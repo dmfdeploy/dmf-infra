@@ -13,16 +13,16 @@ ingress, Longhorn distributed storage, and a complete monitoring and automation 
 >
 > For production use, increase storage sizes and retention periods accordingly.
 
-## Two-Repo Model
+## Part of the DMF Platform
 
-This repo (`dmf-infra`) contains **only generic, environment-agnostic playbooks and roles**.
-Site-specific configuration (real IPs, ingress settings, OpenBao metadata) lives in a separate
-**private** repo:
-
-```
-github: lkirc/dmf-infra    ← public, generic (this repo)
-forgejo/gitlab: dmf-env    ← private, site-specific inventory + OpenBao metadata
-```
+`dmf-infra` is one of the public component repos of the **DMF Platform**
+(`github.com/dmfdeploy/`). It contains **only generic, environment-agnostic
+playbooks and roles** — never real IPs, hostnames, or secrets. Its companion
+[`dmf-env`](https://github.com/dmfdeploy/dmf-env) holds the generic environment
+provisioning + bootstrap tooling (wrapper scripts, OpenTofu roots/modules). Per
+ADR-0035, **all per-environment state** (inventory, secrets bundle, SSH keys,
+OpenTofu state) is **operator-local** under `~/.dmfdeploy/envs/<env>/` and is
+never committed to any repo.
 
 Playbooks are typically run through the environment wrapper so secrets are exported from OpenBao
 before Ansible starts:
@@ -186,7 +186,7 @@ All services are exposed via Traefik at the environment-selected external entry 
 | Grafana | `<external_base_url>/grafana` | admin / (OpenBao) |
 | LibreNMS | `<external_base_url>/librenms` | admin / (OpenBao) |
 | Prometheus | `<external_base_url>/prometheus` | — |
-| Loki | `<external_base_url>/loki` | — |
+| Loki | `<external_base_url>/loki` (log API — no web UI) | — |
 | NetBox | `<external_base_url>/netbox` | admin / (OpenBao) |
 
 The **Landing Page** automatically discovers and displays links to all deployed applications.
@@ -196,22 +196,24 @@ The **Landing Page** automatically discovers and displays links to all deployed 
 ```
 k3s-lab-bootstrap/
 ├── ansible.cfg                      # Ansible configuration (no default inventory)
+├── requirements.yml                 # Galaxy collection/role requirements
 ├── site.yml                         # Top-level entry — calls lifecycle-provision
-├── lifecycle-provision.yml          # EBU Provision + Configure (full build)
+├── lifecycle-provision.yml          # EBU Provision (full build)
+├── lifecycle-configure.yml          # EBU Configure stage
 ├── lifecycle-operate.yml            # EBU Operate stage (verify, drills)
 ├── lifecycle-finalise.yml           # EBU Finalise & Review (teardown)
+├── bootstrap-*.yml                  # From-scratch bootstrap chain (pre-/post-seed,
+│                                    #   configure, verify) — driven by dmf-env / dmf-init
 ├── inventories/
-│   └── example/                     # Template inventory; real envs in dmf-env
+│   └── example/                     # Template inventory; real envs are operator-local
 ├── playbooks/
-│   ├── 200-baseline.yml             # Layer 2 — Host Platform: OS baseline
-│   ├── 210-harden.yml               # Layer 2 — host hardening
-│   ├── 219-host-verify.yml          # Layer 2 — pre-flight gate
-│   ├── 300-k3s.yml … 339-*.yml      # Layer 3 — Container Platform (k3s, ingress, TLS, storage, registry)
-│   ├── 600-landing-page.yml … 693-* # Layer 6 — Application & UI (NetBox, Forgejo, AWX, integration glue)
+│   ├── 200-baseline.yml … 219-*     # Layer 2 — Host Platform: baseline, harden, verify
+│   ├── 300-k3s.yml … 339-*          # Layer 3 — Container Platform (k3s, ingress, TLS, storage, registry)
+│   ├── 600-landing-page.yml … 699-* # Layer 6 — Application & UI (NetBox, Forgejo, AWX, dmf-cms, integration glue)
 │   ├── vertical-security/           # OpenBao, Authentik, breakglass-verify
 │   ├── vertical-monitoring/         # Prometheus, Loki, Grafana, Promtail, LibreNMS
 │   ├── vertical-orchestration/      # ESO (External Secrets Operator)
-│   ├── vertical-control/            # Reserved (operate-time runbooks)
+│   ├── vertical-resilience/         # Resilience drills / recovery runbooks
 │   └── lifecycle/                   # Stack verify + teardown bodies
 ├── roles/
 │   ├── base/                        # Layers 2/3 + verticals (k3s, harden, ingress, longhorn, prometheus base, …)
@@ -220,6 +222,10 @@ k3s-lab-bootstrap/
 │   ├── modules/infra-monitoring/    # Vertical-monitoring extension (LibreNMS, …)
 │   ├── modules/advanced/            # Vertical-orchestration extension (ArgoCD, federation)
 │   └── common/                      # Utilities used across layers
+├── charts/                          # Helm charts vendored/used by playbooks
+├── ee/                              # AWX Execution Environment build (ansible-builder)
+├── providers/                       # Per-provider helpers
+├── tests/                           # Test scaffolding
 └── docs/                            # Additional documentation
 ```
 
@@ -235,7 +241,7 @@ Edit `<inventory>/group_vars/all/main.yml` in your private `dmf-env` repo:
 # Select an ingress mode per environment:
 # cloud-native | metallb-bgp | metallb-l2 | nodeport-only
 cluster_ingress_mode: cloud-native
-external_base_url: "http://cluster.example.net"
+external_base_url: "http://dmf.example.com"
 
 # Longhorn replica count
 longhorn_default_replica_count: "2"

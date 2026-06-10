@@ -18,7 +18,7 @@ bin/generate-status.sh --no-fetch    # refreshes STATUS.md
 ```
 
 Then read in order:
-1. `dmfdeploy/STATUS.md` — what's happening across all 6 repos right now
+1. `dmfdeploy/STATUS.md` — what's happening across all repos right now
 2. `dmfdeploy/CLAUDE.md` — full boot ritual + workspace map
 3. `dmfdeploy/docs/decisions/INDEX.md` — ADRs applicable to your task
 4. The most recent file under `dmfdeploy/docs/handoffs/`
@@ -37,13 +37,13 @@ This repo (`dmf-infra`) contains only generic, environment-agnostic playbooks an
 Environment-specific configuration (node IPs, ingress settings, passwords) lives in a separate
 **private** repo — typically named `dmf-env`. Never commit real IPs or secrets to this repo.
 
-> **2026-05-19 — incoming additions per ADR-0025:**
-> A custom AWX Execution Environment build pipeline lands at
-> `k3s-lab-bootstrap/ee/` (ansible-builder config) with `playbooks/630-zot-seed-platform.yml`
-> building the EE image and pushing to cluster-internal Zot. The same EE
-> image is consumed by the in-cluster ansible runner pod (foundation already
-> at `roles/stack/operator/ansible-runner/`, role landed in `ff36ee8`) and
-> by AWX-spawned media catalog launchers. See
+> **ADR-0025 (landed 2026-05-19):**
+> A custom AWX Execution Environment build pipeline lives at
+> `k3s-lab-bootstrap/ee/` (ansible-builder config); `playbooks/630-zot-seed-platform.yml`
+> builds the EE image and pushes it to cluster-internal Zot. The same EE
+> image is consumed by the in-cluster ansible runner pod
+> (`roles/stack/operator/ansible-runner/`) and by AWX-spawned media catalog
+> launchers. See
 > `dmfdeploy/docs/plans/DMF Cluster-Internal Ansible Execution and Catalog Helm Pivot Plan 2026-05-19.md`
 > and ADR-0025.
 

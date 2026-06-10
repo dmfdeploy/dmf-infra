@@ -1,5 +1,11 @@
 # DMF Platform Plan (v0.1 draft)
 
+> **⚠️ HISTORICAL / SUPERSEDED.** Pre-migration planning document kept for
+> provenance. The repository model and release/contribution process described
+> here are **superseded by ADR-0041 (DMF Release and Contribution Model)** and
+> the executed GitHub-canonical publish — the DMF Platform's public repos now
+> live under `github.com/dmfdeploy/`. Do not treat the workflow below as current.
+
 **Date:** 2026-04-30  
 **Status:** Experiment phase — testing architectural assumptions before commitment  
 **Version:** v0.1 draft — iterate and evolve  
@@ -307,4 +313,4 @@ dmf-media/                       ← scaffold (in progress)
 - **[netbox-deployment-notes.md](netbox-deployment-notes.md)** — Troubleshooting and field notes
 - **[landing-page.md](landing-page.md)** — Dynamic app portal architecture
 - **[integration-sot.md](integration-sot.md)** — NetBox → AWX integration
-- **[CLAUDE.md](../CLAUDE.md)** — Operational guidance and common commands
+- **[CLAUDE.md](../../CLAUDE.md)** — Operational guidance and common commands

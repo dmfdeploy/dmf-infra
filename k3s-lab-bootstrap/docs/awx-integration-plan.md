@@ -1,5 +1,11 @@
 # AWX Integration Plan (NetBox + Forgejo)
 
+> **⚠️ Numbering/commands may be historical.** Parts of this document reference an
+> earlier playbook-numbering scheme (e.g. `31-forgejo`, `40-netbox-sot`, `05-harden`)
+> and the pre-OpenBao `--vault-password-file` workflow. The current tree uses the
+> `200/300/600` + `vertical-*` layout and the `dmf-env/bin/run-playbook.sh` OpenBao
+> wrapper. Cross-check against the live `k3s-lab-bootstrap/playbooks/` tree before running.
+
 This document captures the AWX integration plan and the rationale behind each
 step so future agents can pick up the work quickly.
 

@@ -35,12 +35,12 @@ old↔new playbook map and EBU vocabulary canon.
 
 ## Layer 4 + 5 (Media Exchange, Media Functions)
 
-Not in this repo. They live in `~/repos/dmf-media/roles/` (nmos-cpp,
+Not in this repo. They live in `$DMFDEPLOY_UMBRELLA/dmf-media/roles/` (nmos-cpp,
 ebu-list, flow-exporters, ptp-monitor, netbox-media-plugin, media-controllers).
 
 ## Layer 1 (Infrastructure)
 
 Provider-specific provisioning (Hetzner CCM, hcloud server creation, network
-zones) lives in `~/repos/dmf-env/bin/provision-nodes.sh` and the
+zones) lives in `$DMFDEPLOY_UMBRELLA/dmf-env/bin/provision-nodes.sh` and the
 `tasks/hetzner_*.yml` files. From the EBU model's perspective the operator
 host invoking those scripts is the Layer-1 orchestrator.

@@ -1,5 +1,11 @@
 # Cluster Ready Gate
 
+> **⚠️ Numbering/commands may be historical.** Parts of this document reference an
+> earlier playbook-numbering scheme (e.g. `31-forgejo`, `40-netbox-sot`, `05-harden`)
+> and the pre-OpenBao `--vault-password-file` workflow. The current tree uses the
+> `200/300/600` + `vertical-*` layout and the `dmf-env/bin/run-playbook.sh` OpenBao
+> wrapper. Cross-check against the live `k3s-lab-bootstrap/playbooks/` tree before running.
+
 The cluster ready gate is a shared Ansible role that waits for core cluster services before deploying applications. It prevents race conditions on fresh cluster boots or after reboots when apps might start before DNS, ingress, or storage are available.
 
 ## Overview

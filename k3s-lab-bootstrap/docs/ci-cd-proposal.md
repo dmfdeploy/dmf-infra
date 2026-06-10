@@ -1,5 +1,11 @@
 # CI/CD Proposal: Multi-Environment Workflow
 
+> **⚠️ Numbering/commands may be historical.** Parts of this document reference an
+> earlier playbook-numbering scheme (e.g. `31-forgejo`, `40-netbox-sot`, `05-harden`)
+> and the pre-OpenBao `--vault-password-file` workflow. The current tree uses the
+> `200/300/600` + `vertical-*` layout and the `dmf-env/bin/run-playbook.sh` OpenBao
+> wrapper. Cross-check against the live `k3s-lab-bootstrap/playbooks/` tree before running.
+
 This proposal outlines a pragmatic CI/CD approach to run dev, staging, and
 production concurrently while keeping secrets handling clean and promotions
 predictable.

@@ -52,7 +52,7 @@ zot.zot.svc.cluster.local:5000/dmf/awx-ee:<tag>  (runtime registry — Lane A co
 ### Build
 
 ```bash
-cd ~/repos/dmfdeploy/dmf-infra/k3s-lab-bootstrap/ee
+cd $DMFDEPLOY_UMBRELLA/dmf-infra/k3s-lab-bootstrap/ee
 IMAGE_VERSION=0.1.0 scripts/build.sh
 ```
 
@@ -96,7 +96,7 @@ The script:
 ### Cluster-side mirror (when cluster comes up)
 
 ```bash
-cd ~/repos/dmfdeploy/dmf-env
+cd $DMFDEPLOY_UMBRELLA/dmf-env
 bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/playbooks/630-zot-seed-platform.yml
 ```
 

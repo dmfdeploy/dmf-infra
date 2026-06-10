@@ -22,7 +22,7 @@ The recurring failure mode is:
 - PostgreSQL then rejects the NetBox app with:
   `FATAL: password authentication failed for user "netbox"`
 - Downstream consumers such as `691-netbox-sot.yml`, `693-awx-integration.yml`,
-  `694-born-inventory.yml`, and `698-cms-smoke-test.yml` fail or stall because
+  `694-born-inventory.yml`, and `699-cms-smoke-test.yml` fail or stall because
   the NetBox / AWX / DMF token chain is not stable.
 
 The desired end state is:
@@ -44,7 +44,7 @@ Before touching code, read these files:
 - [k3s-lab-bootstrap/playbooks/693-awx-integration.yml](../playbooks/693-awx-integration.yml)
 - [k3s-lab-bootstrap/playbooks/694-born-inventory.yml](../playbooks/694-born-inventory.yml)
 - [k3s-lab-bootstrap/playbooks/697-cms-awx-token.yml](../playbooks/697-cms-awx-token.yml)
-- [k3s-lab-bootstrap/playbooks/698-cms-smoke-test.yml](../playbooks/698-cms-smoke-test.yml)
+- [k3s-lab-bootstrap/playbooks/699-cms-smoke-test.yml](../playbooks/699-cms-smoke-test.yml)
 - [k3s-lab-bootstrap/roles/stack/operator/netbox/tasks/main.yml](../roles/stack/operator/netbox/tasks/main.yml)
 - [k3s-lab-bootstrap/roles/stack/operator/netbox/templates/values.yml.j2](../roles/stack/operator/netbox/templates/values.yml.j2)
 - [k3s-lab-bootstrap/roles/stack/operator/netbox-sot/tasks/main.yml](../roles/stack/operator/netbox-sot/tasks/main.yml)
@@ -103,7 +103,7 @@ bin/run-playbook.sh hetzner-arm ../dmf-infra/k3s-lab-bootstrap/playbooks/691-net
 bin/run-playbook.sh hetzner-arm ../dmf-infra/k3s-lab-bootstrap/playbooks/693-awx-integration.yml
 bin/run-playbook.sh hetzner-arm ../dmf-infra/k3s-lab-bootstrap/playbooks/694-born-inventory.yml
 bin/run-playbook.sh hetzner-arm ../dmf-infra/k3s-lab-bootstrap/playbooks/697-cms-awx-token.yml
-bin/run-playbook.sh hetzner-arm ../dmf-infra/k3s-lab-bootstrap/playbooks/698-cms-smoke-test.yml
+bin/run-playbook.sh hetzner-arm ../dmf-infra/k3s-lab-bootstrap/playbooks/699-cms-smoke-test.yml
 ```
 
 The wrapper is responsible for exporting bootstrap/runtime vars from OpenBao
@@ -191,7 +191,7 @@ token chain being consistent:
 - `693-awx-integration.yml` grants AWX access to the NetBox inventory and job template roles
 - `694-born-inventory.yml` registers the deployed cluster in NetBox
 - `697-cms-awx-token.yml` wires the DMF Console token
-- `698-cms-smoke-test.yml` verifies the DMF Console token path
+- `699-cms-smoke-test.yml` verifies the DMF Console token path
 
 If any of those steps are built on stale assumptions about the NetBox runtime
 secret, the whole pipeline destabilizes.
@@ -288,7 +288,7 @@ Likely files to adjust:
 - `roles/stack/operator/awx-integration/tasks/main.yml`
 - `roles/common/dmf-born-inventory/tasks/main.yml`
 - possibly `playbooks/697-cms-awx-token.yml`
-- possibly `playbooks/698-cms-smoke-test.yml`
+- possibly `playbooks/699-cms-smoke-test.yml`
 
 What the implementation should converge toward:
 
@@ -313,7 +313,7 @@ The minimum verification set should include:
    - `693-awx-integration.yml`
    - `694-born-inventory.yml`
    - `697-cms-awx-token.yml`
-   - `698-cms-smoke-test.yml`
+   - `699-cms-smoke-test.yml`
 4. A second rerun of the same lifecycle stage to confirm idempotency
 5. Cluster logs showing no fresh DB-auth failure on the second run
 
