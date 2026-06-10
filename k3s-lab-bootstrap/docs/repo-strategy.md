@@ -1,5 +1,11 @@
 # Repository Strategy and Lab Development Workflow
 
+> **⚠️ HISTORICAL / SUPERSEDED.** Pre-migration planning document kept for
+> provenance. The repository model and release/contribution process described
+> here are **superseded by ADR-0041 (DMF Release and Contribution Model)** and
+> the executed GitHub-canonical publish — the DMF Platform's public repos now
+> live under `github.com/dmfdeploy/`. Do not treat the workflow below as current.
+
 **Status:** Planning — pre-implementation reference  
 **Date:** 2026-04-16  
 **Context:** Original lab is gone. New lab being built on Hetzner ARM64. This document
@@ -28,7 +34,7 @@ config kept private on Forgejo.
 ## 2. Two-Repo Model
 
 ```
-github: lkirc/dmf-infra          ← public, generic
+github: dmfdeploy/dmf-infra          ← public, generic
 forgejo: <your-username>/dmf-env ← private, never leaves Forgejo
 ```
 
@@ -200,7 +206,7 @@ defaults to `ansible_host` if not set — backwards compatible).
 ### Repository relationship
 
 ```
-github: lkirc/dmf-infra  (upstream, generic, public)
+github: dmfdeploy/dmf-infra  (upstream, generic, public)
          ↑  periodic PR (clean, generic commits only)
          ↓  fork at project start
 forgejo: <your-username>/dmf-infra   (lab fork, active development)
@@ -230,7 +236,7 @@ Merged to `develop` for live apply. Promoted to `main` when stable.
 
 When a change on `feature/` or `develop` is genuinely generic (no lab-specific
 assumptions, no IPs, no credentials), it is cherry-picked or PR'd to
-`github: lkirc/dmf-infra`. GitHub main should always be a clean subset of
+`github: dmfdeploy/dmf-infra`. GitHub main should always be a clean subset of
 the Forgejo development history.
 
 The rule: **if it would need editing before going to GitHub, it stays on Forgejo.**
@@ -276,7 +282,7 @@ hcloud floating-ip assign k3s-vip k3s-node-01
 
 ```bash
 # Clone both repos locally
-git clone git@github.com:lkirc/dmf-infra.git
+git clone git@github.com:dmfdeploy/dmf-infra.git
 git clone forgejo:<your-username>/dmf-env.git   # once created on Forgejo
 
 # Populate dmf-env with real node IPs from hcloud output
@@ -412,7 +418,7 @@ Work is ordered so each phase delivers something usable before the next begins.
 - [ ] Test apply on `develop` branch
 
 ### Phase 6 — Publish to GitHub
-*Goal: clean public repo on github.com/lkirc/dmf-infra*
+*Goal: clean public repo on github.com/dmfdeploy/dmf-infra*
 
 - [ ] Review all files for any remaining lab-specific content
 - [ ] PR clean generic version to GitHub main

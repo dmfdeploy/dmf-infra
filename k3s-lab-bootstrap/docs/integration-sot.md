@@ -1,5 +1,11 @@
 # Integration: NetBox SoT + AWX + Monitoring
 
+> **⚠️ Numbering/commands may be historical.** Parts of this document reference an
+> earlier playbook-numbering scheme (e.g. `31-forgejo`, `40-netbox-sot`, `05-harden`)
+> and the pre-OpenBao `--vault-password-file` workflow. The current tree uses the
+> `200/300/600` + `vertical-*` layout and the `dmf-env/bin/run-playbook.sh` OpenBao
+> wrapper. Cross-check against the live `k3s-lab-bootstrap/playbooks/` tree before running.
+
 This reference outlines how the lab should integrate NetBox as the source of
 truth, AWX as the automation engine, Prometheus/Grafana for monitoring, and
 LibreNMS for discovery/assurance.

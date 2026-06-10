@@ -16,7 +16,7 @@ bin/generate-status.sh --no-fetch    # refreshes STATUS.md
 ```
 
 Then read in order:
-1. `dmfdeploy/STATUS.md` — what's happening across all 6 repos right now
+1. `dmfdeploy/STATUS.md` — what's happening across all repos right now
 2. `dmfdeploy/QWEN.md` — full boot ritual + skills index + Qwen-specific rules
 3. `dmfdeploy/docs/decisions/INDEX.md` — ADRs applicable to your task
 4. The most recent file under `dmfdeploy/docs/handoffs/`

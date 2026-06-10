@@ -95,7 +95,7 @@ When resuming this work, start from the control node and the cluster wrapper:
 ```bash
 ssh k3s-admin@<control-node-public-ip>
 sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml get nodes
-cd ~/repos/dmf-env
+cd $DMFDEPLOY_UMBRELLA/dmf-env
 bin/run-playbook.sh ../dmf-infra/k3s-lab-bootstrap/site.yml
 ```
 
