@@ -1,0 +1,95 @@
+---
+- name: Validate supported ingress mode
+  ansible.builtin.assert:
+    that:
+      - cluster_ingress_mode in ['cloud-native', 'metallb-l2', 'metallb-bgp', 'nodeport-only', 'single-node-servicelb']
+    fail_msg: "Unsupported cluster_ingress_mode '{{ cluster_ingress_mode }}'"
+
+- name: Deploy MetalLB for MetalLB-based ingress modes
+  ansible.builtin.include_role:
+    name: metallb
+  when: cluster_ingress_mode in ['metallb-l2', 'metallb-bgp']
+
+# Cloud-native mode delegates the provider CCM install to an env-supplied task
+# file. The generic repo defines only the interface (mode + dispatch); the
+# provider implementation lives with the environment that owns the cloud account.
+# Example in env group_vars:
+#   cluster_ingress_provider_tasks: "{{ inventory_dir }}/../../tasks/hetzner/ccm.yml"
+- name: Delegate provider install for cloud-native ingress
+  ansible.builtin.include_tasks: "{{ cluster_ingress_provider_tasks }}"
+  when:
+    - cluster_ingress_mode == 'cloud-native'
+    - cluster_ingress_provider_tasks | length > 0
+
+- name: Wait for Traefik service to exist
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Service
+    name: "{{ cluster_ingress_service_name }}"
+    namespace: "{{ cluster_ingress_service_namespace }}"
+  register: cluster_ingress_service
+  until: cluster_ingress_service.resources | length > 0
+  retries: 30
+  delay: 10
+
+- name: Patch Traefik service for selected ingress mode
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: patched
+    api_version: v1
+    kind: Service
+    name: "{{ cluster_ingress_service_name }}"
+    namespace: "{{ cluster_ingress_service_namespace }}"
+    definition:
+      metadata:
+        annotations: "{{ cluster_ingress_service_annotations }}"
+      spec:
+        type: "{{ cluster_ingress_service_type }}"
+        externalTrafficPolicy: "{{ cluster_ingress_external_traffic_policy }}"
+        loadBalancerClass: "{{ cluster_ingress_load_balancer_class if cluster_ingress_load_balancer_class | length > 0 else omit }}"
+
+# ── HTTP→HTTPS redirect at the Traefik entrypoint ────────────────────────────
+# k3s bundles Traefik; its Helm values are merged from any HelmChartConfig
+# named `traefik` in kube-system. Setting ports.web.redirectTo makes Traefik
+# redirect every HTTP request to HTTPS at the entrypoint level, so apps do
+# not need per-namespace redirect IngressRoutes or Middlewares.
+#
+# In single-node-servicelb mode the bundled Traefik also carries admin/registry
+# uploads (the collapsed lane — no traefik-private), so it additionally gets the
+# upload-friendly respondingTimeouts (additionalArguments, mirroring the
+# traefik-private tuning). Other modes keep Traefik defaults here.
+- name: Configure Traefik entrypoint (HTTPS redirect; +upload timeouts when collapsed)
+  vars:
+    _traefik_values: >-
+      {{
+        {'ports': {'web': {'redirectTo': {'port': 'websecure', 'priority': 10}}}}
+        | combine(
+            {'additionalArguments': ingress_upload_timeout_args}
+            if cluster_ingress_mode == 'single-node-servicelb' else {}
+          )
+      }}
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: helm.cattle.io/v1
+      kind: HelmChartConfig
+      metadata:
+        name: traefik
+        namespace: "{{ cluster_ingress_service_namespace }}"
+      spec:
+        valuesContent: "{{ _traefik_values | to_nice_yaml(indent=2) }}"
+
+# Cleanup: the global cross-namespace redirect Middleware is obsolete now that
+# the redirect happens at the Traefik entrypoint. Traefik also rejects
+# cross-namespace middleware references by default, so any remaining reference
+# from an older playbook run would be invalid.
+- name: Remove legacy global HTTPS redirect Middleware
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: Middleware
+    name: global-https-redirect
+    namespace: "{{ cluster_ingress_service_namespace }}"

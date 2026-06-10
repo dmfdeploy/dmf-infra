@@ -1,0 +1,59 @@
+---
+# Where the k3s API server writes its audit log (matches the path templated by
+# roles/base/k3s/templates/k3s-audit-logging.conf.j2). The archival cron tars
+# this directory and ships it to S3.
+audit_log_archive_local_path: /var/log/kubernetes/audit.log
+audit_log_archive_local_dir: /var/log/kubernetes
+
+# Bucket + S3-compatible endpoint. Leave bucket empty to skip archival
+# (end_host short-circuit in tasks/main.yml). Endpoint empty = real AWS S3.
+# Backblaze B2 example: https://s3.eu-central-003.backblazeb2.com
+audit_log_s3_bucket: ""
+audit_log_s3_endpoint: ""
+
+# Object-key prefix per cluster — keeps multi-env operators tidy.
+audit_log_s3_prefix: "{{ inventory_hostname_short | default('cluster') }}/k3s-api"
+
+# Daily archival schedule (UTC on the node — chrony keeps the clock honest).
+audit_log_archive_cron_minute: "0"
+audit_log_archive_cron_hour: "2"
+
+# Object Lock (WORM) controls. Bucket-level Object Lock must be enabled out
+# of band (provider console or Terraform) for retain-until to take effect.
+# Per docs/processes/audit-log-retention-policy.md the contract is 12 months.
+audit_log_object_lock_enabled: true
+audit_log_object_lock_mode: COMPLIANCE
+audit_log_object_lock_days: 365
+
+# Server-side encryption header passed to `aws s3 cp`. Use "AES256" for
+# provider-managed keys (works on AWS S3, Backblaze B2, MinIO with KES).
+# Set to "aws:kms" + audit_log_kms_key_id when targeting AWS KMS.
+audit_log_sse_algorithm: "AES256"
+audit_log_kms_key_id: ""
+
+# Operator-supplied credentials. In Tier A this is the BYO-object-storage
+# path: set audit_log_aws_access_key_id / audit_log_aws_secret_access_key in
+# inventory group_vars (kept out of git per ADR-0007).
+#
+# The role writes them as a named profile in /root/.aws/credentials and the
+# cron + precheck invoke `aws --profile {{ audit_log_aws_profile }}`. This
+# keeps credentials in an SDK-accessed config file, NOT in process
+# environment — so /proc/<pid>/environ of the running cron does not leak
+# them and ADR-0007's "secrets never in env" rule is respected.
+#
+# Phase 3 supersedes this on-host file with ESO-materialized delivery via
+# a Kubernetes-side CronJob.
+audit_log_aws_access_key_id: ""
+audit_log_aws_secret_access_key: ""
+# Region: empty for AWS S3 (auto-detected) or B2 with virtual-host style.
+# Set to "eu-central-003" for Backblaze B2 EU Central, etc.
+audit_log_aws_region: ""
+# AWS-CLI profile name written into /root/.aws/credentials and used by
+# `aws --profile` invocations. Per-cluster default keeps multiple bootstraps
+# on the same host distinct without collision.
+audit_log_aws_profile: "dmf-audit-archive"
+
+# Root-only working directory where the daily tarball is staged before
+# upload. Stays off /tmp (mode 1777, world-readable, shared with all users)
+# per ADR-0007 concern about secrets-adjacent data on shared paths.
+audit_log_work_dir: /var/lib/dmf/audit-archive

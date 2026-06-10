@@ -1,0 +1,26 @@
+---
+# --soak-prewarm: fire each backup CronJob as a standalone Job so payload
+# paths are proved in ~30 min instead of waiting 48h.
+#
+# Caveat (pane-2 footnote 2026-05-12): the standalone Job is NOT a child
+# of the CronJob, so concurrencyPolicy: Forbid doesn't apply. Daily/weekly
+# schedules make collision vanishingly small; if any schedule bumps to
+# hourly, add a label-selector guard before prewarm.
+
+- name: Prewarm CronJob {{ _rv_prewarm.namespace }}/{{ _rv_prewarm.name }}
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ _rv_prewarm.namespace }}"
+      - create
+      - job
+      - "--from=cronjob/{{ _rv_prewarm.name }}"
+      - "prewarm-{{ _rv_prewarm.name }}-{{ ansible_date_time.epoch }}"
+  register: _rv_prewarm_result
+  failed_when:
+    - _rv_prewarm_result.rc != 0
+    - "'AlreadyExists' not in (_rv_prewarm_result.stderr | default(''))"
+  changed_when: _rv_prewarm_result.rc == 0

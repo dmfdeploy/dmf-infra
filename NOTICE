@@ -1,0 +1,7 @@
+DMF Platform — dmf-infra (generic Ansible playbooks/roles)
+Copyright 2026 DMF Platform contributors
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes no upstream-derived components beyond standard
+Ansible / Helm / Galaxy roles declared in roles/, requirements.yml,
+or playbook imports.

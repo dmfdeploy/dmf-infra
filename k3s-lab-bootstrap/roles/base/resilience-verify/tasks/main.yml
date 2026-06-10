@@ -1,0 +1,22 @@
+---
+# Resilience verify role orchestrator.
+# Runs Track A (in-cluster ESO buckets), Track B (host-side audit + Object
+# Lock), and optionally --soak-prewarm.
+
+- name: Track A — synthetic round-trip for in-cluster ESO buckets
+  ansible.builtin.include_tasks: verify-in-cluster.yml
+  loop: "{{ resilience_verify_in_cluster_targets }}"
+  loop_control:
+    loop_var: _rv_target
+    label: "{{ _rv_target.logical }}"
+
+- name: Track B — host-side audit round-trip + Object Lock delete-refusal
+  ansible.builtin.include_tasks: verify-host-audit.yml
+
+- name: --soak-prewarm — fire each backup CronJob as a standalone Job
+  ansible.builtin.include_tasks: soak-prewarm.yml
+  loop: "{{ resilience_verify_prewarm_cronjobs }}"
+  loop_control:
+    loop_var: _rv_prewarm
+    label: "{{ _rv_prewarm.namespace }}/{{ _rv_prewarm.name }}"
+  when: resilience_verify_soak_prewarm | bool

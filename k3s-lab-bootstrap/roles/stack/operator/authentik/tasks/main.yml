@@ -1,0 +1,625 @@
+---
+- name: Validate Authentik input facts
+  ansible.builtin.assert:
+    that:
+      - authentik_admin_username is defined
+      - authentik_admin_password is defined
+      - authentik_admin_email is defined
+      - authentik_breakglass_username is defined
+      - authentik_breakglass_password is defined
+      - authentik_breakglass_email is defined
+      - authentik_admin_username == authentik_bootstrap_admin_username
+    fail_msg: >-
+      Authentik role expects app-admin-facts to seed akadmin plus the separate
+      break-glass identity before this role runs.
+  no_log: true
+
+- name: Create Authentik namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ authentik_namespace }}"
+
+- name: Establish OpenBao operator session for Authentik bootstrap writes
+  ansible.builtin.include_tasks: openbao_session.yml
+
+- name: Read current Authentik runtime secret from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ authentik_openbao_namespace }}
+      exec -i {{ _authentik_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ authentik_runtime_secret_path | quote }}'
+  register: _authentik_runtime_secret_raw
+  changed_when: false
+  failed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _authentik_openbao_client_token }}"
+  no_log: true
+
+- name: Parse current Authentik runtime secret document
+  ansible.builtin.set_fact:
+    _authentik_runtime_secret_data: >-
+      {{
+        (
+          _authentik_runtime_secret_raw.stdout | default('{}') | from_json
+        ).data.data | default({})
+      }}
+  when:
+    - _authentik_runtime_secret_raw.rc == 0
+    - _authentik_runtime_secret_raw.stdout | default('') | length > 0
+  no_log: true
+
+- name: Default Authentik runtime secret document
+  ansible.builtin.set_fact:
+    _authentik_runtime_secret_data: {}
+  when: _authentik_runtime_secret_data is not defined
+  no_log: true
+
+- name: Generate Authentik secret key when missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -base64
+      - "{{ authentik_secret_key_bytes | string }}"
+  register: _authentik_secret_key_generated
+  changed_when: false
+  when: (_authentik_runtime_secret_data.secret_key | default('')) | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Generate Authentik bootstrap token when missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -hex
+      - "{{ authentik_bootstrap_token_bytes | string }}"
+  register: _authentik_bootstrap_token_generated
+  changed_when: false
+  when: (_authentik_runtime_secret_data.bootstrap_token | default('')) | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Generate Authentik PostgreSQL password when missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -base64
+      - "{{ authentik_postgresql_password_bytes | string }}"
+  register: _authentik_postgresql_password_generated
+  changed_when: false
+  when: (_authentik_runtime_secret_data.postgres_password | default('')) | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Set effective Authentik runtime secrets
+  ansible.builtin.set_fact:
+    authentik_secret_key_effective: >-
+      {{
+        _authentik_runtime_secret_data.secret_key
+        | default(_authentik_secret_key_generated.stdout | default('') | trim, true)
+      }}
+    authentik_bootstrap_token_effective: >-
+      {{
+        _authentik_runtime_secret_data.bootstrap_token
+        | default(_authentik_bootstrap_token_generated.stdout | default('') | trim, true)
+      }}
+    authentik_postgresql_password_effective: >-
+      {{
+        _authentik_runtime_secret_data.postgres_password
+        | default(_authentik_postgresql_password_generated.stdout | default('') | trim, true)
+      }}
+  no_log: true
+
+- name: Persist Authentik runtime secret to OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$AUTHENTIK_SECRET_KEY"
+      "$AUTHENTIK_BOOTSTRAP_TOKEN"
+      "$AUTHENTIK_POSTGRES_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ authentik_openbao_namespace }}
+      exec -i {{ _authentik_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r SECRET_KEY;
+      IFS= read -r BOOTSTRAP_TOKEN;
+      IFS= read -r POSTGRES_PASSWORD;
+      export BAO_TOKEN;
+      bao kv put {{ authentik_runtime_secret_path | quote }}
+      secret_key="$SECRET_KEY"
+      bootstrap_token="$BOOTSTRAP_TOKEN"
+      postgres_password="$POSTGRES_PASSWORD"'
+  when:
+    - _authentik_runtime_secret_data.secret_key | default('') != authentik_secret_key_effective
+      or _authentik_runtime_secret_data.bootstrap_token | default('') != authentik_bootstrap_token_effective
+      or _authentik_runtime_secret_data.postgres_password | default('') != authentik_postgresql_password_effective
+  environment:
+    OPENBAO_TOKEN: "{{ _authentik_openbao_client_token }}"
+    AUTHENTIK_SECRET_KEY: "{{ authentik_secret_key_effective }}"
+    AUTHENTIK_BOOTSTRAP_TOKEN: "{{ authentik_bootstrap_token_effective }}"
+    AUTHENTIK_POSTGRES_PASSWORD: "{{ authentik_postgresql_password_effective }}"
+  no_log: true
+
+- name: Create Authentik runtime ExternalSecret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: "{{ authentik_external_secret_api_version }}"
+      kind: ExternalSecret
+      metadata:
+        name: authentik-runtime
+        namespace: "{{ authentik_namespace }}"
+      spec:
+        refreshInterval: "{{ authentik_external_secret_refresh_interval }}"
+        secretStoreRef:
+          name: "{{ authentik_cluster_secret_store_name }}"
+          kind: ClusterSecretStore
+        target:
+          name: "{{ authentik_runtime_secret_name }}"
+          creationPolicy: Owner
+        data:
+          - secretKey: secret_key
+            remoteRef:
+              key: "{{ authentik_runtime_secret_path }}"
+              property: secret_key
+          - secretKey: password
+            remoteRef:
+              key: "{{ authentik_runtime_secret_path }}"
+              property: postgres_password
+          - secretKey: postgres-password
+            remoteRef:
+              key: "{{ authentik_runtime_secret_path }}"
+              property: postgres_password
+          - secretKey: AUTHENTIK_BOOTSTRAP_PASSWORD
+            remoteRef:
+              key: "{{ authentik_admin_secret_path }}"
+              property: password
+          - secretKey: AUTHENTIK_BOOTSTRAP_EMAIL
+            remoteRef:
+              key: "{{ authentik_admin_secret_path }}"
+              property: email
+          - secretKey: AUTHENTIK_BOOTSTRAP_TOKEN
+            remoteRef:
+              key: "{{ authentik_runtime_secret_path }}"
+              property: bootstrap_token
+  no_log: true
+
+- name: Create Authentik break-glass ExternalSecret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: "{{ authentik_external_secret_api_version }}"
+      kind: ExternalSecret
+      metadata:
+        name: authentik-breakglass
+        namespace: "{{ authentik_namespace }}"
+      spec:
+        refreshInterval: "{{ authentik_external_secret_refresh_interval }}"
+        secretStoreRef:
+          name: "{{ authentik_cluster_secret_store_name }}"
+          kind: ClusterSecretStore
+        target:
+          name: "{{ authentik_breakglass_secret_name }}"
+          creationPolicy: Owner
+        data:
+          - secretKey: username
+            remoteRef:
+              key: "{{ authentik_breakglass_secret_path }}"
+              property: username
+          - secretKey: password
+            remoteRef:
+              key: "{{ authentik_breakglass_secret_path }}"
+              property: password
+          - secretKey: email
+            remoteRef:
+              key: "{{ authentik_breakglass_secret_path }}"
+              property: email
+  no_log: true
+
+- name: Wait for Authentik runtime secret to materialize
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ authentik_runtime_secret_name }}"
+    namespace: "{{ authentik_namespace }}"
+  register: _authentik_runtime_secret_info
+  until:
+    - _authentik_runtime_secret_info.resources | length > 0
+    - (_authentik_runtime_secret_info.resources[0].data | default({})) | dict2items | selectattr('key', 'equalto', 'AUTHENTIK_BOOTSTRAP_PASSWORD') | list | length > 0
+  retries: 24
+  delay: 5
+
+- name: Wait for Authentik break-glass secret to materialize
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ authentik_breakglass_secret_name }}"
+    namespace: "{{ authentik_namespace }}"
+  register: _authentik_breakglass_secret_info
+  until:
+    - _authentik_breakglass_secret_info.resources | length > 0
+    - (_authentik_breakglass_secret_info.resources[0].data | default({})) | dict2items | selectattr('key', 'equalto', 'password') | list | length > 0
+  retries: 24
+  delay: 5
+
+- name: Discover Authentik blueprint files in repo
+  ansible.builtin.set_fact:
+    _authentik_blueprint_files: >-
+      {{
+        (
+          query('fileglob', authentik_blueprints_globs[0])
+          + query('fileglob', authentik_blueprints_globs[1])
+        ) | sort
+      }}
+  when: authentik_blueprints_enabled | bool
+
+- name: Build Authentik blueprint ConfigMap data
+  ansible.builtin.set_fact:
+    _authentik_blueprint_data: >-
+      {{
+        (_authentik_blueprint_data | default({}))
+        | combine({
+            (item | basename | regex_replace('\.j2$', '')):
+              (
+                lookup('template', item)
+                if (item is match('.*\.j2$'))
+                else lookup('file', item)
+              )
+          })
+      }}
+  loop: "{{ _authentik_blueprint_files }}"
+  when: authentik_blueprints_enabled | bool
+
+- name: Set Authentik mounted blueprint filenames
+  ansible.builtin.set_fact:
+    _authentik_blueprint_mount_files: >-
+      {{
+        _authentik_blueprint_files
+        | map('basename')
+        | map('regex_replace', '\.j2$', '')
+        | list
+      }}
+  when: authentik_blueprints_enabled | bool
+
+- name: Assert Authentik blueprint files exist when enabled
+  ansible.builtin.assert:
+    that:
+      - _authentik_blueprint_files | length > 0
+    fail_msg: >-
+      Authentik blueprints are enabled but no files matched
+      {{ authentik_blueprints_globs | join(', ') }}.
+  when: authentik_blueprints_enabled | bool
+
+- name: Create Authentik blueprints ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ authentik_blueprints_configmap_name }}"
+        namespace: "{{ authentik_namespace }}"
+      data: >-
+        {{
+          (_authentik_blueprint_data | default({}))
+          | combine({
+              'README.txt': 'Managed by Ansible. Only keys ending with .yaml are loaded by authentik blueprints.'
+            })
+        }}
+  when: authentik_blueprints_enabled | bool
+
+- name: Add Authentik Helm repository
+  kubernetes.core.helm_repository:
+    name: authentik
+    repo_url: "{{ authentik_helm_repo }}"
+
+- name: Template Authentik Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/authentik-values.yml
+    mode: "0644"
+
+- name: Deploy Authentik via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: "{{ authentik_release_name }}"
+    chart_ref: "authentik/{{ authentik_helm_chart }}"
+    chart_version: "{{ authentik_helm_version }}"
+    release_namespace: "{{ authentik_namespace }}"
+    create_namespace: false
+    values_files:
+      - /tmp/authentik-values.yml
+    wait: true
+    wait_timeout: 600s
+
+- name: Wait for Authentik server deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ authentik_release_name }}-server"
+    namespace: "{{ authentik_namespace }}"
+  register: _authentik_server_deployment
+  until:
+    - _authentik_server_deployment.resources | length > 0
+    - _authentik_server_deployment.resources[0].status.readyReplicas | default(0) | int >= authentik_server_replicas
+  retries: 60
+  delay: 10
+
+- name: Wait for Authentik worker deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ authentik_release_name }}-worker"
+    namespace: "{{ authentik_namespace }}"
+  register: _authentik_worker_deployment
+  until:
+    - _authentik_worker_deployment.resources | length > 0
+    - _authentik_worker_deployment.resources[0].status.readyReplicas | default(0) | int >= authentik_worker_replicas
+  retries: 60
+  delay: 10
+
+- name: Wait for mounted Authentik blueprint files to be visible in worker pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ authentik_namespace }}"
+      - exec
+      - deploy/{{ authentik_release_name }}-worker
+      - --
+      - env
+      - AK_BLUEPRINT_DIR=/blueprints/mounted/cm-{{ authentik_blueprints_configmap_name }}
+      - AK_BLUEPRINT_FILES={{ _authentik_blueprint_mount_files | join(':') }}
+      - sh
+      - -c
+      - |-
+        missing=0
+        old_ifs="$IFS"
+        IFS=:
+        for file in $AK_BLUEPRINT_FILES; do
+          if [ ! -f "$AK_BLUEPRINT_DIR/$file" ]; then
+            echo "missing $file"
+            missing=1
+          fi
+        done
+        IFS="$old_ifs"
+        exit "$missing"
+  register: _authentik_blueprint_mount_wait
+  changed_when: false
+  until: _authentik_blueprint_mount_wait.rc | default(1) == 0
+  retries: 24
+  delay: 5
+  when: authentik_blueprints_enabled | bool
+
+- name: Preflight — verify blueprint property-mapping !Find references resolve
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ authentik_namespace }}"
+      - exec
+      - deploy/{{ authentik_release_name }}-worker
+      - --
+      - ak
+      - shell
+      - -c
+      - >-
+        from authentik.core.models import PropertyMapping;
+        refs = [
+            "goauthentik.io/providers/oauth2/scope-openid",
+            "goauthentik.io/providers/oauth2/scope-email",
+            "goauthentik.io/providers/oauth2/scope-profile",
+            "goauthentik.io/providers/saml/username",
+            "goauthentik.io/providers/saml/uid",
+            "goauthentik.io/providers/saml/email",
+            "goauthentik.io/providers/saml/name",
+            "goauthentik.io/providers/saml/groups"
+        ];
+        failed = [f"FAIL: !Find [authentik_core.propertymapping, [managed, {n!r}]]" for n in refs if not PropertyMapping.objects.filter(managed=n).exists()];
+        print("\n".join(failed) if failed else "All blueprint property-mapping !Find references resolved");
+        exit(1) if failed else exit(0)
+  register: _authentik_blueprint_preflight
+  changed_when: false
+  failed_when: false
+  until: _authentik_blueprint_preflight.rc | default(1) == 0
+  retries: 12
+  delay: 10
+  when: authentik_blueprints_enabled | bool
+
+- name: Fail if blueprint property-mapping !Find preflight found missing references
+  ansible.builtin.fail:
+    msg: >-
+      Authentik blueprint property-mapping !Find references failed to resolve.
+      The preflight now checks PropertyMapping entries by managed slug because
+      authentik.blueprints.models.Mapping is not present on Authentik 2026.2.2.
+      Output: {{ _authentik_blueprint_preflight.stdout | default('') }}
+  when:
+    - authentik_blueprints_enabled | bool
+    - _authentik_blueprint_preflight.rc | default(0) != 0
+
+- name: Apply mounted Authentik blueprints via worker CLI
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ authentik_namespace }}"
+      - exec
+      - deploy/{{ authentik_release_name }}-worker
+      - --
+      - ak
+      - apply_blueprint
+      - "/blueprints/mounted/cm-{{ authentik_blueprints_configmap_name }}/{{ item | basename | regex_replace('\\.j2$', '') }}"
+  loop: "{{ _authentik_blueprint_files }}"
+  when: authentik_blueprints_enabled | bool
+  changed_when: false
+
+- name: Remove legacy WebAuthn setup stage from default login flow
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ authentik_namespace }}"
+      - exec
+      - deploy/{{ authentik_release_name }}-server
+      - --
+      - env
+      - AK_FLOW_SLUG={{ authentik_default_authentication_flow_slug }}
+      - AK_STAGE_NAME={{ authentik_legacy_webauthn_stage_name }}
+      - AK_STAGE_ORDER={{ authentik_legacy_webauthn_stage_order | string }}
+      - ak
+      - shell
+      - -c
+      - >-
+        import os;
+        from authentik.flows.models import FlowStageBinding;
+        qs = FlowStageBinding.objects.filter(
+            target__slug=os.environ["AK_FLOW_SLUG"],
+            stage__name=os.environ["AK_STAGE_NAME"],
+            order=int(os.environ["AK_STAGE_ORDER"])
+        );
+        count = qs.count();
+        qs.delete();
+        print(f"deleted={count}")
+  register: _authentik_webauthn_binding_cleanup
+  changed_when: _authentik_webauthn_binding_cleanup.stdout is search('deleted=[1-9]')
+  when:
+    - authentik_blueprints_enabled | bool
+    - authentik_cleanup_legacy_webauthn_login_binding | bool
+
+- name: Ensure Authentik bootstrap passkey invitation is fresh
+  ansible.builtin.include_tasks: ensure_invitation.yml
+
+- name: Create or update Authentik break-glass local user
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ authentik_namespace }}"
+      - exec
+      - deploy/{{ authentik_release_name }}-server
+      - --
+      - env
+      - AUTHENTIK_BREAKGLASS_USERNAME={{ authentik_breakglass_username }}
+      - AUTHENTIK_BREAKGLASS_EMAIL={{ authentik_breakglass_email }}
+      - AUTHENTIK_BREAKGLASS_PASSWORD={{ authentik_breakglass_password }}
+      - AUTHENTIK_BREAKGLASS_NAME={{ authentik_breakglass_display_name }}
+      - AUTHENTIK_BREAKGLASS_PATH={{ authentik_breakglass_user_path }}
+      - AUTHENTIK_BREAKGLASS_TYPE={{ authentik_breakglass_user_type }}
+      - AUTHENTIK_BREAKGLASS_GROUP={{ authentik_breakglass_group_name }}
+      - AUTHENTIK_BREAKGLASS_ADMIN_GROUP={{ authentik_breakglass_admin_group_name }}
+      - AUTHENTIK_BREAKGLASS_ACTIVE={{ 'true' if authentik_breakglass_is_active else 'false' }}
+      - ak
+      - shell
+      - -c
+      - >-
+        import json, os; from authentik.core.models import Group, User;
+        username = os.environ["AUTHENTIK_BREAKGLASS_USERNAME"];
+        email = os.environ["AUTHENTIK_BREAKGLASS_EMAIL"];
+        password = os.environ["AUTHENTIK_BREAKGLASS_PASSWORD"];
+        name = os.environ["AUTHENTIK_BREAKGLASS_NAME"];
+        path = os.environ["AUTHENTIK_BREAKGLASS_PATH"];
+        user_type = os.environ["AUTHENTIK_BREAKGLASS_TYPE"];
+        group_name = os.environ["AUTHENTIK_BREAKGLASS_GROUP"];
+        admin_group_name = os.environ["AUTHENTIK_BREAKGLASS_ADMIN_GROUP"];
+        is_active = os.environ["AUTHENTIK_BREAKGLASS_ACTIVE"].lower() == "true";
+        changed = False;
+        user, created = User.objects.get_or_create(username=username, defaults={"email": email, "name": name, "path": path, "type": user_type, "is_active": is_active});
+        changed = changed or created;
+        updated_fields = [field for field, value in (("email", email), ("name", name), ("path", path), ("type", user_type), ("is_active", is_active)) if getattr(user, field) != value and not setattr(user, field, value)];
+        dirty = created or bool(updated_fields);
+        changed = changed or bool(updated_fields);
+        password_changed = not user.check_password(password);
+        password_changed and not user.set_password(password);
+        dirty = dirty or password_changed;
+        changed = changed or password_changed;
+        dirty and not user.save();
+        group = Group.objects.get(name=group_name);
+        group_missing = not user.groups.filter(pk=group.pk).exists();
+        group_missing and not user.groups.add(group);
+        changed = changed or group_missing;
+        admin_group = Group.objects.get(name=admin_group_name);
+        admin_group_missing = not user.groups.filter(pk=admin_group.pk).exists();
+        admin_group_missing and not user.groups.add(admin_group);
+        changed = changed or admin_group_missing;
+        print("AUTHENTIK_BREAKGLASS_RESULT=" + json.dumps({"changed": changed, "username": user.username, "email": user.email, "type": user.type, "path": user.path, "is_active": user.is_active, "groups": sorted(user.groups.values_list("name", flat=True))}))
+  register: _authentik_breakglass_sync
+  changed_when: >-
+    _authentik_breakglass_sync.stdout is search('AUTHENTIK_BREAKGLASS_RESULT=.*"changed": true')
+  failed_when: >-
+    _authentik_breakglass_sync.rc != 0
+    or not (_authentik_breakglass_sync.stdout is search('AUTHENTIK_BREAKGLASS_RESULT='))
+  no_log: true
+
+- name: Create Authentik HTTPS IngressRoute
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: authentik
+        namespace: "{{ authentik_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: "Host(`{{ authentik_host }}`)"
+            kind: Rule
+            services:
+              - name: "{{ authentik_release_name }}-server"
+                port: 80
+
+- name: Cleanup Authentik Helm values temp file
+  ansible.builtin.file:
+    path: /tmp/authentik-values.yml
+    state: absent
+
+- name: Report Authentik deployment summary
+  ansible.builtin.debug:
+    msg: |
+      Authentik deployed in namespace {{ authentik_namespace }}
+      Host: https://{{ authentik_host }}/
+      Helm chart: {{ authentik_helm_chart }} {{ authentik_helm_version }}
+      Runtime secret: {{ authentik_runtime_secret_name }} (via ESO)
+      Break-glass secret: {{ authentik_breakglass_secret_name }} (via ESO)
+      Bootstrap admin: {{ authentik_admin_username }} (password sourced from OpenBao)
+      Break-glass credential path seeded in OpenBao: {{ authentik_breakglass_secret_path }}
+      Break-glass local user synced in Authentik: {{ authentik_breakglass_username }}
+      Blueprint ConfigMap: {{ authentik_blueprints_configmap_name }}
+      Blueprint files: {{ (_authentik_blueprint_files | default([])) | map('basename') | join(', ') }}

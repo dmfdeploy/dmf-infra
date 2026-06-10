@@ -1,0 +1,65 @@
+---
+# Object-storage credentials role defaults.
+# Provisions two OpenBao AppRoles (openbao_snapshots, app_backups),
+# two ClusterSecretStores, and ExternalSecrets in consumer namespaces
+# per the Frozen Secret Contract (Phase 3 execution plan).
+#
+# Audit is NOT handled by this role — Phase 1's audit-log-archival
+# consumes audit credentials via inventory vars (export-vars), not ESO.
+
+# Logical bucket identifiers. Each maps to:
+#   OpenBao path:        secret/platform/object-storage/<logical>       (underscored — matches seed-bao state)
+#   OpenBao policy:      object-storage-<logical-dashed>-reader         (dashed — K8s name rules)
+#   OpenBao AppRole:     object-storage-<logical-dashed>                (dashed — K8s name rules)
+#   ESO binding:         secret/platform/eso-bindings/object-storage-<logical-dashed>
+#   K8s Secret:          s3-creds-<logical-dashed>                      (dashed)
+#   ClusterSecretStore:  openbao-<logical-dashed>                       (dashed)
+# `logical_dashed` is derived at runtime in tasks/main.yml.
+object_storage_logicals:
+  - openbao_snapshots
+  - app_backups
+
+# Consumer namespaces per logical. Each namespace gets an ExternalSecret
+# materializing the K8s Secret with keys:
+#   bucket, endpoint, region, access_key_id, secret_access_key
+#
+# NOTE: longhorn-system is INTENTIONALLY excluded from app_backups.
+# Longhorn 1.10.1's BackupTarget requires UPPERCASE Secret keys
+# (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINTS).
+# Claude's longhorn-backup-target role creates its own ExternalSecret in
+# longhorn-system that re-keys lowercase → uppercase.
+object_storage_consumer_namespaces:
+  openbao_snapshots:
+    - openbao-system
+  app_backups:
+    - awx
+    - netbox
+    - authentik
+    - forgejo
+    - zot
+
+# Namespaces owned by the resilience stack and safe for this role to create
+# before ExternalSecrets are applied. App namespaces are intentionally not
+# listed here; they must already exist from their app roles.
+object_storage_managed_consumer_namespaces:
+  - openbao-system
+
+# OpenBao AppRole TTLs. Long-lived because backup CronJobs depend on
+# these creds; rotation is operator-initiated, not reconcile-driven.
+openbao_approle_secret_id_ttl: "8760h"
+openbao_approle_token_ttl: "1h"
+openbao_approle_token_max_ttl: "24h"
+
+# ESO plumbing — mirrors external-secrets role defaults
+object_storage_eso_namespace: "external-secrets"
+object_storage_eso_crd_api_version: "external-secrets.io/v1"
+object_storage_openbao_kv_mount: "secret"
+object_storage_openbao_kv_version: "v2"
+object_storage_openbao_approle_mount: "approle"
+
+# OpenBao target URL — default is in-cluster service over TLS
+object_storage_eso_openbao_url: "https://openbao.openbao.svc.cluster.local:8200"
+
+# OpenBao connection facts (injected by common/openbao-session or caller)
+openbao_pod: "openbao-0"
+openbao_namespace: "openbao"

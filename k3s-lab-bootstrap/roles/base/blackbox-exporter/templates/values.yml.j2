@@ -1,0 +1,12 @@
+---
+fullnameOverride: {{ blackbox_fullname_override }}
+
+config:
+  modules:
+{{ blackbox_modules | to_nice_yaml(indent=4) | indent(4, true) }}
+
+resources:
+{{ blackbox_resources | to_nice_yaml(indent=2) | indent(2, true) }}
+
+serviceMonitor:
+  enabled: false

@@ -1,0 +1,43 @@
+---
+# Apply the runner-pod foundation: namespace, ServiceAccount, ClusterRoleBinding.
+# This role is idempotent — re-running it is safe.
+#
+# Run-time Jobs (one per playbook invocation) are NOT created here — they
+# spawn from the operator-side wrapper bin/run-playbook-in-cluster.sh,
+# which renders templates/runner-job.yaml.j2 with per-run parameters.
+
+- name: Render runner SA + namespace + RBAC manifests
+  ansible.builtin.template:
+    src: runner-sa.yaml.j2
+    dest: /tmp/ansible-runner-sa-{{ ansible_runner_namespace }}.yaml
+    mode: '0600'
+  changed_when: false
+
+- name: Apply runner namespace + ServiceAccount + ClusterRoleBinding
+  kubernetes.core.k8s:
+    state: present
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    src: /tmp/ansible-runner-sa-{{ ansible_runner_namespace }}.yaml
+
+- name: Verify ServiceAccount is created
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: ServiceAccount
+    namespace: "{{ ansible_runner_namespace }}"
+    name: "{{ ansible_runner_service_account }}"
+  register: _ansible_runner_sa_check
+
+- name: Assert ServiceAccount exists
+  ansible.builtin.assert:
+    that:
+      - _ansible_runner_sa_check.resources | length > 0
+    fail_msg: >-
+      ansible-runner ServiceAccount missing in namespace
+      {{ ansible_runner_namespace }} after apply.
+
+- name: Clean up rendered manifest tempfile
+  ansible.builtin.file:
+    path: /tmp/ansible-runner-sa-{{ ansible_runner_namespace }}.yaml
+    state: absent
+  changed_when: false

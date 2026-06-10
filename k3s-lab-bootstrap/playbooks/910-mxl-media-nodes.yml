@@ -1,0 +1,147 @@
+---
+# 910-mxl-media-nodes.yml — SPIKE addon (feat/mxl-single-node-spike), NOT for main.
+#
+# Adds the two Aliyun ARM nodes to the EXISTING live g2r6-foa9 cluster as tainted
+# MXL AGENTS over Tailscale (Approach B, see dmf-infra/docs/mxl-media-nodes-plan.md).
+#
+# Design: mirror vanilla bootstrap where we can, diverge only where the cross-cloud
+# join + Ubuntu host force it.
+#   Stage 1 — vanilla 200-baseline + 210-harden (scoped to the 2 nodes by the
+#             aliyun-media inventory; harden vars overridden in group_vars).
+#   Stage 2 — base/tailscale ROLE only (we SKIP 321-tailscale's Cloudflare DNS
+#             reconcile — media agents serve no ingress and aliyun-media has no domain).
+#   Stage 3 — read the EXISTING cluster's node-token off the control node (the one
+#             genuinely new bit; vanilla assumes a same-run control plane).
+#   Stage 4 — join as AGENTS (not servers — we keep Aliyun out of the Hetzner etcd
+#             quorum) with the media label+taint applied at install time.
+#   Stage 5 — verify the nodes are Ready from the control node.
+#
+# Prereqs: terraform/aliyun-media applied; tailscale_authkey available (OpenBao
+# vault_tailscale_authkey or -e mxl_media_tailscale_authkey); operator SSH access
+# to the g2r6-foa9 control node over the tailnet.
+#
+# Run:
+#   bin/run-playbook.sh aliyun-media \
+#     ../dmf-infra/k3s-lab-bootstrap/playbooks/910-mxl-media-nodes.yml
+
+# ── Stage 1 — vanilla host bootstrap ───────────────────────────────────────
+- import_playbook: 200-baseline.yml
+- import_playbook: 210-harden.yml
+
+# ── Stage 2 — Tailscale (role only; no Cloudflare DNS reconcile) ───────────
+- name: Bring up Tailscale on the MXL media nodes
+  hosts: mxl_media
+  become: true
+  roles:
+    - base/tailscale
+
+# ── Stage 3 — source the existing g2r6-foa9 join token (no_log) ────────────
+- name: Read the g2r6-foa9 node-token from the control node
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    # The token is read server-side and used by the join below; it is never
+    # printed (no_log). §0 secrets discipline: the agent does not capture it.
+    - name: SSH-read /var/lib/rancher/k3s/server/node-token off the control node
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -i
+          - "{{ mxl_media_control_ssh_key }}"
+          - -o
+          - BatchMode=yes
+          - -o
+          - ConnectTimeout=10
+          - "{{ mxl_media_control_ssh_user }}@{{ mxl_media_control_ssh_ip }}"
+          - "sudo cat /var/lib/rancher/k3s/server/node-token"
+      register: _mxl_join_token
+      changed_when: false
+      no_log: true
+
+# ── Stage 4 — join as tainted MXL agents ───────────────────────────────────
+- name: Join media nodes as tainted MXL agents
+  hosts: mxl_media
+  become: true
+  serial: 1
+  vars:
+    _join_token: "{{ hostvars['localhost']._mxl_join_token.stdout | trim }}"
+    # Agent flags. NOTE on MTU (blocker #1): k3s derives the flannel MTU from the
+    # --flannel-iface MTU (tailscale0 = 1280 → ~1230 after VXLAN). There is NO real
+    # `--flannel-mtu` flag; if the validation gate shows blackholing, drop a custom
+    # flannel net-conf.json or lower tailscale0's MTU — do not invent a flag.
+    _k3s_agent_args:
+      - "--node-name={{ inventory_hostname }}"
+      - "--node-ip={{ tailscale_ip }}"                  # tailnet IP (base/tailscale fact)
+      - "--node-external-ip={{ ansible_host }}"          # Aliyun public IP
+      - "--flannel-iface={{ k3s_flannel_iface }}"        # tailscale0
+      - "--node-label={{ mxl_media_node_label }}"        # dmf.io/role=mxl-processor
+      - "--node-taint={{ mxl_media_node_taint }}"        # dmf.io/mxl=true:NoSchedule
+  tasks:
+    - name: Assert join token + tailscale IP are present
+      ansible.builtin.assert:
+        that:
+          - _join_token | length > 0
+          - tailscale_ip | default('') | length > 0
+        fail_msg: >-
+          Need a join token (SSH read from the control node) and a tailscale_ip
+          (base/tailscale). Check tailnet registration + control-node SSH access.
+      no_log: true
+
+    - name: Check whether k3s is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: _k3s_bin
+
+    - name: Download the k3s install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      when: not _k3s_bin.stat.exists
+
+    - name: Install k3s as a tainted MXL agent and join g2r6-foa9
+      ansible.builtin.shell: |
+        INSTALL_K3S_VERSION="{{ mxl_media_k3s_version }}" \
+        K3S_URL="{{ k3s_server_url }}" \
+        K3S_TOKEN="{{ _join_token }}" \
+        /tmp/k3s-install.sh agent {{ _k3s_agent_args | join(' ') }}
+      args:
+        creates: /etc/systemd/system/k3s-agent.service
+      no_log: true            # token in the environment
+      when: not _k3s_bin.stat.exists
+
+    - name: Wait for the k3s-agent service to be active
+      ansible.builtin.command: systemctl is-active k3s-agent
+      register: _agent_status
+      until: "_agent_status.stdout == 'active'"
+      retries: 30
+      delay: 10
+      changed_when: false
+
+# ── Stage 5 — verify Ready from the control node ───────────────────────────
+- name: Verify the media nodes registered Ready in g2r6-foa9
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Query node status for each media node from the control node
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -i
+          - "{{ mxl_media_control_ssh_key }}"
+          - -o
+          - BatchMode=yes
+          - "{{ mxl_media_control_ssh_user }}@{{ mxl_media_control_ssh_ip }}"
+          - >-
+            sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml get node
+            {{ item }} -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      register: _mxl_ready
+      changed_when: false
+      until: "_mxl_ready.stdout == 'True'"
+      retries: 30
+      delay: 10
+      loop: "{{ groups['mxl_media'] }}"
+
+    - name: Report
+      ansible.builtin.debug:
+        msg: "MXL media nodes Ready in g2r6-foa9: {{ groups['mxl_media'] | join(', ') }}"

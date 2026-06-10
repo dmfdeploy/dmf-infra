@@ -1,0 +1,310 @@
+---
+# Wire Authentik API token for DMF Console passkey enrollment.
+#
+# Runs after Authentik (vertical-security/110-authentik.yml) and the DMF Console
+# deploy (650-dmf-cms.yml). Creates an API token for the bootstrap user (`akadmin`),
+# persists it in OpenBao, patches the K8s runtime secret, and rolls the CMS
+# deployment so the console can create passkey invitations for new devices.
+#
+# The token is stored at secret/apps/authentik/runtime → cms_api_token in OpenBao
+# and injected into the dmf-cms-runtime K8s Secret under key `authentikApiToken`.
+- name: Wire Authentik API token for DMF Console
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  vars:
+    cms_authentik_api_token_name: dmf-cms
+    cms_authentik_api_token_user: akadmin
+
+  roles:
+    - base/cluster-ready
+
+  tasks:
+    - name: Create Authentik exec service account
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: "{{ cms_authentik_exec_service_account | default('authentik-token-operator') }}"
+            namespace: "{{ authentik_namespace | default('authentik') }}"
+
+    - name: Create Authentik exec Role
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: "{{ cms_authentik_exec_role_name | default('authentik-token-operator-exec') }}"
+            namespace: "{{ authentik_namespace | default('authentik') }}"
+          rules:
+            - apiGroups: [""]
+              resources: ["pods", "pods/exec"]
+              verbs: ["get", "list", "create"]
+
+    - name: Create Authentik exec RoleBinding
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: "{{ cms_authentik_exec_rolebinding_name | default('authentik-token-operator-exec') }}"
+            namespace: "{{ authentik_namespace | default('authentik') }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: "{{ cms_authentik_exec_role_name | default('authentik-token-operator-exec') }}"
+          subjects:
+            - kind: ServiceAccount
+              name: "{{ cms_authentik_exec_service_account | default('authentik-token-operator') }}"
+              namespace: "{{ authentik_namespace | default('authentik') }}"
+
+    - name: Mint Authentik exec service-account token
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ authentik_namespace | default('authentik') }}"
+          - create
+          - token
+          - "{{ cms_authentik_exec_service_account | default('authentik-token-operator') }}"
+          - --duration=1h
+      register: _cms_authentik_exec_sa_token_raw
+      changed_when: false
+      no_log: true
+
+    - name: Store Authentik exec service-account token
+      ansible.builtin.set_fact:
+        _cms_authentik_exec_sa_token: "{{ _cms_authentik_exec_sa_token_raw.stdout | trim }}"
+      no_log: true
+
+    - name: Create Authentik API token for DMF Console
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - k3s
+          - kubectl
+          - --token
+          - "{{ _cms_authentik_exec_sa_token }}"
+          - -n
+          - "{{ authentik_namespace | default('authentik') }}"
+          - exec
+          - deploy/{{ authentik_release_name | default('authentik') }}-server
+          - --
+          - ak
+          - shell
+          - -c
+          - |-
+            import json
+            from datetime import timedelta
+            from django.utils import timezone
+            from authentik.core.models import Token, User
+
+            username = "{{ cms_authentik_api_token_user }}"
+            token_name = "{{ cms_authentik_api_token_name }}"
+
+            user = User.objects.get(username=username)
+
+            # Delete any existing tokens for this name on any user (migration safety)
+            Token.objects.filter(
+                intent="api",
+                description=token_name,
+            ).delete()
+
+            token = Token.objects.create(
+                user=user,
+                intent="api",
+                description=token_name,
+                expiring=True,
+                expires=timezone.now() + timedelta(days=90),
+            )
+            print(json.dumps({"key": token.key, "changed": True}))
+      register: _cms_authentik_token_result
+      changed_when: true
+      no_log: true
+
+    - name: Parse Authentik API token result
+      ansible.builtin.set_fact:
+        _cms_authentik_token_data: >-
+          {{
+            (
+              _cms_authentik_token_result.stdout_lines
+              | select('match', '^\{.*\}$')
+              | list
+              | last
+              | from_json
+            )
+          }}
+      no_log: true
+
+    - name: Assert Authentik API token was returned
+      ansible.builtin.assert:
+        that:
+          - _cms_authentik_token_data.key | default('') | length > 0
+        fail_msg: "Authentik did not return an API token key for {{ cms_authentik_api_token_user }}."
+      no_log: true
+
+    - name: Read current DMF Console runtime Secret for checksum
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+      register: _cms_runtime_secret_current
+      when: _cms_authentik_token_data.changed | default(false) | bool
+
+    - name: Compute new runtime Secret checksum including Authentik token
+      ansible.builtin.set_fact:
+        _cms_runtime_secret_checksum: >-
+          {{
+            (_cms_runtime_secret_current.resources[0].data | default({})
+             | combine({
+                 (cms_runtime_secret_authentik_token_key | default('authentikApiToken')): (_cms_authentik_token_data.key | b64encode)
+               })
+             | to_nice_json | hash('sha256'))
+          }}
+      no_log: true
+      when: _cms_authentik_token_data.changed | default(false) | bool
+
+    - name: Establish OpenBao operator session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_breakglass_file: "{{ eso_openbao_breakglass_file | default((openbao_key_path | default('')) ~ '.json', true) }}"
+        openbao_session_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+
+    - name: Read current Authentik runtime secret from OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json secret/apps/authentik/runtime'
+      register: _cms_authentik_runtime_secret_raw
+      changed_when: false
+      failed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    - name: Parse current Authentik runtime secret from OpenBao
+      ansible.builtin.set_fact:
+        _cms_authentik_runtime_secret_data: >-
+          {{
+            (
+              _cms_authentik_runtime_secret_raw.stdout | default('{}') | from_json
+            ).data.data | default({})
+          }}
+      when:
+        - _cms_authentik_runtime_secret_raw.rc == 0
+        - _cms_authentik_runtime_secret_raw.stdout | default('') | length > 0
+      no_log: true
+
+    - name: Default Authentik runtime secret from OpenBao
+      ansible.builtin.set_fact:
+        _cms_authentik_runtime_secret_data: {}
+      when: _cms_authentik_runtime_secret_data is not defined
+      no_log: true
+
+    - name: Build Authentik runtime secret payload for OpenBao
+      ansible.builtin.set_fact:
+        _cms_authentik_runtime_secret_payload: >-
+          {{
+            _cms_authentik_runtime_secret_data
+            | combine({'cms_api_token': _cms_authentik_token_data.key}, recursive=True)
+            | to_json
+          }}
+      no_log: true
+
+    - name: Persist API token to OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n%s\n' "$OPENBAO_TOKEN" "$AUTHENTIK_RUNTIME_SECRET_PAYLOAD" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          --
+          sh -c 'IFS= read -r BAO_TOKEN;
+          payload=$(cat);
+          export BAO_ADDR=https://127.0.0.1:8200;
+          export BAO_TOKEN;
+          printf %s "$payload" | bao kv put secret/apps/authentik/runtime -'
+      when: _cms_authentik_token_data.changed | default(false) | bool
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+        AUTHENTIK_RUNTIME_SECRET_PAYLOAD: "{{ _cms_authentik_runtime_secret_payload }}"
+      no_log: true
+
+    - name: Build stringData for DMF Console runtime Secret patch
+      ansible.builtin.set_fact:
+        _cms_runtime_secret_stringdata: >-
+          {{
+            {
+              (cms_runtime_secret_authentik_token_key | default('authentikApiToken')): _cms_authentik_token_data.key
+            }
+          }}
+      when: _cms_authentik_token_data.changed | default(false) | bool
+      no_log: true
+
+    - name: Patch DMF Console runtime Secret with API token
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+            namespace: "{{ cms_namespace | default('dmf-cms') }}"
+          type: Opaque
+          stringData: "{{ _cms_runtime_secret_stringdata }}"
+      when:
+        - _cms_authentik_token_data.changed | default(false) | bool
+        - _cms_runtime_secret_stringdata is defined
+      no_log: true
+
+    - name: Patch DMF Console Deployment checksum annotation to trigger rollout
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ cms_release_name | default('dmf-cms') }}"
+            namespace: "{{ cms_namespace | default('dmf-cms') }}"
+          spec:
+            template:
+              metadata:
+                annotations:
+                  checksum/runtime-secret: "{{ _cms_runtime_secret_checksum }}"
+      when: _cms_authentik_token_data.changed | default(false) | bool
+
+    - name: Wait for DMF Console Deployment to be ready after Secret patch
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ cms_release_name | default('dmf-cms') }}"
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+      register: _cms_deployment_ready
+      until:
+        - _cms_deployment_ready.resources | length > 0
+        - _cms_deployment_ready.resources[0].status.readyReplicas | default(0) | int >= 1
+      retries: 60
+      delay: 5
+      when: _cms_authentik_token_data.changed | default(false) | bool

@@ -1,0 +1,21 @@
+---
+landing_page_namespace: default
+landing_page_title: "dmfdeploy"
+landing_page_tagline: "Open Source Infrastructure Lab"
+# Set to a path under /assets/ if you add a logo file to the assets ConfigMap.
+# Example: "/assets/logo.svg"
+landing_page_logo_url: "/assets/dmfdeploy-icon-white.svg"
+landing_page_logo_alt: "dmfdeploy"
+landing_page_prometheus_url: "http://prometheus-server.monitoring.svc.cluster.local/prometheus"
+# Set to the external repo URL for the repo link in the landing page header.
+# Example: "https://forgejo.example.com/myorg/dmf-infra"
+landing_page_repo_url: ""
+landing_page_regen_interval_seconds: 60
+
+# Brand palette — customize to match your organization's colours
+landing_page_brand_bg: "#0b1c2c"
+landing_page_brand_bg_alt: "#12263a"
+landing_page_brand_text: "#f5f7fa"
+landing_page_brand_muted: "#9fb2c7"
+landing_page_brand_accent: "#f58220"
+landing_page_brand_accent_soft: "#ffd6a3"

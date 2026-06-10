@@ -1,0 +1,271 @@
+---
+- name: Create AWX namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ awx_namespace }}"
+
+- name: Add AWX Operator Helm repository
+  kubernetes.core.helm_repository:
+    name: awx-operator
+    repo_url: "{{ awx_helm_repo }}"
+
+- name: Deploy AWX Operator via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: awx-operator
+    chart_ref: awx-operator/awx-operator
+    chart_version: "{{ awx_operator_version }}"
+    release_namespace: "{{ awx_namespace }}"
+    create_namespace: true
+    wait: true
+    wait_timeout: 300s
+
+- name: Wait for AWX Operator to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: awx-operator-controller-manager
+    namespace: "{{ awx_namespace }}"
+  register: operator_deployment
+  until: operator_deployment.resources[0].status.readyReplicas | default(0) >= 1
+  retries: 30
+  delay: 10
+
+- name: Create AWX admin password secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ awx_instance_name }}-admin-password"
+        namespace: "{{ awx_namespace }}"
+      type: Opaque
+      stringData:
+        password: "{{ awx_admin_password }}"
+
+- name: Discover Authentik SAML signing certificate for AWX
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ awx_saml_authentik_namespace }}"
+      - exec
+      - "deploy/{{ awx_saml_authentik_server_deploy }}"
+      - --
+      - env
+      - AK_SIGNING_CERT_NAME={{ awx_saml_authentik_signing_kp }}
+      - ak
+      - shell
+      - -c
+      - >-
+        import os;
+        from authentik.crypto.models import CertificateKeyPair;
+        cert = CertificateKeyPair.objects.get(name=os.environ["AK_SIGNING_CERT_NAME"]).certificate_data;
+        cert = cert.replace("-----BEGIN CERTIFICATE-----", "").replace("-----END CERTIFICATE-----", "").replace("\n", "").strip();
+        print("AWX_SAML_IDP_CERT=" + cert)
+  register: awx_saml_idp_certificate_discovery
+  changed_when: false
+  until:
+    - awx_saml_idp_certificate_discovery.rc == 0
+    - awx_saml_idp_certificate_discovery.stdout_lines | select('match', '^AWX_SAML_IDP_CERT=') | list | length > 0
+  retries: "{{ awx_saml_certificate_discovery_retries }}"
+  delay: "{{ awx_saml_certificate_discovery_delay }}"
+  when:
+    - awx_saml_enabled | bool
+    - (awx_saml_idp_certificate | default('') | length) == 0
+
+- name: Normalize configured AWX SAML IdP certificate
+  ansible.builtin.set_fact:
+    awx_saml_idp_certificate_effective: >-
+      {{
+        awx_saml_idp_certificate
+        | regex_replace('-----BEGIN CERTIFICATE-----', '')
+        | regex_replace('-----END CERTIFICATE-----', '')
+        | regex_replace('\s+', '')
+      }}
+  when:
+    - awx_saml_enabled | bool
+    - (awx_saml_idp_certificate | default('') | length) > 0
+
+- name: Set discovered AWX SAML IdP certificate
+  ansible.builtin.set_fact:
+    awx_saml_idp_certificate_effective: >-
+      {{
+        (
+          awx_saml_idp_certificate_discovery.stdout_lines
+          | select('match', '^AWX_SAML_IDP_CERT=')
+          | first
+          | regex_replace('^AWX_SAML_IDP_CERT=', '')
+        )
+      }}
+  when:
+    - awx_saml_enabled | bool
+    - (awx_saml_idp_certificate | default('') | length) == 0
+
+- name: Assert AWX SAML IdP certificate is available
+  ansible.builtin.assert:
+    that:
+      - awx_saml_idp_certificate_effective | default('') | length > 0
+    fail_msg: >-
+      AWX SAML is enabled, but the Authentik signing certificate could not be
+      discovered. Either deploy Authentik first or set awx_saml_idp_certificate.
+  when: awx_saml_enabled | bool
+
+# HISTORICAL (2026-05-06): abandoned pre-ADR-0025 SA-mount attempt.
+# Media catalog launchers now use awx-integration's Container Group +
+# target-namespace RBAC. Keep disabled to prevent creating orphaned
+# cluster-scoped permissions.
+# - name: Configure AWX runner service account
+#   ansible.builtin.include_tasks: service-account.yml
+
+- name: Deploy AWX instance
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    template: awx-instance.yml.j2
+
+- name: Wait for AWX web deployment to exist
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: "{{ awx_instance_name }}-web"
+    namespace: "{{ awx_namespace }}"
+  register: awx_web_deployment
+  until:
+    - awx_web_deployment.resources | length > 0
+    - awx_web_deployment.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: 60
+  delay: 10
+
+- name: Sync AWX admin password to desired secret
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ awx_namespace }}"
+      - exec
+      - "deploy/{{ awx_instance_name }}-web"
+      - --
+      - sh
+      - -lc
+      - >-
+        awx-manage update_password --username {{ awx_admin_user | quote }}
+        --password {{ awx_admin_password | quote }}
+  register: awx_admin_password_sync
+  changed_when: true
+  no_log: true
+  retries: 30
+  delay: 10
+  until: awx_admin_password_sync.rc == 0
+
+- name: Note AWX readiness is async
+  ansible.builtin.debug:
+    msg: "AWX deployment initiated. It can take several minutes (or longer) for AWX to become ready."
+
+- name: Create Traefik strip prefix middleware for AWX
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: awx-strip-prefix
+        namespace: "{{ awx_namespace }}"
+      spec:
+        stripPrefix:
+          prefixes:
+            - "{{ awx_path }}"
+
+- name: Create Traefik redirect middleware for AWX
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: awx-redirect
+        namespace: "{{ awx_namespace }}"
+      spec:
+        redirectRegex:
+          permanent: true
+          regex: "^https?://(.*){{ awx_path }}$"
+          replacement: "https://$1{{ awx_path }}/"
+
+# HTTP→HTTPS redirect is handled at the Traefik entrypoint (see base/ingress).
+# Delete-before-recreate clears any stale `tls.secretName` from older runs.
+# Note: IngressRoute/awx-redirect is distinct from Middleware/awx-redirect
+# (the latter is the trailing-slash regex middleware created above).
+- name: Remove legacy AWX IngressRoutes
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: IngressRoute
+    name: "{{ item }}"
+    namespace: "{{ awx_namespace }}"
+  loop:
+    - awx
+    - awx-redirect
+
+- name: Create AWX Host-based IngressRoute (private lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: awx
+        namespace: "{{ awx_namespace }}"
+        annotations:
+          dmf.exposure: private
+          traefik.ingress.kubernetes.io/router.ingressclass: "{{ awx_ingress_class }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: "Host(`{{ awx_host }}`)"
+            kind: Rule
+            services:
+              - name: "{{ awx_instance_name }}-service"
+                port: 80
+  when: awx_exposure | default('host') == 'host'
+
+- name: Create AWX Path-based IngressRoute (public lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: awx
+        namespace: "{{ awx_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: "PathPrefix(`{{ awx_path }}`)"
+            kind: Rule
+            middlewares:
+              - name: awx-redirect
+              - name: awx-strip-prefix
+            services:
+              - name: "{{ awx_instance_name }}-service"
+                port: 80
+  when: awx_exposure | default('host') == 'path'

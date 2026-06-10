@@ -1,0 +1,98 @@
+---
+forgejo_external_host: >-
+  {{
+    forgejo_host
+    | default(
+        (external_base_url | default('http://' ~ (metallb_vip | default('placeholder'))))
+        | regex_replace('^https?://', '')
+        | regex_replace('/.*$', ''),
+        true
+      )
+  }}
+forgejo_external_scheme: >-
+  {{
+    'https'
+    if (external_base_url | default('https://' ~ forgejo_external_host)).startswith('https://')
+    else 'http'
+  }}
+forgejo_external_base_url: "{{ forgejo_external_scheme }}://{{ forgejo_external_host }}"
+forgejo_api_base: "{{ forgejo_external_base_url }}/api/v1"
+
+forgejo_vault_path: "{{ inventory_dir }}/group_vars/all/vault.yml"
+forgejo_vault_password_file: "~/.vault_pass"
+forgejo_openbao_namespace: openbao
+forgejo_openbao_pod_label_selector: "app.kubernetes.io/name=openbao"
+forgejo_openbao_breakglass_file: "{{ eso_openbao_breakglass_file | default('', true) }}"
+forgejo_runtime_secret_path: secret/apps/forgejo/runtime
+
+forgejo_admin_token: "{{ vault_forgejo_admin_token | default('') }}"
+forgejo_admin_token_input: ""
+forgejo_admin_token_name: forgejo-admin-automation
+forgejo_admin_token_scopes:
+  - all
+# Forgejo admin identity. Resolved by common/app-admin-facts in
+# live-read mode at the top of tasks/main.yml. These defaults define the
+# "explicit caller override" candidate of the helper's source-atomic
+# resolution chain; the second candidate is the canonical break-glass pair
+# (forgejo-break-glass +
+#  vault_forgejo_admin_password | default(vault_bootstrap_admin_password)).
+# Per ADR-0024/0028 the username is the per-app break-glass account, NOT the
+# operator identity (vault_bootstrap_admin_username); only the password may
+# fall back to the shared bootstrap password.
+# If both candidates fail to supply a paired credential AND OpenBao has
+# no secret/apps/forgejo/admin entry, the role's post-resolution assert
+# fails loud. No `dmfadmin`/`mandatory` literal fallback — empty
+# resolution is a deployer error and must surface, not silently degrade.
+forgejo_admin_username: ""
+forgejo_admin_password: ""
+
+forgejo_svc_user: forgejo-svc
+forgejo_svc_email: forgejo-svc@example.com
+forgejo_svc_password: "{{ vault_forgejo_svc_password | default('') }}"
+forgejo_svc_token: "{{ vault_forgejo_svc_token | default('') }}"
+forgejo_svc_token_scopes:
+  - read:user
+  - read:repository
+  - write:repository
+
+forgejo_repos:
+  - awx-automation
+  - app-configs
+  - dmf-media             # Mirror for AWX project (catalog roles + playbooks)
+  - dmf-infra             # Mirror for AWX project (infrastructure roles)
+  - dmf-runbooks          # Thin launcher playbooks for AWX
+  - netbox-data           # Git-backed external datasource for NetBox
+
+# Pull-mirror configuration: repo name -> canonical upstream git URL.
+# The role converts each named repo to a Forgejo pull-mirror of the given
+# URL (mirror_interval defaults to 1h). Per the 2026-05-21 public-publish
+# handoff, the canonical sync direction is:
+#   Operator -> LAN Forgejo (push-mirror) -> GitHub (canonical) ->
+#               per-cluster in-cluster Forgejo (pull-mirror via this var)
+# Repos listed here MUST exist publicly on GitHub or the mirror sync 422s.
+#
+# Why dmf-media and dmf-infra aren't here (yet):
+# Per ADR-0014 they should also be mirrored. They are listed in
+# `forgejo_repos` above so the role creates an in-cluster Forgejo repo
+# for each, but they are NOT yet published to GitHub — that happens
+# under Move 7 of the 2026-05-22 forward plan (public-publish
+# expansion). Until then they sit as non-mirror in-cluster Forgejo
+# repos and are not used as AWX project sources. When Move 7 publishes
+# those repos to GitHub, add entries here pointing at the canonical
+# GitHub URLs and the pull-mirror chain takes over.
+forgejo_mirror_repos:
+  dmf-runbooks: https://github.com/dmfdeploy/dmf-runbooks.git
+
+# Seed local repos from controller filesystem paths (one-shot init).
+# Each entry: { repo: <forgejo-repo-name>, source_path: <controller-path>, required_files: [list] }
+# The role checks that all required_files exist in the Forgejo repo before seeding.
+# Idempotent: if required files already exist, the seed step is skipped.
+# Source paths must be absolute or relative to the Ansible controller working directory.
+# A default entry points at the umbrella sibling dmf-runbooks checkout when present.
+forgejo_seed_repos:
+  dmf-runbooks:
+    repo: "dmf-runbooks"
+    source_path: "{{ lookup('ansible.builtin.env', 'DMFDEPLOY_UMBRELLA', default='/dev/null') }}/dmf-runbooks"
+    required_files:
+      - "playbooks/launch-nmos-cpp.yml"
+      - "playbooks/teardown-nmos-cpp.yml"

@@ -1,0 +1,443 @@
+---
+- name: Look up VM {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/virtual-machines/?name={{ dmf_node_record.name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_node_vm_lookup
+
+- name: Create VM {{ dmf_node_record.name }} when missing
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/virtual-machines/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_node_record.name }}"
+      status: "{{ dmf_born_inventory_default_status }}"
+      cluster: "{{ dmf_born_inventory_cluster_id }}"
+      role: "{{ dmf_node_role_id }}"
+      platform: "{{ dmf_born_inventory_platform_id }}"
+      tenant: "{{ dmf_born_inventory_tenant_id }}"
+      vcpus: "{{ dmf_node_record.cpu_cores }}"
+      memory: "{{ dmf_node_record.memory_mb }}"
+      disk: "{{ dmf_node_record.disk_mb }}"
+      comments: "{{ dmf_node_vm_comments }}"
+      tags:
+        - "{{ dmf_born_inventory_tag_id }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_node_vm_lookup.json.count | int == 0
+  register: dmf_node_vm_created
+
+- name: Refresh VM lookup for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/virtual-machines/?name={{ dmf_node_record.name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_node_vm_lookup_after_create
+
+- name: Set VM id fact for {{ dmf_node_record.name }}
+  ansible.builtin.set_fact:
+    dmf_born_inventory_vm_ids: >-
+      {{
+        dmf_born_inventory_vm_ids | default({})
+        | combine({
+            dmf_node_record.name: (
+              (
+                dmf_node_vm_lookup_after_create.json.results
+                | default(dmf_node_vm_lookup.json.results)
+                | default([])
+                | first
+                | default({})
+              ).id
+            )
+          })
+      }}
+
+- name: Ensure public VM interface exists for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/?virtual_machine_id={{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}&name={{ dmf_node_record.public_iface | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_public_iface_lookup
+
+- name: Create public VM interface for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      virtual_machine: "{{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}"
+      name: "{{ dmf_node_record.public_iface }}"
+      enabled: true
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_public_iface_lookup.json.count | int == 0
+  register: dmf_public_iface_created
+
+- name: Refresh public VM interface lookup for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/?virtual_machine_id={{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}&name={{ dmf_node_record.public_iface | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_public_iface_lookup_after_create
+
+- name: Set public interface id for {{ dmf_node_record.name }}
+  ansible.builtin.set_fact:
+    dmf_born_inventory_public_iface_ids: >-
+      {{
+        dmf_born_inventory_public_iface_ids | default({})
+        | combine({
+            dmf_node_record.name: (
+              (
+                dmf_public_iface_lookup_after_create.json.results
+                | default(dmf_public_iface_lookup.json.results)
+                | default([])
+                | first
+                | default({})
+              ).id
+            )
+          })
+      }}
+
+- name: Ensure private VM interface exists for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/?virtual_machine_id={{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}&name={{ dmf_node_record.private_iface | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_private_iface_lookup
+
+- name: Create private VM interface for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      virtual_machine: "{{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}"
+      name: "{{ dmf_node_record.private_iface }}"
+      enabled: true
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_private_iface_lookup.json.count | int == 0
+  register: dmf_private_iface_created
+
+- name: Refresh private VM interface lookup for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/?virtual_machine_id={{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}&name={{ dmf_node_record.private_iface | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_private_iface_lookup_after_create
+
+- name: Set private interface id for {{ dmf_node_record.name }}
+  ansible.builtin.set_fact:
+    dmf_born_inventory_private_iface_ids: >-
+      {{
+        dmf_born_inventory_private_iface_ids | default({})
+        | combine({
+            dmf_node_record.name: (
+              (
+                dmf_private_iface_lookup_after_create.json.results
+                | default(dmf_private_iface_lookup.json.results)
+                | default([])
+                | first
+                | default({})
+              ).id
+            )
+          })
+      }}
+
+- name: Ensure Tailscale VM interface exists for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/?virtual_machine_id={{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}&name={{ dmf_node_record.tailscale_iface | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_tailscale_iface_lookup
+  when: dmf_node_record.tailscale_ip | default('') | length > 0
+
+- name: Create Tailscale VM interface for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      virtual_machine: "{{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}"
+      name: "{{ dmf_node_record.tailscale_iface }}"
+      enabled: true
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when:
+    - dmf_node_record.tailscale_ip | default('') | length > 0
+    - dmf_tailscale_iface_lookup.json.count | int == 0
+  register: dmf_tailscale_iface_created
+
+- name: Refresh Tailscale VM interface lookup for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/interfaces/?virtual_machine_id={{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}&name={{ dmf_node_record.tailscale_iface | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_tailscale_iface_lookup_after_create
+  when: dmf_node_record.tailscale_ip | default('') | length > 0
+
+- name: Set Tailscale interface id for {{ dmf_node_record.name }}
+  ansible.builtin.set_fact:
+    dmf_born_inventory_tailscale_iface_ids: >-
+      {{
+        dmf_born_inventory_tailscale_iface_ids | default({})
+        | combine({
+            dmf_node_record.name: (
+              (
+                dmf_tailscale_iface_lookup_after_create.json.results
+                | default(dmf_tailscale_iface_lookup.json.results)
+                | default([])
+                | first
+                | default({})
+              ).id
+            )
+          })
+      }}
+  when: dmf_node_record.tailscale_ip | default('') | length > 0
+
+- name: Ensure Tailscale IP object exists for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/?address={{ (dmf_node_record.tailscale_ip ~ '/32') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_tailscale_ip_lookup
+  when: dmf_node_record.tailscale_ip | default('') | length > 0
+
+- name: Create Tailscale IP object for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      address: "{{ dmf_node_record.tailscale_ip }}/32"
+      status: active
+      tenant: "{{ dmf_born_inventory_tenant_id }}"
+      description: "Tailscale VPN IP for {{ dmf_node_record.name }}"
+      assigned_object_type: virtualization.vminterface
+      assigned_object_id: "{{ dmf_born_inventory_tailscale_iface_ids[dmf_node_record.name] }}"
+      tags:
+        - "{{ dmf_born_inventory_tag_id }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when:
+    - dmf_node_record.tailscale_ip | default('') | length > 0
+    - dmf_tailscale_ip_lookup.json.count | int == 0
+  register: dmf_tailscale_ip_created
+
+- name: Refresh Tailscale IP lookup for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/?address={{ (dmf_node_record.tailscale_ip ~ '/32') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_tailscale_ip_lookup_after_create
+  when: dmf_node_record.tailscale_ip | default('') | length > 0
+
+- name: Set Tailscale IP id for {{ dmf_node_record.name }}
+  ansible.builtin.set_fact:
+    dmf_born_inventory_tailscale_ip_ids: >-
+      {{
+        dmf_born_inventory_tailscale_ip_ids | default({})
+        | combine({
+            dmf_node_record.name: (
+              (
+                dmf_tailscale_ip_lookup_after_create.json.results
+                | default(dmf_tailscale_ip_lookup.json.results)
+                | default([])
+                | first
+                | default({})
+              ).id
+            )
+          })
+      }}
+  when: dmf_node_record.tailscale_ip | default('') | length > 0
+
+- name: Ensure public IP object exists for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/?address={{ (dmf_node_record.public_ip ~ '/32') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_public_ip_lookup
+
+- name: Create public IP object for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      address: "{{ dmf_node_record.public_ip }}/32"
+      status: active
+      tenant: "{{ dmf_born_inventory_tenant_id }}"
+      description: "Public access IP for {{ dmf_node_record.name }}"
+      assigned_object_type: virtualization.vminterface
+      assigned_object_id: "{{ dmf_born_inventory_public_iface_ids[dmf_node_record.name] }}"
+      tags:
+        - "{{ dmf_born_inventory_tag_id }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_public_ip_lookup.json.count | int == 0
+  register: dmf_public_ip_created
+
+- name: Refresh public IP lookup for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/?address={{ (dmf_node_record.public_ip ~ '/32') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_public_ip_lookup_after_create
+
+- name: Set public IP id for {{ dmf_node_record.name }}
+  ansible.builtin.set_fact:
+    dmf_born_inventory_public_ip_ids: >-
+      {{
+        dmf_born_inventory_public_ip_ids | default({})
+        | combine({
+            dmf_node_record.name: (
+              (
+                dmf_public_ip_lookup_after_create.json.results
+                | default(dmf_public_ip_lookup.json.results)
+                | default([])
+                | first
+                | default({})
+              ).id
+            )
+          })
+      }}
+
+- name: Reconcile public IP assignment for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/{{ dmf_born_inventory_public_ip_ids[dmf_node_record.name] }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      assigned_object_type: virtualization.vminterface
+      assigned_object_id: "{{ dmf_born_inventory_public_iface_ids[dmf_node_record.name] }}"
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+
+- name: Ensure private IP object exists for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/?address={{ (dmf_node_record.private_ip ~ '/32') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_private_ip_lookup
+
+- name: Create private IP object for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      address: "{{ dmf_node_record.private_ip }}/32"
+      status: active
+      tenant: "{{ dmf_born_inventory_tenant_id }}"
+      description: "Cluster/private IP for {{ dmf_node_record.name }}"
+      assigned_object_type: virtualization.vminterface
+      assigned_object_id: "{{ dmf_born_inventory_private_iface_ids[dmf_node_record.name] }}"
+      tags:
+        - "{{ dmf_born_inventory_tag_id }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_private_ip_lookup.json.count | int == 0
+  register: dmf_private_ip_created
+
+- name: Refresh private IP lookup for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/?address={{ (dmf_node_record.private_ip ~ '/32') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_private_ip_lookup_after_create
+
+- name: Set primary IP for {{ dmf_node_record.name }}
+  ansible.builtin.set_fact:
+    dmf_born_inventory_primary_ip_ids: >-
+      {{
+        dmf_born_inventory_primary_ip_ids | default({})
+        | combine({
+            dmf_node_record.name: (
+              (
+                dmf_public_ip_lookup_after_create.json.results
+                | default(dmf_public_ip_lookup.json.results)
+                | default([])
+                | first
+                | default({})
+              ).id
+            )
+          })
+      }}
+
+- name: Patch VM primary IP for {{ dmf_node_record.name }}
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/virtual-machines/{{ dmf_born_inventory_vm_ids[dmf_node_record.name] }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      vcpus: "{{ dmf_node_record.cpu_cores }}"
+      memory: "{{ dmf_node_record.memory_mb }}"
+      disk: "{{ dmf_node_record.disk_mb }}"
+      primary_ip4: "{{ dmf_born_inventory_primary_ip_ids[dmf_node_record.name] }}"
+      comments: >-
+        Day-0 DMF node {{ dmf_node_record.name }}.
+        Public IP: {{ dmf_node_record.public_ip }}.
+        Private IP: {{ dmf_node_record.private_ip }}.
+        Tailscale IP: {{ dmf_node_record.tailscale_ip | default('n/a') }}.
+        OS: {{ dmf_node_record.os_release }}.
+        Kernel: {{ dmf_node_record.kernel }}.
+        CPU: {{ dmf_node_record.cpu_cores }} vCPU.
+        RAM: {{ dmf_node_record.memory_mb }} MiB.
+        Disk: {{ dmf_node_record.disk_mb }} MiB ({{ dmf_node_record.disk_gb }} GiB).
+        Private iface: {{ dmf_node_record.private_iface }}.
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_vm_patch_result

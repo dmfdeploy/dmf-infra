@@ -1,0 +1,153 @@
+---
+# Self-contained slice: ensure the DMF bootstrap passkey invitation is fresh
+# and the OpenBao `secret/apps/authentik/bootstrap-passkey` cache mirrors it.
+#
+# Two callers:
+#   1. roles/stack/operator/authentik/tasks/main.yml — full role flow
+#      (session is already established earlier in main.yml; the guarded
+#      include below is a no-op there).
+#   2. playbooks/vertical-security/111-authentik-passkey-ensure.yml — the
+#      operator-helper mini-playbook invoked by
+#      dmf-env/bin/get-passkey-enrollment-url.sh when the live invitation
+#      is missing/consumed (ADR-0010 sanctioned entry).
+#
+# Mint logic lives in files/ak_passkey_invitation.py — single source of
+# truth, sourced via lookup('file', …).
+
+- name: Ensure OpenBao operator session for Authentik invitation flow
+  ansible.builtin.include_tasks: openbao_session.yml
+  when: _authentik_openbao_client_token is not defined
+
+- name: Assert Authentik bootstrap passkey minimum satisfies ADR-0028 D8
+  ansible.builtin.assert:
+    that:
+      - authentik_bootstrap_passkey_min_confirmed_devices | int >= 2
+    fail_msg: >-
+      ADR-0028 D8 requires at least two confirmed passkeys per human.
+      Set authentik_bootstrap_passkey_min_confirmed_devices to 2 or higher.
+  when: authentik_blueprints_enabled | bool
+
+- name: Ensure Authentik bootstrap passkey invitation exists
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ authentik_namespace }}"
+      - exec
+      - deploy/{{ authentik_release_name }}-server
+      - --
+      - env
+      - AK_BOOTSTRAP_PASSKEY_USERNAME={{ authentik_bootstrap_passkey_username }}
+      - AK_BOOTSTRAP_PASSKEY_EMAIL={{ authentik_bootstrap_passkey_email }}
+      - AK_BOOTSTRAP_PASSKEY_NAME={{ authentik_bootstrap_passkey_name }}
+      - AK_BOOTSTRAP_PASSKEY_FLOW={{ authentik_bootstrap_passkey_enrollment_flow_slug }}
+      - AK_BOOTSTRAP_PASSKEY_INVITATION={{ authentik_bootstrap_passkey_invitation_name }}
+      - AK_BOOTSTRAP_PASSKEY_TTL_HOURS={{ authentik_bootstrap_passkey_invitation_ttl_hours | string }}
+      - AK_BOOTSTRAP_PASSKEY_MIN_CONFIRMED_DEVICES={{ authentik_bootstrap_passkey_min_confirmed_devices | string }}
+      - AK_AUTHENTIK_PUBLIC_URL=https://{{ authentik_host }}
+      - ak
+      - shell
+      - -c
+      - "{{ lookup('file', role_path + '/files/ak_passkey_invitation.py') }}"
+  register: _authentik_bootstrap_passkey_invitation
+  changed_when: >-
+    _authentik_bootstrap_passkey_invitation.stdout is search('"changed": true')
+  when: authentik_blueprints_enabled | bool
+  no_log: true
+
+- name: Parse Authentik bootstrap passkey invitation result
+  ansible.builtin.set_fact:
+    _authentik_bootstrap_passkey_invitation_data: >-
+      {{
+        (
+          _authentik_bootstrap_passkey_invitation.stdout_lines
+          | select('match', '^\{.*\}$')
+          | list
+          | last
+        ) | from_json
+      }}
+  when: authentik_blueprints_enabled | bool
+  no_log: true
+
+- name: Surface bootstrap passkey enrollment URL in play log
+  ansible.builtin.debug:
+    msg: |-
+      ────────────────────────────────────────────────────────────
+       DMF passkey enrollment URL (reusable within TTL, expires in {{ authentik_bootstrap_passkey_invitation_ttl_hours }}h)
+       user: {{ _authentik_bootstrap_passkey_invitation_data.username }}
+       confirmed passkeys: {{ _authentik_bootstrap_passkey_invitation_data.webauthn_count }}/{{ _authentik_bootstrap_passkey_invitation_data.required_webauthn_count }}
+       url : {{ _authentik_bootstrap_passkey_invitation_data.url }}
+       expires: {{ _authentik_bootstrap_passkey_invitation_data.expires }}
+       ntfy: {{ authentik_ntfy_url | default('(not configured — set dmf_ntfy_url or subscribe to the constructed topic)') }}
+      ────────────────────────────────────────────────────────────
+  when:
+    - authentik_blueprints_enabled | bool
+    - _authentik_bootstrap_passkey_invitation_data is defined
+    - _authentik_bootstrap_passkey_invitation_data.url | default('') | length > 0
+    - _authentik_bootstrap_passkey_invitation_data.changed | default(false) | bool
+
+- name: Send passkey enrollment URL via ntfy
+  ansible.builtin.uri:
+    url: "{{ authentik_ntfy_url }}"
+    method: POST
+    body: >-
+      DMF passkey enrollment:
+      {{ _authentik_bootstrap_passkey_invitation_data.url }}
+      (confirmed {{ _authentik_bootstrap_passkey_invitation_data.webauthn_count }}/{{ _authentik_bootstrap_passkey_invitation_data.required_webauthn_count }},
+      expires {{ _authentik_bootstrap_passkey_invitation_data.expires }})
+    headers:
+      Title: "DMF passkey enrollment for {{ _authentik_bootstrap_passkey_invitation_data.username }}"
+      Priority: "3"
+      Tags: "key,lock"
+  when:
+    - authentik_blueprints_enabled | bool
+    - _authentik_bootstrap_passkey_invitation_data is defined
+    - _authentik_bootstrap_passkey_invitation_data.url | default('') | length > 0
+    - authentik_ntfy_url | default('') | length > 0
+
+- name: Persist Authentik bootstrap passkey enrollment status to OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$AUTHENTIK_PASSKEY_USERNAME"
+      "$AUTHENTIK_PASSKEY_EMAIL"
+      "$AUTHENTIK_PASSKEY_HAS_WEBAUTHN"
+      "$AUTHENTIK_PASSKEY_WEBAUTHN_COUNT"
+      "$AUTHENTIK_PASSKEY_REQUIRED_WEBAUTHN_COUNT"
+      "$AUTHENTIK_PASSKEY_URL"
+      "$AUTHENTIK_PASSKEY_EXPIRES" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ authentik_openbao_namespace }}
+      exec -i {{ _authentik_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r USERNAME;
+      IFS= read -r EMAIL;
+      IFS= read -r HAS_WEBAUTHN;
+      IFS= read -r WEBAUTHN_COUNT;
+      IFS= read -r REQUIRED_WEBAUTHN_COUNT;
+      IFS= read -r ENROLLMENT_URL;
+      IFS= read -r EXPIRES;
+      export BAO_TOKEN;
+      bao kv put {{ authentik_bootstrap_passkey_secret_path | quote }}
+      username="$USERNAME"
+      email="$EMAIL"
+      has_webauthn="$HAS_WEBAUTHN"
+      webauthn_count="$WEBAUTHN_COUNT"
+      required_webauthn_count="$REQUIRED_WEBAUTHN_COUNT"
+      enrollment_url="$ENROLLMENT_URL"
+      expires="$EXPIRES"'
+  when: authentik_blueprints_enabled | bool
+  environment:
+    OPENBAO_TOKEN: "{{ _authentik_openbao_client_token }}"
+    AUTHENTIK_PASSKEY_USERNAME: "{{ _authentik_bootstrap_passkey_invitation_data.username }}"
+    AUTHENTIK_PASSKEY_EMAIL: "{{ _authentik_bootstrap_passkey_invitation_data.email }}"
+    AUTHENTIK_PASSKEY_HAS_WEBAUTHN: "{{ (_authentik_bootstrap_passkey_invitation_data.has_webauthn | bool) | string | lower }}"
+    AUTHENTIK_PASSKEY_WEBAUTHN_COUNT: "{{ _authentik_bootstrap_passkey_invitation_data.webauthn_count | string }}"
+    AUTHENTIK_PASSKEY_REQUIRED_WEBAUTHN_COUNT: "{{ _authentik_bootstrap_passkey_invitation_data.required_webauthn_count | string }}"
+    AUTHENTIK_PASSKEY_URL: "{{ _authentik_bootstrap_passkey_invitation_data.url }}"
+    AUTHENTIK_PASSKEY_EXPIRES: "{{ _authentik_bootstrap_passkey_invitation_data.expires }}"
+  no_log: true

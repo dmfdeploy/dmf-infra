@@ -1,0 +1,199 @@
+---
+# ---------------------------------------------------------------------------
+# playbooks/339-container-platform-verify.yml
+# Layer 3 (Container Platform) end-of-layer verification gate.
+#
+# This playbook is read-only. It verifies the shared platform contracts that
+# downstream application layers depend on:
+#   - wildcard/default Certificate is Ready
+#   - Longhorn StorageClass is the default class
+#   - Zot registry API is reachable
+#   - Traefik LoadBalancer has an assigned ingress
+# ---------------------------------------------------------------------------
+
+- name: Verify Container Platform layer
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    container_verify_kubeconfig: /etc/rancher/k3s/k3s.yaml
+    container_verify_certificate_name: "{{ cert_manager_certificate_name | default('cluster-tls') }}"
+    container_verify_certificate_namespace: "{{ cert_manager_certificate_namespace | default('kube-system') }}"
+    # 330-longhorn.yml currently manages the canonical StorageClass by this
+    # literal name; keep an override hook for a future role default.
+    container_verify_longhorn_storage_class_name: "{{ longhorn_storage_class_name | default('longhorn') }}"
+    container_verify_registry_external_url: >-
+      {{
+        registry_external_url
+        | default(
+            'https://' ~ (
+              registry_host
+              | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com')))
+            ),
+            true
+          )
+      }}
+    container_verify_registry_api_url: "{{ container_verify_registry_external_url | regex_replace('/+$', '') }}/v2/"
+    container_verify_traefik_service_name: >-
+      {{ traefik_service_name | default(cluster_ingress_service_name | default('traefik')) }}
+    container_verify_traefik_namespace: >-
+      {{ cluster_ingress_service_namespace | default('kube-system') }}
+    container_verify_retry_count: 12
+    container_verify_retry_delay: 5
+
+  tasks:
+    - name: Wait for wildcard Certificate to report Ready
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ container_verify_kubeconfig }}"
+        api_version: cert-manager.io/v1
+        kind: Certificate
+        name: "{{ container_verify_certificate_name }}"
+        namespace: "{{ container_verify_certificate_namespace }}"
+      register: container_verify_certificate
+      until: >-
+        container_verify_certificate.resources | length > 0 and
+        (
+          container_verify_certificate.resources[0].status.conditions | default([])
+          | selectattr('type', 'equalto', 'Ready')
+          | selectattr('status', 'equalto', 'True')
+          | list
+          | length
+        ) > 0
+      retries: "{{ container_verify_retry_count }}"
+      delay: "{{ container_verify_retry_delay }}"
+
+    - name: Set Certificate readiness facts
+      ansible.builtin.set_fact:
+        container_verify_certificate_ready_conditions: >-
+          {{
+            container_verify_certificate.resources[0].status.conditions | default([])
+            | selectattr('type', 'equalto', 'Ready')
+            | selectattr('status', 'equalto', 'True')
+            | list
+          }}
+
+    - name: Assert wildcard Certificate is Ready
+      ansible.builtin.assert:
+        that:
+          - container_verify_certificate.resources | length > 0
+          - container_verify_certificate_ready_conditions | length > 0
+        fail_msg: >-
+          Certificate {{ container_verify_certificate_namespace }}/{{ container_verify_certificate_name }}
+          is not Ready. Check cert-manager Certificate status, ACME challenge
+          state, and the shared wildcard/default TLS secret before continuing.
+        quiet: true
+
+    - name: Wait for Longhorn StorageClass to be default
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ container_verify_kubeconfig }}"
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: "{{ container_verify_longhorn_storage_class_name }}"
+      register: container_verify_longhorn_storage_class
+      until: >-
+        container_verify_longhorn_storage_class.resources | length > 0 and
+        (
+          container_verify_longhorn_storage_class.resources[0].metadata.annotations
+          | default({})
+        ).get('storageclass.kubernetes.io/is-default-class', '') == 'true'
+      retries: "{{ container_verify_retry_count }}"
+      delay: "{{ container_verify_retry_delay }}"
+
+    - name: Set Longhorn StorageClass facts
+      ansible.builtin.set_fact:
+        container_verify_longhorn_default_annotation: >-
+          {{
+            (
+              container_verify_longhorn_storage_class.resources[0].metadata.annotations
+              | default({})
+            ).get('storageclass.kubernetes.io/is-default-class', '')
+          }}
+
+    - name: Assert Longhorn StorageClass is default
+      ansible.builtin.assert:
+        that:
+          - container_verify_longhorn_storage_class.resources | length > 0
+          - container_verify_longhorn_default_annotation == 'true'
+        fail_msg: >-
+          StorageClass {{ container_verify_longhorn_storage_class_name }} is not
+          marked as the default class. Check playbooks/330-longhorn.yml and the
+          storageclass.kubernetes.io/is-default-class annotation before deploying
+          stateful applications.
+        quiet: true
+
+    - name: Wait for Zot registry API endpoint
+      ansible.builtin.uri:
+        url: "{{ container_verify_registry_api_url }}"
+        method: GET
+        status_code:
+          - 200
+          - 401
+        return_content: false
+      register: container_verify_registry_probe
+      until: container_verify_registry_probe.status | default(0) in [200, 401]
+      retries: "{{ container_verify_retry_count }}"
+      delay: "{{ container_verify_retry_delay }}"
+
+    - name: Assert Zot registry API endpoint is reachable
+      ansible.builtin.assert:
+        that:
+          - container_verify_registry_probe.status in [200, 401]
+        fail_msg: >-
+          Zot registry API {{ container_verify_registry_api_url }} did not return
+          HTTP 200 or 401. Check Zot rollout, ingress routing, DNS, and TLS before
+          publishing images.
+        quiet: true
+
+    - name: Read Traefik service exposure state
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        kind: Service
+        name: "{{ container_verify_traefik_service_name }}"
+        namespace: "{{ container_verify_traefik_namespace }}"
+      register: container_verify_traefik_service
+      until: >-
+        container_verify_traefik_service.resources | length > 0 and
+        (
+          container_verify_traefik_service.resources[0].status.loadBalancer.ingress
+          | default([])
+          | length
+        ) > 0
+      retries: "{{ container_verify_retry_count }}"
+      delay: "{{ container_verify_retry_delay }}"
+
+    - name: Set Traefik LoadBalancer ingress facts
+      ansible.builtin.set_fact:
+        container_verify_traefik_ingress: >-
+          {{
+            container_verify_traefik_service.resources[0].status.loadBalancer.ingress
+            | default([])
+          }}
+        container_verify_traefik_lb_endpoint: >-
+          {{
+            (
+              container_verify_traefik_service.resources[0].status.loadBalancer.ingress
+              | default([])
+              | first
+              | default({})
+            ).ip
+            | default(
+                (
+                  container_verify_traefik_service.resources[0].status.loadBalancer.ingress
+                  | default([])
+                  | first
+                  | default({})
+                ).hostname | default(''),
+                true
+              )
+          }}
+
+    - name: Assert Traefik LoadBalancer ingress is assigned
+      ansible.builtin.assert:
+        that:
+          - container_verify_traefik_ingress | length > 0
+          - container_verify_traefik_lb_endpoint | length > 0
+        fail_msg: >-
+          Traefik service {{ container_verify_traefik_namespace }}/{{ container_verify_traefik_service_name }}
+          has no LoadBalancer ingress IP or hostname. Check the cloud load
+          balancer controller, service annotations, and cluster_ingress_* vars.
+        quiet: true

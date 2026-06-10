@@ -1,0 +1,24 @@
+# Managed by Ansible — roles/base/chrony.
+# Audit-grade time discipline. See defaults/main.yml for rationale.
+
+pool {{ chrony_pool }}{{ ' iburst' if chrony_pool_iburst else '' }}
+
+# Step the clock if drift exceeds the threshold on the first N measurements.
+# Prevents slow slew on boot from re-ordering audit log timestamps.
+makestep {{ chrony_makestep_threshold }} {{ chrony_makestep_count }}
+
+{% if chrony_rtcsync %}
+# Sync system clock back to hardware clock periodically.
+rtcsync
+{% endif %}
+
+# Drift file persists kernel frequency offset across reboots.
+driftfile {{ chrony_driftfile }}
+
+# Serve time to the local cluster (peers fall back to each other if the pool
+# is unreachable).
+allow {{ chrony_allow_cidr }}
+
+# Log measurement, statistics, and tracking for audit and debugging.
+logdir /var/log/chrony
+log measurements statistics tracking

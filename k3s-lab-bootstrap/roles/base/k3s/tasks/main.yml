@@ -1,0 +1,43 @@
+---
+# k3s audit logging and runtime hardening helpers.
+#
+# Note: the containerd-registries.yml task file is intentionally NOT
+# imported here. It is included separately from playbooks/300-k3s.yml
+# (a dedicated play that targets all k3s nodes), because the role's
+# main entry point is invoked only against k3s_control for audit
+# logging — while containerd certs.d must be applied to every node.
+
+- name: Ensure k3s audit policy directory exists
+  ansible.builtin.file:
+    path: /etc/k3s
+    state: directory
+    mode: "0755"
+
+- name: Ensure k3s audit log directory exists
+  ansible.builtin.file:
+    path: /var/log/kubernetes
+    state: directory
+    mode: "0755"
+
+- name: Ensure k3s systemd drop-in directory exists
+  ansible.builtin.file:
+    path: "{{ k3s_audit_service_dropin_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Deploy k3s audit policy
+  ansible.builtin.template:
+    src: audit-policy.yaml.j2
+    dest: "{{ k3s_audit_policy_path }}"
+    mode: "0600"
+  notify:
+    - Restart k3s
+
+- name: Deploy k3s audit logging drop-in
+  ansible.builtin.template:
+    src: k3s-audit-logging.conf.j2
+    dest: "{{ k3s_audit_service_dropin_path }}"
+    mode: "0644"
+  notify:
+    - Reload systemd
+    - Restart k3s

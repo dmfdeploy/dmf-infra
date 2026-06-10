@@ -1,0 +1,17 @@
+---
+# playbooks/vertical-security/190-breakglass-verify.yml
+# STUB — real verification logic will land in a later PR.
+# Vertical: Security — verify Authentik break-glass admin path.
+- name: Verify Authentik break-glass admin
+  hosts: localhost
+  become: false
+  gather_facts: false
+  tasks:
+    - name: TODO — verify break-glass admin login
+      ansible.builtin.debug:
+        msg: |
+          STUB: 51-authentik-breakglass-verify.yml has not yet been implemented.
+          Intended checks:
+          - API login as seeded break-glass admin returns 200 BEFORE OIDC
+          See DMF Orchestrator and Renumbering Plan 2026-04-22.md §2.2
+          for the full intent of this playbook.

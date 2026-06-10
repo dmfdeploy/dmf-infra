@@ -1,0 +1,263 @@
+---
+- name: Compute landing page generator checksum
+  ansible.builtin.set_fact:
+    landing_page_generator_checksum: "{{ lookup('template', 'generate-html.sh.j2') | hash('sha1') }}"
+    landing_page_oss_checksum: "{{ lookup('template', 'oss-projects.sh.j2') | hash('sha1') }}"
+    landing_page_assets_checksum: "no-assets"
+
+- name: Create generator script ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: landing-page-generator
+        namespace: "{{ landing_page_namespace }}"
+      data:
+        generate.sh: "{{ lookup('template', 'generate-html.sh.j2') }}"
+
+- name: Create OSS projects data ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: landing-page-oss-data
+        namespace: "{{ landing_page_namespace }}"
+      data:
+        oss-projects.sh: "{{ lookup('template', 'oss-projects.sh.j2') }}"
+
+- name: Delete existing landing page assets ConfigMap (data→binaryData migration)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    kind: ConfigMap
+    name: landing-page-assets
+    namespace: "{{ landing_page_namespace }}"
+
+- name: Create landing page assets ConfigMap from files
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'assets-configmap.yml.j2') }}"
+
+- name: Create nginx configuration ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: landing-page-nginx-conf
+        namespace: "{{ landing_page_namespace }}"
+      data:
+        nginx.conf: |
+          worker_processes auto;
+          events { worker_connections 1024; }
+          http {
+            include       /etc/nginx/mime.types;
+            default_type  application/octet-stream;
+            sendfile      on;
+            keepalive_timeout 65;
+
+            # gzip compression
+            gzip on;
+            gzip_vary on;
+            gzip_proxied any;
+            gzip_comp_level 6;
+            gzip_min_length 256;
+            gzip_types
+              text/html
+              text/css
+              text/plain
+              text/xml
+              application/json
+              application/javascript
+              application/xml
+              application/xml+rss
+              image/svg+xml;
+
+            server {
+              listen 80;
+              server_name _;
+              root /usr/share/nginx/html;
+
+              # HTML — short cache with revalidation
+              location ~* \.html?$ {
+                add_header Cache-Control "public, max-age=60, stale-while-revalidate=300";
+                add_header X-Content-Type-Options nosniff;
+              }
+
+              # Assets (logos, etc) — longer cache
+              location /assets/ {
+                add_header Cache-Control "public, max-age=86400, immutable";
+                add_header X-Content-Type-Options nosniff;
+              }
+
+              # SVG/logos served from assets volume
+              location ~* \.(svg|png|ico|webp|jpg)$ {
+                add_header Cache-Control "public, max-age=86400, immutable";
+                add_header X-Content-Type-Options nosniff;
+              }
+
+              # Default
+              location / {
+                add_header Cache-Control "public, max-age=30, stale-while-revalidate=120";
+                add_header X-Content-Type-Options nosniff;
+              }
+            }
+          }
+
+- name: Delete existing landing page Deployment (force clean recreate)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: apps/v1
+    kind: Deployment
+    name: landing-page
+    namespace: "{{ landing_page_namespace }}"
+
+- name: Deploy landing page with dynamic generation
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: landing-page
+        namespace: "{{ landing_page_namespace }}"
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: landing-page
+        template:
+          metadata:
+            labels:
+              app: landing-page
+            annotations:
+              landing-page/generator-checksum: "{{ landing_page_generator_checksum }}"
+              landing-page/oss-checksum: "{{ landing_page_oss_checksum }}"
+              landing-page/assets-checksum: "{{ landing_page_assets_checksum }}"
+          spec:
+            initContainers:
+              - name: generate-html
+                image: curlimages/curl:latest
+                command: ["/bin/sh", "/scripts/generate.sh"]
+                volumeMounts:
+                  - name: html
+                    mountPath: /html
+                  - name: scripts
+                    mountPath: /scripts
+                  - name: oss-data
+                    mountPath: /oss-data
+                  - name: assets
+                    mountPath: /assets-src
+            containers:
+              - name: nginx
+                image: nginx:alpine
+                ports:
+                  - containerPort: 80
+                command: ["nginx", "-c", "/etc/nginx/custom/nginx.conf", "-g", "daemon off;"]
+                volumeMounts:
+                  - name: html
+                    mountPath: /usr/share/nginx/html
+                    readOnly: true
+                  - name: nginx-conf
+                    mountPath: /etc/nginx/custom
+                    readOnly: true
+              - name: regenerator
+                image: curlimages/curl:latest
+                command:
+                  - /bin/sh
+                  - -c
+                  - |
+                    while true; do
+                      sleep {{ landing_page_regen_interval_seconds | int }}
+                      /bin/sh /scripts/generate.sh
+                    done
+                volumeMounts:
+                  - name: html
+                    mountPath: /html
+                  - name: scripts
+                    mountPath: /scripts
+                  - name: oss-data
+                    mountPath: /oss-data
+                  - name: assets
+                    mountPath: /assets-src
+            volumes:
+              - name: html
+                emptyDir: {}
+              - name: scripts
+                configMap:
+                  name: landing-page-generator
+                  defaultMode: 0755
+              - name: oss-data
+                configMap:
+                  name: landing-page-oss-data
+                  defaultMode: 0644
+              - name: assets
+                configMap:
+                  name: landing-page-assets
+              - name: nginx-conf
+                configMap:
+                  name: landing-page-nginx-conf
+
+- name: Create landing page Service
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: landing-page
+        namespace: "{{ landing_page_namespace }}"
+      spec:
+        selector:
+          app: landing-page
+        ports:
+          - port: 80
+            targetPort: 80
+
+# HTTP→HTTPS redirect is handled at the Traefik entrypoint (see base/ingress).
+# Delete-before-recreate clears any stale `tls.secretName` from older runs.
+- name: Remove legacy landing page IngressRoutes
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: IngressRoute
+    name: "{{ item }}"
+    namespace: "{{ landing_page_namespace }}"
+  loop:
+    - landing-page
+    - landing-page-redirect
+
+- name: Create landing page HTTPS IngressRoute
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: landing-page
+        namespace: "{{ landing_page_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: Path(`/`) || Path(`/index.html`) || PathPrefix(`/assets`)
+            kind: Rule
+            priority: 1
+            services:
+              - name: landing-page
+                port: 80

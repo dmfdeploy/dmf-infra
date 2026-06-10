@@ -1,0 +1,96 @@
+---
+# 915-mxl-cms-override.yml — SPIKE (feat/mxl-single-node-spike), additive, NOT for main.
+#
+# Temporarily override the live dmf-cms console with a dev image that includes the
+# "MXL Flows" evaluation page, and inject the MXL status-sidecar endpoints — WITHOUT
+# touching the canonical release config. It is a strategic-merge patch of the running
+# Deployment, so all existing values (OIDC, secrets, ingress, other env) are preserved;
+# only the container image is swapped and one env var is added. No OpenBao/vault vars
+# are needed (we reuse the live release's config), so this runs via a plain
+# ansible-playbook against the g2r6-foa9 inventory — not the OpenBao run-playbook wrapper.
+#
+# REQUIRED extra vars (pass via -e; never commit the endpoints — they carry tailnet IPs):
+#   mxl_cms_image      full image ref of the dev build, e.g.
+#                      registry.<cluster-domain>/dmf-cms:0.9.2-mxl-spike   (Zot, prod-like)
+#                      or ghcr.io/dmfdeploy/dmf-cms:0.9.2-mxl-spike         (public, no Zot)
+#   mxl_cms_endpoints  DMF_CONSOLE_MXL_ENDPOINTS value, comma-separated role|provider|url:
+#                      "producer|aliyun|http://<producer-tailnet-ip>:9000,receiver|aliyun|http://<receiver-tailnet-ip>:9000"
+#
+# REVERT (back to exactly the pre-override release, image 0.9.0):
+#   helm --kubeconfig /etc/rancher/k3s/k3s.yaml -n dmf-cms rollback dmf-cms <REV>
+#   (helm rollback re-applies that revision's Deployment spec, dropping this patch.)
+#   Re-running the canonical 650-dmf-cms.yml instead lands on main's VERSION (0.9.2),
+#   not 0.9.0 — use rollback for an exact revert.
+
+- name: Temp-override DMF Console with the MXL Flows dev image (SPIKE)
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    cms_namespace: dmf-cms
+    cms_release_name: dmf-cms
+  tasks:
+    - name: Assert override vars are provided
+      ansible.builtin.assert:
+        that:
+          - mxl_cms_image is defined and mxl_cms_image | length > 0
+          - mxl_cms_endpoints is defined and mxl_cms_endpoints | length > 0
+        fail_msg: >-
+          Pass -e mxl_cms_image=<ref> and -e mxl_cms_endpoints=<role|provider|url,...>.
+
+    - name: Record the pre-override image (for the revert note in output)
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ cms_release_name }}"
+        namespace: "{{ cms_namespace }}"
+      register: _pre
+
+    - name: Show current image + helm revision (revert target)
+      ansible.builtin.debug:
+        msg: >-
+          Pre-override image: {{ _pre.resources[0].spec.template.spec.containers[0].image }}.
+          Revert with: helm -n {{ cms_namespace }} rollback {{ cms_release_name }} <current-revision>.
+
+    - name: Strategic-merge patch — swap image + add MXL endpoints env (preserves all else)
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ cms_release_name }}"
+            namespace: "{{ cms_namespace }}"
+          spec:
+            template:
+              spec:
+                containers:
+                  - name: dmf-cms
+                    image: "{{ mxl_cms_image }}"
+                    env:
+                      - name: DMF_CONSOLE_MXL_ENDPOINTS
+                        value: "{{ mxl_cms_endpoints }}"
+
+    - name: Wait for the override rollout to complete
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ cms_release_name }}"
+        namespace: "{{ cms_namespace }}"
+      register: _post
+      until:
+        - _post.resources | length > 0
+        - _post.resources[0].status.updatedReplicas | default(0) | int >= 1
+        - _post.resources[0].status.readyReplicas | default(0) | int >= 1
+        - (_post.resources[0].status.unavailableReplicas | default(0) | int) == 0
+      retries: 30
+      delay: 5
+
+    - name: Override applied
+      ansible.builtin.debug:
+        msg: >-
+          dmf-cms now running {{ mxl_cms_image }} with the MXL Flows page.
+          Open https://console.<cluster-domain>/mxl-flows.

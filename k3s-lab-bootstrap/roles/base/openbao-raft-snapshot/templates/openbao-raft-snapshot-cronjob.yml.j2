@@ -1,0 +1,76 @@
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openbao-raft-snapshot
+  namespace: {{ openbao_raft_snapshot_namespace }}
+  labels:
+    app: openbao-raft-snapshot
+    dmftier: "A"
+spec:
+  schedule: "{{ openbao_raft_snapshot_schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800
+      template:
+        metadata:
+          labels:
+            app: openbao-raft-snapshot
+        spec:
+          serviceAccountName: {{ openbao_raft_snapshot_service_account }}
+          restartPolicy: Never
+          volumes:
+            - name: s3-creds
+              secret:
+                secretName: {{ openbao_raft_snapshot_secret_name }}
+            - name: bao-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      expirationSeconds: 600
+                      audience: openbao
+            - name: snapshot-script
+              configMap:
+                name: openbao-raft-snapshot-script
+                defaultMode: 0755
+            # aws CLI binary copied out of amazon/aws-cli initContainer
+            - name: shared-bin
+              emptyDir: {}
+          initContainers:
+            - name: aws-cli-loader
+              image: {{ openbao_raft_snapshot_awscli_image }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  cp -r /usr/local/aws-cli /shared-bin/aws-cli
+                  chmod -R 0755 /shared-bin/aws-cli/v2/current/bin/aws
+              volumeMounts:
+                - name: shared-bin
+                  mountPath: /shared-bin
+          containers:
+            - name: snapshot
+              image: {{ openbao_raft_snapshot_image }}
+              command: ["/bin/bash", "-ex", "/scripts/snapshot.sh"]
+              env:
+                - name: BAO_ADDR
+                  value: "http://{{ openbao_pod }}.{{ openbao_namespace }}.svc.cluster.local:8200"
+                - name: PATH
+                  value: "/shared-bin/aws-cli/v2/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              volumeMounts:
+                - name: s3-creds
+                  mountPath: {{ openbao_raft_snapshot_secret_mount }}
+                  readOnly: true
+                - name: bao-token
+                  mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                  readOnly: true
+                - name: snapshot-script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: shared-bin
+                  mountPath: /shared-bin
+                  readOnly: true

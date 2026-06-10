@@ -1,0 +1,19 @@
+---
+# playbooks/lifecycle/finalise-teardown.yml
+# STUB — real teardown logic will land in a later PR.
+# DMF lifecycle: Finalise & Review stage — teardown in reverse layer order.
+- name: "Teardown facility (lifecycle: finalise)"
+  hosts: localhost
+  become: false
+  gather_facts: false
+  tasks:
+    - name: TODO — verify safe teardown sequence
+      ansible.builtin.debug:
+        msg: |
+          STUB: lifecycle/finalise-teardown.yml has not yet been implemented.
+          Intended checks:
+          - Revoke ESO AppRole
+          - Wait for Longhorn backup flush
+          - hcloud server delete
+          - Preserve floating IP + SSH key
+          See DMF EBU Mapping (2026-04-25).md for the finalise-stage scope.

@@ -1,0 +1,325 @@
+---
+# ---------------------------------------------------------------------------
+# Resolve cloud provider-id from instance metadata (env-conditional).
+#
+# Some cloud providers (e.g. Aliyun) require kubelet to register nodes with
+# a cloud-provider-shaped spec.providerID before their CCM will reconcile
+# Service: type=LoadBalancer onto cloud LBs. Setting --kubelet-arg=provider-id
+# at install time avoids the post-hoc node-patching race that otherwise
+# leaves new nodes invisible to the CCM until the operator manually patches
+# them.
+#
+# Activated by setting in env group_vars:
+#   k3s_provider_id_prefix: "alicloud://{{ aliyun_ccm_region }}."
+#   k3s_provider_id_metadata_url: "http://100.100.100.200/latest/meta-data/instance-id"
+#
+# Both unset → no provider-id is added (Hetzner default; the post-hoc patch
+# in tasks/hetzner/ccm.yml continues to handle Hetzner's case).
+# ---------------------------------------------------------------------------
+
+- name: Resolve kubelet provider-id from cloud metadata (opt-in)
+  hosts: k3s
+  become: false
+  gather_facts: false
+  tasks:
+    - name: Default _k3s_provider_id_resolved empty (no cloud provider-id wanted)
+      ansible.builtin.set_fact:
+        _k3s_provider_id_resolved: ""
+
+    - name: Check if k3s is already installed before metadata lookup
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: _k3s_provider_id_k3s_binary
+
+    - name: Fetch + compose provider-id when prefix and metadata URL are configured
+      when:
+        - k3s_provider_id_prefix is defined and k3s_provider_id_prefix | length > 0
+        - k3s_provider_id_metadata_url is defined and k3s_provider_id_metadata_url | length > 0
+        - not _k3s_provider_id_k3s_binary.stat.exists
+      block:
+        - name: Fetch cloud instance ID from metadata service
+          ansible.builtin.uri:
+            url: "{{ k3s_provider_id_metadata_url }}"
+            method: GET
+            timeout: 10
+            return_content: true
+          register: _instance_id_response
+
+        - name: Compose provider-id
+          ansible.builtin.set_fact:
+            _k3s_provider_id_resolved: "{{ k3s_provider_id_prefix }}{{ _instance_id_response.content | trim }}"
+
+- name: Install k3s on first control plane node
+  hosts: k3s_control[0]
+  become: true
+  vars:
+    k3s_version: "v1.33.12+k3s1"
+    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default('eth0')) }}"
+    k3s_server_disable_cloud_controller_resolved: "{{ k3s_server_disable_cloud_controller | default(false) }}"
+    k3s_disable_servicelb_resolved: >-
+      {{
+        k3s_disable_servicelb
+        | default((dmf_ingress_mode | default(cluster_ingress_mode | default('metallb-l2'))) != 'single-node-servicelb')
+      }}
+    k3s_disable_local_storage_resolved: >-
+      {{
+        k3s_disable_local_storage
+        | default((dmf_storage_backend | default('longhorn')) != 'local-path')
+      }}
+    k3s_server_tls_sans_resolved: "{{ k3s_server_tls_sans | default([]) }}"
+    k3s_server_extra_args_resolved: "{{ k3s_server_extra_args | default([]) }}"
+    k3s_kubelet_args_resolved: >-
+      {{
+        (k3s_kubelet_args | default([]))
+        + ( ['provider-id=' ~ hostvars[inventory_hostname]._k3s_provider_id_resolved]
+            if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
+            else [] )
+      }}
+    k3s_disable_server_args: >-
+      {{
+        (['--disable=servicelb'] if k3s_disable_servicelb_resolved | bool else [])
+        + (['--disable=local-storage'] if k3s_disable_local_storage_resolved | bool else [])
+      }}
+    k3s_base_server_args:
+      - "--node-name={{ inventory_hostname }}"
+      - "--node-ip={{ k3s_node_ip }}"
+      - "--node-external-ip={{ k3s_node_external_ip | default(ansible_host) }}"
+      - "--advertise-address={{ k3s_advertise_address | default(k3s_node_ip) }}"
+      - "--flannel-iface={{ k3s_private_interface_resolved }}"
+    k3s_conditional_server_args: "{{ ['--disable-cloud-controller'] if k3s_server_disable_cloud_controller_resolved | bool else [] }}"
+    k3s_tls_san_args: "{{ k3s_server_tls_sans_resolved | map('regex_replace', '^(.*)$', '--tls-san=\\1') | list }}"
+    k3s_kubelet_arg_flags: "{{ k3s_kubelet_args_resolved | map('regex_replace', '^(.*)$', '--kubelet-arg=\\1') | list }}"
+    k3s_server_args: >-
+      {{
+        (k3s_disable_server_args
+        + k3s_base_server_args
+        + k3s_conditional_server_args
+        + k3s_tls_san_args
+        + k3s_kubelet_arg_flags
+        + k3s_server_extra_args_resolved) | join(' ')
+      }}
+  tasks:
+    - name: Check if k3s is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    # k3s-uninstall.sh leaves /etc/systemd/system/k3s.service.d/ in place, so a
+    # leftover drop-in from a previous deploy can silently override the freshly
+    # installed unit's ExecStart on the next install. Wipe stale drop-ins on a
+    # fresh install; play 7 (Configure k3s audit logging) re-templates them.
+    - name: Wipe stale k3s systemd drop-ins on fresh install
+      ansible.builtin.file:
+        path: /etc/systemd/system/k3s.service.d
+        state: absent
+      when: not k3s_binary.stat.exists
+
+    - name: Download k3s install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      when: not k3s_binary.stat.exists
+
+    - name: Install k3s on first node (init cluster)
+      ansible.builtin.shell: |
+        INSTALL_K3S_VERSION="{{ k3s_version }}" \
+        K3S_TOKEN="{{ k3s_token }}" \
+        /tmp/k3s-install.sh server --cluster-init {{ k3s_server_args }}
+      args:
+        creates: /etc/rancher/k3s/k3s.yaml
+      when: not k3s_binary.stat.exists
+
+    - name: Wait for k3s to be ready
+      ansible.builtin.wait_for:
+        path: /var/lib/rancher/k3s/server/node-token
+        state: present
+        timeout: 120
+
+    - name: Get node token
+      ansible.builtin.slurp:
+        src: /var/lib/rancher/k3s/server/node-token
+      register: node_token
+
+    - name: Set node token fact
+      ansible.builtin.set_fact:
+        k3s_node_token: "{{ node_token.content | b64decode | trim }}"
+
+- name: Join additional control plane nodes to cluster
+  hosts: k3s:!k3s_control
+  become: true
+  serial: 1
+  vars:
+    k3s_version: "v1.33.12+k3s1"
+    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default('eth0')) }}"
+    k3s_server_disable_cloud_controller_resolved: "{{ k3s_server_disable_cloud_controller | default(false) }}"
+    k3s_disable_servicelb_resolved: >-
+      {{
+        k3s_disable_servicelb
+        | default((dmf_ingress_mode | default(cluster_ingress_mode | default('metallb-l2'))) != 'single-node-servicelb')
+      }}
+    k3s_disable_local_storage_resolved: >-
+      {{
+        k3s_disable_local_storage
+        | default((dmf_storage_backend | default('longhorn')) != 'local-path')
+      }}
+    k3s_join_server_extra_args_resolved: "{{ k3s_join_server_extra_args | default([]) }}"
+    k3s_kubelet_args_resolved: >-
+      {{
+        (k3s_kubelet_args | default([]))
+        + ( ['provider-id=' ~ hostvars[inventory_hostname]._k3s_provider_id_resolved]
+            if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
+            else [] )
+      }}
+    k3s_server_url: "https://{{ hostvars[k3s_control_node].k3s_node_ip }}:6443"
+    k3s_disable_server_args: >-
+      {{
+        (['--disable=servicelb'] if k3s_disable_servicelb_resolved | bool else [])
+        + (['--disable=local-storage'] if k3s_disable_local_storage_resolved | bool else [])
+      }}
+    k3s_base_server_args:
+      - "--node-name={{ inventory_hostname }}"
+      - "--node-ip={{ k3s_node_ip }}"
+      - "--node-external-ip={{ k3s_node_external_ip | default(ansible_host) }}"
+      - "--advertise-address={{ k3s_advertise_address | default(k3s_node_ip) }}"
+      - "--flannel-iface={{ k3s_private_interface_resolved }}"
+    k3s_conditional_server_args: "{{ ['--disable-cloud-controller'] if k3s_server_disable_cloud_controller_resolved | bool else [] }}"
+    k3s_kubelet_arg_flags: "{{ k3s_kubelet_args_resolved | map('regex_replace', '^(.*)$', '--kubelet-arg=\\1') | list }}"
+    k3s_server_args: >-
+      {{
+        (k3s_disable_server_args
+        + k3s_base_server_args
+        + k3s_conditional_server_args
+        + k3s_kubelet_arg_flags
+        + k3s_join_server_extra_args_resolved) | join(' ')
+      }}
+  tasks:
+    - name: Check if k3s is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/k3s
+      register: k3s_binary
+
+    # See note in play 5: k3s-uninstall.sh leaves drop-ins behind.
+    - name: Wipe stale k3s systemd drop-ins on fresh install
+      ansible.builtin.file:
+        path: /etc/systemd/system/k3s.service.d
+        state: absent
+      when: not k3s_binary.stat.exists
+
+    - name: Download k3s install script
+      ansible.builtin.get_url:
+        url: https://get.k3s.io
+        dest: /tmp/k3s-install.sh
+        mode: "0755"
+      when: not k3s_binary.stat.exists
+
+    - name: Join node to cluster
+      ansible.builtin.shell: |
+        INSTALL_K3S_VERSION="{{ k3s_version }}" \
+        K3S_TOKEN="{{ hostvars[groups['k3s_control'][0]]['k3s_node_token'] }}" \
+        K3S_URL="{{ k3s_server_url }}" \
+        /tmp/k3s-install.sh server {{ k3s_server_args }}
+      args:
+        creates: /etc/rancher/k3s/k3s.yaml
+      when: not k3s_binary.stat.exists
+
+    - name: Wait for node to be ready
+      ansible.builtin.command: k3s kubectl get node {{ inventory_hostname }}
+      register: node_status
+      until: "'Ready' in node_status.stdout"
+      retries: 30
+      delay: 10
+      changed_when: false
+
+    # ── Remove the external CCM uninitialized taint so CoreDNS and other
+    # kube-system pods can schedule before phase-2 deploys the cloud CCM.
+    # The CCM will re-apply and then remove the taint when it initializes.
+    - name: Remove CCM uninitialized taint from all nodes
+      ansible.builtin.command:
+        argv:
+          - k3s
+          - kubectl
+          - taint
+          - node
+          - "--all"
+          - node.cloudprovider.kubernetes.io/uninitialized-
+      failed_when: false
+      changed_when: true
+
+# Drop a containerd hosts.d entry on every k3s node so cluster-internal
+# Zot pulls (zot.zot.svc.cluster.local:5000, plain HTTP) succeed for AWX
+# EE and catalog-launched workloads. containerd hot-reloads certs.d, so
+# no k3s restart is required. ADR-0025 Lane B fix; see role task notes.
+- name: Configure containerd registries for cluster-internal Zot
+  hosts: k3s
+  become: true
+  tasks:
+    - name: Apply containerd hosts.d entry for cluster-internal Zot
+      ansible.builtin.include_role:
+        name: base/k3s
+        tasks_from: containerd-registries.yml
+
+- name: Configure k3s audit logging
+  hosts: k3s_control
+  become: true
+  serial: 1
+  vars:
+    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default('eth0')) }}"
+    k3s_server_disable_cloud_controller_resolved: "{{ k3s_server_disable_cloud_controller | default(false) }}"
+    k3s_disable_servicelb_resolved: >-
+      {{
+        k3s_disable_servicelb
+        | default((dmf_ingress_mode | default(cluster_ingress_mode | default('metallb-l2'))) != 'single-node-servicelb')
+      }}
+    k3s_disable_local_storage_resolved: >-
+      {{
+        k3s_disable_local_storage
+        | default((dmf_storage_backend | default('longhorn')) != 'local-path')
+      }}
+    k3s_server_tls_sans_resolved: "{{ k3s_server_tls_sans | default([]) }}"
+    k3s_server_extra_args_resolved: "{{ k3s_server_extra_args | default([]) }}"
+    k3s_kubelet_args_resolved: >-
+      {{
+        (k3s_kubelet_args | default([]))
+        + ( ['provider-id=' ~ hostvars[inventory_hostname]._k3s_provider_id_resolved]
+            if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
+            else [] )
+      }}
+    # k3s_base_server_args here MUST include --node-name and --cluster-init
+    # because the audit-logging.conf.j2 drop-in REPLACES the install-time
+    # ExecStart entirely. Without these, k3s restarts after the drop-in lands
+    # would (a) re-register nodes under the cloud-assigned iZ...Z hostname,
+    # creating duplicate ghost entries, and (b) drop --cluster-init on the
+    # bootstrap node so k3s falls back to kine (sqlite) instead of embedded
+    # etcd, breaking new-node joins ("embedded etcd is not enabled").
+    k3s_disable_server_args: >-
+      {{
+        (['--disable=servicelb'] if k3s_disable_servicelb_resolved | bool else [])
+        + (['--disable=local-storage'] if k3s_disable_local_storage_resolved | bool else [])
+      }}
+    k3s_base_server_args:
+      - "--node-name={{ inventory_hostname }}"
+      - "--node-ip={{ k3s_node_ip }}"
+      - "--node-external-ip={{ k3s_node_external_ip | default(ansible_host) }}"
+      - "--advertise-address={{ k3s_advertise_address | default(k3s_node_ip) }}"
+      - "--flannel-iface={{ k3s_private_interface_resolved }}"
+    k3s_cluster_init_args: "{{ ['--cluster-init'] if inventory_hostname == k3s_control_node else [] }}"
+    k3s_conditional_server_args: "{{ ['--disable-cloud-controller'] if k3s_server_disable_cloud_controller_resolved | bool else [] }}"
+    k3s_tls_san_args: "{{ k3s_server_tls_sans_resolved | map('regex_replace', '^(.*)$', '--tls-san=\\1') | list }}"
+    k3s_kubelet_arg_flags: "{{ k3s_kubelet_args_resolved | map('regex_replace', '^(.*)$', '--kubelet-arg=\\1') | list }}"
+    k3s_server_args: >-
+      {{
+        (k3s_disable_server_args
+        + k3s_base_server_args
+        + k3s_cluster_init_args
+        + k3s_conditional_server_args
+        + k3s_tls_san_args
+        + k3s_kubelet_arg_flags
+        + k3s_server_extra_args_resolved) | join(' ')
+      }}
+  roles:
+    - base/k3s
+
+# Audit log archival is now its own playbook (302-k3s-audit-archival.yml) so
+# it can be re-run independently to roll out new bucket/SSE/Object-Lock
+# settings without touching k3s install state. See bootstrap-provision-pre-seed.yml.

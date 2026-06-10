@@ -1,0 +1,19 @@
+---
+# DMF lifecycle: Configure stage — workload configure stub.
+#
+# This file previously imported media workload launchers from dmf-media.
+# That path is stale. Workload Configure (catalog launch, NetBox tag flip)
+# is now driven through dmf-runbooks via AWX job templates.
+#
+# To configure a catalog entry:
+#   1. Ensure the entry exists in NetBox with tag lifecycle:bootstrapped
+#   2. Launch the corresponding AWX job template (e.g. media-launch-nmos-cpp)
+#   3. NetBox tag flips to lifecycle:active on success
+#
+# To finalise (teardown):
+#   1. Launch the finalise AWX job template (e.g. media-finalise-nmos-cpp)
+#   2. NetBox tag flips back to lifecycle:bootstrapped
+#
+# See dmf-runbooks/ for catalog launcher playbooks.
+# See dmfdeploy/docs/decisions/0012-configure-stage-distinct-from-provision.md
+# and dmfdeploy/docs/decisions/0013-media-function-catalog-model.md.

@@ -1,0 +1,2351 @@
+---
+- name: Set effective NetBox admin token
+  ansible.builtin.set_fact:
+    netbox_sot_admin_token_effective: "{{ netbox_sot_admin_token }}"
+  no_log: true
+
+- name: Reset NetBox admin token if not v2 formatted
+  ansible.builtin.set_fact:
+    netbox_sot_admin_token_effective: ""
+  when:
+    - netbox_sot_admin_token_effective | length > 0
+    - (netbox_sot_admin_token_effective | regex_search('\\.')) is none
+  no_log: true
+
+- name: Set NetBox admin token command
+  ansible.builtin.set_fact:
+    netbox_sot_admin_token_cmd: |-
+      cat > /tmp/nbs-token-admin.py << 'PY'
+      from users.models import Token, User
+      from users.constants import TOKEN_PREFIX
+      user = User.objects.get(username="{{ netbox_sot_admin_username | replace('"', '\\"') }}")
+      token = Token.objects.filter(user=user, description="netbox-sot-admin").first()
+      if token:
+          token.delete()
+          token = None
+      if not token:
+          token = Token.objects.create(user=user, description="netbox-sot-admin")
+      print("ADMIN_TOKEN=" + TOKEN_PREFIX + token.key + "." + token.token)
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-admin.py | grep '^ADMIN_TOKEN=' | tail -n 1 | cut -d'=' -f2-
+
+- name: Set NetBox AWX token command
+  ansible.builtin.set_fact:
+    netbox_sot_awx_token_cmd: |-
+      cat > /tmp/nbs-token-awx.py << 'PY'
+      from users.models import Token, User
+      from users.constants import TOKEN_PREFIX
+      user = User.objects.get(username="{{ netbox_sot_awx_user | replace('"', '\\"') }}")
+      token = Token.objects.filter(user=user, description="AWX inventory source").first()
+      if token:
+          token.delete()
+          token = None
+      if not token:
+          token = Token.objects.create(user=user, description="AWX inventory source", write_enabled=False)
+      print("AWX_TOKEN=" + TOKEN_PREFIX + token.key + "." + token.token)
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-awx.py | grep '^AWX_TOKEN=' | tail -n 1 | cut -d'=' -f2-
+
+- name: Set NetBox LibreNMS token command
+  ansible.builtin.set_fact:
+    netbox_sot_librenms_token_cmd: |-
+      cat > /tmp/nbs-token-librenms.py << 'PY'
+      from users.models import Token, User
+      from users.constants import TOKEN_PREFIX
+      user = User.objects.get(username="{{ netbox_sot_librenms_user | replace('"', '\\"') }}")
+      token = Token.objects.filter(user=user, description="LibreNMS discovery sync").first()
+      if token:
+          token.delete()
+          token = None
+      if not token:
+          token = Token.objects.create(user=user, description="LibreNMS discovery sync", write_enabled=True)
+      print("LIBRENMS_TOKEN=" + TOKEN_PREFIX + token.key + "." + token.token)
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-librenms.py | grep '^LIBRENMS_TOKEN=' | tail -n 1 | cut -d'=' -f2-
+  when: netbox_sot_librenms_enabled | bool
+
+- name: Set NetBox catalog writer token command
+  ansible.builtin.set_fact:
+    netbox_sot_catalog_token_cmd: |-
+      cat > /tmp/nbs-token-catalog.py << 'PY'
+      from users.models import Token, User
+      from users.constants import TOKEN_PREFIX
+      user = User.objects.get(username="{{ netbox_sot_catalog_username | replace('"', '\\"') }}")
+      token = Token.objects.filter(user=user, description="DMF catalog writer").first()
+      if token:
+          token.delete()
+          token = None
+      if not token:
+          token = Token.objects.create(user=user, description="DMF catalog writer", write_enabled=True)
+      print("CATALOG_TOKEN=" + TOKEN_PREFIX + token.key + "." + token.token)
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-catalog.py | grep '^CATALOG_TOKEN=' | tail -n 1 | cut -d'=' -f2-
+  when: netbox_sot_catalog_writer_enabled | bool
+
+- name: Set PromSD token command
+  ansible.builtin.set_fact:
+    netbox_sot_promsd_token_cmd: |-
+      cat > /tmp/nbs-token-promsd.py << 'PY'
+      import secrets
+      from django.contrib.auth import authenticate
+      from users.models import Token, User
+      from users.constants import TOKEN_PREFIX
+
+      username = "{{ netbox_sot_promsd_username | replace('\"', '\\"') }}"
+      token_name = "{{ netbox_sot_promsd_token_name | replace('\"', '\\"') }}"
+
+      user, created = User.objects.get_or_create(
+          username=username,
+          defaults={'email': f'{username}@dmf.example.com'},
+      )
+      new_password = secrets.token_urlsafe(24)
+      user.set_password(new_password)
+      user.save(update_fields=['password'])
+
+      authed_user = authenticate(username=username, password=new_password)
+      if authed_user is None:
+          raise SystemExit("Failed to authenticate as PromSD service user")
+
+      Token.objects.filter(user=authed_user, description=token_name).delete()
+      token = Token.objects.create(
+          user=authed_user,
+          description=token_name,
+          write_enabled=False,
+      )
+      print("PROMSD_TOKEN=" + TOKEN_PREFIX + token.key + "." + token.token)
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-promsd.py | grep '^PROMSD_TOKEN=' | tail -n 1 | cut -d'=' -f2-
+  when: netbox_sot_promsd_enabled | bool
+
+- name: Set NetBox secret persistence mode
+  ansible.builtin.set_fact:
+    netbox_sot_persist_to_openbao: "{{ netbox_sot_openbao_breakglass_file | default('', true) | length > 0 }}"
+
+- name: Set effective vault password file
+  ansible.builtin.set_fact:
+    netbox_sot_vault_password_file_effective: "{{ netbox_sot_vault_password_file | expanduser }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Assert vault password file exists
+  ansible.builtin.stat:
+    path: "{{ netbox_sot_vault_password_file_effective }}"
+  register: netbox_sot_vault_passfile
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Fail if vault password file is missing
+  ansible.builtin.assert:
+    that:
+      - netbox_sot_vault_passfile.stat.exists
+    fail_msg: >-
+      Vault password file not found at {{ netbox_sot_vault_password_file_effective }}.
+      Create it (e.g. ~/.vault_pass) before running this playbook.
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Set effective NetBox AWX integration token
+  ansible.builtin.set_fact:
+    netbox_sot_awx_token_effective: "{{ netbox_sot_awx_token }}"
+  no_log: true
+
+- name: Set effective NetBox LibreNMS integration token
+  ansible.builtin.set_fact:
+    netbox_sot_librenms_token_effective: "{{ netbox_sot_librenms_token }}"
+  when: netbox_sot_librenms_enabled | bool
+  no_log: true
+
+- name: Set effective NetBox catalog writer token
+  ansible.builtin.set_fact:
+    netbox_sot_catalog_token_effective: "{{ netbox_sot_catalog_token }}"
+  when: netbox_sot_catalog_writer_enabled | bool
+  no_log: true
+
+- name: Set effective NetBox PromSD token
+  ansible.builtin.set_fact:
+    netbox_sot_promsd_token_effective: "{{ netbox_sot_promsd_token }}"
+  when: netbox_sot_promsd_enabled | bool
+  no_log: true
+
+- name: Check NetBox API availability
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/"
+    method: GET
+    status_code: [200, 502, 503]
+  register: netbox_sot_api_check
+  until: netbox_sot_api_check.status == 200
+  retries: "{{ netbox_sot_api_wait_retries }}"
+  delay: "{{ netbox_sot_api_wait_delay }}"
+  # 502 Bad Gateway is expected during NetBox startup while Traefik has a route
+  # but the backend endpoint is not yet ready after migrations complete.
+
+# ── OpenBao operator session (hoisted: needed by the admin/awx/librenms/catalog
+# token reuse gates below as well as the integration-secret persistence further
+# down) ─────────────────────────────────────────────────────────────────────
+# Establishes a userpass session against the in-cluster OpenBao so already-valid
+# service tokens can be read back BEFORE we decide whether to mint. NetBox cannot
+# re-derive a token's secret (the DB stores only the key), so reuse MUST come
+# from OpenBao — otherwise a standalone 691 re-run rotates the token (delete +
+# recreate ORM) and silently invalidates downstream consumers (e.g. the AWX
+# inventory-source credential). Only runs on the OpenBao persistence path; the
+# ansible-vault file path is unaffected.
+- name: Load OpenBao break-glass JSON for NetBox persistence
+  ansible.builtin.set_fact:
+    _netbox_sot_openbao_breakglass: "{{ lookup('file', netbox_sot_openbao_breakglass_file) | from_json }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: netbox_sot_persist_to_openbao | bool
+
+- name: Extract OpenBao operator credentials for NetBox persistence
+  ansible.builtin.set_fact:
+    _netbox_sot_openbao_username: "{{ _netbox_sot_openbao_breakglass.ops_admin_username | default('') }}"
+    _netbox_sot_openbao_password: "{{ _netbox_sot_openbao_breakglass.ops_admin_password | default('') }}"
+  run_once: true
+  no_log: true
+  when: netbox_sot_persist_to_openbao | bool
+
+- name: Assert OpenBao operator credentials exist for NetBox persistence
+  ansible.builtin.assert:
+    that:
+      - _netbox_sot_openbao_username | length > 0
+      - _netbox_sot_openbao_password | length > 0
+    fail_msg: >-
+      No operator credentials found in {{ netbox_sot_openbao_breakglass_file }}.
+      NetBox SoT token persistence must write to the in-cluster OpenBao.
+  run_once: true
+  no_log: true
+  when: netbox_sot_persist_to_openbao | bool
+
+- name: Discover OpenBao pod for NetBox persistence
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ netbox_sot_openbao_namespace }}"
+    label_selectors:
+      - "{{ netbox_sot_openbao_pod_label_selector }}"
+  register: _netbox_sot_openbao_pod_info
+  run_once: true
+  when: netbox_sot_persist_to_openbao | bool
+
+- name: Assert OpenBao pod exists for NetBox persistence
+  ansible.builtin.assert:
+    that:
+      - _netbox_sot_openbao_pod_info.resources | length > 0
+    fail_msg: >-
+      Could not find an OpenBao pod in namespace {{ netbox_sot_openbao_namespace }}
+      with selector {{ netbox_sot_openbao_pod_label_selector }}.
+  run_once: true
+  when: netbox_sot_persist_to_openbao | bool
+
+- name: Set OpenBao pod fact for NetBox persistence
+  ansible.builtin.set_fact:
+    _netbox_sot_openbao_pod: "{{ _netbox_sot_openbao_pod_info.resources[0].metadata.name }}"
+  run_once: true
+  when: netbox_sot_persist_to_openbao | bool
+
+- name: Log into OpenBao with operator userpass for NetBox persistence
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ _netbox_sot_openbao_username }} password="$P"'
+  register: _netbox_sot_openbao_login_raw
+  changed_when: false
+  run_once: true
+  no_log: true
+  when: netbox_sot_persist_to_openbao | bool
+  environment:
+    OPENBAO_PASSWORD: "{{ _netbox_sot_openbao_password }}"
+
+- name: Extract OpenBao client token for NetBox persistence
+  ansible.builtin.set_fact:
+    _netbox_sot_openbao_client_token: "{{ (_netbox_sot_openbao_login_raw.stdout | from_json).auth.client_token }}"
+  run_once: true
+  no_log: true
+  when: netbox_sot_persist_to_openbao | bool
+
+# ── Read persisted NetBox service tokens once (admin/awx/librenms reuse) ─────
+# Single read of the runtime secret; the admin/awx/librenms reuse gates each
+# consume the matching key. The catalog gate further down keeps its own read.
+- name: Read existing NetBox service tokens from OpenBao (reuse gate)
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ netbox_sot_runtime_secret_path | quote }}'
+  register: _netbox_sot_reuse_openbao_raw
+  changed_when: false
+  failed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_sot_openbao_client_token }}"
+  no_log: true
+  when:
+    - netbox_sot_persist_to_openbao | bool
+
+- name: Parse persisted NetBox service tokens from OpenBao
+  ansible.builtin.set_fact:
+    _netbox_sot_persisted_tokens: >-
+      {{
+        (_netbox_sot_reuse_openbao_raw.stdout | from_json).data.data | default({})
+        if (_netbox_sot_reuse_openbao_raw.rc | default(1)) == 0
+        and (_netbox_sot_reuse_openbao_raw.stdout | default('') | length) > 0
+        else {}
+      }}
+  no_log: true
+  when:
+    - netbox_sot_persist_to_openbao | bool
+
+# ── Admin token idempotency gate ────────────────────────────────────────────
+# The admin token drives every NetBox API call in this run, so reuse must yield
+# a usable token: we only reuse when OpenBao still holds netbox_admin_token AND
+# NetBox still has the matching "netbox-sot-admin" token (ORM). Otherwise fall
+# through to the mint below (first run, lost OpenBao value, or deleted token).
+- name: Build NetBox admin token existence-check command
+  ansible.builtin.set_fact:
+    netbox_sot_admin_token_check_cmd: |-
+      cat > /tmp/nbs-token-admin-check.py << 'PY'
+      from users.models import Token, User
+      try:
+          user = User.objects.get(username="{{ netbox_sot_admin_username | replace('"', '\\"') }}")
+          exists = Token.objects.filter(user=user, description="netbox-sot-admin").exists()
+      except User.DoesNotExist:
+          exists = False
+      print("1" if exists else "0")
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-admin-check.py | tail -n 1
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_admin_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.netbox_admin_token | default('')) | length > 0
+
+- name: Check NetBox for an existing admin token (ORM)
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_admin_token_check_cmd] }}"
+  register: _netbox_sot_admin_nb_token_check
+  changed_when: false
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_admin_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.netbox_admin_token | default('')) | length > 0
+
+- name: Reuse existing admin token from OpenBao (no rotation)
+  ansible.builtin.set_fact:
+    netbox_sot_admin_token_effective: "{{ _netbox_sot_persisted_tokens.netbox_admin_token }}"
+    _netbox_sot_admin_token_reused: true
+  no_log: true
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_admin_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.netbox_admin_token | default('')) | length > 0
+    - (_netbox_sot_admin_nb_token_check.stdout | default('0') | trim) == "1"
+
+- name: Ensure NetBox admin token via NetBox pod
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_admin_token_cmd] }}"
+  register: netbox_sot_admin_token_created
+  changed_when: false
+  when: netbox_sot_admin_token_effective | length == 0
+  no_log: true
+
+- name: Set admin token from pod output
+  ansible.builtin.set_fact:
+    netbox_sot_admin_token_effective: >-
+      {{ ((netbox_sot_admin_token_created | default({})).stdout | default('') | trim) }}
+  when: netbox_sot_admin_token_effective | length == 0
+  no_log: true
+
+- name: Fail if admin token is still missing
+  ansible.builtin.assert:
+    that:
+      - netbox_sot_admin_token_effective | length > 0
+    fail_msg: >-
+      NetBox admin token is empty. Check that the NetBox pod is ready and the
+      admin user exists.
+
+# ── DMF catalog tag taxonomy (platform-wide invariants) ─────────────────────
+# Bootstrap the tags AWX-driven catalog launchers reference (dmf-catalog,
+# lifecycle:*, exposure:*). The dmf-runbooks nmos-cpp role auto-creates any
+# missing tag on first provision (idempotent), but seeding here makes the
+# taxonomy a platform invariant rather than a side effect of the first
+# launcher. Slug derivation matches the dmf-born-inventory pattern.
+- name: Fetch existing NetBox tags
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/extras/tags/?limit=200"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    status_code: 200
+  register: netbox_sot_existing_tags
+  no_log: true
+
+- name: Compute set of existing tag names
+  ansible.builtin.set_fact:
+    netbox_sot_existing_tag_names: >-
+      {{ netbox_sot_existing_tags.json.results | map(attribute='name') | list }}
+  no_log: true
+
+- name: Create missing DMF catalog tags
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/extras/tags/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      slug: "{{ item.name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+      color: "{{ item.color | default('4caf50') }}"
+      description: "{{ item.description | default('DMF catalog tag') }}"
+    status_code: 201
+  loop: "{{ netbox_sot_catalog_tags }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in netbox_sot_existing_tag_names
+  no_log: true
+
+- name: Fetch existing NetBox monitoring tags
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/extras/tags/?limit=200"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    status_code: 200
+  register: netbox_sot_existing_monitoring_tags
+  no_log: true
+
+- name: Compute set of existing monitoring tag names
+  ansible.builtin.set_fact:
+    netbox_sot_existing_monitoring_tag_names: >-
+      {{ netbox_sot_existing_monitoring_tags.json.results | map(attribute='name') | list }}
+  no_log: true
+
+- name: Create missing NetBox monitoring tags
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/extras/tags/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    body_format: json
+    body:
+      name: "{{ item.name }}"
+      slug: "{{ item.name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+      color: "{{ item.color | default('4caf50') }}"
+      description: "{{ item.description | default('DMF monitoring tag') }}"
+    status_code: 201
+  loop: "{{ netbox_sot_monitoring_tags }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name not in netbox_sot_existing_monitoring_tag_names
+  no_log: true
+
+- name: Ensure NetBox monitoring choice sets exist
+  vars:
+    _netbox_sot_monitoring_choice_sets: "{{ netbox_sot_monitoring_choice_sets }}"
+  block:
+    - name: Look up NetBox monitoring choice set {{ item.name }}
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/extras/custom-field-choice-sets/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: _netbox_sot_monitoring_choice_set_lookup
+      loop: "{{ _netbox_sot_monitoring_choice_sets }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create missing NetBox monitoring choice set {{ item.item.name }}
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/extras/custom-field-choice-sets/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          description: "{{ item.item.description }}"
+          extra_choices: "{{ item.item.extra_choices }}"
+        status_code: 201
+      loop: "{{ _netbox_sot_monitoring_choice_set_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.json.count | int == 0
+
+    - name: Refresh NetBox monitoring choice set lookups
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/extras/custom-field-choice-sets/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: _netbox_sot_monitoring_choice_set_lookup_after_create
+      loop: "{{ _netbox_sot_monitoring_choice_sets }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Reconcile NetBox monitoring choice set extra choices
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/extras/custom-field-choice-sets/{{ (item.json.results | first).id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          extra_choices: "{{ item.item.extra_choices }}"
+        status_code: 200
+      loop: "{{ _netbox_sot_monitoring_choice_set_lookup_after_create.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when:
+        - item.json.count | int > 0
+        - (item.json.results | first).extra_choices | default([]) != item.item.extra_choices
+
+    - name: Build NetBox monitoring choice set id map (name -> id)
+      ansible.builtin.set_fact:
+        netbox_sot_monitoring_choice_set_ids: >-
+          {{
+            _netbox_sot_monitoring_choice_set_lookup_after_create.results
+            | map(attribute='json.results')
+            | map('first')
+            | list
+            | items2dict(key_name='name', value_name='id')
+          }}
+
+- name: Ensure NetBox monitoring custom fields exist
+  vars:
+    _netbox_sot_monitoring_cf_defs: "{{ netbox_sot_monitoring_custom_fields }}"
+  block:
+    - name: Look up NetBox monitoring custom field {{ item.name }}
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/extras/custom-fields/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: _netbox_sot_monitoring_cf_lookup
+      loop: "{{ _netbox_sot_monitoring_cf_defs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create missing NetBox monitoring custom field {{ item.item.name }}
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/extras/custom-fields/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body: >-
+          {{
+            {
+              'name': item.item.name,
+              'label': item.item.label,
+              'description': item.item.description,
+              'type': item.item.type,
+              'object_types': item.item.object_types,
+              'required': item.item.required | bool,
+            }
+            | combine(
+                {'default': item.item.default}
+                if (item.item.default | default('') | string | length) > 0 else {}
+              )
+            | combine(
+                {'choice_set': netbox_sot_monitoring_choice_set_ids[item.item.choice_set]}
+                if (item.item.choice_set | default('') | string | length) > 0 else {}
+              )
+          }}
+        status_code: 201
+      loop: "{{ _netbox_sot_monitoring_cf_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.json.count | int == 0
+
+    - name: Warn on NetBox monitoring custom-field type drift
+      ansible.builtin.debug:
+        msg: >-
+          NetBox custom field {{ item.item.name }} exists with type
+          '{{ (item.json.results | first).type.value | default((item.json.results | first).type) }}'
+          but the role wants type '{{ item.item.type }}'. Re-shape manually;
+          the role will not PATCH existing custom fields.
+      loop: "{{ _netbox_sot_monitoring_cf_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when:
+        - item.json.count | int > 0
+        - (item.json.results | first).type.value | default((item.json.results | first).type) != item.item.type
+
+- name: Lookup AWX group
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/users/groups/?name={{ netbox_sot_awx_group | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    status_code: 200
+  register: netbox_sot_awx_group_lookup
+
+- name: Create AWX group
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/users/groups/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    body_format: json
+    body:
+      name: "{{ netbox_sot_awx_group }}"
+      description: "AWX inventory read-only access"
+    status_code: 201
+  when: netbox_sot_awx_group_lookup.json.count | int == 0
+  register: netbox_sot_awx_group_created
+
+- name: Refresh AWX group lookup after create
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/users/groups/?name={{ netbox_sot_awx_group | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    status_code: 200
+  register: netbox_sot_awx_group_lookup_after_create
+  when: netbox_sot_awx_group_lookup.json.count | int == 0
+
+- name: Set AWX group id
+  ansible.builtin.set_fact:
+    netbox_sot_awx_group_id: >-
+      {{ (netbox_sot_awx_group_lookup_after_create.json.results
+          | default(netbox_sot_awx_group_lookup.json.results)
+          | default([])
+          | first
+          | default({})).id }}
+
+- name: Ensure PromSD monitoring service account NetBox access
+  when: netbox_sot_promsd_enabled | bool
+  block:
+    - name: Lookup PromSD group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/?name={{ netbox_sot_promsd_group | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_promsd_group_lookup
+
+    - name: Create PromSD group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        body_format: json
+        body:
+          name: "{{ netbox_sot_promsd_group }}"
+          description: "PromSD NetBox monitoring read access"
+        status_code: 201
+      when: netbox_sot_promsd_group_lookup.json.count | int == 0
+      register: netbox_sot_promsd_group_created
+
+    - name: Set PromSD group id
+      ansible.builtin.set_fact:
+        netbox_sot_promsd_group_id: >-
+          {{ (netbox_sot_promsd_group_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_promsd_group_created.json.id) }}
+
+    - name: Set PromSD object permission command
+      ansible.builtin.set_fact:
+        netbox_sot_promsd_permission_cmd: |-
+          cat > /tmp/nbs-perm-promsd.py << 'PY'
+          from django.contrib.contenttypes.models import ContentType
+          from users.models import ObjectPermission, Group
+
+          perm_name = "{{ netbox_sot_promsd_permission_name | replace('\"', '\\\"') }}"
+          perm_desc = "{{ netbox_sot_promsd_permission_description | replace('\"', '\\\"') }}"
+          actions = {{ netbox_sot_promsd_actions | to_json }}
+          object_types = {{ netbox_sot_promsd_object_types | to_json }}
+          group_name = "{{ netbox_sot_promsd_group | replace('\"', '\\\"') }}"
+
+          cts = []
+          missing = []
+          for entry in object_types:
+              app, model = entry.split('.', 1)
+              ct = ContentType.objects.filter(app_label=app, model=model).first()
+              if ct:
+                  cts.append(ct)
+              else:
+                  missing.append(entry)
+          if missing:
+              raise SystemExit("Missing content types: " + ", ".join(missing))
+
+          perm = ObjectPermission.objects.filter(name=perm_name).first()
+          if not perm:
+              perm = ObjectPermission.objects.create(
+                  name=perm_name,
+                  description=perm_desc,
+                  actions=actions,
+              )
+          else:
+              perm.description = perm_desc
+              perm.actions = actions
+              perm.save()
+          perm.object_types.set(cts)
+
+          group = Group.objects.get(name=group_name)
+          perm.groups.set([group])
+          print(perm.id)
+          PY
+          /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-promsd.py
+
+    - name: Apply PromSD object permission via NetBox pod
+      ansible.builtin.command:
+        argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_promsd_permission_cmd] }}"
+      register: netbox_sot_promsd_object_permission_applied
+      changed_when: false
+
+    - name: Lookup PromSD service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/?username={{ netbox_sot_promsd_username | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_promsd_user_lookup
+
+    - name: Create PromSD service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          username: "{{ netbox_sot_promsd_username }}"
+          is_active: true
+          password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+          groups:
+            - "{{ netbox_sot_promsd_group_id }}"
+        status_code: 201
+      when: netbox_sot_promsd_user_lookup.json.count | int == 0
+      no_log: true
+      register: netbox_sot_promsd_user_created
+
+    - name: Set PromSD user id
+      ansible.builtin.set_fact:
+        netbox_sot_promsd_user_id: >-
+          {{ (netbox_sot_promsd_user_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_promsd_user_created.json.id) }}
+
+    - name: Fetch PromSD service user details
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_promsd_user_id }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_promsd_user_detail
+
+    - name: Set PromSD user group ids
+      ansible.builtin.set_fact:
+        netbox_sot_promsd_user_group_ids: "{{ group_ids | unique | list }}"
+      vars:
+        groups: "{{ netbox_sot_promsd_user_detail.json.groups | default([]) }}"
+        group_ids: >-
+          {{ (groups | select('mapping') | map(attribute='id') | list)
+             + (groups | select('number') | list) }}
+
+    - name: Ensure PromSD user is in PromSD group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_promsd_user_id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          groups: "{{ netbox_sot_promsd_user_group_ids | union([netbox_sot_promsd_group_id | int]) }}"
+        status_code: 200
+      when: netbox_sot_promsd_group_id | int not in (netbox_sot_promsd_user_group_ids | list)
+
+- name: Ensure LibreNMS group exists when enabled
+  when: netbox_sot_librenms_enabled | bool
+  block:
+    - name: Lookup LibreNMS group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/?name={{ netbox_sot_librenms_group | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_librenms_group_lookup
+
+    - name: Create LibreNMS group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          name: "{{ netbox_sot_librenms_group }}"
+          description: "LibreNMS discovery write access"
+        status_code: 201
+      when: netbox_sot_librenms_group_lookup.json.count | int == 0
+      register: netbox_sot_librenms_group_created
+
+    - name: Set LibreNMS group id
+      ansible.builtin.set_fact:
+        netbox_sot_librenms_group_id: >-
+          {{ (netbox_sot_librenms_group_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_librenms_group_created.json.id) }}
+
+- name: Set NetBox AWX object permission command
+  ansible.builtin.set_fact:
+    netbox_sot_awx_permission_cmd: |-
+      cat > /tmp/nbs-perm-awx.py << 'PY'
+      import json
+      from django.contrib.contenttypes.models import ContentType
+      from users.models import ObjectPermission, Group
+
+      perm_name = "{{ netbox_sot_awx_permission_name | replace('\"', '\\\"') }}"
+      perm_desc = "{{ netbox_sot_awx_permission_description | replace('\"', '\\\"') }}"
+      actions = {{ netbox_sot_awx_actions | to_json }}
+      object_types = {{ netbox_sot_awx_object_types | to_json }}
+      group_name = "{{ netbox_sot_awx_group | replace('\"', '\\\"') }}"
+
+      cts = []
+      missing = []
+      for entry in object_types:
+          app, model = entry.split('.', 1)
+          ct = ContentType.objects.filter(app_label=app, model=model).first()
+          if ct:
+              cts.append(ct)
+          else:
+              missing.append(entry)
+      if missing:
+          raise SystemExit("Missing content types: " + ", ".join(missing))
+
+      perm = ObjectPermission.objects.filter(name=perm_name).first()
+      if not perm:
+          perm = ObjectPermission.objects.create(
+              name=perm_name,
+              description=perm_desc,
+              actions=actions,
+          )
+      else:
+          perm.description = perm_desc
+          perm.actions = actions
+          perm.save()
+      perm.object_types.set(cts)
+
+      group = Group.objects.get(name=group_name)
+      perm.groups.set([group])
+      print(perm.id)
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-awx.py
+
+- name: Set NetBox LibreNMS object permission command
+  ansible.builtin.set_fact:
+    netbox_sot_librenms_permission_cmd: |-
+      cat > /tmp/nbs-perm-librenms.py << 'PY'
+      import json
+      from django.contrib.contenttypes.models import ContentType
+      from users.models import ObjectPermission, Group
+
+      view_name = "{{ netbox_sot_librenms_view_permission_name | replace('\"', '\\\"') }}"
+      view_desc = "{{ netbox_sot_librenms_view_permission_description | replace('\"', '\\\"') }}"
+      view_actions = {{ netbox_sot_librenms_view_actions | to_json }}
+      view_object_types = {{ netbox_sot_librenms_view_object_types | to_json }}
+
+      write_name = "{{ netbox_sot_librenms_write_permission_name | replace('\"', '\\\"') }}"
+      write_desc = "{{ netbox_sot_librenms_write_permission_description | replace('\"', '\\\"') }}"
+      write_actions = {{ netbox_sot_librenms_write_actions | to_json }}
+      write_object_types = {{ netbox_sot_librenms_write_object_types | to_json }}
+
+      group_name = "{{ netbox_sot_librenms_group | replace('\"', '\\\"') }}"
+
+      def resolve_object_types(object_types):
+          cts = []
+          missing = []
+          for entry in object_types:
+              app, model = entry.split('.', 1)
+              ct = ContentType.objects.filter(app_label=app, model=model).first()
+              if ct:
+                  cts.append(ct)
+              else:
+                  missing.append(entry)
+          return cts, missing
+
+      view_cts, view_missing = resolve_object_types(view_object_types)
+      write_cts, write_missing = resolve_object_types(write_object_types)
+      missing = view_missing + write_missing
+      if missing:
+          raise SystemExit("Missing content types: " + ", ".join(sorted(set(missing))))
+
+      view_perm = ObjectPermission.objects.filter(name=view_name).first()
+      if not view_perm:
+          view_perm = ObjectPermission.objects.create(
+              name=view_name,
+              description=view_desc,
+              actions=view_actions,
+          )
+      else:
+          view_perm.description = view_desc
+          view_perm.actions = view_actions
+          view_perm.save()
+      view_perm.object_types.set(view_cts)
+
+      write_perm = ObjectPermission.objects.filter(name=write_name).first()
+      if not write_perm:
+          write_perm = ObjectPermission.objects.create(
+              name=write_name,
+              description=write_desc,
+              actions=write_actions,
+          )
+      else:
+          write_perm.description = write_desc
+          write_perm.actions = write_actions
+          write_perm.save()
+      write_perm.object_types.set(write_cts)
+
+      group = Group.objects.get(name=group_name)
+      view_perm.groups.set([group])
+      write_perm.groups.set([group])
+      print(view_perm.id, write_perm.id)
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-librenms.py
+  when: netbox_sot_librenms_enabled | bool
+
+- name: Ensure AWX object permission via NetBox pod
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_awx_permission_cmd] }}"
+  register: netbox_sot_awx_object_permission_applied
+  changed_when: false
+
+- name: Ensure LibreNMS object permissions via NetBox pod
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_librenms_permission_cmd] }}"
+  register: netbox_sot_librenms_object_permissions_applied
+  changed_when: false
+  when: netbox_sot_librenms_enabled | bool
+
+- name: Lookup AWX service user
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/users/users/?username={{ netbox_sot_awx_user | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    status_code: 200
+  register: netbox_sot_awx_user_lookup
+
+- name: Create AWX service user
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/users/users/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    body_format: json
+    body:
+      username: "{{ netbox_sot_awx_user }}"
+      is_active: true
+      password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+      groups:
+        - "{{ netbox_sot_awx_group_id }}"
+    status_code: 201
+  when: netbox_sot_awx_user_lookup.json.count | int == 0
+  no_log: true
+  register: netbox_sot_awx_user_created
+
+- name: Set AWX user id
+  ansible.builtin.set_fact:
+    netbox_sot_awx_user_id: >-
+      {{ (netbox_sot_awx_user_lookup.json.results | default([]) | first | default({})).id
+         | default(netbox_sot_awx_user_created.json.id) }}
+
+- name: Fetch AWX service user details
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_awx_user_id }}/"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    status_code: 200
+  register: netbox_sot_awx_user_detail
+
+- name: Set AWX user group ids
+  ansible.builtin.set_fact:
+    netbox_sot_awx_user_group_ids: "{{ group_ids | unique | list }}"
+  vars:
+    groups: "{{ netbox_sot_awx_user_detail.json.groups | default([]) }}"
+    group_ids: >-
+      {{ (groups | select('mapping') | map(attribute='id') | list)
+         + (groups | select('number') | list) }}
+
+- name: Set AWX group id effective
+  ansible.builtin.set_fact:
+    netbox_sot_awx_group_id_effective: "{{ effective }}"
+  vars:
+    groups: "{{ netbox_sot_awx_user_detail.json.groups | default([]) }}"
+    matched_ids: "{{ groups | selectattr('name', 'equalto', netbox_sot_awx_group) | map(attribute='id') | list }}"
+    effective: >-
+      {{ (netbox_sot_awx_group_id | int) if (netbox_sot_awx_group_id | int) > 0
+         else (matched_ids | first | default(0)) }}
+
+- name: Assert AWX group id resolved
+  ansible.builtin.assert:
+    that:
+      - netbox_sot_awx_group_id_effective | int > 0
+    fail_msg: "AWX group id could not be resolved from NetBox lookups."
+
+- name: Ensure AWX user is in AWX group
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_awx_user_id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    body_format: json
+    body:
+      groups: "{{ netbox_sot_awx_user_group_ids | union([netbox_sot_awx_group_id_effective | int]) }}"
+    status_code: 200
+  when: netbox_sot_awx_group_id_effective | int not in (netbox_sot_awx_user_group_ids | list)
+
+- name: Ensure LibreNMS service user exists when enabled
+  when: netbox_sot_librenms_enabled | bool
+  block:
+    - name: Lookup LibreNMS service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/?username={{ netbox_sot_librenms_user | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_librenms_user_lookup
+
+    - name: Create LibreNMS service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          username: "{{ netbox_sot_librenms_user }}"
+          is_active: true
+          password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+          groups:
+            - "{{ netbox_sot_librenms_group_id }}"
+        status_code: 201
+      when: netbox_sot_librenms_user_lookup.json.count | int == 0
+      no_log: true
+      register: netbox_sot_librenms_user_created
+
+    - name: Set LibreNMS user id
+      ansible.builtin.set_fact:
+        netbox_sot_librenms_user_id: >-
+          {{ (netbox_sot_librenms_user_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_librenms_user_created.json.id) }}
+
+    - name: Fetch LibreNMS service user details
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_librenms_user_id }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_librenms_user_detail
+
+    - name: Set LibreNMS user group ids
+      ansible.builtin.set_fact:
+        netbox_sot_librenms_user_group_ids: "{{ group_ids | unique | list }}"
+      vars:
+        groups: "{{ netbox_sot_librenms_user_detail.json.groups | default([]) }}"
+        group_ids: >-
+          {{ (groups | select('mapping') | map(attribute='id') | list)
+             + (groups | select('number') | list) }}
+
+    - name: Ensure LibreNMS user is in LibreNMS group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_librenms_user_id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          groups: >-
+            {{ netbox_sot_librenms_user_group_ids
+               | union([netbox_sot_librenms_group_id | int]) }}
+        status_code: 200
+      when: netbox_sot_librenms_group_id | int not in netbox_sot_librenms_user_group_ids
+
+# ── DMF CMS service account: group, permissions, user (Option C) ──────────
+# netbox-sot owns the NetBox permission model for dmf-cms-svc.
+# The 698 playbook mints/persists the API token for this user.
+- name: Ensure DMF CMS service account NetBox access
+  when: cms_netbox_enabled | bool
+  block:
+    # ── Group ──
+    - name: Lookup CMS group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/?name={{ cms_netbox_group | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_cms_group_lookup
+
+    - name: Create CMS group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        body_format: json
+        body:
+          name: "{{ cms_netbox_group }}"
+          description: "DMF CMS read-only access"
+        status_code: 201
+      when: netbox_sot_cms_group_lookup.json.count | int == 0
+      register: netbox_sot_cms_group_created
+
+    - name: Set CMS group id
+      ansible.builtin.set_fact:
+        netbox_sot_cms_group_id: >-
+          {{ (netbox_sot_cms_group_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_cms_group_created.json.id) }}
+
+    # ── ObjectPermissions (one per cms_netbox_permissions entry) ──
+    - name: Set CMS object permission commands
+      ansible.builtin.set_fact:
+        netbox_sot_cms_permission_cmds: >-
+          {{ netbox_sot_cms_permission_cmds | default({})
+             | combine({ item.name: cmd }) }}
+      loop: "{{ cms_netbox_permissions }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }}"
+      vars:
+        perm_name: "{{ item.name }}"
+        perm_desc: "DMF CMS {{ item.name }} access"
+        cmd: |-
+          cat > /tmp/nbs-perm-cms-{{ item.name | replace('-', '_') }}.py << 'PY'
+          import json
+          from django.contrib.contenttypes.models import ContentType
+          from users.models import ObjectPermission, Group
+
+          perm_name = "{{ perm_name | replace('\"', '\\\"') }}"
+          perm_desc = "{{ perm_desc | replace('\"', '\\\"') }}"
+          actions = {{ item.actions | to_json }}
+          object_types = {{ item.object_types | to_json }}
+          group_name = "{{ cms_netbox_group | replace('\"', '\\\"') }}"
+
+          cts = []
+          missing = []
+          for entry in object_types:
+              app, model = entry.split('.', 1)
+              ct = ContentType.objects.filter(app_label=app, model=model).first()
+              if ct:
+                  cts.append(ct)
+              else:
+                  missing.append(entry)
+          if missing:
+              raise SystemExit("Missing content types: " + ", ".join(missing))
+
+          perm = ObjectPermission.objects.filter(name=perm_name).first()
+          if not perm:
+              perm = ObjectPermission.objects.create(
+                  name=perm_name,
+                  description=perm_desc,
+                  actions=actions,
+              )
+          else:
+              perm.description = perm_desc
+              perm.actions = actions
+              perm.save()
+          perm.object_types.set(cts)
+
+          group = Group.objects.get(name=group_name)
+          perm.groups.set([group])
+          print(perm.id)
+          PY
+          /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-cms-{{ item.name | replace('-', '_') }}.py
+
+    - name: Apply CMS object permissions via NetBox pod
+      ansible.builtin.command:
+        argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_cms_permission_cmds[item.name]] }}"
+      loop: "{{ cms_netbox_permissions }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }}"
+      register: netbox_sot_cms_permissions_applied
+      changed_when: false
+
+    # ── User lookup/create + group assignment ──
+    - name: Lookup CMS service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/?username={{ cms_netbox_username | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_cms_user_lookup
+
+    - name: Create CMS service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          username: "{{ cms_netbox_username }}"
+          is_active: true
+          password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+          groups:
+            - "{{ netbox_sot_cms_group_id }}"
+        status_code: 201
+      when: netbox_sot_cms_user_lookup.json.count | int == 0
+      no_log: true
+      register: netbox_sot_cms_user_created
+
+    - name: Set CMS user id
+      ansible.builtin.set_fact:
+        netbox_sot_cms_user_id: >-
+          {{ (netbox_sot_cms_user_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_cms_user_created.json.id) }}
+
+    - name: Fetch CMS service user details
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_cms_user_id }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_cms_user_detail
+
+    - name: Set CMS user group ids
+      ansible.builtin.set_fact:
+        netbox_sot_cms_user_group_ids: "{{ group_ids | unique | list }}"
+      vars:
+        groups: "{{ netbox_sot_cms_user_detail.json.groups | default([]) }}"
+        group_ids: >-
+          {{ (groups | select('mapping') | map(attribute='id') | list)
+             + (groups | select('number') | list) }}
+
+    - name: Ensure CMS user is in CMS group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_cms_user_id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          groups: "{{ netbox_sot_cms_user_group_ids | union([netbox_sot_cms_group_id | int]) }}"
+        status_code: 200
+      when: netbox_sot_cms_group_id | int not in (netbox_sot_cms_user_group_ids | list)
+
+# ── DMF catalog writer service account: group, scoped perms, user (ADR-0032) ─
+# netbox-sot owns the NetBox permission model for dmf-catalog-svc. The token is
+# minted/persisted below alongside the other service tokens. Scope is limited
+# to ipam.service (view/add/change) + extras.tag (view/add) — see
+# netbox_sot_catalog_permissions. NOT a superuser; replaces the launcher's
+# former use of the admin token (ADR-0028 C3 violation).
+- name: Ensure DMF catalog writer service account NetBox access
+  when: netbox_sot_catalog_writer_enabled | bool
+  block:
+    # ── Group ──
+    - name: Lookup catalog writer group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/?name={{ netbox_sot_catalog_group | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_catalog_group_lookup
+
+    - name: Create catalog writer group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        body_format: json
+        body:
+          name: "{{ netbox_sot_catalog_group }}"
+          description: "DMF catalog launcher scoped writer access"
+        status_code: 201
+      when: netbox_sot_catalog_group_lookup.json.count | int == 0
+      register: netbox_sot_catalog_group_created
+
+    - name: Set catalog writer group id
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_group_id: >-
+          {{ (netbox_sot_catalog_group_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_catalog_group_created.json.id) }}
+
+    # ── ObjectPermissions (one per netbox_sot_catalog_permissions entry) ──
+    - name: Set catalog writer object permission commands
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_permission_cmds: >-
+          {{ netbox_sot_catalog_permission_cmds | default({})
+             | combine({ item.name: cmd }) }}
+      loop: "{{ netbox_sot_catalog_permissions }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }}"
+      vars:
+        perm_name: "{{ item.name }}"
+        perm_desc: "DMF catalog {{ item.name }} access"
+        cmd: |-
+          cat > /tmp/nbs-perm-catalog-{{ item.name | replace('-', '_') }}.py << 'PY'
+          import json
+          from django.contrib.contenttypes.models import ContentType
+          from users.models import ObjectPermission, Group
+
+          perm_name = "{{ perm_name | replace('\"', '\\\"') }}"
+          perm_desc = "{{ perm_desc | replace('\"', '\\\"') }}"
+          actions = {{ item.actions | to_json }}
+          object_types = {{ item.object_types | to_json }}
+          group_name = "{{ netbox_sot_catalog_group | replace('\"', '\\\"') }}"
+
+          cts = []
+          missing = []
+          for entry in object_types:
+              app, model = entry.split('.', 1)
+              ct = ContentType.objects.filter(app_label=app, model=model).first()
+              if ct:
+                  cts.append(ct)
+              else:
+                  missing.append(entry)
+          if missing:
+              raise SystemExit("Missing content types: " + ", ".join(missing))
+
+          perm = ObjectPermission.objects.filter(name=perm_name).first()
+          if not perm:
+              perm = ObjectPermission.objects.create(
+                  name=perm_name,
+                  description=perm_desc,
+                  actions=actions,
+              )
+          else:
+              perm.description = perm_desc
+              perm.actions = actions
+              perm.save()
+          perm.object_types.set(cts)
+
+          group = Group.objects.get(name=group_name)
+          perm.groups.set([group])
+          print(perm.id)
+          PY
+          /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-catalog-{{ item.name | replace('-', '_') }}.py
+
+    - name: Apply catalog writer object permissions via NetBox pod
+      ansible.builtin.command:
+        argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_catalog_permission_cmds[item.name]] }}"
+      loop: "{{ netbox_sot_catalog_permissions }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }}"
+      register: netbox_sot_catalog_permissions_applied
+      changed_when: false
+
+    # ── User lookup/create + group assignment ──
+    - name: Lookup catalog writer service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/?username={{ netbox_sot_catalog_username | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_catalog_user_lookup
+
+    - name: Create catalog writer service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          username: "{{ netbox_sot_catalog_username }}"
+          is_active: true
+          password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+          groups:
+            - "{{ netbox_sot_catalog_group_id }}"
+        status_code: 201
+      when: netbox_sot_catalog_user_lookup.json.count | int == 0
+      no_log: true
+      register: netbox_sot_catalog_user_created
+
+    - name: Set catalog writer user id
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_user_id: >-
+          {{ (netbox_sot_catalog_user_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_catalog_user_created.json.id) }}
+
+    - name: Fetch catalog writer service user details
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_catalog_user_id }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_catalog_user_detail
+
+    - name: Set catalog writer user group ids
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_user_group_ids: "{{ group_ids | unique | list }}"
+      vars:
+        groups: "{{ netbox_sot_catalog_user_detail.json.groups | default([]) }}"
+        group_ids: >-
+          {{ (groups | select('mapping') | map(attribute='id') | list)
+             + (groups | select('number') | list) }}
+
+    - name: Ensure catalog writer user is in catalog writer group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_catalog_user_id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          groups: "{{ netbox_sot_catalog_user_group_ids | union([netbox_sot_catalog_group_id | int]) }}"
+        status_code: 200
+      when: netbox_sot_catalog_group_id | int not in (netbox_sot_catalog_user_group_ids | list)
+
+# ── AWX token idempotency gate ──────────────────────────────────────────────
+# Reuse the OpenBao-persisted AWX inventory-source token when NetBox still has
+# the matching "AWX inventory source" token (ORM). A standalone 691 re-run that
+# rotated this token previously went stale on the AWX NetBox inventory-source
+# credential, 401'd the inventory sync, and cascaded to the catalog teardown.
+- name: Build NetBox AWX token existence-check command
+  ansible.builtin.set_fact:
+    netbox_sot_awx_token_check_cmd: |-
+      cat > /tmp/nbs-token-awx-check.py << 'PY'
+      from users.models import Token, User
+      try:
+          user = User.objects.get(username="{{ netbox_sot_awx_user | replace('"', '\\"') }}")
+          exists = Token.objects.filter(user=user, description="AWX inventory source").exists()
+      except User.DoesNotExist:
+          exists = False
+      print("1" if exists else "0")
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-awx-check.py | tail -n 1
+  when:
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_awx_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.netbox_awx_token | default('')) | length > 0
+
+- name: Check NetBox for an existing AWX token (ORM)
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_awx_token_check_cmd] }}"
+  register: _netbox_sot_awx_nb_token_check
+  changed_when: false
+  when:
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_awx_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.netbox_awx_token | default('')) | length > 0
+
+- name: Reuse existing AWX token from OpenBao (no rotation)
+  ansible.builtin.set_fact:
+    netbox_sot_awx_token_effective: "{{ _netbox_sot_persisted_tokens.netbox_awx_token }}"
+    _netbox_sot_awx_token_reused: true
+  no_log: true
+  when:
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_awx_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.netbox_awx_token | default('')) | length > 0
+    - (_netbox_sot_awx_nb_token_check.stdout | default('0') | trim) == "1"
+
+- name: Create AWX token via NetBox pod
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_awx_token_cmd] }}"
+  register: netbox_sot_awx_token_created
+  changed_when: false
+  when:
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_awx_token_effective | length == 0
+  no_log: true
+
+- name: Set AWX token from pod output
+  ansible.builtin.set_fact:
+    netbox_sot_awx_token_effective: "{{ netbox_sot_awx_token_created.stdout | default('') | trim }}"
+  when:
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_awx_token_effective | length == 0
+  no_log: true
+
+- name: Ensure LibreNMS service token exists when enabled
+  when: netbox_sot_librenms_enabled | bool
+  block:
+    # ── LibreNMS token idempotency gate ─────────────────────────────────────
+    # Reuse the OpenBao-persisted LibreNMS token when NetBox still has the
+    # matching "LibreNMS discovery sync" token (ORM); otherwise mint below.
+    - name: Build NetBox LibreNMS token existence-check command
+      ansible.builtin.set_fact:
+        netbox_sot_librenms_token_check_cmd: |-
+          cat > /tmp/nbs-token-librenms-check.py << 'PY'
+          from users.models import Token, User
+          try:
+              user = User.objects.get(username="{{ netbox_sot_librenms_user | replace('"', '\\"') }}")
+              exists = Token.objects.filter(user=user, description="LibreNMS discovery sync").exists()
+          except User.DoesNotExist:
+              exists = False
+          print("1" if exists else "0")
+          PY
+          /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-librenms-check.py | tail -n 1
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_persist_to_openbao | bool
+        - netbox_sot_librenms_token_effective | length == 0
+        - (_netbox_sot_persisted_tokens.netbox_librenms_token | default('')) | length > 0
+
+    - name: Check NetBox for an existing LibreNMS token (ORM)
+      ansible.builtin.command:
+        argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_librenms_token_check_cmd] }}"
+      register: _netbox_sot_librenms_nb_token_check
+      changed_when: false
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_persist_to_openbao | bool
+        - netbox_sot_librenms_token_effective | length == 0
+        - (_netbox_sot_persisted_tokens.netbox_librenms_token | default('')) | length > 0
+
+    - name: Reuse existing LibreNMS token from OpenBao (no rotation)
+      ansible.builtin.set_fact:
+        netbox_sot_librenms_token_effective: "{{ _netbox_sot_persisted_tokens.netbox_librenms_token }}"
+        _netbox_sot_librenms_token_reused: true
+      no_log: true
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_persist_to_openbao | bool
+        - netbox_sot_librenms_token_effective | length == 0
+        - (_netbox_sot_persisted_tokens.netbox_librenms_token | default('')) | length > 0
+        - (_netbox_sot_librenms_nb_token_check.stdout | default('0') | trim) == "1"
+
+    - name: Create LibreNMS token via NetBox pod
+      ansible.builtin.command:
+        argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_librenms_token_cmd] }}"
+      register: netbox_sot_librenms_token_created
+      changed_when: false
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_librenms_token_effective | length == 0
+      no_log: true
+
+    - name: Set LibreNMS token from pod output
+      ansible.builtin.set_fact:
+        netbox_sot_librenms_token_effective: "{{ netbox_sot_librenms_token_created.stdout | default('') | trim }}"
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_librenms_token_effective | length == 0
+      no_log: true
+
+# ── Catalog writer token idempotency gate (ADR-0032 follow-up) ──────────────
+# Mint-if-absent, mirroring 698-cms-netbox-forgejo-tokens.yml. A standalone
+# 691 re-run must NOT rotate a valid catalog token: the old mint command
+# delete+recreated it on every run, silently invalidating the value already
+# persisted in OpenBao + wired into the AWX catalog JT (forcing a 693 re-run).
+#
+# NetBox only returns the full token at CREATION (the DB stores only the key),
+# so an existing token's value cannot be re-derived from NetBox — reuse MUST
+# come from OpenBao. We reuse (and skip the delete+recreate) iff BOTH hold:
+#   * OpenBao secret/apps/netbox/runtime already has a non-empty
+#     netbox_catalog_token, AND
+#   * NetBox still has a "DMF catalog writer" token for the catalog user (ORM).
+# Otherwise we fall through to mint + persist as before (first run, lost
+# OpenBao value, or a deleted NetBox token — recovery path).
+#
+# This only pre-populates netbox_sot_catalog_token_effective so the existing
+# "length == 0" mint gate below skips. The downstream catalog `kv patch` still
+# runs to write/re-assert netbox_catalog_token (the admin/awx/librenms persist
+# does not include it) — but with the unchanged reused value, so it is a no-op
+# in content, not a rotation. (The admin/awx/librenms persist is now a `kv patch`
+# on re-runs too, so it no longer drops sibling keys like netbox_catalog_token
+# or cms_api_token.)
+- name: Read existing catalog writer token from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ netbox_sot_runtime_secret_path | quote }}'
+  register: _netbox_sot_catalog_openbao_raw
+  changed_when: false
+  failed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_sot_openbao_client_token }}"
+  no_log: true
+  when:
+    - netbox_sot_catalog_writer_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_catalog_token_effective | length == 0
+
+- name: Parse existing catalog writer token from OpenBao
+  ansible.builtin.set_fact:
+    _netbox_sot_catalog_openbao_token: >-
+      {{
+        (_netbox_sot_catalog_openbao_raw.stdout | from_json).data.data.netbox_catalog_token | default('')
+        if (_netbox_sot_catalog_openbao_raw.rc | default(1)) == 0
+        and (_netbox_sot_catalog_openbao_raw.stdout | default('') | length) > 0
+        else ''
+      }}
+  no_log: true
+  when:
+    - netbox_sot_catalog_writer_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_catalog_token_effective | length == 0
+
+- name: Build NetBox catalog writer token existence-check command
+  ansible.builtin.set_fact:
+    netbox_sot_catalog_token_check_cmd: |-
+      cat > /tmp/nbs-token-catalog-check.py << 'PY'
+      from users.models import Token, User
+      try:
+          user = User.objects.get(username="{{ netbox_sot_catalog_username | replace('"', '\\"') }}")
+          exists = Token.objects.filter(user=user, description="DMF catalog writer").exists()
+      except User.DoesNotExist:
+          exists = False
+      print("1" if exists else "0")
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-catalog-check.py | tail -n 1
+  when:
+    - netbox_sot_catalog_writer_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_catalog_token_effective | length == 0
+    - _netbox_sot_catalog_openbao_token | default('') | length > 0
+
+- name: Check NetBox for an existing catalog writer token (ORM)
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_catalog_token_check_cmd] }}"
+  register: _netbox_sot_catalog_nb_token_check
+  changed_when: false
+  when:
+    - netbox_sot_catalog_writer_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_catalog_token_effective | length == 0
+    - _netbox_sot_catalog_openbao_token | default('') | length > 0
+
+- name: Reuse existing catalog writer token from OpenBao (no rotation)
+  ansible.builtin.set_fact:
+    netbox_sot_catalog_token_effective: "{{ _netbox_sot_catalog_openbao_token }}"
+    _netbox_sot_catalog_token_reused: true
+  no_log: true
+  when:
+    - netbox_sot_catalog_writer_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_catalog_token_effective | length == 0
+    - _netbox_sot_catalog_openbao_token | default('') | length > 0
+    - (_netbox_sot_catalog_nb_token_check.stdout | default('0') | trim) == "1"
+
+- name: Report catalog writer token decision
+  ansible.builtin.debug:
+    msg: >-
+      DMF catalog writer token:
+      {{ 'REUSED from OpenBao (no rotation)'
+         if _netbox_sot_catalog_token_reused | default(false) | bool
+         else 'will be minted (no valid existing token found)' }}
+  when:
+    - netbox_sot_catalog_writer_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+
+- name: Ensure catalog writer service token exists when enabled
+  when: netbox_sot_catalog_writer_enabled | bool
+  block:
+    - name: Create catalog writer token via NetBox pod
+      ansible.builtin.command:
+        argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_catalog_token_cmd] }}"
+      register: netbox_sot_catalog_token_created
+      changed_when: false
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_catalog_token_effective | length == 0
+      no_log: true
+
+    - name: Set catalog writer token from pod output
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_token_effective: "{{ netbox_sot_catalog_token_created.stdout | default('') | trim }}"
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_catalog_token_effective | length == 0
+      no_log: true
+
+- name: Build NetBox PromSD token existence-check command
+  ansible.builtin.set_fact:
+    netbox_sot_promsd_token_check_cmd: |-
+      cat > /tmp/nbs-token-promsd-check.py << 'PY'
+      from users.models import Token, User
+      try:
+          user = User.objects.get(username="{{ netbox_sot_promsd_username | replace('"', '\\"') }}")
+          exists = Token.objects.filter(user=user, description="{{ netbox_sot_promsd_token_name | replace('"', '\\"') }}").exists()
+      except User.DoesNotExist:
+          exists = False
+      print("1" if exists else "0")
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-promsd-check.py | tail -n 1
+  when:
+    - netbox_sot_promsd_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_promsd_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.promsd_api_token | default('')) | length > 0
+
+- name: Check NetBox for an existing PromSD token (ORM)
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_promsd_token_check_cmd] }}"
+  register: _netbox_sot_promsd_nb_token_check
+  changed_when: false
+  when:
+    - netbox_sot_promsd_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_promsd_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.promsd_api_token | default('')) | length > 0
+
+- name: Reuse existing PromSD token from OpenBao (no rotation)
+  ansible.builtin.set_fact:
+    netbox_sot_promsd_token_effective: "{{ _netbox_sot_persisted_tokens.promsd_api_token }}"
+    _netbox_sot_promsd_token_reused: true
+  no_log: true
+  when:
+    - netbox_sot_promsd_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_promsd_token_effective | length == 0
+    - (_netbox_sot_persisted_tokens.promsd_api_token | default('')) | length > 0
+    - (_netbox_sot_promsd_nb_token_check.stdout | default('0') | trim) == "1"
+
+- name: Create PromSD token via NetBox pod
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_promsd_token_cmd] }}"
+  register: netbox_sot_promsd_token_created
+  changed_when: false
+  when:
+    - netbox_sot_promsd_enabled | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_promsd_token_effective | length == 0
+  no_log: true
+
+- name: Set PromSD token from pod output
+  ansible.builtin.set_fact:
+    netbox_sot_promsd_token_effective: "{{ netbox_sot_promsd_token_created.stdout | default('') | trim }}"
+  when:
+    - netbox_sot_promsd_enabled | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_promsd_token_effective | length == 0
+  no_log: true
+
+- name: Set NetBox vault token items
+  ansible.builtin.set_fact:
+    netbox_sot_vault_token_items:
+      - key: vault_netbox_admin_token
+        value: "{{ netbox_sot_admin_token_effective }}"
+      - key: vault_netbox_awx_token
+        value: "{{ netbox_sot_awx_token_effective }}"
+  no_log: true
+
+- name: Add LibreNMS token to NetBox vault token items
+  ansible.builtin.set_fact:
+    netbox_sot_vault_token_items: >-
+      {{ netbox_sot_vault_token_items
+         + [{'key': 'vault_netbox_librenms_token',
+             'value': netbox_sot_librenms_token_effective}] }}
+  when: netbox_sot_librenms_enabled | bool
+  no_log: true
+
+- name: Add catalog writer token to NetBox vault token items
+  ansible.builtin.set_fact:
+    netbox_sot_vault_token_items: >-
+      {{ netbox_sot_vault_token_items
+         + [{'key': 'vault_netbox_catalog_token',
+             'value': netbox_sot_catalog_token_effective}] }}
+  when: netbox_sot_catalog_writer_enabled | bool
+  no_log: true
+
+- name: Add PromSD token to NetBox vault token items
+  ansible.builtin.set_fact:
+    netbox_sot_vault_token_items: >-
+      {{ netbox_sot_vault_token_items
+         + [{'key': 'vault_netbox_promsd_token',
+             'value': netbox_sot_promsd_token_effective}] }}
+  when: netbox_sot_promsd_enabled | bool
+  no_log: true
+
+- name: Set NetBox OpenBao secret patch
+  ansible.builtin.set_fact:
+    netbox_sot_openbao_secret_patch:
+      netbox_admin_token: "{{ netbox_sot_admin_token_effective }}"
+      netbox_awx_token: "{{ netbox_sot_awx_token_effective }}"
+  no_log: true
+
+- name: Add PromSD token to NetBox OpenBao secret patch
+  ansible.builtin.set_fact:
+    netbox_sot_openbao_secret_patch: >-
+      {{ netbox_sot_openbao_secret_patch
+         | combine({'promsd_api_token': netbox_sot_promsd_token_effective}) }}
+  when: netbox_sot_promsd_enabled | bool
+  no_log: true
+
+- name: Add LibreNMS token to NetBox OpenBao secret patch
+  ansible.builtin.set_fact:
+    netbox_sot_openbao_secret_patch: >-
+      {{ netbox_sot_openbao_secret_patch
+         | combine({'netbox_librenms_token': netbox_sot_librenms_token_effective}) }}
+  when: netbox_sot_librenms_enabled | bool
+  no_log: true
+
+- name: Create temp file for NetBox vault edits
+  ansible.builtin.tempfile:
+    state: file
+    suffix: .yml
+  register: netbox_sot_vault_tmp
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Read vault.yml header
+  ansible.builtin.slurp:
+    path: "{{ netbox_sot_vault_path }}"
+  register: netbox_sot_vault_slurp
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Set vault encrypted flag
+  ansible.builtin.set_fact:
+    netbox_sot_vault_encrypted: "{{ (netbox_sot_vault_slurp.content | b64decode).startswith('$ANSIBLE_VAULT') }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Decrypt vault.yml to temp file
+  ansible.builtin.command: >
+    ansible-vault decrypt --vault-password-file {{ netbox_sot_vault_password_file_effective }}
+    --output {{ netbox_sot_vault_tmp.path }} {{ netbox_sot_vault_path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - not netbox_sot_persist_to_openbao | bool
+    - netbox_sot_vault_encrypted
+
+- name: Copy vault.yml to temp file
+  ansible.builtin.copy:
+    src: "{{ netbox_sot_vault_path }}"
+    dest: "{{ netbox_sot_vault_tmp.path }}"
+    mode: "0600"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - not netbox_sot_persist_to_openbao | bool
+    - not netbox_sot_vault_encrypted
+  no_log: true
+
+- name: Update NetBox tokens in vault
+  ansible.builtin.lineinfile:
+    path: "{{ netbox_sot_vault_tmp.path }}"
+    regexp: "^{{ item.key }}:"
+    line: "{{ item.key }}: \"{{ item.value }}\""
+    create: true
+  loop: "{{ netbox_sot_vault_token_items }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Encrypt updated vault.yml
+  ansible.builtin.command: >
+    ansible-vault encrypt --vault-password-file {{ netbox_sot_vault_password_file_effective }} {{ netbox_sot_vault_tmp.path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - not netbox_sot_persist_to_openbao | bool
+    - netbox_sot_vault_encrypted
+  no_log: true
+
+- name: Replace vault.yml with updated version
+  ansible.builtin.command: >
+    cp -f {{ netbox_sot_vault_tmp.path }} {{ netbox_sot_vault_path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Cleanup temp vault file
+  ansible.builtin.file:
+    path: "{{ netbox_sot_vault_tmp.path }}"
+    state: absent
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not netbox_sot_persist_to_openbao | bool
+
+- name: Read current NetBox integration secret from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ netbox_sot_runtime_secret_path | quote }}'
+  register: _netbox_sot_runtime_secret_raw
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when: netbox_sot_persist_to_openbao | bool
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_sot_openbao_client_token }}"
+
+- name: Parse current NetBox integration secret from OpenBao
+  ansible.builtin.set_fact:
+    _netbox_sot_runtime_secret_data: >-
+      {{
+        (
+          _netbox_sot_runtime_secret_raw.stdout | default('{}') | from_json
+        ).data.data | default({})
+      }}
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - _netbox_sot_runtime_secret_raw.rc == 0
+    - _netbox_sot_runtime_secret_raw.stdout | default('') | length > 0
+  no_log: true
+
+- name: Default NetBox integration secret from OpenBao
+  ansible.builtin.set_fact:
+    _netbox_sot_runtime_secret_data: {}
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - _netbox_sot_runtime_secret_data is not defined
+  no_log: true
+
+# `bao kv patch` merges (preserves sibling keys like cms_api_token written by
+# 698 and netbox_catalog_token patched below) but requires the secret to already
+# exist. On a true first run the runtime secret is absent, so fall back to
+# `bao kv put` to create it; every subsequent run patches.
+- name: Determine NetBox runtime secret existence (put vs patch)
+  ansible.builtin.set_fact:
+    _netbox_sot_runtime_secret_exists: >-
+      {{ (_netbox_sot_runtime_secret_raw.rc | default(1)) == 0
+         and (_netbox_sot_runtime_secret_raw.stdout | default('') | length) > 0 }}
+  when: netbox_sot_persist_to_openbao | bool
+
+- name: Persist NetBox integration secrets to in-cluster OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      {% if netbox_sot_librenms_enabled | bool %}
+      printf '%s\n%s\n%s\n%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$NETBOX_ADMIN_TOKEN"
+      "$NETBOX_AWX_TOKEN"
+      "$NETBOX_PROMSD_TOKEN"
+      "$NETBOX_LIBRENMS_TOKEN"
+      {% else %}
+      printf '%s\n%s\n%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$NETBOX_ADMIN_TOKEN"
+      "$NETBOX_AWX_TOKEN"
+      "$NETBOX_PROMSD_TOKEN"
+      {% endif %} |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r ADMIN_TOKEN;
+      IFS= read -r AWX_TOKEN;
+      IFS= read -r PROMSD_TOKEN;
+      {% if netbox_sot_librenms_enabled | bool %}
+      IFS= read -r LIBRENMS_TOKEN;
+      {% endif %}
+      export BAO_TOKEN;
+      {% set _bao_kv_verb = 'patch' if _netbox_sot_runtime_secret_exists | bool else 'put' %}
+      {% if netbox_sot_librenms_enabled | bool %}
+      bao kv {{ _bao_kv_verb }} {{ netbox_sot_runtime_secret_path | quote }}
+      netbox_admin_token="$ADMIN_TOKEN"
+      netbox_awx_token="$AWX_TOKEN"
+      promsd_api_token="$PROMSD_TOKEN"
+      netbox_librenms_token="$LIBRENMS_TOKEN"
+      {% else %}
+      bao kv {{ _bao_kv_verb }} {{ netbox_sot_runtime_secret_path | quote }}
+      netbox_admin_token="$ADMIN_TOKEN"
+      netbox_awx_token="$AWX_TOKEN"
+      promsd_api_token="$PROMSD_TOKEN"
+      {% endif %}'
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_sot_openbao_client_token }}"
+    NETBOX_ADMIN_TOKEN: "{{ netbox_sot_admin_token_effective }}"
+    NETBOX_AWX_TOKEN: "{{ netbox_sot_awx_token_effective }}"
+    NETBOX_PROMSD_TOKEN: "{{ netbox_sot_promsd_token_effective }}"
+    NETBOX_LIBRENMS_TOKEN: "{{ netbox_sot_librenms_token_effective | default('') }}"
+  no_log: true
+  when: netbox_sot_persist_to_openbao | bool
+
+# Merge the scoped catalog writer token into the same runtime secret (ADR-0032).
+# kv patch (not put) so the admin/awx/librenms fields written above survive —
+# mirrors how 698 patches cms_api_token into secret/apps/netbox/runtime.
+- name: Persist NetBox catalog writer token to in-cluster OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$NETBOX_CATALOG_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r CATALOG_TOKEN;
+      export BAO_TOKEN;
+      bao kv patch {{ netbox_sot_runtime_secret_path | quote }}
+      netbox_catalog_token="$CATALOG_TOKEN"'
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_sot_openbao_client_token }}"
+    NETBOX_CATALOG_TOKEN: "{{ netbox_sot_catalog_token_effective }}"
+  changed_when: false
+  no_log: true
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_catalog_writer_enabled | bool
+
+# ── NetBox external datasource (git-backed from Forgejo) ────────────────────
+# Uses the core Data Sources model to sync files from a private Forgejo repo
+# into NetBox as DataFile objects. Supports config contexts, Jinja2 templates,
+# export templates, policy data, and machine-generated inputs.
+# https://docs.netbox.dev/en/stable/models/core/datasource/
+# ---------------------------------------------------------------------------
+
+# ── Token resolution (OpenBao primary, ansible-vault fallback) ─────────────
+
+- name: Read Forgejo datasource token from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json secret/apps/forgejo/runtime'
+  register: _netbox_sot_ds_forgejo_token_raw
+  changed_when: false
+  failed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_sot_openbao_client_token | default('') }}"
+  no_log: true
+  when:
+    - netbox_sot_datasource_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+
+- name: Parse Forgejo datasource token from OpenBao
+  ansible.builtin.set_fact:
+    netbox_sot_forgejo_datasource_token: >-
+      {{
+        (_netbox_sot_ds_forgejo_token_raw.stdout | from_json).data.data.forgejo_svc_token
+        | default(netbox_sot_forgejo_datasource_token, true)
+      }}
+  when:
+    - netbox_sot_datasource_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - _netbox_sot_ds_forgejo_token_raw is defined
+    - _netbox_sot_ds_forgejo_token_raw.rc == 0
+    - (_netbox_sot_ds_forgejo_token_raw.stdout | default('') | trim | length) > 0
+  no_log: true
+
+# Issue 2 fix: fallback to ansible-vault when not using OpenBao
+- name: Fall back to ansible-vault for Forgejo datasource token
+  ansible.builtin.set_fact:
+    netbox_sot_forgejo_datasource_token: "{{ vault_forgejo_svc_token | default('') }}"
+  when:
+    - netbox_sot_datasource_enabled | bool
+    - not netbox_sot_persist_to_openbao | bool
+    - netbox_sot_forgejo_datasource_token | length == 0
+  no_log: true
+
+- name: Assert Forgejo datasource token is available
+  ansible.builtin.assert:
+    that:
+      - netbox_sot_forgejo_datasource_token | length > 0
+    fail_msg: >-
+      NetBox datasource requires a Forgejo token (netbox_sot_forgejo_datasource_token)
+      but none was found in OpenBao or vault. Run 692-forgejo-bootstrap.yml first
+      to create the forgejo-svc user and token.
+  when: netbox_sot_datasource_enabled | bool
+  no_log: true
+
+# ── Data Source create (idempotent) ─────────────────────────────────────────
+# Issue 1 fix: credentials go in parameters.username/password, NOT in
+# source_url. This keeps the token out of the NetBox DB and UI.
+# A separate PATCH task below handles token rotation.
+
+- name: Assemble NetBox datasource URL (internal cluster access)
+  ansible.builtin.set_fact:
+    netbox_sot_datasource_url: >-
+      {{
+        'http://' ~
+        (forgejo_internal_host | default('forgejo-http.forgejo.svc.cluster.local:3000', true)) ~
+        '/' ~ netbox_sot_forgejo_svc_user ~ '/netbox-data.git'
+      }}
+  when:
+    - netbox_sot_datasource_enabled | bool
+  no_log: false
+
+- name: Fetch existing NetBox data sources
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/core/data-sources/?limit=200"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    status_code: 200
+  register: netbox_sot_existing_datasources
+  when: netbox_sot_datasource_enabled | bool
+  no_log: true
+
+- name: Compute existing data source names
+  ansible.builtin.set_fact:
+    netbox_sot_existing_datasource_names: >-
+      {{ netbox_sot_existing_datasources.json.results | default([]) | map(attribute='name') | list }}
+  when: netbox_sot_datasource_enabled | bool
+  no_log: true
+
+- name: Create NetBox data source for Forgejo git repo
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/core/data-sources/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    body_format: json
+    body:
+      name: "{{ netbox_sot_datasource_name }}"
+      type: "{{ netbox_sot_datasource_type }}"
+      source_url: "{{ netbox_sot_datasource_url }}"
+      enabled: true
+      parameters:
+        branch: "{{ netbox_sot_datasource_branch }}"
+        ignore_rules: "{{ netbox_sot_datasource_ignore_rules }}"
+        username: "{{ netbox_sot_forgejo_svc_user }}"
+        password: "{{ netbox_sot_forgejo_datasource_token }}"
+      sync_interval: "{{ netbox_sot_datasource_sync_interval }}"
+    status_code: 201
+  register: netbox_sot_datasource_created
+  when:
+    - netbox_sot_datasource_enabled | bool
+    - netbox_sot_datasource_name not in netbox_sot_existing_datasource_names | default([])
+  no_log: true
+
+- name: Set data source ID from create response
+  ansible.builtin.set_fact:
+    netbox_sot_datasource_id: "{{ netbox_sot_datasource_created.json.id }}"
+  when:
+    - netbox_sot_datasource_enabled | bool
+    - netbox_sot_datasource_created is changed
+  no_log: true
+
+- name: Lookup existing data source ID by name
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/core/data-sources/?name={{ netbox_sot_datasource_name | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    return_content: true
+    status_code: 200
+  register: netbox_sot_datasource_lookup
+  when:
+    - netbox_sot_datasource_enabled | bool
+    - netbox_sot_datasource_id is not defined
+  no_log: true
+
+- name: Set data source ID from lookup
+  ansible.builtin.set_fact:
+    netbox_sot_datasource_id: >-
+      {{ (netbox_sot_datasource_lookup.json.results | default([]) | first | default({})).id }}
+  when:
+    - netbox_sot_datasource_enabled | bool
+    - netbox_sot_datasource_id is not defined
+    - netbox_sot_datasource_lookup.json.count | default(0) | int > 0
+  no_log: true
+
+- name: Assert data source ID was resolved
+  ansible.builtin.assert:
+    that:
+      - netbox_sot_datasource_id is defined
+      - netbox_sot_datasource_id | int > 0
+    fail_msg: >-
+      Could not resolve NetBox data source ID for '{{ netbox_sot_datasource_name }}'.
+      Check that the data source was created successfully.
+  when: netbox_sot_datasource_enabled | bool
+  no_log: true
+
+# ── PATCH parameters on every run (token rotation path) ─────────────────────
+# Issue 1 fix: this runs unconditionally so that when forgejo_svc_token is
+# rotated (e.g. by re-running 692-forgejo-bootstrap.yml), the Data Source
+# parameters are updated before the next sync.
+
+- name: PATCH NetBox data source parameters with current Forgejo token
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/core/data-sources/{{ netbox_sot_datasource_id }}/"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    body_format: json
+    body:
+      source_url: "{{ netbox_sot_datasource_url }}"
+      parameters:
+        branch: "{{ netbox_sot_datasource_branch }}"
+        ignore_rules: "{{ netbox_sot_datasource_ignore_rules }}"
+        username: "{{ netbox_sot_forgejo_svc_user }}"
+        password: "{{ netbox_sot_forgejo_datasource_token }}"
+    status_code: [200]
+  register: netbox_sot_datasource_patched
+  when:
+    - netbox_sot_datasource_enabled | bool
+    - netbox_sot_datasource_id is defined
+  no_log: true
+
+# ── Sync ────────────────────────────────────────────────────────────────────
+
+- name: Trigger initial sync of NetBox data source
+  ansible.builtin.uri:
+    url: "{{ netbox_sot_api_base }}/core/data-sources/{{ netbox_sot_datasource_id }}/sync/"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+    status_code: [200, 202]
+  register: netbox_sot_datasource_sync
+  when: netbox_sot_datasource_enabled | bool
+  no_log: true
+
+# ── Wait for sync (with block/rescue for sanitized diagnostics) ─────────────
+
+- block:
+    - name: Wait for data source sync to complete (poll)
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/core/data-sources/{{ netbox_sot_datasource_id }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+        timeout: 30
+      register: netbox_sot_datasource_status
+      until: >-
+        netbox_sot_datasource_status.json.status.value | default('') in ['completed', 'failed']
+      retries: 30
+      delay: 10
+      no_log: true
+
+    - name: Assert data source sync succeeded
+      ansible.builtin.assert:
+        that:
+          - netbox_sot_datasource_status.json.status.value | default('') == 'completed'
+        fail_msg: >-
+          NetBox data source sync failed. Status: {{ netbox_sot_datasource_status.json.status.value | default('unknown') }}
+          Check NetBox admin UI -> Core -> Data Sources -> {{ netbox_sot_datasource_name }} -> Last Sync.
+      no_log: true
+
+  rescue:
+    - name: Capture sanitized sync diagnostic (on failure)
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/core/data-sources/{{ netbox_sot_datasource_id }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+        timeout: 30
+      register: netbox_sot_sync_debug
+      no_log: true
+
+    - name: Print sanitized sync failure summary
+      ansible.builtin.debug:
+        msg:
+          - "FAILED: NetBox data source sync did not reach a terminal state."
+          - "  DS ID: {{ netbox_sot_datasource_id | default('unknown') }}"
+          - "  DS Name: {{ netbox_sot_datasource_name | default('unknown') }}"
+          - "  Source URL: {{ netbox_sot_datasource_url | default('unknown') }}"
+          - "  Status: {{ netbox_sot_sync_debug.json.status.value | default('(not captured)') }}"
+          - "  Last synced: {{ netbox_sot_sync_debug.json.last_synced | default('never') }}"
+          - "  Last sync error: {{ netbox_sot_sync_debug.json.last_sync_error | default('(none reported)') }}"
+          - "  DataFile count: {{ netbox_sot_sync_debug.json.datafile_count | default('unknown') }}"
+          - "  (parameters/credentials redacted)"
+          - "  Action: Check NetBox admin UI → Core → Data Sources → {{ netbox_sot_datasource_name }} → Last Sync"
+      no_log: false
+
+    - name: Fail after printing diagnostic
+      ansible.builtin.fail:
+        msg: >-
+          NetBox data source sync failed (see sanitized summary above).
+          Status was {{ netbox_sot_sync_debug.json.status.value | default('unknown') }},
+          last_sync_error = {{ netbox_sot_sync_debug.json.last_sync_error | default('none') }}.
+
+  when: netbox_sot_datasource_enabled | bool
+
+- name: Count synced DataFiles
+  ansible.builtin.debug:
+    msg: >-
+      Data source '{{ netbox_sot_datasource_name }}' synced successfully.
+      {{ netbox_sot_datasource_status.json.total_files | default('unknown') }} files imported.
+  when: netbox_sot_datasource_enabled | bool

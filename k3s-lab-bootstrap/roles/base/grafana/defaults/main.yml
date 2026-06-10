@@ -1,0 +1,41 @@
+---
+grafana_namespace: monitoring
+grafana_storage_size: 1Gi
+grafana_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+grafana_admin_password: "{{ vault_grafana_admin_password | default(vault_bootstrap_admin_password | mandatory) }}"
+grafana_helm_repo: https://grafana.github.io/helm-charts
+grafana_helm_chart_version: "8.0.0"
+grafana_pvc_wait_retries: 30
+grafana_pvc_wait_delay: 10
+grafana_oidc_enabled: true
+grafana_oidc_provider_name: Grafana
+grafana_oidc_secret_name: grafana-oauth
+grafana_oidc_scopes: "openid email profile groups"
+grafana_oidc_groups_attribute_path: groups
+grafana_oidc_admin_group: ops-admin
+grafana_oidc_allow_sign_up: true
+grafana_oidc_auto_login: true
+grafana_oidc_disable_login_form: true
+grafana_oidc_use_pkce: true
+
+# Exposure model — "host" (cloud lane default, FQDN + private ingress)
+# or "path" (airgapped/flypack, apex-path routing).
+grafana_exposure: host
+grafana_host: grafana.dmf.example.com
+grafana_path: /grafana
+grafana_ingress_class: traefik-private
+
+# Local-CA lane (sandbox / dmf_tls_mode==local-ca): Grafana's generic-OAuth
+# server-side token + userinfo exchange runs the Go HTTP client against the
+# Authentik public host, which presents the in-cluster DMF Local CA cert.
+# Without trust, login fails CERTIFICATE_VERIFY_FAILED (same class as the zot
+# and netbox CA-mount fixes). Mirror the zot pattern: publish dmf-local-ca
+# into the monitoring ns as a ConfigMap and mount ca.crt into the Grafana pod.
+# grafana/grafana is Alpine — the Go cert-dir scan is not guaranteed to match
+# Debian/Zot's; set SSL_CERT_FILE explicitly as the image-agnostic primary.
+# No-op on cloud/real-cert lanes.
+grafana_local_ca_trust_enabled: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
+grafana_local_ca_secret: dmf-local-ca
+grafana_local_ca_secret_namespace: cert-manager
+grafana_local_ca_configmap: dmf-local-ca
+grafana_local_ca_mount_path: /etc/ssl/certs/dmf-local-ca.crt

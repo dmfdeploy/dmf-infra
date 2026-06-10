@@ -1,0 +1,52 @@
+---
+# Re-mint the DMF bootstrap passkey invitation when the live Authentik DB
+# no longer holds the cached one (single-use consumed, expired, or wiped).
+#
+# Operator-helper entry point — invoked from
+# dmf-env/bin/get-passkey-enrollment-url.sh when the script detects the
+# cached `itoken` is gone from Authentik. ADR-0010 sanctioned: all state
+# mutation flows through bin/run-playbook.sh.
+#
+# Scope: just the invitation lifecycle + its OpenBao cache. Does NOT
+# re-apply blueprints, redeploy Helm, or touch the runtime secret. For the
+# comprehensive run, use 110-authentik.yml.
+
+- name: Ensure DMF bootstrap passkey invitation is fresh
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Establish OpenBao operator session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_mode: operator
+
+    - name: Gather Authentik bootstrap admin facts
+      ansible.builtin.include_role:
+        name: common/app-admin-facts
+      vars:
+        app_admin_app_name: authentik
+        app_admin_fact_prefix: authentik_admin
+        app_admin_secret_path: secret/apps/authentik/admin
+        app_admin_default_username: akadmin
+        app_admin_default_email: "akadmin@{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+        app_admin_expected_username: akadmin
+
+    - name: Gather Authentik break-glass user facts
+      ansible.builtin.include_role:
+        name: common/app-admin-facts
+      vars:
+        app_admin_app_name: authentik
+        app_admin_fact_prefix: authentik_breakglass
+        app_admin_secret_path: secret/apps/authentik/breakglass
+        app_admin_default_username: break-glass
+        app_admin_default_email: "break-glass@{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+        app_admin_expected_username: break-glass
+
+  tasks:
+    - name: Re-mint passkey invitation via the authentik role
+      ansible.builtin.include_role:
+        name: stack/operator/authentik
+        tasks_from: ensure_invitation.yml

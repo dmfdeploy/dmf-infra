@@ -1,0 +1,80 @@
+---
+# Establishes an OpenBao operator userpass session for Authentik bootstrap
+# writes. Sets the role-internal facts:
+#   _authentik_openbao_pod          — pod name to exec into
+#   _authentik_openbao_client_token — short-lived BAO_TOKEN
+#
+# Idempotent: includers that run this slice multiple times only pay the
+# discovery / login cost once per play if guarded with
+# `when: _authentik_openbao_client_token is not defined`.
+#
+# Carved out of main.yml so the operator-helper mini-playbook
+# (playbooks/vertical-security/111-authentik-passkey-ensure.yml) can reuse
+# the same session-establish logic without re-running the entire authentik
+# role. Single source of truth for the OpenBao auth dance.
+
+- name: Load OpenBao break-glass JSON from operator host
+  ansible.builtin.set_fact:
+    _authentik_breakglass: "{{ lookup('file', authentik_openbao_breakglass_file) | from_json }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Extract OpenBao operator credentials for Authentik bootstrap writes
+  ansible.builtin.set_fact:
+    _authentik_openbao_username: "{{ _authentik_breakglass.ops_admin_username | default('') }}"
+    _authentik_openbao_password: "{{ _authentik_breakglass.ops_admin_password | default('') }}"
+  no_log: true
+
+- name: Assert OpenBao operator credentials exist for Authentik bootstrap
+  ansible.builtin.assert:
+    that:
+      - _authentik_openbao_username | length > 0
+      - _authentik_openbao_password | length > 0
+    fail_msg: >-
+      No operator credentials found in {{ authentik_openbao_breakglass_file }}.
+      Authentik bootstrap now depends on the lab operator userpass identity.
+  no_log: true
+
+- name: Discover OpenBao pod for Authentik bootstrap writes
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ authentik_openbao_namespace }}"
+    label_selectors:
+      - "{{ authentik_openbao_pod_label_selector }}"
+  register: _authentik_openbao_pod_info
+
+- name: Assert OpenBao pod exists for Authentik bootstrap
+  ansible.builtin.assert:
+    that:
+      - _authentik_openbao_pod_info.resources | length > 0
+    fail_msg: >-
+      Could not find an OpenBao pod in namespace {{ authentik_openbao_namespace }}
+      with selector {{ authentik_openbao_pod_label_selector }}.
+
+- name: Set OpenBao pod fact for Authentik bootstrap
+  ansible.builtin.set_fact:
+    _authentik_openbao_pod: "{{ _authentik_openbao_pod_info.resources[0].metadata.name }}"
+
+- name: Log into OpenBao with operator userpass for Authentik bootstrap writes
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ authentik_openbao_namespace }}
+      exec -i {{ _authentik_openbao_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ _authentik_openbao_username }} password="$P"'
+  register: _authentik_openbao_login_raw
+  changed_when: false
+  environment:
+    OPENBAO_PASSWORD: "{{ _authentik_openbao_password }}"
+  no_log: true
+
+- name: Extract OpenBao client token for Authentik bootstrap writes
+  ansible.builtin.set_fact:
+    _authentik_openbao_client_token: "{{ (_authentik_openbao_login_raw.stdout | from_json).auth.client_token }}"
+  no_log: true

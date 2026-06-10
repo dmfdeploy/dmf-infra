@@ -1,0 +1,228 @@
+---
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ grafana_namespace }}"
+
+- name: Read Grafana OAuth client credentials from Authentik
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ authentik_namespace | default('authentik') }}"
+      - exec
+      - deploy/{{ authentik_release_name | default('authentik') }}-worker
+      - --
+      - ak
+      - shell
+      - -c
+      - >-
+        import json;
+        from authentik.providers.oauth2.models import OAuth2Provider;
+        provider = OAuth2Provider.objects.get(name="{{ grafana_oidc_provider_name }}");
+        print(json.dumps({"client_id": provider.client_id, "client_secret": provider.client_secret}))
+  register: grafana_oidc_provider_credentials
+  changed_when: false
+  no_log: true
+  when: grafana_oidc_enabled | bool
+
+- name: Parse Grafana OAuth client credentials
+  ansible.builtin.set_fact:
+    grafana_oidc_provider_credentials_parsed: "{{ grafana_oidc_provider_credentials.stdout_lines | last | from_json }}"
+  no_log: true
+  when: grafana_oidc_enabled | bool
+
+- name: Create Grafana OAuth secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ grafana_oidc_secret_name }}"
+        namespace: "{{ grafana_namespace }}"
+      type: Opaque
+      stringData:
+        GF_AUTH_GENERIC_OAUTH_ENABLED: "true"
+        GF_AUTH_GENERIC_OAUTH_NAME: Authentik
+        GF_AUTH_GENERIC_OAUTH_ALLOW_SIGN_UP: "{{ 'true' if grafana_oidc_allow_sign_up | bool else 'false' }}"
+        GF_AUTH_GENERIC_OAUTH_AUTO_LOGIN: "{{ 'true' if grafana_oidc_auto_login | bool else 'false' }}"
+        GF_AUTH_GENERIC_OAUTH_CLIENT_ID: "{{ grafana_oidc_provider_credentials_parsed.client_id }}"
+        GF_AUTH_GENERIC_OAUTH_CLIENT_SECRET: "{{ grafana_oidc_provider_credentials_parsed.client_secret }}"
+        GF_AUTH_GENERIC_OAUTH_SCOPES: "{{ grafana_oidc_scopes }}"
+        GF_AUTH_GENERIC_OAUTH_AUTH_URL: "https://{{ authentik_host }}/application/o/authorize/"
+        GF_AUTH_GENERIC_OAUTH_TOKEN_URL: "https://{{ authentik_host }}/application/o/token/"
+        GF_AUTH_GENERIC_OAUTH_API_URL: "https://{{ authentik_host }}/application/o/userinfo/"
+        GF_AUTH_GENERIC_OAUTH_USE_PKCE: "{{ 'true' if grafana_oidc_use_pkce | bool else 'false' }}"
+        GF_AUTH_DISABLE_LOGIN_FORM: "{{ 'true' if grafana_oidc_disable_login_form | bool else 'false' }}"
+        GF_AUTH_SIGNOUT_REDIRECT_URL: "https://{{ authentik_host }}/if/session/end/"
+        GF_AUTH_GENERIC_OAUTH_EMAIL_ATTRIBUTE_NAME: email
+        GF_AUTH_GENERIC_OAUTH_LOGIN_ATTRIBUTE_PATH: preferred_username
+        GF_AUTH_GENERIC_OAUTH_NAME_ATTRIBUTE_PATH: name
+        GF_AUTH_GENERIC_OAUTH_GROUPS_ATTRIBUTE_PATH: "{{ grafana_oidc_groups_attribute_path }}"
+        GF_AUTH_GENERIC_OAUTH_ROLE_ATTRIBUTE_PATH: "contains({{ grafana_oidc_groups_attribute_path }}[*], '{{ grafana_oidc_admin_group }}') && 'GrafanaAdmin' || 'Viewer'"
+        GF_AUTH_GENERIC_OAUTH_ALLOW_ASSIGN_GRAFANA_ADMIN: "true"
+  when: grafana_oidc_enabled | bool
+  no_log: true
+
+# Local-CA lane: publish the DMF Local CA public cert into the monitoring
+# namespace so Grafana can mount it; without it the Go OAuth client's
+# server-side token/userinfo exchange fails with x509 / CERTIFICATE_VERIFY_FAILED.
+# Mirrors zot + netbox; structured read (not command+jsonpath whose arg-splitting
+# drops the 'ca.crt' key).
+- name: Read local CA Secret from the cluster (local-CA lane)
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ grafana_local_ca_secret }}"
+    namespace: "{{ grafana_local_ca_secret_namespace }}"
+  register: _grafana_ca_secret
+  when: grafana_local_ca_trust_enabled | bool
+
+- name: Publish local CA cert into monitoring namespace (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ grafana_local_ca_configmap }}"
+        namespace: "{{ grafana_namespace }}"
+      data:
+        ca.crt: "{{ _grafana_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
+  when:
+    - grafana_local_ca_trust_enabled | bool
+    - _grafana_ca_secret.resources | default([]) | length > 0
+    - _grafana_ca_secret.resources[0].data['ca.crt'] | default('') | length > 0
+
+- name: Add grafana Helm repository
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: "{{ grafana_helm_repo }}"
+
+- name: Create custom dashboards ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    template: configmap-dashboards.yml.j2
+
+- name: Template Grafana Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/grafana-values.yml
+    mode: "0644"
+
+- name: Deploy Grafana via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: grafana
+    chart_ref: grafana/grafana
+    chart_version: "{{ grafana_helm_chart_version }}"
+    release_namespace: "{{ grafana_namespace }}"
+    create_namespace: true
+    values_files:
+      - /tmp/grafana-values.yml
+    wait: true
+    wait_timeout: 300s
+
+- name: Restart Grafana after OAuth secret refresh
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ grafana_namespace }}"
+      - rollout
+      - restart
+      - deployment/grafana
+  changed_when: true
+  when: grafana_oidc_enabled | bool
+
+- name: Wait for Grafana PVC to be bound
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: grafana
+    namespace: "{{ grafana_namespace }}"
+  register: grafana_pvc
+  until: grafana_pvc.resources | length > 0 and grafana_pvc.resources[0].status.phase == "Bound"
+  retries: "{{ grafana_pvc_wait_retries }}"
+  delay: "{{ grafana_pvc_wait_delay }}"
+
+# HTTP→HTTPS redirect is handled at the Traefik entrypoint (see base/ingress).
+# Delete-before-recreate clears any stale IngressRoutes from older runs.
+- name: Remove legacy Grafana IngressRoutes
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: IngressRoute
+    name: "{{ item }}"
+    namespace: "{{ grafana_namespace }}"
+  loop:
+    - grafana
+    - grafana-redirect
+
+- name: Create Grafana Host-based IngressRoute (private lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: grafana
+        namespace: "{{ grafana_namespace }}"
+        annotations:
+          dmf.exposure: private
+          traefik.ingress.kubernetes.io/router.ingressclass: "{{ grafana_ingress_class }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: "Host(`{{ grafana_host }}`)"
+            kind: Rule
+            services:
+              - name: grafana
+                port: 80
+  when: grafana_exposure | default('host') == 'host'
+
+- name: Create Grafana Path-based IngressRoute (public lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: grafana
+        namespace: "{{ grafana_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: "PathPrefix(`{{ grafana_path }}`)"
+            kind: Rule
+            services:
+              - name: grafana
+                port: 80
+  when: grafana_exposure | default('host') == 'path'
+
+- name: Cleanup temp values file
+  ansible.builtin.file:
+    path: /tmp/grafana-values.yml
+    state: absent

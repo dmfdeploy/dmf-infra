@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: landing-page-assets
+  namespace: "{{ landing_page_namespace }}"
+binaryData:
+{% set logos = [
+  'k3s.ico', 'openbao.svg', 'traefik.svg', 'netbox.svg', 'authentik.svg',
+  'prometheus.svg', 'grafana.ico', 'awx.svg', 'forgejo.png', 'zot-logo.svg',
+  'cert-manager.png', 'metallb.svg', 'longhorn.png', 'loki.png',
+  'external-secrets.svg', 'react.ico', 'fastapi.png', 'opentofu.svg', 'dmf-mxl.png',
+  'dmfdeploy-icon-white.svg'
+] %}
+{% for logo in logos %}
+  "{{ logo }}": "{{ lookup('pipe', 'openssl base64 -A -in ' ~ role_path ~ '/files/logos/' ~ logo) }}"
+{% endfor %}

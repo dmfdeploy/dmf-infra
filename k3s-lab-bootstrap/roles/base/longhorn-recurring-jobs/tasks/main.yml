@@ -1,0 +1,23 @@
+---
+# Longhorn RecurringJob role.
+# Creates a single RecurringJob bound to the default BackupTarget,
+# applied to all volumes via the `default` group.
+
+- name: Create Longhorn RecurringJob {{ longhorn_recurring_jobs_name }}
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: longhorn.io/v1beta2
+      kind: RecurringJob
+      metadata:
+        name: "{{ longhorn_recurring_jobs_name }}"
+        namespace: "{{ longhorn_recurring_jobs_namespace }}"
+        labels: "{{ longhorn_recurring_jobs_labels }}"
+      spec:
+        name: "{{ longhorn_recurring_jobs_name }}"
+        cron: "{{ longhorn_recurring_jobs_cron }}"
+        task: "{{ longhorn_recurring_jobs_task }}"
+        groups: "{{ longhorn_recurring_jobs_groups }}"
+        retain: "{{ longhorn_recurring_jobs_retain }}"
+        concurrency: "{{ longhorn_recurring_jobs_concurrency }}"

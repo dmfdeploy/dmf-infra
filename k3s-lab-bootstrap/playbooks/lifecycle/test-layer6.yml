@@ -1,0 +1,116 @@
+---
+# playbooks/lifecycle/test-layer6.yml
+#
+# Phase 2 Layer 6 integration gate for:
+# - 650-dmf-cms.yml
+# - 694-born-inventory.yml
+# - 695-zot-oidc.yml
+#
+# Gates:
+# 1. Authentik must already expose the `DMF Console` OIDC provider before CMS
+#    runs.
+# 2. Each Phase 2 playbook must apply cleanly in order.
+# 3. App endpoints must be healthy after deployment:
+#    - DMF Console /healthz
+#    - NetBox API root used by born-inventory
+#    - Zot registry /v2/
+#
+# Expected outcome:
+# - CMS deploys with Authentik OIDC credentials available.
+# - born-inventory can reach the NetBox API it depends on.
+# - Zot rewires to Authentik and still answers registry probes.
+
+- name: Preflight Phase 2 Layer 6 dependencies
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Verify Authentik DMF Console OIDC provider exists before CMS deploy
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - k3s
+          - kubectl
+          - -n
+          - "{{ authentik_namespace | default('authentik') }}"
+          - exec
+          - deploy/{{ authentik_release_name | default('authentik') }}-worker
+          - --
+          - ak
+          - shell
+          - -c
+          - >-
+            from authentik.providers.oauth2.models import OAuth2Provider;
+            print(OAuth2Provider.objects.get(name="DMF Console").name)
+      register: _test_layer6_authentik_provider
+      changed_when: false
+      retries: 30
+      delay: 5
+      until:
+        - _test_layer6_authentik_provider.rc == 0
+        - _test_layer6_authentik_provider.stdout_lines | length > 0
+
+- import_playbook: ../650-dmf-cms.yml
+
+- name: Verify DMF Console endpoint after CMS deployment
+  hosts: localhost
+  become: false
+  gather_facts: false
+
+  tasks:
+    - name: Check DMF Console health endpoint
+      ansible.builtin.uri:
+        url: "https://{{ dmf_cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/healthz"
+        method: GET
+        status_code: [200]
+        validate_certs: true
+        return_content: true
+      register: _test_layer6_cms_health
+      retries: 30
+      delay: 5
+      until: _test_layer6_cms_health.status == 200
+
+    - name: Assert DMF Console reports healthy status
+      ansible.builtin.assert:
+        that:
+          - (_test_layer6_cms_health.content | from_json).status == 'ok'
+          - (_test_layer6_cms_health.content | from_json).product == 'DMF Console'
+
+- import_playbook: ../694-born-inventory.yml
+
+- name: Verify born-inventory API endpoint after NetBox survey
+  hosts: localhost
+  become: false
+  gather_facts: false
+
+  tasks:
+    - name: Check NetBox API root used by born-inventory
+      ansible.builtin.uri:
+        url: "https://{{ netbox_host | default('netbox.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/api/"
+        method: GET
+        status_code: [200]
+        validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | default(false) | bool }}"
+      register: _test_layer6_netbox_api
+      retries: 30
+      delay: 5
+      until: _test_layer6_netbox_api.status == 200
+
+- import_playbook: ../vertical-security/191-zot-oidc.yml
+
+- name: Verify Zot registry endpoint after Authentik wiring
+  hosts: localhost
+  become: false
+  gather_facts: false
+
+  tasks:
+    - name: Check Zot registry v2 endpoint
+      ansible.builtin.uri:
+        url: "https://{{ registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/v2/"
+        method: GET
+        status_code: [200, 401]
+        validate_certs: true
+      register: _test_layer6_zot_v2
+      retries: 30
+      delay: 5
+      until: _test_layer6_zot_v2.status in [200, 401]

@@ -1,0 +1,32 @@
+---
+# Playbook: 05-harden.yml
+# Hardens all k3s nodes before cluster bootstrap.
+# Run this immediately after provisioning, before any other playbook.
+#
+# What it does:
+#   1. Locks down SSH (prohibit root login, AllowUsers, MaxAuthTries)
+#   2. Deploys nftables: public interface restricted; private interface open
+#   3. Applies a provider-specific cloud firewall when
+#      `harden_cloud_firewall_tasks` points at an env-repo task file
+#      (e.g. `dmf-env/tasks/hetzner/firewall.yml`). Skipped otherwise.
+#   4. Installs and configures fail2ban
+#   5. Enables unattended security upgrades
+#
+# Prerequisites:
+#   - Servers must be provisioned via bin/provision-nodes.sh, which injects
+#     a cloud-init user-data that creates {{ harden_admin_user }} at first boot.
+#   - inventory ansible_user must be {{ harden_admin_user }} (default: k3s-admin).
+
+- name: Harden k3s nodes
+  hosts: k3s
+  become: true
+  gather_facts: true
+  vars:
+    # Cloud nodes are reached as root for the first run — cloud-init may not have
+    # finished creating harden_admin_user yet; the harden role creates it
+    # idempotently. Local-CA profiles (sandbox, ADR-0031 O1) have no root SSH and
+    # already have their admin user (the Lima/VPS sudo user), so connect as
+    # harden_admin_user instead (the harden role also keeps it in AllowUsers).
+    ansible_user: "{{ 'root' if (dmf_tls_mode | default('') != 'local-ca') else (harden_admin_user | default('root')) }}"
+  roles:
+    - base/harden

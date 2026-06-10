@@ -1,0 +1,34 @@
+---
+# DMF sandbox bootstrap: Configure.
+#
+# Wires cross-app relationships for the single-node sandbox after the sandbox
+# post-seed provision wrapper has installed the application set.
+
+- import_playbook: bootstrap-sandbox-profile.yml
+  tags: [always, sandbox, release-profile]
+
+# ── Identity overlays ────────────────────────────────────────────────────────
+- import_playbook: playbooks/vertical-security/191-zot-oidc.yml
+  tags: [vertical-security, identity, registry, authentik, oidc]
+
+# ── Source of Truth and automation wiring ────────────────────────────────────
+- import_playbook: playbooks/692-forgejo-bootstrap.yml
+  tags: [layer6, application-ui, forgejo, bootstrap]
+- import_playbook: playbooks/691-netbox-sot.yml
+  tags: [layer6, application-ui, netbox, sot]
+- import_playbook: playbooks/693-awx-integration.yml
+  tags: [layer6, application-ui, awx, integration]
+- import_playbook: playbooks/694-born-inventory.yml
+  tags: [layer6, application-ui, inventory, netbox, reconcile]
+- import_playbook: playbooks/vertical-monitoring/160-promsd.yml
+  tags: [vertical-monitoring, promsd]
+
+# ── CMS integration wiring ───────────────────────────────────────────────────
+- import_playbook: playbooks/696-cms-authentik-api.yml
+  tags: [layer6, application-ui, dmf-console, identity, authentik, api]
+- import_playbook: playbooks/697-cms-awx-token.yml
+  tags: [layer6, application-ui, dmf-console, identity, awx, api]
+- import_playbook: playbooks/698-cms-netbox-forgejo-tokens.yml
+  tags: [layer6, application-ui, dmf-console, netbox, forgejo, api]
+- import_playbook: playbooks/699-cms-smoke-test.yml
+  tags: [layer6, application-ui, dmf-console, verify, smoke-test]

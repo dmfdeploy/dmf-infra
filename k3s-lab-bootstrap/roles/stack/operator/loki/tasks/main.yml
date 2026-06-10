@@ -1,0 +1,135 @@
+---
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ loki_namespace }}"
+
+- name: Add grafana Helm repository
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: "{{ loki_helm_repo }}"
+
+- name: Template Loki Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/loki-values.yml
+    mode: "0644"
+
+- name: Deploy Loki via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: loki
+    chart_ref: grafana/loki
+    chart_version: "{{ loki_helm_chart_version }}"
+    release_namespace: "{{ loki_namespace }}"
+    create_namespace: true
+    values_files:
+      - /tmp/loki-values.yml
+    wait: false
+
+- name: Wait for Loki PVC to be bound
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: storage-loki-0
+    namespace: "{{ loki_namespace }}"
+  register: loki_pvc
+  until: loki_pvc.resources | length > 0 and loki_pvc.resources[0].status.phase == "Bound"
+  retries: "{{ loki_wait_retries }}"
+  delay: "{{ loki_wait_delay }}"
+
+- name: Wait for Loki StatefulSet to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    name: loki
+    namespace: "{{ loki_namespace }}"
+  register: loki_statefulset
+  until:
+    - loki_statefulset.resources | length > 0
+    - loki_statefulset.resources[0].status.readyReplicas | default(0) | int == 1
+  retries: "{{ loki_wait_retries }}"
+  delay: "{{ loki_wait_delay }}"
+
+- name: Wait for Loki gateway Deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: loki-gateway
+    namespace: "{{ loki_namespace }}"
+  register: loki_gateway
+  until:
+    - loki_gateway.resources | length > 0
+    - loki_gateway.resources[0].status.readyReplicas | default(0) | int == 1
+  retries: "{{ loki_wait_retries }}"
+  delay: "{{ loki_wait_delay }}"
+
+- name: Create Loki readiness path middleware
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: loki-ready-path
+        namespace: "{{ loki_namespace }}"
+      spec:
+        replacePath:
+          path: /ready
+
+# HTTP→HTTPS redirect is handled at the Traefik entrypoint (see base/ingress).
+# Delete-before-recreate clears any stale `tls.secretName` from older runs.
+- name: Remove legacy Loki IngressRoutes
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: IngressRoute
+    name: "{{ item }}"
+    namespace: "{{ loki_namespace }}"
+  loop:
+    - loki
+    - loki-redirect
+
+- name: Create Loki HTTPS IngressRoute
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: loki
+        namespace: "{{ loki_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: "Path(`{{ loki_path }}/ready`) || Path(`{{ loki_path }}/ready/`)"
+            kind: Rule
+            priority: 100
+            middlewares:
+              - name: loki-ready-path
+            services:
+              - name: loki
+                port: 3100
+          - match: "PathPrefix(`{{ loki_path }}`)"
+            kind: Rule
+            services:
+              - name: loki-gateway
+                port: 80
+
+- name: Cleanup temp values file
+  ansible.builtin.file:
+    path: /tmp/loki-values.yml
+    state: absent

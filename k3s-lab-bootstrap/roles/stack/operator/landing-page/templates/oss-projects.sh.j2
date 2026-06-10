@@ -1,0 +1,26 @@
+# Open source projects used across the DMF Platform infrastructure.
+# Each line: NAME|LOGO_URL|LICENSE|HOMEPAGE|DESCRIPTION
+# Logo paths are relative to /assets/ served by nginx from the assets ConfigMap.
+# Fallback: if a logo fails to load, the card shows the project initials.
+OSS_PROJECTS="
+k3s|/assets/k3s.ico|Apache-2.0|https://k3s.io|Lightweight Kubernetes distribution — the foundation of our entire platform
+OpenBao|/assets/openbao.svg|MPL-2.0|https://openbao.org|Community-driven fork of HashiCorp Vault for secrets management
+Traefik|/assets/traefik.svg|MIT|https://traefik.io|Cloud-native ingress controller and edge router
+NetBox|/assets/netbox.svg|Apache-2.0|https://netboxlabs.com|Source of Truth for IP address management and data center infrastructure
+Authentik|/assets/authentik.svg|MIT|https://goauthentik.io|Open-source identity provider for SSO and authentication
+Prometheus|/assets/prometheus.svg|Apache-2.0|https://prometheus.io|Systems monitoring and alerting toolkit
+Grafana|/assets/grafana.ico|Apache-2.0|https://grafana.com|Observability dashboards and metrics visualization
+AWX|/assets/awx.svg|Apache-2.0|https://ansible.com/products/awx|Upstream open-source Ansible automation platform
+Forgejo|/assets/forgejo.png|MIT|https://forgejo.org|Lightweight self-hosted Git forge, fork of Gitea
+Zot|/assets/zot-logo.svg|Apache-2.0|https://zotregistry.dev|Minimal OCI-compliant container registry
+cert-manager|/assets/cert-manager.png|Apache-2.0|https://cert-manager.io|Automated X.509 certificate management for Kubernetes
+MetalLB|/assets/metallb.svg|Apache-2.0|https://metallb.io|Load balancer implementation for bare-metal Kubernetes
+Longhorn|/assets/longhorn.png|Apache-2.0|https://longhorn.io|Cloud-native distributed block storage
+Loki|/assets/loki.png|AGPL-3.0|https://grafana.com/oss/loki|Horizontally scalable, highly available log aggregation
+External Secrets|/assets/external-secrets.svg|Apache-2.0|https://external-secrets.io|Kubernetes integration with external secret management systems
+React|/assets/react.ico|MIT|https://react.dev|Frontend UI library for the DMF Console operator console
+FastAPI|/assets/fastapi.png|MIT|https://fastapi.tiangolo.com|High-performance Python web framework for the API backend
+OpenTofu|/assets/opentofu.svg|MPL-2.0|https://opentofu.org|Open-source Infrastructure as Code tool, fork of Terraform
+DMF-MXL|/assets/dmf-mxl.png|Apache-2.0|https://github.com/dmf-mxl|Dynamic Media Facility — Media Exchange Layer for SMPTE ST 2110 workflows
+Ansible|/assets/awx.svg|GPL-3.0|https://ansible.com|Configuration management and orchestration engine
+"

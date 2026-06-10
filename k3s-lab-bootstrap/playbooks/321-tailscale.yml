@@ -1,0 +1,159 @@
+---
+# Install Tailscale + private-ingress port forwarder on every k3s node.
+#
+# Running the role on all nodes eliminates the single-point-of-failure where
+# one dead node took every private admin URL with it. Each node joins the
+# tailnet under its own hostname and publishes its own :443 forwarder on its
+# tailnet interface.
+#
+# After the nodes register we reconcile the Cloudflare wildcard A record set
+# against the fresh tailnet IPs so clients round-robin across live nodes.
+# TTL is pinned at 60s — surgically removing a dead node from DNS then
+# propagates in seconds instead of hours.
+#
+# Auth key must be reusable (not single-use) since we register 3 nodes from
+# one key. Generate on your headscale host (set headscale_ssh_target in
+# inventory; defaults to hs.example.com — override for your environment):
+#   ssh root@<headscale-host> "docker exec headscale headscale \
+#     preauthkeys create --user <id> --reusable --expiration 720h -o json"
+
+- name: Install Tailscale on all k3s nodes and reconcile public DNS
+  hosts: k3s
+  become: true
+  gather_facts: true
+  roles:
+    - base/tailscale
+  post_tasks:
+    - name: Aggregate tailnet IPs for DNS reconciliation
+      run_once: true
+      delegate_to: localhost
+      become: false
+      ansible.builtin.set_fact:
+        tailnet_ips_required: >-
+          {{
+            groups['k3s']
+            | map('extract', hostvars, 'tailscale_ip')
+            | reject('undefined')
+            | list
+          }}
+
+    - name: Report required Cloudflare wildcard DNS state
+      run_once: true
+      delegate_to: localhost
+      become: false
+      ansible.builtin.debug:
+        msg: |-
+          Cloudflare wildcard '*.{{ cert_manager_cluster_domain }}' will be
+          reconciled to one A record per tailnet IP (TTL 60):
+            {{ tailnet_ips_required | join(', ') }}
+
+    - name: Reconcile Cloudflare wildcard A records
+      run_once: true
+      delegate_to: localhost
+      become: false
+      when:
+        - cloudflare_zone_name | default('') | length > 0
+        - vault_cloudflare_dns_token | default('') | length > 0
+        - tailnet_ips_required | length > 0
+      block:
+        - name: Refuse to reconcile with an empty tailnet IP set
+          ansible.builtin.assert:
+            that:
+              - tailnet_ips_required | length >= 1
+            fail_msg: >-
+              Aborting Cloudflare reconcile — zero tailnet IPs collected
+              across the k3s group. Deleting every wildcard A record would
+              take the private lane entirely dark. Fix tailscaled registration
+              before re-running this playbook.
+            quiet: true
+
+        - name: Look up Cloudflare zone ID
+          ansible.builtin.uri:
+            url: "https://api.cloudflare.com/client/v4/zones?name={{ cloudflare_zone_name }}"
+            headers:
+              Authorization: "Bearer {{ vault_cloudflare_dns_token }}"
+            return_content: true
+          register: _cf_zone
+          no_log: true
+
+        - name: Assert Cloudflare token can see the zone
+          ansible.builtin.assert:
+            that:
+              - _cf_zone.json.success
+              - _cf_zone.json.result | length == 1
+            fail_msg: >-
+              Cloudflare zone lookup for '{{ cloudflare_zone_name }}' returned
+              {{ _cf_zone.json.result | default([]) | length }} results
+              (success={{ _cf_zone.json.success | default('unknown') }}).
+              Check vault_cloudflare_dns_token has Zone.DNS.Read+Edit for this zone.
+            quiet: true
+
+        - name: Capture Cloudflare zone ID
+          ansible.builtin.set_fact:
+            _cf_zone_id: "{{ _cf_zone.json.result[0].id }}"
+
+        - name: Fetch current wildcard A records
+          ansible.builtin.uri:
+            url: >-
+              https://api.cloudflare.com/client/v4/zones/{{ _cf_zone_id }}/dns_records?type=A&name=*.{{ cert_manager_cluster_domain }}
+            headers:
+              Authorization: "Bearer {{ vault_cloudflare_dns_token }}"
+            return_content: true
+          register: _cf_records
+          no_log: true
+
+        - name: Compute the diff between desired and current A records
+          ansible.builtin.set_fact:
+            _cf_existing: "{{ _cf_records.json.result }}"
+            _cf_to_delete: >-
+              {{
+                _cf_records.json.result
+                | rejectattr('content', 'in', tailnet_ips_required)
+                | list
+              }}
+            _cf_to_create: >-
+              {{
+                tailnet_ips_required
+                | difference(_cf_records.json.result | map(attribute='content') | list)
+              }}
+
+        - name: Report DNS reconcile plan
+          ansible.builtin.debug:
+            msg: |-
+              Cloudflare wildcard reconcile:
+                existing: {{ _cf_existing | map(attribute='content') | list | join(', ') or '(none)' }}
+                desired:  {{ tailnet_ips_required | join(', ') }}
+                delete:   {{ _cf_to_delete | map(attribute='content') | list | join(', ') or '(none)' }}
+                create:   {{ _cf_to_create | join(', ') or '(none)' }}
+
+        - name: Delete stale wildcard A records
+          ansible.builtin.uri:
+            url: "https://api.cloudflare.com/client/v4/zones/{{ _cf_zone_id }}/dns_records/{{ item.id }}"
+            method: DELETE
+            headers:
+              Authorization: "Bearer {{ vault_cloudflare_dns_token }}"
+            status_code: [200]
+          loop: "{{ _cf_to_delete }}"
+          loop_control:
+            label: "{{ item.content }}"
+          no_log: true
+
+        - name: Create missing wildcard A records
+          ansible.builtin.uri:
+            url: "https://api.cloudflare.com/client/v4/zones/{{ _cf_zone_id }}/dns_records"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ vault_cloudflare_dns_token }}"
+              Content-Type: application/json
+            body_format: json
+            body:
+              type: A
+              name: "*.{{ cert_manager_cluster_domain }}"
+              content: "{{ item }}"
+              ttl: 60
+              proxied: false
+            status_code: [200]
+          loop: "{{ _cf_to_create }}"
+          loop_control:
+            label: "{{ item }}"
+          no_log: true

@@ -1,0 +1,198 @@
+---
+- name: Verify monitoring alerting pipeline
+  hosts: k3s_control[0]
+  become: false
+  gather_facts: false
+  vars:
+    monitoring_verify_namespace: "{{ prometheus_namespace | default('monitoring') }}"
+    monitoring_verify_alertmanager_service: prometheus-alertmanager
+    monitoring_verify_send_ntfy_smoke: true
+    monitoring_verify_send_alertmanager_smoke: true
+    monitoring_verify_smoke_alert_name: DMFNtfySmoke
+  tasks:
+    # Skip the entire verify play when alerting is intentionally disabled
+    # (Mode A / experiment-phase envs per ADR-0020). The prometheus role
+    # itself tolerates prometheus_alertmanager_enabled=false; this verify
+    # play has to match that contract or post-seed can't complete on a
+    # cluster that deliberately ships without Alertmanager.
+    - name: End play if alerting is disabled (Mode A / experiment)
+      ansible.builtin.meta: end_play
+      when: not (prometheus_alertmanager_enabled | default(true) | bool)
+
+    - name: Assert Alertmanager receiver URLs are present
+      ansible.builtin.assert:
+        that:
+          - prometheus_alertmanager_ntfy_url | default('') | length > 0
+          - prometheus_alertmanager_watchdog_url | default('') | length > 0
+        fail_msg: >-
+          Alerting verification requires prometheus_alertmanager_ntfy_url and
+          prometheus_alertmanager_watchdog_url when prometheus_alertmanager_enabled
+          is true. Set prometheus_alertmanager_enabled=false to deploy
+          monitoring without alerting (experiment-phase / Mode A).
+        quiet: true
+      no_log: true
+
+    - name: Wait for Prometheus server rollout
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ monitoring_verify_namespace }}"
+          - rollout
+          - status
+          - deployment/prometheus-server
+          - --timeout=180s
+      changed_when: false
+
+    - name: Wait for Alertmanager rollout
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ monitoring_verify_namespace }}"
+          - rollout
+          - status
+          - statefulset/prometheus-alertmanager
+          - --timeout=180s
+      changed_when: false
+
+    - name: Wait for ntfy formatter bridge rollout
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ monitoring_verify_namespace }}"
+          - rollout
+          - status
+          - deployment/{{ prometheus_ntfy_bridge_name | default('ntfy-alertmanager-bridge') }}
+          - --timeout=180s
+      changed_when: false
+      when: prometheus_ntfy_bridge_enabled | default(true) | bool
+
+    - name: Read Alertmanager service ClusterIP
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ monitoring_verify_namespace }}"
+          - get
+          - svc
+          - "{{ monitoring_verify_alertmanager_service }}"
+          - -o
+          - jsonpath={.spec.clusterIP}
+      register: _monitoring_verify_alertmanager_cluster_ip
+      changed_when: false
+
+    - name: Set Alertmanager API base URL
+      ansible.builtin.set_fact:
+        _monitoring_verify_alertmanager_api: >-
+          http://{{ _monitoring_verify_alertmanager_cluster_ip.stdout | trim }}:9093
+
+    - name: Check Alertmanager readiness
+      ansible.builtin.uri:
+        url: "{{ _monitoring_verify_alertmanager_api }}/-/ready"
+        method: GET
+        return_content: true
+        status_code: 200
+
+    - name: Read Alertmanager status
+      ansible.builtin.uri:
+        url: "{{ _monitoring_verify_alertmanager_api }}/api/v2/status"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: _monitoring_verify_alertmanager_status
+
+    - name: Assert Alertmanager has primary and watchdog receivers
+      ansible.builtin.assert:
+        that:
+          - "'primary' in _monitoring_verify_alertmanager_status.content"
+          - "'watchdog' in _monitoring_verify_alertmanager_status.content"
+        fail_msg: >-
+          Alertmanager status did not expose the expected primary/watchdog
+          receivers. Check the rendered prometheus Helm values and live config.
+        quiet: true
+
+    - name: Read active Alertmanager alerts
+      ansible.builtin.uri:
+        url: "{{ _monitoring_verify_alertmanager_api }}/api/v2/alerts"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: _monitoring_verify_alerts
+
+    - name: Assert Watchdog alert is active
+      ansible.builtin.assert:
+        that:
+          - "'Watchdog' in _monitoring_verify_alerts.content"
+        fail_msg: >-
+          Alertmanager is reachable but the Watchdog alert is not active, so the
+          dead-man's switch route is not being exercised.
+        quiet: true
+
+    - name: Send direct ntfy smoke notification
+      ansible.builtin.uri:
+        url: "{{ prometheus_alertmanager_ntfy_url }}"
+        method: POST
+        body: "DMF monitoring verify: direct ntfy smoke from {{ inventory_hostname }}"
+        headers:
+          Title: DMF monitoring smoke
+          Priority: low
+          Tags: white_check_mark
+        status_code:
+          - 200
+          - 201
+          - 202
+          - 204
+      when: monitoring_verify_send_ntfy_smoke | bool
+      no_log: true
+
+    - name: Send synthetic alert through Alertmanager primary route
+      ansible.builtin.uri:
+        url: "{{ _monitoring_verify_alertmanager_api }}/api/v2/alerts"
+        method: POST
+        body_format: json
+        body:
+          - labels:
+              alertname: "{{ monitoring_verify_smoke_alert_name }}"
+              severity: info
+              category: smoke
+            annotations:
+              summary: DMF ntfy smoke test
+              description: Synthetic alert created by playbooks/vertical-monitoring/190-monitoring-verify.yml.
+        status_code:
+          - 200
+          - 202
+      when: monitoring_verify_send_alertmanager_smoke | bool
+
+    - name: Confirm synthetic alert is active in Alertmanager
+      ansible.builtin.uri:
+        url: "{{ _monitoring_verify_alertmanager_api }}/api/v2/alerts"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: _monitoring_verify_smoke_alerts
+      until: monitoring_verify_smoke_alert_name in _monitoring_verify_smoke_alerts.content
+      retries: 6
+      delay: 5
+      when: monitoring_verify_send_alertmanager_smoke | bool
+
+    - name: Show monitoring verification summary
+      ansible.builtin.debug:
+        msg: >-
+          Alertmanager is ready, Watchdog is active, direct ntfy smoke was
+          {{ 'sent' if monitoring_verify_send_ntfy_smoke | bool else 'skipped' }},
+          and synthetic alert {{ monitoring_verify_smoke_alert_name }} was
+          {{ 'accepted by Alertmanager' if monitoring_verify_send_alertmanager_smoke | bool else 'skipped' }}.

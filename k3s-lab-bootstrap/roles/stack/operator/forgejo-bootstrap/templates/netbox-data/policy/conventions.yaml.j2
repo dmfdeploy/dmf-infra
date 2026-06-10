@@ -1,0 +1,63 @@
+# DMF Platform — Naming Conventions & Policy Data
+# Source of truth for automation pipelines and NetBox config contexts.
+# Changes require PR review before NetBox sync consumes them.
+---
+
+# Device naming convention
+device_naming:
+  pattern: "{site}-{role}-{id}"
+  example: "hq-spine-01"
+  site_format: "lowercase airport code or building abbreviation"
+  roles:
+    - spine
+    - leaf
+    - border
+    - oob
+    - ptp-grandmaster
+    - st2110-sender
+    - st2110-receiver
+
+# VLAN convention
+vlans:
+  management:
+    id: 10
+    name: "mgmt"
+    description: "Out-of-band management"
+  ptp:
+    id: 100
+    name: "ptp-domain"
+    description: "IEEE 1588 PTP domain traffic"
+  st2110_media:
+    id: 200
+    name: "st2110-media"
+    description: "SMPTE ST 2110 essence streams"
+  st2110_control:
+    id: 201
+    name: "st2110-control"
+    description: "NMOS IS-04/IS-05 control plane"
+
+# PTP domain
+ptp:
+  domain_number: "{{ ptp_domain | default(1) }}"
+  priority1: "{{ ptp_priority1 | default(128) }}"
+  priority2: "{{ ptp_priority2 | default(128) }}"
+  transport: "UDP-IPv4"
+  profile: "SMPTE ST 2059-2"
+  grandmaster:
+    site: "{{ ptp_gm_site | default('hq') }}"
+    role: "ptp-grandmaster"
+
+# TACACS/RADIUS (placeholder — fill per-site)
+aaa:
+  tacacs:
+    servers: []  # e.g. [{address: 10.0.1.70, key_secret_path: secret/aaa/tacacs}]
+  radius:
+    servers: []
+
+# Telemetry
+telemetry:
+  streaming:
+    encoding: "json"
+    transport: "gRPC"
+    port: 57400
+  snmp_polling_interval: 300  # seconds

@@ -1,0 +1,60 @@
+---
+# OpenBao Raft snapshot role defaults.
+# Daily CronJob in openbao-system that snapshots the Raft log via
+# `bao operator raft snapshot save` and uploads to the object-storage
+# bucket via the ESO-materialized s3-creds-openbao-snapshots Secret.
+#
+# Authentication: Kubernetes auth method (NOT AppRole). The CronJob pod
+# uses its ServiceAccount token to `bao login -method=kubernetes` and
+# gets a short-lived token scoped to the openbao-raft-snapshot policy.
+
+# CronJob schedule — daily at 02:30 UTC (after k3s audit archival at 02:00)
+openbao_raft_snapshot_schedule: "30 2 * * *"
+
+# Namespace / ServiceAccount
+openbao_raft_snapshot_namespace: openbao-system
+openbao_raft_snapshot_service_account: openbao-raft-snapshot
+
+# CronJob labels
+openbao_raft_snapshot_labels:
+  app: openbao-raft-snapshot
+  dmftier: "A"
+
+# Image for the snapshot pod — provides the `bao` CLI.
+# `aws` CLI is copied in via an initContainer (amazon/aws-cli) into a
+# shared emptyDir on /shared-bin — same pattern as zot-mirror +
+# postgres-backups.
+openbao_raft_snapshot_image: "openbao/openbao:latest"
+openbao_raft_snapshot_awscli_image: "amazon/aws-cli:latest"
+
+# S3 bucket coordinates — overridden from manifests or group_vars.
+# The CronJob reads these at runtime from the mounted Secret, so these
+# defaults are informational only (used for the k8s_resource lookups).
+openbao_raft_snapshot_bucket: ""
+openbao_raft_snapshot_endpoint: ""
+openbao_raft_snapshot_region: ""
+
+# Object key prefix — timestamp-prefixed per Phase 3 agreement.
+# Format: <cluster-prefix>/<YYYY-MM-DDTHH-MM-SSZ>.snap
+openbao_raft_snapshot_key_prefix: "{{ inventory_hostname_short | default('openbao') }}"
+
+# Backup retention hint (informational — B2 lifecycle rules enforce actual expiry)
+openbao_raft_snapshot_retention_days: 90
+
+# OpenBao kubernetes auth role name
+openbao_raft_snapshot_k8s_auth_role: openbao-raft-snapshot
+
+# Snapshot filename inside the pod (ephemeral — deleted after upload)
+openbao_raft_snapshot_tmp_file: /tmp/openbao-snapshot.snap
+
+# Secret name from Frozen Contract — consumed as volume mount
+openbao_raft_snapshot_secret_name: s3-creds-openbao-snapshots
+openbao_raft_snapshot_secret_mount: /etc/s3-creds
+
+# OpenBao connection (injected by caller or common/openbao-session)
+openbao_pod: "openbao-0"
+openbao_namespace: "openbao"
+openbao_is_leader: false
+
+# Kubernetes auth method mount path
+openbao_k8s_auth_mount: kubernetes

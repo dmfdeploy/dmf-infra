@@ -1,0 +1,107 @@
+---
+# Fixture test for common/app-admin-facts live-read source-atomicity.
+#
+# Exercises the live-read resolution logic (source-layer selection +
+# atomic username/password extraction) against six hand-built scenarios
+# WITHOUT contacting any cluster or OpenBao instance.
+#
+# The role itself needs an established OpenBao session + a real kubectl
+# exec to read the secret, so we can't include the role end-to-end here.
+# Instead, this playbook duplicates the resolution Jinja from
+# roles/common/app-admin-facts/tasks/main.yml verbatim (the "Resolve
+# live-read source layer" and "Set effective app-admin facts (live-read
+# mode)" tasks). If those expressions ever change, this file must change
+# in lockstep — that lockstep is the test.
+#
+# Each scenario sets _app_admin_existing_data + the fallback inputs to
+# represent one source-precedence case, runs the same dict-lookup logic
+# the role uses, and asserts the resolved source + the username/password
+# pair came from the same source layer (no cross-layer mixing).
+#
+# Run locally:
+#   ansible-playbook tests/test-app-admin-facts-live-read.yml
+- name: Fixture test — common/app-admin-facts live-read source-atomicity
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    # Six scenarios cover:
+    #   1. OpenBao has both fields              -> source=openbao
+    #   2. OpenBao has username but no password -> source must NOT be openbao
+    #   3. OpenBao empty, first candidate full  -> source=fallback-candidates
+    #   4. OpenBao empty, first candidate has empty password,
+    #      second candidate full                -> source=fallback-candidates (2nd)
+    #   5. OpenBao empty, all candidates incomplete, scalar full
+    #                                           -> source=fallback-scalar
+    #   6. OpenBao empty, no fallback at all    -> source=no-fallback
+    scenarios:
+      - id: 1-openbao-full
+        existing: { username: "akadmin", password: "P-bao" }
+        candidates:
+          - { username: "alt", password: "P-alt" }
+        scalar_user: "fb-user"
+        scalar_pass: "P-fb"
+        expect_source: openbao
+        expect_user: akadmin
+        expect_pass: P-bao
+
+      - id: 2-openbao-partial
+        existing: { username: "akadmin", password: "" }
+        candidates:
+          - { username: "alt", password: "P-alt" }
+        scalar_user: "fb-user"
+        scalar_pass: "P-fb"
+        expect_source: fallback-candidates
+        expect_user: alt
+        expect_pass: P-alt
+
+      - id: 3-candidate-first
+        existing: {}
+        candidates:
+          - { username: "cand1", password: "P-cand1" }
+          - { username: "cand2", password: "P-cand2" }
+        scalar_user: "fb-user"
+        scalar_pass: "P-fb"
+        expect_source: fallback-candidates
+        expect_user: cand1
+        expect_pass: P-cand1
+
+      - id: 4-candidate-second-when-first-partial
+        existing: {}
+        candidates:
+          - { username: "cand1", password: "" }
+          - { username: "cand2", password: "P-cand2" }
+        scalar_user: "fb-user"
+        scalar_pass: "P-fb"
+        expect_source: fallback-candidates
+        expect_user: cand2
+        expect_pass: P-cand2
+
+      - id: 5-scalar-when-no-candidate-qualifies
+        existing: {}
+        candidates:
+          - { username: "", password: "P-x" }
+          - { username: "y", password: "" }
+        scalar_user: "fb-user"
+        scalar_pass: "P-fb"
+        expect_source: fallback-scalar
+        expect_user: fb-user
+        expect_pass: P-fb
+
+      - id: 6-no-fallback
+        existing: {}
+        candidates: []
+        scalar_user: ""
+        scalar_pass: ""
+        expect_source: no-fallback
+        expect_user: ""
+        expect_pass: ""
+
+  tasks:
+    - name: Exercise resolution for each scenario
+      ansible.builtin.include_tasks: _app-admin-facts-live-read-step.yml
+      loop: "{{ scenarios }}"
+      loop_control:
+        loop_var: scenario
+        label: "{{ scenario.id }}"

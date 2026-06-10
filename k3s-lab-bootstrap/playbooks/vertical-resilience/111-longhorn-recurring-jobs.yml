@@ -1,0 +1,8 @@
+---
+- name: Create daily Longhorn RecurringJob (group=default, retain=7)
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - base/longhorn-recurring-jobs

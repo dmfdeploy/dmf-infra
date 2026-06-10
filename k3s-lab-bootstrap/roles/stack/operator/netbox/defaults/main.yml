@@ -1,0 +1,75 @@
+---
+netbox_namespace: netbox
+netbox_storage_size: 1Gi
+netbox_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+# Local NetBox superuser — intentionally a fixed non-colliding break-glass
+# identity, NOT vault_bootstrap_admin_username. ADR-0028 D3 + per-app survey
+# §3.3 + §5 item 2 (2026-05-24): decoupling the local admin from the
+# operator's Authentik username crystallises the slogan (C4 — no routine
+# break-glass) and mirrors the AWX rename (ADR-0028 follow-on step 2,
+# dmf-infra c426dc0). NetBox already deduplicates OIDC logins by email
+# (SOCIAL_AUTH_PIPELINE associate_by_email), so no shadow class to remediate
+# here; the rename is the symbolic + structural cleanup.
+#
+# Existing envs that bootstrapped with the prior default MUST override
+# this in env inventory before re-running, or plan a one-time live
+# migration (create netbox-break-glass via the create-superuser job +
+# reassign object ownership). See survey §5 item 2.
+netbox_superuser_username: netbox-break-glass
+# ADR-0024/0028 canonical break-glass email: per-app, per-env synthetic.
+# Must NOT fall back to vault_bootstrap_admin_email (the operator email) —
+# NetBox's SOCIAL_AUTH_PIPELINE associate_by_email step would merge the
+# operator's OIDC sign-in into this break-glass User row, hijacking the
+# break-glass identity (observed live on zy9q-1015 prior to the 2026-05-28
+# remediation). bootstrap-secrets.sh seed-bao writes the same pattern to
+# secret/apps/netbox/admin.email; vault_netbox_superuser_email below is
+# kept as a per-env override hook.
+netbox_superuser_email: "{{ vault_netbox_superuser_email | default('netbox-' ~ (dmf_env_id | default('local')) ~ '@' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
+netbox_superuser_password: "{{ vault_netbox_superuser_password | default(vault_bootstrap_admin_password | mandatory) }}"
+netbox_path: /netbox
+netbox_chart_stage_path: /tmp/netbox-chart
+netbox_runtime_secret_path: secret/apps/netbox/runtime
+netbox_openbao_namespace: openbao
+netbox_openbao_pod_label_selector: "app.kubernetes.io/name=openbao"
+netbox_wait_retries: 120
+netbox_wait_delay: 5
+netbox_oidc_enabled: true
+netbox_oidc_provider_name: NetBox
+netbox_oidc_issuer_url: "https://{{ authentik_host }}/application/o/netbox"
+netbox_oidc_login_url: /oauth/login/oidc/
+netbox_oidc_login_label: Sign in with Authentik
+netbox_oidc_groups_scope_name: groups
+netbox_oidc_admin_group: ops-admin
+netbox_sso_pipeline_configmap_name: netbox-sso-pipeline-roles
+netbox_sso_pipeline_mount_path: /opt/netbox/netbox/netbox/sso_pipeline_roles.py
+
+# Local-CA lane (sandbox / dmf_tls_mode==local-ca): NetBox's server-side OIDC
+# (python-social-auth does discovery/token/userinfo against the Authentik
+# *public* host) must trust the in-cluster CA, else login 500s with
+# CERTIFICATE_VERIFY_FAILED. Mirrors the zot role: publish dmf-local-ca into the
+# netbox ns, mount it, and point requests/urllib at it (via the NGINX Unit app
+# environment — Unit does not inherit the container env). The browser-facing
+# authorize/redirect stays on the public host (ADR-0023 front-channel), so all
+# apps remain externally reachable. No-op on cloud/real-cert lanes.
+netbox_local_ca_trust_enabled: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
+netbox_local_ca_secret: dmf-local-ca
+netbox_local_ca_secret_namespace: cert-manager
+netbox_local_ca_configmap: dmf-local-ca
+netbox_local_ca_mount_path: /etc/ssl/certs/dmf-local-ca.crt
+
+# NetBox DB, Valkey, and API token pepper are sourced from OpenBao at
+# netbox_runtime_secret_path and only fall back to explicit overrides.
+netbox_db_password: "{{ vault_netbox_db_password | default('') }}"
+netbox_valkey_password: "{{ vault_netbox_valkey_password | default('') }}"
+netbox_api_token_pepper: "{{ vault_netbox_api_token_pepper | default('') }}"
+netbox_secret_key: "{{ vault_netbox_secret_key | default('') }}"
+netbox_superuser_api_token: "{{ vault_netbox_superuser_api_token | default('') }}"
+
+# Exposure model — "host" (cloud lane default) or "path" (airgapped/flypack).
+netbox_exposure: host
+netbox_host: netbox.dmf.example.com
+netbox_ingress_class: traefik-private
+
+# Media persistence access mode - ReadWriteMany for multi-pod cloud
+# deployments; set to ReadWriteOnce for single-node / local-path profiles.
+netbox_media_access_mode: ReadWriteMany

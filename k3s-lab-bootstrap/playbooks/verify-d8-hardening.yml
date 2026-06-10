@@ -1,0 +1,167 @@
+---
+# Assertion-only verifier for ADR-0028 D8 operational hardening.
+#
+# Checks the two D8 controls that have live Authentik state:
+#   1. the operator has at least two confirmed passkeys
+#   2. OAuth2/OIDC providers use short access-token lifetimes
+#
+# Recovery drills are procedural rather than cluster state; see
+# docs/adr0028-break-glass-drill.md.
+#
+# Run:
+#   bin/run-playbook.sh <env> \
+#     ../dmf-infra/k3s-lab-bootstrap/playbooks/verify-d8-hardening.yml
+#
+- name: Verify ADR-0028 D8 hardening
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  tags:
+    - vertical-identity
+    - verify-d8-hardening
+
+  vars:
+    verify_d8_authentik_namespace: "{{ authentik_namespace | default('authentik') }}"
+    verify_d8_authentik_release_name: "{{ authentik_release_name | default('authentik') }}"
+    verify_d8_operator_username: "{{ authentik_bootstrap_passkey_username | mandatory }}"
+    verify_d8_required_passkeys: "{{ authentik_bootstrap_passkey_min_confirmed_devices | default(2) }}"
+    verify_d8_max_access_code_seconds: 60
+    verify_d8_max_access_token_seconds: 900
+    verify_d8_max_refresh_token_seconds: 28800
+    verify_d8_oauth_provider_names:
+      - Forgejo
+      - NetBox
+      - LibreNMS
+      - Grafana
+      - DMF Console
+      - Zot
+
+  tasks:
+    - name: Read Authentik D8 state
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ verify_d8_authentik_namespace }}"
+          - exec
+          - deploy/{{ verify_d8_authentik_release_name }}-server
+          - --
+          - env
+          - AK_OPERATOR_USERNAME={{ verify_d8_operator_username }}
+          - AK_PROVIDER_NAMES={{ verify_d8_oauth_provider_names | join(',') }}
+          - ak
+          - shell
+          - -c
+          - |-
+            import json
+            import os
+            from authentik.core.models import User
+            from authentik.lib.utils.time import timedelta_from_string
+            from authentik.providers.oauth2.models import OAuth2Provider
+            from authentik.stages.authenticator_webauthn.models import WebAuthnDevice
+
+            username = os.environ["AK_OPERATOR_USERNAME"]
+            provider_names = [
+                name for name in os.environ["AK_PROVIDER_NAMES"].split(",")
+                if name
+            ]
+            user = User.objects.get(username=username)
+            providers = OAuth2Provider.objects.filter(name__in=provider_names)
+            # OAuth2Provider.{access_code,access_token,refresh_token}_validity
+            # are stored as duration-syntax strings (e.g. "minutes=15"),
+            # not timedelta objects. Parse via Authentik's helper.
+            provider_data = {}
+            for provider in providers:
+                provider_data[provider.name] = {
+                    "access_code_validity_seconds": int(timedelta_from_string(provider.access_code_validity).total_seconds()),
+                    "access_token_validity_seconds": int(timedelta_from_string(provider.access_token_validity).total_seconds()),
+                    "has_invalidation_flow": provider.invalidation_flow_id is not None,
+                    "refresh_token_validity_seconds": int(timedelta_from_string(provider.refresh_token_validity).total_seconds()),
+                }
+            result = {
+                "operator_username": username,
+                "webauthn_count": WebAuthnDevice.objects.filter(user=user, confirmed=True).count(),
+                "providers": provider_data,
+            }
+            print(json.dumps(result, sort_keys=True))
+      register: _verify_d8_state_raw
+      changed_when: false
+
+    - name: Parse Authentik D8 state
+      ansible.builtin.set_fact:
+        _verify_d8_state: >-
+          {{
+            (
+              _verify_d8_state_raw.stdout_lines
+              | select('match', '^\{.*\}$')
+              | list
+              | last
+            ) | from_json
+          }}
+
+    - name: Assert operator has the required confirmed passkey count
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_verify_d8_state.webauthn_count | int)
+            >= (verify_d8_required_passkeys | int)
+        fail_msg: >-
+          ADR-0028 D8 requires at least {{ verify_d8_required_passkeys }}
+          confirmed passkeys for operator '{{ verify_d8_operator_username }}';
+          found {{ _verify_d8_state.webauthn_count }}. Re-run
+          vertical-security/110-authentik.yml to mint the next enrollment URL,
+          enroll another device, then rerun this verifier.
+      tags:
+        - verify-d8-passkeys
+
+    - name: Assert every OAuth2 provider was inspected
+      ansible.builtin.assert:
+        that:
+          - item in _verify_d8_state.providers
+        fail_msg: >-
+          OAuth2 provider '{{ item }}' was not found in Authentik. Confirm the
+          20-app-providers blueprint applied successfully.
+      loop: "{{ verify_d8_oauth_provider_names }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert OAuth2 provider token lifetimes match D8 bounds
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_verify_d8_state.providers[item].access_code_validity_seconds | int)
+            <= (verify_d8_max_access_code_seconds | int)
+          - >-
+            (_verify_d8_state.providers[item].access_token_validity_seconds | int)
+            <= (verify_d8_max_access_token_seconds | int)
+          - >-
+            (_verify_d8_state.providers[item].refresh_token_validity_seconds | int)
+            <= (verify_d8_max_refresh_token_seconds | int)
+          - >-
+            (_verify_d8_state.providers[item].refresh_token_validity_seconds | int)
+            > (_verify_d8_state.providers[item].access_token_validity_seconds | int)
+          - _verify_d8_state.providers[item].has_invalidation_flow | bool
+        fail_msg: >-
+          OAuth2 provider '{{ item }}' violates ADR-0028 D8 token lifetime
+          bounds. Got
+          access_code={{ _verify_d8_state.providers[item].access_code_validity_seconds }}s,
+          access_token={{ _verify_d8_state.providers[item].access_token_validity_seconds }}s,
+          refresh_token={{ _verify_d8_state.providers[item].refresh_token_validity_seconds }}s,
+          has_invalidation_flow={{ _verify_d8_state.providers[item].has_invalidation_flow }}.
+      loop: "{{ verify_d8_oauth_provider_names }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Summarise ADR-0028 D8 verification
+      ansible.builtin.debug:
+        msg:
+          - >-
+            ADR-0028 D8 verified for operator
+            '{{ verify_d8_operator_username }}':
+            passkeys={{ _verify_d8_state.webauthn_count }}/{{ verify_d8_required_passkeys }}.
+          - >-
+            OAuth2 providers checked={{ verify_d8_oauth_provider_names | length }},
+            max access token={{ verify_d8_max_access_token_seconds }}s,
+            max refresh token={{ verify_d8_max_refresh_token_seconds }}s.

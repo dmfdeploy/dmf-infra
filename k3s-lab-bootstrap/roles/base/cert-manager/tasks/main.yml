@@ -1,0 +1,455 @@
+---
+# Scope: cert-manager — TLS certificate issuance (OpenBao PKI / ACME / self-signed fallback)
+
+- name: Assert Cloudflare DNS token is present when DNS-01 is selected
+  ansible.builtin.assert:
+    that:
+      - vault_cloudflare_dns_token is defined
+      - vault_cloudflare_dns_token | default('') | length > 0
+    fail_msg: >-
+      cert_manager_dns_provider is set to 'cloudflare' but
+      vault_cloudflare_dns_token is missing or empty. The wrapper
+      bin/export-openbao-vars.sh is expected to inject this from the
+      operator's secret store (e.g. ~/.config/cf/dns.txt or 1Password).
+    quiet: true
+  when:
+    - cert_manager_dns_provider | default('') == 'cloudflare'
+
+- name: Resolve cert-manager DNS names
+  ansible.builtin.set_fact:
+    cert_manager_dns_names_resolved: >-
+      {{
+        cert_manager_dns_names
+        if cert_manager_dns_names | length > 0
+        else ([cert_manager_cluster_domain] if cert_manager_cluster_domain | length > 0 else [])
+      }}
+
+- name: Check cert-manager Helm release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/rancher/k3s/k3s.yaml
+    -n {{ cert_manager_namespace }}
+    status cert-manager
+  register: _cert_manager_helm_status
+  changed_when: false
+  failed_when: false
+
+- name: Add Jetstack Helm repository
+  kubernetes.core.helm_repository:
+    name: jetstack
+    repo_url: "{{ cert_manager_helm_repo }}"
+  when: >
+    cert_manager_force_helm_upgrade | bool or
+    _cert_manager_helm_status.rc != 0
+
+- name: Check cert-manager CRDs
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: certificates.cert-manager.io
+  register: _cert_manager_certificate_crd
+
+# cert-manager CRDs must be installed separately because Helm hooks can fail
+# on first install (the webhook depends on CRDs, CRDs depend on the webhook).
+# See: https://cert-manager.io/docs/installation/helm/#1-add-the-jetstack-helm-repository
+- name: Install cert-manager CRDs directly from upstream manifest
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    src: "https://github.com/cert-manager/cert-manager/releases/download/{{ cert_manager_helm_version }}/cert-manager.crds.yaml"
+  when:
+    - _cert_manager_certificate_crd.resources | length == 0
+
+- name: Install cert-manager via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: cert-manager
+    chart_ref: jetstack/cert-manager
+    chart_version: "{{ cert_manager_helm_version }}"
+    release_namespace: "{{ cert_manager_namespace }}"
+    create_namespace: true
+    wait: true
+    wait_timeout: 300s
+    values:
+      crds:
+        enabled: false
+  when: >
+    cert_manager_force_helm_upgrade | bool or
+    _cert_manager_helm_status.rc != 0
+
+- name: Reuse existing cert-manager release
+  ansible.builtin.debug:
+    msg: "cert-manager Helm release already exists; skipping network-backed Helm upgrade."
+  when:
+    - not cert_manager_force_helm_upgrade | bool
+    - _cert_manager_helm_status.rc == 0
+
+- name: Preflight — verify Cloudflare token scope can list zones
+  ansible.builtin.uri:
+    url: "https://api.cloudflare.com/client/v4/zones?name={{ cert_manager_cluster_domain | regex_replace('^.*?\\.(\\w+\\.\\w+)$', '\\1') }}"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ vault_cloudflare_dns_token }}"
+      Content-Type: application/json
+    status_code: 200
+    return_content: true
+  register: _cf_zones_probe
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - cert_manager_dns_provider | default('') == 'cloudflare'
+    - cert_manager_dns_names_resolved | length > 0
+    - cert_manager_acme_email | length > 0
+
+- name: Fail if Cloudflare token cannot list the zone
+  ansible.builtin.fail:
+    msg: >-
+      Your Cloudflare DNS-01 token lacks Zone.Zone.Read. The token can
+      verify itself but cannot list zones, which cert-manager needs for
+      DNS-01 challenges. Add Zone.Zone.Read scope to the token, then
+      rerun.
+  when:
+    - cert_manager_dns_provider | default('') == 'cloudflare'
+    - cert_manager_dns_names_resolved | length > 0
+    - cert_manager_acme_email | length > 0
+    - (_cf_zones_probe.json | default({})).result | default([]) | length == 0
+
+- name: Create Let's Encrypt ClusterIssuer
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ cert_manager_cluster_issuer }}"
+      spec:
+        acme:
+          server: "{{ cert_manager_acme_server }}"
+          email: "{{ cert_manager_acme_email }}"
+          privateKeySecretRef:
+            name: letsencrypt-issuer-account-key
+          solvers:
+            - dns01:
+                cloudflare:
+                  apiTokenSecretRef:
+                    name: cloudflare-api-token
+                    key: api-token
+  when:
+    - cert_manager_dns_names_resolved | length > 0
+    - cert_manager_acme_email | length > 0
+    - cert_manager_dns_provider | default('') == 'cloudflare'
+
+- name: Create Let's Encrypt ClusterIssuer (HTTP-01 fallback)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ cert_manager_cluster_issuer }}"
+      spec:
+        acme:
+          server: "{{ cert_manager_acme_server }}"
+          email: "{{ cert_manager_acme_email }}"
+          privateKeySecretRef:
+            name: letsencrypt-issuer-account-key
+          solvers:
+            - http01:
+                ingress:
+                  class: traefik
+  when:
+    - cert_manager_dns_names_resolved | length > 0
+    - cert_manager_acme_email | length > 0
+    - cert_manager_dns_provider | default('') != 'cloudflare'
+
+- name: Create Cloudflare API token secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: cloudflare-api-token
+        namespace: "{{ cert_manager_namespace }}"
+      type: Opaque
+      stringData:
+        api-token: "{{ vault_cloudflare_dns_token }}"
+  no_log: true
+  when:
+    - cert_manager_dns_names_resolved | length > 0
+    - cert_manager_acme_email | length > 0
+    - cert_manager_dns_provider | default('') == 'cloudflare'
+
+- name: Create Certificate for cluster domain
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ cert_manager_certificate_name }}"
+        namespace: "{{ cert_manager_certificate_namespace }}"
+      spec:
+        secretName: "{{ cert_manager_tls_secret_name }}"
+        dnsNames: "{{ cert_manager_dns_names_resolved }}"
+        issuerRef:
+          name: "{{ cert_manager_cluster_issuer }}"
+          kind: ClusterIssuer
+  when:
+    - cert_manager_dns_names_resolved | length > 0
+    - cert_manager_acme_email | length > 0
+
+# Wait for the Certificate to be issued before creating the TLSStore.
+# Without this, Traefik loads the default TLSStore pointing at a secret that
+# does not yet exist and the next app playbook's HTTPS endpoints fail with
+# TLS handshake errors until the ACME challenge eventually completes.
+- name: Wait for Certificate to become Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ cert_manager_certificate_name }}"
+    namespace: "{{ cert_manager_certificate_namespace }}"
+  register: cert_manager_certificate_status
+  until: >-
+    cert_manager_certificate_status.resources | length > 0
+    and (cert_manager_certificate_status.resources[0].status.conditions | default([]))
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length > 0
+  retries: "{{ cert_manager_certificate_wait_retries }}"
+  delay: "{{ cert_manager_certificate_wait_delay }}"
+  when:
+    - cert_manager_dns_names_resolved | length > 0
+    - cert_manager_acme_email | length > 0
+
+# Traefik (k3s bundled) serves the websecure entrypoint. Creating a TLSStore
+# named 'default' in the kube-system namespace tells Traefik to use our
+# cert-manager secret as the default TLS certificate for any connection that
+# doesn't match a specific IngressRoute TLS config.
+- name: Create TLSStore referencing cert-manager secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: TLSStore
+      metadata:
+        name: default
+        namespace: kube-system
+      spec:
+        defaultCertificate:
+          secretName: "{{ cert_manager_tls_secret_name }}"
+  when:
+    - cert_manager_dns_names_resolved | length > 0
+    - cert_manager_acme_email | length > 0
+
+# ---------------------------------------------------------------------------
+# Local CA lane (dmf_tls_mode == 'local-ca'): no public DNS + ACME. Build a
+# self-signed root CA and issue the cluster default cert from it, then point
+# Traefik's default TLSStore at it. Used by the sandbox-single-node profile
+# (WP1S): host-based apps share one apex+wildcard default cert on the collapsed
+# single Traefik, and in-cluster OIDC consumers trust the same CA. The cloud/lab
+# ACME tasks above are gated on cert_manager_acme_email; this assert enforces
+# the two branches stay mutually exclusive (both would otherwise manage the same
+# default Certificate/TLSStore).
+- name: Assert local-CA lane does not coexist with ACME (local-CA lane)
+  ansible.builtin.assert:
+    that:
+      - cert_manager_acme_email | default('') | length == 0
+    fail_msg: >-
+      dmf_tls_mode == 'local-ca' but cert_manager_acme_email is set. The
+      local-CA and ACME branches both manage the default Certificate/TLSStore;
+      clear cert_manager_acme_email to use the local-CA lane.
+  when: cert_manager_local_ca_enabled | bool
+
+- name: Create self-signed bootstrap ClusterIssuer (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ cert_manager_local_ca_bootstrap_issuer }}"
+      spec:
+        selfSigned: {}
+  when: cert_manager_local_ca_enabled | bool
+
+- name: Create local root CA Certificate (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ cert_manager_local_ca_secret }}"
+        namespace: "{{ cert_manager_namespace }}"
+      spec:
+        isCA: true
+        commonName: "{{ cert_manager_local_ca_common_name }}"
+        secretName: "{{ cert_manager_local_ca_secret }}"
+        duration: "{{ cert_manager_local_ca_duration }}"
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+        issuerRef:
+          name: "{{ cert_manager_local_ca_bootstrap_issuer }}"
+          kind: ClusterIssuer
+  when: cert_manager_local_ca_enabled | bool
+
+- name: Wait for local root CA to become Ready (local-CA lane)
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ cert_manager_local_ca_secret }}"
+    namespace: "{{ cert_manager_namespace }}"
+  register: _local_ca_status
+  until: >-
+    _local_ca_status.resources | length > 0
+    and (_local_ca_status.resources[0].status.conditions | default([]))
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length > 0
+  retries: "{{ cert_manager_certificate_wait_retries }}"
+  delay: "{{ cert_manager_certificate_wait_delay }}"
+  when: cert_manager_local_ca_enabled | bool
+
+- name: Create local CA ClusterIssuer (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: "{{ cert_manager_local_ca_issuer }}"
+      spec:
+        ca:
+          secretName: "{{ cert_manager_local_ca_secret }}"
+  when: cert_manager_local_ca_enabled | bool
+
+- name: Create cluster default Certificate from local CA (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ cert_manager_certificate_name }}"
+        namespace: "{{ cert_manager_certificate_namespace }}"
+      spec:
+        secretName: "{{ cert_manager_tls_secret_name }}"
+        duration: "{{ cert_manager_local_ca_cert_duration }}"
+        dnsNames: "{{ cert_manager_local_ca_dns_names }}"
+        issuerRef:
+          name: "{{ cert_manager_local_ca_issuer }}"
+          kind: ClusterIssuer
+  when: cert_manager_local_ca_enabled | bool
+
+- name: Wait for cluster default Certificate to become Ready (local-CA lane)
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ cert_manager_certificate_name }}"
+    namespace: "{{ cert_manager_certificate_namespace }}"
+  register: _local_ca_cluster_cert_status
+  until: >-
+    _local_ca_cluster_cert_status.resources | length > 0
+    and (_local_ca_cluster_cert_status.resources[0].status.conditions | default([]))
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length > 0
+  retries: "{{ cert_manager_certificate_wait_retries }}"
+  delay: "{{ cert_manager_certificate_wait_delay }}"
+  when: cert_manager_local_ca_enabled | bool
+
+- name: Create default TLSStore from local-CA cluster cert (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: TLSStore
+      metadata:
+        name: default
+        namespace: kube-system
+      spec:
+        defaultCertificate:
+          secretName: "{{ cert_manager_tls_secret_name }}"
+  when: cert_manager_local_ca_enabled | bool
+
+# OpenBao TLS is internal-only. Use a self-signed issuer so the OpenBao pod and
+# in-cluster clients can trust the same certificate without depending on ACME.
+
+- name: Create OpenBao namespace for TLS Issuer
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ cert_manager_openbao_namespace }}"
+  when: cert_manager_openbao_enabled | bool
+
+- name: Create OpenBao self-signed Issuer
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Issuer
+      metadata:
+        name: "{{ cert_manager_openbao_issuer_name }}"
+        namespace: "{{ cert_manager_openbao_namespace }}"
+      spec:
+        selfSigned: {}
+  when: cert_manager_openbao_enabled | bool
+
+- name: Create OpenBao Certificate
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ cert_manager_openbao_certificate_name }}"
+        namespace: "{{ cert_manager_openbao_namespace }}"
+      spec:
+        secretName: "{{ cert_manager_openbao_tls_secret_name }}"
+        commonName: "{{ cert_manager_openbao_common_name }}"
+        dnsNames: "{{ cert_manager_openbao_dns_names }}"
+        ipAddresses: "{{ cert_manager_openbao_ip_addresses }}"
+        issuerRef:
+          name: "{{ cert_manager_openbao_issuer_name }}"
+          kind: Issuer
+  when: cert_manager_openbao_enabled | bool
+
+- name: Wait for OpenBao Certificate to become Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ cert_manager_openbao_certificate_name }}"
+    namespace: "{{ cert_manager_openbao_namespace }}"
+  register: cert_manager_openbao_certificate_status
+  until: >-
+    cert_manager_openbao_certificate_status.resources | length > 0
+    and (cert_manager_openbao_certificate_status.resources[0].status.conditions | default([]))
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length > 0
+  retries: "{{ cert_manager_openbao_wait_retries }}"
+  delay: "{{ cert_manager_openbao_wait_delay }}"
+  when: cert_manager_openbao_enabled | bool

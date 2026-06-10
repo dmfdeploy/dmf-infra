@@ -1,0 +1,285 @@
+---
+- name: Validate app-admin-facts inputs
+  ansible.builtin.assert:
+    that:
+      - app_admin_app_name | length > 0
+      - app_admin_fact_prefix | length > 0
+      - app_admin_secret_path | length > 0
+      - app_admin_mode in ['materialize', 'live-read']
+    fail_msg: >-
+      app_admin_app_name, app_admin_fact_prefix, app_admin_secret_path
+      must be set; app_admin_mode must be 'materialize' or 'live-read'
+      (got: '{{ app_admin_mode }}').
+
+- name: Assert OpenBao session is established by caller
+  ansible.builtin.assert:
+    that:
+      - _openbao_session_pod is defined
+      - _openbao_session_pod | length > 0
+      - _openbao_session_client_token is defined
+      - _openbao_session_client_token | length > 0
+    fail_msg: >-
+      common/app-admin-facts requires the caller to have already
+      included common/openbao-session (with openbao_session_mode: operator)
+      in the same play. _openbao_session_pod and
+      _openbao_session_client_token are unset.
+  no_log: true
+
+- name: Reset app-admin-facts per-invocation state
+  ansible.builtin.set_fact:
+    _app_admin_existing_data: {}
+    _app_admin_generated_password: {}
+    _app_admin_fallback_resolved: {}
+  no_log: true
+
+- name: Read existing app-admin secret from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ app_admin_openbao_namespace }}
+      exec -i {{ _openbao_session_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ app_admin_secret_path | quote }}'
+  register: _app_admin_existing_secret_raw
+  changed_when: false
+  failed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+  no_log: true
+
+- name: Parse existing app-admin secret document
+  ansible.builtin.set_fact:
+    _app_admin_existing_data: >-
+      {{
+        (
+          _app_admin_existing_secret_raw.stdout | default('{}') | from_json
+        ).data.data | default({})
+      }}
+  when:
+    - _app_admin_existing_secret_raw.rc == 0
+    - _app_admin_existing_secret_raw.stdout | default('') | length > 0
+  no_log: true
+
+- name: Default existing app-admin secret document
+  ansible.builtin.set_fact:
+    _app_admin_existing_data: {}
+  when:
+    - _app_admin_existing_secret_raw.rc != 0
+      or _app_admin_existing_secret_raw.stdout | default('') | length == 0
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Live-read mode: walk fallback_candidates list (if any), pick the first
+# entry where BOTH username AND password are non-empty. The paired structure
+# prevents username-from-source-A + password-from-source-B mismatches.
+# ---------------------------------------------------------------------------
+- name: Resolve fallback candidate (live-read mode)
+  ansible.builtin.set_fact:
+    _app_admin_fallback_resolved: >-
+      {{
+        (app_admin_fallback_candidates
+         | rejectattr('username', 'undefined')
+         | rejectattr('password', 'undefined')
+         | rejectattr('username', 'equalto', '')
+         | rejectattr('password', 'equalto', '')
+         | list
+         | first
+        ) | default({})
+      }}
+  when:
+    - app_admin_mode == 'live-read'
+    - app_admin_fallback_candidates | default([]) | length > 0
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Password generation: materialize-only. Live-read never generates.
+# ---------------------------------------------------------------------------
+- name: Generate app-admin password when missing (materialize only)
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -base64
+      - "{{ app_admin_password_bytes | string }}"
+  register: _app_admin_generated_password
+  changed_when: false
+  when:
+    - app_admin_mode == 'materialize'
+    - (_app_admin_existing_data.password | default('')) | length == 0
+    - app_admin_password_input | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Materialize mode: defaults the missing pieces and writes them back.
+# ---------------------------------------------------------------------------
+- name: Set effective app-admin facts (materialize mode)
+  ansible.builtin.set_fact:
+    _app_admin_effective_username: >-
+      {{
+        _app_admin_existing_data.username
+        | default(app_admin_username_input, true)
+        | default(app_admin_default_username, true)
+      }}
+    _app_admin_effective_password: >-
+      {{
+        _app_admin_existing_data.password
+        | default(app_admin_password_input, true)
+        | default(_app_admin_generated_password.stdout | default('') | trim, true)
+      }}
+    _app_admin_effective_email: >-
+      {{
+        _app_admin_existing_data.email
+        | default(app_admin_email_input, true)
+        | default(app_admin_default_email, true)
+      }}
+    _app_admin_resolved_source: >-
+      {{
+        'openbao' if (_app_admin_existing_data.username | default('')) | length > 0
+        else 'fallback'
+      }}
+  when: app_admin_mode == 'materialize'
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Live-read mode: never generates, never writes, never emits email.
+# Resolution is strictly source-atomic — each layer must supply BOTH
+# username and password or the whole layer is rejected. Order:
+#   1. OpenBao secret if both fields non-empty
+#   2. First fallback_candidates entry with both fields non-empty
+#      (already filtered by the previous task)
+#   3. Scalar app_admin_fallback_username + app_admin_fallback_password if
+#      both non-empty
+#   4. Empty result (source: no-fallback)
+# Never mix username from layer A with password from layer B.
+# ---------------------------------------------------------------------------
+- name: Resolve live-read source layer
+  ansible.builtin.set_fact:
+    _app_admin_resolved_source: >-
+      {{
+        'openbao'
+        if (_app_admin_existing_data.username | default('') | length > 0
+            and _app_admin_existing_data.password | default('') | length > 0)
+        else (
+          'fallback-candidates'
+          if (_app_admin_fallback_resolved.username | default('') | length > 0
+              and _app_admin_fallback_resolved.password | default('') | length > 0)
+          else (
+            'fallback-scalar'
+            if (app_admin_fallback_username | length > 0
+                and app_admin_fallback_password | length > 0)
+            else 'no-fallback'
+          )
+        )
+      }}
+  when: app_admin_mode == 'live-read'
+  no_log: true
+
+- name: Set effective app-admin facts (live-read mode)
+  ansible.builtin.set_fact:
+    _app_admin_effective_username: >-
+      {{
+        {
+          'openbao': _app_admin_existing_data.username | default(''),
+          'fallback-candidates': _app_admin_fallback_resolved.username | default(''),
+          'fallback-scalar': app_admin_fallback_username,
+          'no-fallback': '',
+        }[_app_admin_resolved_source]
+      }}
+    _app_admin_effective_password: >-
+      {{
+        {
+          'openbao': _app_admin_existing_data.password | default(''),
+          'fallback-candidates': _app_admin_fallback_resolved.password | default(''),
+          'fallback-scalar': app_admin_fallback_password,
+          'no-fallback': '',
+        }[_app_admin_resolved_source]
+      }}
+  when: app_admin_mode == 'live-read'
+  no_log: true
+
+- name: Enforce expected username when specified
+  ansible.builtin.assert:
+    that:
+      - _app_admin_effective_username == app_admin_expected_username
+    fail_msg: >-
+      Secret {{ app_admin_secret_path }} resolved username
+      {{ _app_admin_effective_username }}, expected
+      {{ app_admin_expected_username }}.
+  when: app_admin_expected_username | length > 0
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Persist (materialize-only).
+# ---------------------------------------------------------------------------
+- name: Persist app-admin secret to OpenBao when missing or changed (materialize only)
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n%s\n%s\n' "$OPENBAO_TOKEN" "$APP_ADMIN_USERNAME" "$APP_ADMIN_PASSWORD" "$APP_ADMIN_EMAIL" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ app_admin_openbao_namespace }}
+      exec -i {{ _openbao_session_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r U;
+      IFS= read -r P;
+      IFS= read -r E;
+      export BAO_TOKEN;
+      bao kv put {{ app_admin_secret_path | quote }}
+      username="$U" password="$P" email="$E"'
+  register: _app_admin_kv_put
+  when:
+    - app_admin_mode == 'materialize'
+    - _app_admin_existing_data.username | default('') != _app_admin_effective_username
+      or _app_admin_existing_data.password | default('') != _app_admin_effective_password
+      or _app_admin_existing_data.email | default('') != _app_admin_effective_email
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+    APP_ADMIN_USERNAME: "{{ _app_admin_effective_username }}"
+    APP_ADMIN_PASSWORD: "{{ _app_admin_effective_password }}"
+    APP_ADMIN_EMAIL: "{{ _app_admin_effective_email }}"
+  no_log: true
+  failed_when: false
+
+- name: Check if app-admin secret write failed due to permission denied (materialize only)
+  ansible.builtin.assert:
+    that:
+      - _app_admin_kv_put.rc | default(0) == 0
+    fail_msg: >-
+      OpenBao denied write to {{ app_admin_secret_path }}. This usually means
+      stale or unreconciled app-admin-writer policy on the ops-admin account.
+      Error output: {{ _app_admin_kv_put.stderr | default(_app_admin_kv_put.stdout | default('')) }}.
+      To recover: rerun OpenBao policy reconciliation or rebuild from clean bootstrap.
+  when:
+    - app_admin_mode == 'materialize'
+    - _app_admin_kv_put is defined
+    - _app_admin_existing_data.username | default('') != _app_admin_effective_username
+      or _app_admin_existing_data.password | default('') != _app_admin_effective_password
+      or _app_admin_existing_data.email | default('') != _app_admin_effective_email
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Expose resolved facts. Materialize mode emits email; live-read does not.
+# ---------------------------------------------------------------------------
+- name: Expose app-admin facts using requested prefix (materialize mode)
+  ansible.builtin.set_fact:
+    "{{ app_admin_fact_prefix }}_username": "{{ _app_admin_effective_username }}"
+    "{{ app_admin_fact_prefix }}_password": "{{ _app_admin_effective_password }}"
+    "{{ app_admin_fact_prefix }}_email": "{{ _app_admin_effective_email }}"
+    "{{ app_admin_fact_prefix }}_secret_path": "{{ app_admin_secret_path }}"
+    "{{ app_admin_fact_prefix }}_source": "{{ _app_admin_resolved_source }}"
+  when: app_admin_mode == 'materialize'
+  no_log: true
+
+- name: Expose app-admin facts using requested prefix (live-read mode)
+  ansible.builtin.set_fact:
+    "{{ app_admin_fact_prefix }}_username": "{{ _app_admin_effective_username }}"
+    "{{ app_admin_fact_prefix }}_password": "{{ _app_admin_effective_password }}"
+    "{{ app_admin_fact_prefix }}_secret_path": "{{ app_admin_secret_path }}"
+    "{{ app_admin_fact_prefix }}_source": "{{ _app_admin_resolved_source }}"
+  when: app_admin_mode == 'live-read'
+  no_log: true

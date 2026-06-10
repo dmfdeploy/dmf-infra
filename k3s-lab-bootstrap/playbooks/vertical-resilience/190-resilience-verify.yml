@@ -1,0 +1,8 @@
+---
+- name: Resilience verify (synthetic round-trip + Object Lock + optional prewarm)
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: true   # ansible_date_time is consumed by soak-prewarm
+  roles:
+    - base/cluster-ready
+    - base/resilience-verify

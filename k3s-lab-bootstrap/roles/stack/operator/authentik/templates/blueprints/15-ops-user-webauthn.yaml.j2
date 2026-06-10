@@ -1,0 +1,46 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+version: 1
+metadata:
+  name: dmf-ops-user-webauthn
+  labels:
+    blueprints.goauthentik.io/description: DMF ops user with WebAuthn passkey authentication
+entries:
+  # --- WebAuthn authenticator stage ---
+  # Keep the setup stage available for the invitation-gated bootstrap enrollment
+  # flow. Do not bind the setup stage directly into default-authentication-flow.
+  - model: authentik_stages_authenticator_webauthn.authenticatorwebauthnstage
+    id: dmf-stage-webauthn
+    state: present
+    identifiers:
+      name: dmf-webauthn-stage
+    attrs:
+      name: dmf-webauthn-stage
+      friendly_name: Passkey
+      device_classes:
+        - platform
+        - cross-platform
+      user_verification: required
+      resident_key_requirement: required
+
+  # --- Ops user ---
+  - model: authentik_core.user
+    id: dmf-user-ops
+    state: present
+    identifiers:
+      email: {{ authentik_bootstrap_passkey_email | to_json }}
+    attrs:
+      username: {{ authentik_bootstrap_passkey_username | to_json }}
+      email: {{ authentik_bootstrap_passkey_email | to_json }}
+      name: {{ authentik_bootstrap_passkey_name | to_json }}
+      is_active: true
+
+  # --- Add user to ops-admin group (upsert, blueprint-managed) ---
+  - model: authentik_core.group
+    id: dmf-group-ops-admin
+    state: present
+    identifiers:
+      name: ops-admin
+    method: add_users
+    attrs:
+      users:
+        - !KeyOf dmf-user-ops

@@ -1,0 +1,351 @@
+---
+netbox_sot_namespace: netbox
+netbox_sot_external_host: >-
+  {{
+    netbox_host
+    | default(
+        (external_base_url | default('http://' ~ (metallb_vip | default('placeholder'))))
+        | regex_replace('^https?://', '')
+        | regex_replace('/.*$', ''),
+        true
+      )
+  }}
+netbox_sot_external_scheme: >-
+  {{
+    'https'
+    if (external_base_url | default('https://' ~ netbox_sot_external_host)).startswith('https://')
+    else 'http'
+  }}
+netbox_sot_path: >-
+  {{ '' if (netbox_exposure | default('host')) == 'host' else (netbox_base_path | default('/netbox')) }}
+netbox_sot_external_base_url: >-
+  {{
+    netbox_sot_external_scheme ~ '://' ~ netbox_sot_external_host
+    if (netbox_exposure | default('host')) == 'host'
+    else (external_base_url | default('http://' ~ (metallb_vip | default('placeholder'))))
+  }}
+netbox_sot_api_base: "{{ netbox_sot_external_base_url ~ netbox_sot_path ~ '/api' }}"
+netbox_sot_api_wait_retries: 60
+netbox_sot_api_wait_delay: 10
+netbox_sot_vault_path: "{{ inventory_dir }}/group_vars/all/vault.yml"
+netbox_sot_vault_password_file: "~/.vault_pass"
+netbox_sot_openbao_namespace: openbao
+netbox_sot_openbao_pod_label_selector: "app.kubernetes.io/name=openbao"
+netbox_sot_openbao_breakglass_file: "{{ eso_openbao_breakglass_file | default('', true) }}"
+netbox_sot_runtime_secret_path: "{{ netbox_runtime_secret_path | default('secret/apps/netbox/runtime') }}"
+
+netbox_sot_admin_token: "{{ vault_netbox_admin_token | default('') }}"
+netbox_sot_awx_token: "{{ vault_netbox_awx_token | default('') }}"
+netbox_sot_librenms_token: "{{ vault_netbox_librenms_token | default('') }}"
+netbox_sot_catalog_token: "{{ vault_netbox_catalog_token | default('') }}"
+netbox_sot_promsd_token: "{{ vault_netbox_promsd_token | default('') }}"
+# Match what the NetBox chart provisions. ADR-0028 D3 (2026-05-24): the
+# NetBox chart's local superuser is the literal `netbox-break-glass` (see
+# roles/stack/operator/netbox/defaults/main.yml). 691-netbox-sot.yml does
+# not load the chart role, so this default cannot ride the chart's value;
+# the literal is duplicated here as the canonical fallback. Keep the two
+# in sync if either changes.
+netbox_sot_admin_username: "{{ netbox_superuser_username | default('netbox-break-glass') }}"
+netbox_sot_admin_password: "{{ vault_netbox_superuser_password | default(vault_bootstrap_admin_password | mandatory) }}"
+
+# Forgejo service user — needed for NetBox datasource URL assembly.
+# Mirrors forgejo-bootstrap default; if forgejo-svc user name changes,
+# update both roles.
+netbox_sot_forgejo_svc_user: "{{ forgejo_svc_user | default('forgejo-svc') }}"
+netbox_sot_kubectl_cmd:
+  - sudo
+  - k3s
+  - kubectl
+netbox_sot_kubectl_exec_target: "deploy/netbox"
+
+netbox_sot_awx_user: awx-netbox
+netbox_sot_librenms_enabled: false
+netbox_sot_librenms_user: librenms-netbox
+netbox_sot_awx_group: awx-readonly
+netbox_sot_librenms_group: librenms-writer
+
+netbox_sot_manage_tokens: true
+
+# ── DMF CMS service account NetBox permissions (Option C) ──────────────────
+# netbox-sot owns the NetBox permission model and dmf-cms-svc user + group.
+# The 698 playbook mints/persists the token for the already-permissioned user.
+cms_netbox_enabled: true
+cms_netbox_group: "dmf-cms-readonly"
+cms_netbox_username: "dmf-cms-svc"
+cms_netbox_permissions:
+  - name: "dcim-readonly"
+    actions: ["view"]
+    object_types:
+      - "dcim.site"
+      - "dcim.sitegroup"
+      - "dcim.region"
+      - "dcim.device"
+      - "dcim.devicetype"
+      - "dcim.devicerole"
+      - "dcim.manufacturer"
+      - "dcim.platform"
+      - "dcim.location"
+      - "dcim.interface"
+      - "dcim.cable"
+      - "dcim.virtualchassis"
+      - "dcim.rack"
+  - name: "ipam-readonly"
+    actions: ["view"]
+    object_types:
+      - "ipam.prefix"
+      - "ipam.ipaddress"
+      - "ipam.vlan"
+      - "ipam.vlangroup"
+      - "ipam.vrf"
+      - "ipam.service"
+  - name: "tenancy-readonly"
+    actions: ["view"]
+    object_types:
+      - "tenancy.tenant"
+      - "tenancy.tenantgroup"
+  - name: "virtualization-readonly"
+    actions: ["view"]
+    object_types:
+      - "virtualization.cluster"
+      - "virtualization.virtualmachine"
+  # extras.tag (view) so the console catalog page can resolve the lifecycle:*
+  # status tags on each catalog service. Without it the tag read 403s and the
+  # console shows "unknown" (ADR-0032 console-read fix).
+  - name: "extras-readonly"
+    actions: ["view"]
+    object_types:
+      - "extras.tag"
+
+# ── DMF catalog writer service account (ADR-0032) ──────────────────────────
+# Scoped NetBox writer for catalog launchers (e.g. media-launch-nmos-cpp).
+# Per ADR-0032 (refining ADR-0028 C3), catalog launchers must mutate NetBox
+# via this narrowly-scoped account — never the superuser admin token. The
+# launcher CREATEs the per-deployment ipam.service record + the per-function
+# app:<key> tag and PATCHes the lifecycle tag across all 3 stages, so the
+# writer is scoped to exactly the two models it touches:
+#   ipam.service -> view, add, change
+#   extras.tag   -> view, add
+# No superuser/staff, no dcim, no tag change/delete. The 691 playbook mints +
+# persists the token (netbox_catalog_token) for the already-permissioned user.
+netbox_sot_catalog_writer_enabled: true
+netbox_sot_catalog_group: "dmf-catalog-writer"
+netbox_sot_catalog_username: "dmf-catalog-svc"
+netbox_sot_catalog_permissions:
+  - name: "catalog-service-writer"
+    actions: ["view", "add", "change"]
+    object_types:
+      - "ipam.service"
+  - name: "catalog-tag-writer"
+    actions: ["view", "add"]
+    object_types:
+      - "extras.tag"
+  # Read-only on dcim.device: the launcher looks up the parent load-balancer
+  # device (dmf-traefik) to attach the ipam.service to. View only — no write.
+  - name: "catalog-device-reader"
+    actions: ["view"]
+    object_types:
+      - "dcim.device"
+
+netbox_sot_awx_permission_name: "awx-readonly"
+netbox_sot_awx_permission_description: "AWX inventory read-only access"
+netbox_sot_awx_actions:
+  - view
+netbox_sot_awx_object_types:
+  - dcim.site
+  - dcim.sitegroup
+  - dcim.region
+  - tenancy.tenant
+  - tenancy.tenantgroup
+  - dcim.device
+  - dcim.devicetype
+  - dcim.devicerole
+  - dcim.manufacturer
+  - dcim.platform
+  - dcim.location
+  - dcim.interface
+  - ipam.ipaddress
+  - ipam.prefix
+  - ipam.vlan
+  - virtualization.cluster
+  - virtualization.virtualmachine
+  - ipam.service
+  - dcim.rack
+
+netbox_sot_librenms_view_permission_name: "librenms-readonly"
+netbox_sot_librenms_view_permission_description: "LibreNMS discovery read access"
+netbox_sot_librenms_view_actions:
+  - view
+netbox_sot_librenms_view_object_types:
+  - dcim.site
+  - dcim.sitegroup
+  - dcim.region
+  - tenancy.tenant
+  - tenancy.tenantgroup
+  - dcim.device
+  - dcim.devicetype
+  - dcim.devicerole
+  - dcim.manufacturer
+  - dcim.platform
+  - dcim.location
+  - dcim.interface
+  - ipam.ipaddress
+  - ipam.prefix
+  - ipam.vlan
+  - virtualization.cluster
+  - virtualization.virtualmachine
+  - ipam.service
+  - dcim.rack
+
+netbox_sot_librenms_write_permission_name: "librenms-writer"
+netbox_sot_librenms_write_permission_description: "LibreNMS discovery write access"
+netbox_sot_librenms_write_actions:
+  - add
+  - change
+netbox_sot_librenms_write_object_types:
+  - dcim.device
+  - dcim.interface
+  - ipam.ipaddress
+
+# DMF catalog tag taxonomy — platform-wide invariants used by AWX-driven
+# catalog launchers (e.g. media-launch-nmos-cpp). Keep colours and
+# descriptions consistent across functions; per-app tags (app:<key>)
+# are created on first provision by the catalog role.
+netbox_sot_catalog_tags:
+  - { name: "dmf-catalog",            color: "4caf50", description: "DMF catalog-managed service" }
+  - { name: "lifecycle:bootstrapped", color: "ff9800", description: "Catalog entry registered, workload not running" }
+  - { name: "lifecycle:active",       color: "4caf50", description: "Catalog entry workload running" }
+  - { name: "exposure:private",       color: "757575", description: "Cluster-internal service (no external ingress)" }
+  - { name: "exposure:public",        color: "f44336", description: "Externally exposed via Traefik" }
+
+netbox_sot_monitoring_tags:
+  - { name: "monitoring:scrape", color: "2196f3", description: "Prometheus scrape lane" }
+  - { name: "monitoring:probe",  color: "ff9800", description: "Prometheus blackbox probe lane" }
+  - { name: "monitoring:snmp",   color: "9c27b0", description: "Prometheus SNMP discovery lane" }
+
+netbox_sot_monitoring_choice_sets:
+  - name: "dmf_blackbox_probe_modules"
+    description: "DMF blackbox-exporter probe modules"
+    extra_choices:
+      - [http_2xx, http_2xx]
+      - [http_2xx_insecure, http_2xx_insecure]
+      - [tcp_connect, tcp_connect]
+      - [icmp, icmp]
+  - name: "dmf_snmp_modules"
+    description: "DMF SNMP-exporter modules"
+    extra_choices:
+      - [if_mib, if_mib]
+  - name: "dmf_monitoring_severities"
+    description: "DMF monitoring alert severities"
+    extra_choices:
+      - [none, none]
+      - [info, info]
+      - [warning, warning]
+      - [critical, critical]
+
+netbox_sot_monitoring_custom_fields:
+  - name: "metrics_port"
+    label: "Monitoring Metrics Port"
+    description: "Port used by the scrape lane."
+    type: "integer"
+    default: ""
+    choice_set: ""
+    required: false
+    object_types:
+      - "ipam.service"
+      - "dcim.device"
+      - "virtualization.virtualmachine"
+  - name: "metrics_path"
+    label: "Monitoring Metrics Path"
+    description: "HTTP path used by the scrape lane."
+    type: "text"
+    default: "/metrics"
+    choice_set: ""
+    required: false
+    object_types:
+      - "ipam.service"
+      - "dcim.device"
+      - "virtualization.virtualmachine"
+  - name: "probe_module"
+    label: "Monitoring Probe Module"
+    description: "Blackbox-exporter probe module used by the probe lane."
+    type: "select"
+    default: "http_2xx"
+    choice_set: "dmf_blackbox_probe_modules"
+    required: false
+    object_types:
+      - "ipam.service"
+      - "dcim.device"
+      - "virtualization.virtualmachine"
+  - name: "snmp_module"
+    label: "Monitoring SNMP Module"
+    description: "SNMP-exporter module used by the SNMP lane."
+    type: "select"
+    default: "if_mib"
+    choice_set: "dmf_snmp_modules"
+    required: false
+    object_types:
+      - "dcim.device"
+  - name: "cluster_service"
+    label: "Monitoring Cluster Service"
+    description: "Kubernetes Service name for in-cluster probe/scrape targets."
+    type: "text"
+    default: ""
+    choice_set: ""
+    required: false
+    object_types:
+      - "ipam.service"
+      - "dcim.device"
+      - "virtualization.virtualmachine"
+  - name: "cluster_namespace"
+    label: "Monitoring Cluster Namespace"
+    description: "Kubernetes namespace for in-cluster probe/scrape targets."
+    type: "text"
+    default: ""
+    choice_set: ""
+    required: false
+    object_types:
+      - "ipam.service"
+      - "dcim.device"
+      - "virtualization.virtualmachine"
+  - name: "cluster_port"
+    label: "Monitoring Cluster Port"
+    description: "In-cluster Service port for probe/scrape (not necessarily the ingress :443)."
+    type: "integer"
+    default: ""
+    choice_set: ""
+    required: false
+    object_types:
+      - "ipam.service"
+      - "dcim.device"
+      - "virtualization.virtualmachine"
+
+netbox_sot_promsd_enabled: true
+netbox_sot_promsd_group: "monitoring-readonly"
+netbox_sot_promsd_username: "promsd-netbox"
+netbox_sot_promsd_permission_name: "monitoring-readonly"
+netbox_sot_promsd_permission_description: "PromSD NetBox monitoring read access"
+netbox_sot_promsd_token_name: "PromSD monitoring reader"
+netbox_sot_promsd_actions:
+  - "view"
+netbox_sot_promsd_object_types:
+  - "ipam.service"
+  - "ipam.ipaddress"
+  - "dcim.device"
+  - "dcim.interface"
+  - "virtualization.virtualmachine"
+  - "extras.tag"
+
+# ── NetBox external datasource (git-backed from Forgejo) ────────────────────
+# NetBox core Data Sources model: https://docs.netbox.dev/en/stable/models/core/datasource/
+netbox_sot_datasource_enabled: true
+netbox_sot_datasource_name: "forgejo-netbox-data"
+netbox_sot_datasource_type: "git"
+netbox_sot_datasource_branch: main
+netbox_sot_datasource_ignore_rules: |
+  *.md
+  .gitkeep
+netbox_sot_datasource_sync_interval: 1440  # minutes (24h); 0 = manual only
+# Token is sourced from OpenBao at runtime (forgejo_svc_token); the URL is
+# assembled in tasks/main.yml after the token is read.
+netbox_sot_forgejo_datasource_token: ""
+netbox_sot_datasource_url: ""  # set_fact in tasks after token resolution

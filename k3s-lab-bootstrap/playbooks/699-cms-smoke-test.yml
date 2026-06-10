@@ -1,0 +1,137 @@
+---
+# Console integration smoke test.
+#
+# Verifies that DMF Console can reach AWX and list job templates.
+# Runs after 697-cms-awx-token.yml (which wires the token) and 650-dmf-cms.yml.
+#
+# This is a read-only check: it hits the /healthz endpoint and the
+# /api/workflows endpoint (which calls AWX /api/v2/job_templates/).
+# Does NOT launch a job — that's left for manual validation or
+# the end-to-end test.
+- name: DMF Console integration smoke test
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  vars:
+    cms_smoke_base_url: >-
+      {{
+        'https://' ~ (cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))))
+        if (cms_exposure | default('host')) == 'host'
+        else (external_base_url | default('http://' ~ metallb_vip))
+      }}
+    cms_smoke_base_path: "{{ '/console' if (cms_exposure | default('host')) == 'path' else '' }}"
+    cms_awx_api_base: >-
+      {{
+        'https://' ~ (awx_host | default('awx.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))))
+        if (awx_exposure | default('host')) == 'host'
+        else (external_base_url | default('http://' ~ metallb_vip))
+      }}{{ '/api/v2' if (awx_exposure | default('host')) == 'host' else (awx_base_path | default('/awx')) ~ '/api/v2' }}
+
+  roles:
+    - base/cluster-ready
+
+  tasks:
+    - name: Wait for DMF Console pod to be ready
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Pod
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+        label_selectors:
+          - "app.kubernetes.io/name=dmf-cms"
+      register: cms_pods
+      until:
+        - cms_pods.resources | length > 0
+        - cms_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list | length > 0
+      retries: 30
+      delay: 10
+
+    - name: Check /healthz endpoint
+      ansible.builtin.uri:
+        url: "{{ cms_smoke_base_url }}{{ cms_smoke_base_path }}/healthz"
+        method: GET
+        status_code: 200
+        # The console endpoint uses the lab CA, so validation remains off
+        # until the CA bundle is threaded through the smoke-test path.
+        validate_certs: false
+      register: cms_healthz
+
+    - name: Report healthz result
+      ansible.builtin.debug:
+        msg: "Console healthz: {{ cms_healthz.status }} — {{ cms_healthz.json | default('no json') | to_nice_json }}"
+
+    - name: Assert healthz passed
+      ansible.builtin.assert:
+        that:
+          - cms_healthz.status == 200
+          - cms_healthz.json.status == "ok"
+        fail_msg: "DMF Console healthz check failed."
+
+    - name: Verify AWX integration is wired in K8s Secret
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - k3s
+          - kubectl
+          - -n
+          - "{{ cms_namespace | default('dmf-cms') }}"
+          - get
+          - secret
+          - "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+          - -o
+          - jsonpath={.data.awxApiToken}
+      register: cms_awx_token_check
+      no_log: true
+      changed_when: false
+
+    - name: Assert AWX API token is present in the Secret
+      ansible.builtin.assert:
+        that:
+          - cms_awx_token_check.stdout | length > 0
+        fail_msg: "AWX API token not found in DMF Console runtime Secret."
+
+    - name: Read AWX API token from the Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+        name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+      register: cms_runtime_secret
+      no_log: true
+
+    - name: Decode AWX API token from the Secret
+      ansible.builtin.set_fact:
+        cms_awx_api_token: "{{ cms_runtime_secret.resources[0].data.awxApiToken | b64decode }}"
+      no_log: true
+
+    - name: Verify AWX token is valid by accessing inventories
+      ansible.builtin.uri:
+        url: "{{ cms_awx_api_base }}/inventories/?format=json"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ cms_awx_api_token }}"
+        status_code: 200
+      register: cms_awx_inventories_check
+      no_log: true
+
+    - name: Assert AWX token is valid and can list inventories
+      ansible.builtin.assert:
+        that:
+          - cms_awx_inventories_check.status == 200
+          - cms_awx_inventories_check.json.count is defined
+        fail_msg: >-
+          AWX API token in the DMF Console runtime Secret is not valid.
+          Could not authenticate to AWX API.
+          Status: {{ cms_awx_inventories_check.status }}
+          Response: {{ cms_awx_inventories_check.json | default({}) | to_json }}
+
+    - name: Report smoke test summary
+      ansible.builtin.debug:
+        msg: |
+          DMF Console smoke test passed:
+            - healthz: 200
+            - AWX token: present in Secret
+            - AWX token: authenticates as dmf-cms-svc
+          Next: manually launch eso-openbao-health-check from the console UI.

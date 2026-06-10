@@ -1,0 +1,96 @@
+# Ansible vault files — never commit plaintext secrets.
+# Encrypted vault.yml files are OK to commit (they're AES256 encrypted).
+# Unencrypted copies should never be tracked.
+*.vault_pass
+.vault_pass
+vault_pass
+
+# Local inventory overrides — real node IPs and VIPs stay in dmf-env (private repo).
+# If you want a local dev inventory, add it here and never commit it.
+inventories/local/
+
+# Ansible retry files
+*.retry
+
+# macOS metadata
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+Icon
+Icon?
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+__MACOSX/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Editor / local workspace noise
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Qwen artifacts
+.qwen/*.orig
+
+# ansible-builder build output (regenerated on every build)
+k3s-lab-bootstrap/ee/context/
+
+# === Secrets-prevention baseline (DMF Platform 2026-05-07) ===
+# Patterns that should never be committed across any DMF Platform repo.
+# Repo-specific rules belong above this block; add new shared rules here.
+
+# Kubeconfigs
+*.kubeconfig
+kubeconfig
+kube.config
+
+# Terraform / OpenTofu state
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Ansible inventory (auto-generated)
+hosts.ini
+
+# Cryptographic material
+*.pem
+*.key
+*.p12
+*.pfx
+
+# OpenBao / Vault tokens + key shares
+openbao-keys*.json
+openbao-keys*.hcl
+.bao-token
+.vault-token
+
+# Ansible secrets
+*.retry
+.vault_pass
+vault_pass
+
+# Env files / generic secrets
+.env
+.env.*
+.netrc
+secret_id
+secret_id.*

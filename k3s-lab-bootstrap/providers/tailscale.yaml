@@ -1,0 +1,85 @@
+---
+# Provider Descriptor — Tailscale / Headscale VPN.
+#
+# Schema: docs/architecture/DMF Provider Descriptor Model.md (ADR-0026,
+# https://github.com/dmfdeploy/dmfdeploy umbrella).
+#
+# This is the reference descriptor landed alongside ADR-0026 as Promotion
+# Criterion 1. It mirrors the bindings hand-rolled into
+# dmf-env/inventories/hetzner-arm/group_vars/all/tailscale.yml today.
+schema_version: 1
+
+id: tailscale
+name: "Tailscale / Headscale VPN"
+kind: vpn
+applies_to_profiles:
+  - cloud
+  - flypack-offline
+  - flypack-online
+optional: true   # Operator can skip; the role's own assertion gates downstream use.
+
+inputs:
+  - name: headscale_url
+    prompt: "Headscale URL (e.g. https://hs.example.com)"
+    type: url
+    required: true
+    inventory_var: tailscale_headscale_url
+
+  - name: hostname
+    prompt: "Tailscale hostname per node"
+    type: string
+    default: "{{ inventory_hostname }}"
+    advanced: true
+    inventory_var: tailscale_hostname
+
+  - name: accept_routes
+    prompt: "Accept advertised routes from peers?"
+    type: bool
+    default: true
+    advanced: true
+    inventory_var: tailscale_accept_routes
+
+  - name: advertise_exit_node
+    prompt: "Advertise this node as an exit node?"
+    type: bool
+    default: false
+    advanced: true
+    inventory_var: tailscale_advertise_exit_node
+
+  - name: ephemeral
+    prompt: "Register as ephemeral (auto-expire on disconnect)?"
+    type: bool
+    default: true
+    advanced: true
+    inventory_var: tailscale_ephemeral
+
+secrets:
+  - name: authkey
+    prompt: "Tailscale/Headscale pre-auth key (reusable)"
+    bundle_path: providers.tailscale.authkey
+    vault_path: secret/platform/tailscale
+    vault_field: authkey
+    export_var: vault_tailscale_authkey
+    inventory_var: tailscale_authkey
+    indirection: "{{ vault_tailscale_authkey | default('') }}"
+
+group_vars_file:
+  path: "group_vars/all/tailscale.yml"
+  template: |
+    ---
+    # Generated from dmf-infra/k3s-lab-bootstrap/providers/tailscale.yaml.
+    # Schema: ADR-0026 Provider Descriptors. Do not edit by hand — re-run
+    # the wizard (or descriptor renderer) to regenerate.
+    tailscale_headscale_url: "{{ headscale_url }}"
+    tailscale_hostname: "{{ hostname }}"
+    tailscale_accept_routes: {{ accept_routes }}
+    tailscale_advertise_exit_node: {{ advertise_exit_node }}
+    tailscale_ephemeral: {{ ephemeral }}
+    tailscale_authkey: "{{ secrets.authkey.indirection }}"
+
+roles_consuming:
+  - dmf-infra/k3s-lab-bootstrap/roles/base/tailscale
+
+secret_rotation:
+  owner: operator
+  cadence: yearly   # Headscale reusable pre-auth keys default to 1y expiry.

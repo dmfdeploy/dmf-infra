@@ -1,0 +1,23 @@
+---
+# admin-identity-resolve — read the live admin user + password from a cluster
+# K8s Secret, falling back to caller-supplied values.
+#
+# Inputs (caller-supplied via vars:):
+#   admin_resolve_app                : free-form app name (log messages only)
+#   admin_resolve_secret_ns          : K8s namespace containing the Secret
+#   admin_resolve_secret_name        : K8s Secret name
+#   admin_resolve_username_key       : Secret data key for the username
+#                                       (default 'username')
+#   admin_resolve_password_key       : Secret data key for the password
+#                                       (default 'password')
+#   admin_resolve_fallback_username  : value used if Secret missing/incomplete
+#   admin_resolve_fallback_password  : value used if Secret missing/incomplete
+#
+# Outputs (set_fact):
+#   _resolved_admin_user
+#   _resolved_admin_password
+#
+# ADR-0007 compliance: k8s_info reads via kubeconfig; no secrets in argv;
+# all tasks that touch the password set no_log: true.
+admin_resolve_username_key: "username"
+admin_resolve_password_key: "password"

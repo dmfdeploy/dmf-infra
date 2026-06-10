@@ -1,0 +1,53 @@
+---
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ blackbox_namespace }}"
+
+- name: Add prometheus-community Helm repository
+  kubernetes.core.helm_repository:
+    name: prometheus-community
+    repo_url: "{{ blackbox_helm_repo }}"
+
+- name: Template blackbox-exporter Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/blackbox-exporter-values.yml
+    mode: "0644"
+
+- name: Deploy blackbox-exporter via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: blackbox-exporter
+    chart_ref: prometheus-community/prometheus-blackbox-exporter
+    chart_version: "{{ blackbox_helm_chart_version }}"
+    release_namespace: "{{ blackbox_namespace }}"
+    create_namespace: true
+    values_files:
+      - /tmp/blackbox-exporter-values.yml
+    wait: true
+    wait_timeout: 300s
+
+- name: Wait for blackbox-exporter rollout
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ blackbox_namespace }}"
+      - rollout
+      - status
+      - deployment/{{ blackbox_fullname_override }}
+      - --timeout=180s
+  changed_when: false
+
+- name: Cleanup temp values file
+  ansible.builtin.file:
+    path: /tmp/blackbox-exporter-values.yml
+    state: absent

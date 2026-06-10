@@ -1,0 +1,302 @@
+---
+# Deploy DMF Console with Authentik-backed OIDC and a cluster runtime Secret.
+
+- name: Skip role when DMF Console is disabled
+  ansible.builtin.meta: end_role
+  when: not cms_enabled | bool
+
+- name: Acquire dmf-cms apply lock
+  ansible.builtin.file:
+    path: "{{ cms_lock_file }}"
+    state: touch
+  register: _cms_lock_file
+  changed_when: false
+  delegate_to: localhost
+  become: false
+
+- name: Protect apply with lock
+  block:
+    - name: Create DMF Console namespace
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ cms_namespace }}"
+
+    - name: Read existing DMF Console runtime Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ cms_runtime_secret_name }}"
+        namespace: "{{ cms_namespace }}"
+      register: _cms_runtime_secret_info
+      changed_when: false
+
+    - name: Set existing DMF Console runtime Secret data
+      ansible.builtin.set_fact:
+        _cms_runtime_secret_data: "{{ _cms_runtime_secret_info.resources[0].data | default({}) }}"
+      when: _cms_runtime_secret_info.resources | length > 0
+      no_log: true
+
+    - name: Default DMF Console runtime Secret data
+      ansible.builtin.set_fact:
+        _cms_runtime_secret_data: {}
+      when: _cms_runtime_secret_data is not defined
+      no_log: true
+
+    - name: Generate DMF Console session secret when missing
+      ansible.builtin.command:
+        argv:
+          - openssl
+          - rand
+          - -base64
+          - "48"
+      register: _cms_secret_key_generated
+      changed_when: false
+      when:
+        - (cms_secret_key | default('') | length) == 0
+        - (_cms_runtime_secret_data[cms_runtime_secret_session_key] | default('')) | length == 0
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Read DMF Console OIDC client credentials from Authentik
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - k3s
+          - kubectl
+          - -n
+          - "{{ authentik_namespace | default('authentik') }}"
+          - exec
+          - deploy/{{ authentik_release_name | default('authentik') }}-worker
+          - --
+          - ak
+          - shell
+          - -c
+          - >-
+            import json;
+            from authentik.providers.oauth2.models import OAuth2Provider;
+            provider = OAuth2Provider.objects.get(name="{{ cms_oidc_provider_name }}");
+            print(json.dumps({"client_id": provider.client_id, "client_secret": provider.client_secret}))
+      register: _cms_oidc_provider_credentials
+      changed_when: false
+      no_log: true
+      retries: 30
+      delay: 5
+      until:
+        - _cms_oidc_provider_credentials.rc == 0
+        - _cms_oidc_provider_credentials.stdout_lines | length > 0
+
+    - name: Parse DMF Console OIDC client credentials
+      ansible.builtin.set_fact:
+        dmf_cms_oidc_provider_credentials_parsed: "{{ _cms_oidc_provider_credentials.stdout_lines | last | from_json }}"
+      no_log: true
+
+    - name: Set effective DMF Console runtime Secret values
+      ansible.builtin.set_fact:
+        cms_secret_key_effective: >-
+          {{
+            (
+              _cms_runtime_secret_data[cms_runtime_secret_session_key]
+              | default(_cms_secret_key_generated.stdout | default(cms_secret_key | default('')) | trim, true)
+            )
+          }}
+        cms_oidc_client_secret_effective: >-
+          {{
+            dmf_cms_oidc_provider_credentials_parsed.client_secret | default('')
+          }}
+      no_log: true
+
+    - name: Encode new DMF Console runtime Secret values as base64
+      ansible.builtin.shell:
+        cmd: printf '%s' "{{ cms_secret_key_effective }}" | openssl base64 -A
+      register: _cms_secret_key_b64
+      changed_when: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Encode DMF Console OIDC client secret as base64
+      ansible.builtin.shell:
+        cmd: printf '%s' "{{ cms_oidc_client_secret_effective }}" | openssl base64 -A
+      register: _cms_oidc_secret_b64
+      changed_when: false
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    - name: Build DMF Console runtime Secret payload (base64 data)
+      ansible.builtin.set_fact:
+        _cms_runtime_secret_data_merged: >-
+          {{
+            {
+              cms_runtime_secret_session_key: _cms_secret_key_b64.stdout | default(''),
+              cms_runtime_secret_oidc_key: _cms_oidc_secret_b64.stdout | default('')
+            }
+            | combine(_cms_runtime_secret_data | default({}) | dict2items | rejectattr('key', 'in', [cms_runtime_secret_session_key, cms_runtime_secret_oidc_key]) | list | items2dict)
+          }}
+      no_log: true
+
+    - name: Update DMF Console runtime Secret (preserve existing keys like authentikApiToken)
+      ansible.builtin.shell:
+        cmd: |
+          sudo k3s kubectl -n {{ cms_namespace }} apply -f - <<EOF
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: {{ cms_runtime_secret_name }}
+          type: Opaque
+          data:
+            {{ cms_runtime_secret_session_key }}: {{ _cms_secret_key_b64.stdout | default('') }}
+            {{ cms_runtime_secret_oidc_key }}: {{ _cms_oidc_secret_b64.stdout | default('') }}
+          EOF
+      no_log: true
+
+    # ── Registry image presence check ─────────────────────────────────────────
+    # As of the 2026-05-19 convergence (ADR-0025 + public registry plan),
+    # the dmf-cms image is seeded from GHCR into cluster-internal Zot by
+    # playbook 630-zot-seed-platform.yml BEFORE this role runs. Kubelet
+    # pulls normally via imagePullPolicy: IfNotPresent.
+    #
+    # We do a single anonymous manifest check against Zot's registry HTTP
+    # API. If the image is missing, fail loud with a pointer at 630 —
+    # don't try to fall back to a workstation build. That legacy path was
+    # removed in the 2026-05-19 convergence run; the canonical source of
+    # truth is now ghcr.io/dmfdeploy/dmf-cms:<VERSION>.
+
+    - name: Assert dmf-cms image is present in cluster-internal Zot
+      # Runs on the control node (NOT delegate_to: localhost) — the node
+      # resolves + reaches its own registry ingress via CoreDNS + Traefik on
+      # every lane, including the single-node sandbox lane which has no
+      # Tailscale and no workstation→cluster ingress path. (Delegating this to
+      # localhost assumed the operator workstation could reach
+      # registry.<domain>, which is false on the sandbox lane — it 'nodename
+      # nor servname' fails on the unresolvable .test host.) Same rationale as
+      # the 630 on-node fix (ADR-0033 bundle).
+      ansible.builtin.uri:
+        url: "https://{{ cms_image_registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/v2/dmf-cms/manifests/{{ cms_image_tag }}"
+        method: HEAD
+        status_code: 200
+        validate_certs: false
+      changed_when: false
+      register: _cms_image_check
+      failed_when: _cms_image_check.status != 200
+      vars:
+        # Re-run remediation: 630-zot-seed-platform.yml is wired into
+        # bootstrap-provision-post-seed.yml between 620-forgejo and
+        # 640-awx, so the normal site.yml run handles this. If you got
+        # here from a partial re-run (e.g. invoking 650 directly), seed
+        # manually:
+        #   bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/playbooks/630-zot-seed-platform.yml
+        # or, if 650 already partially ran and you just want to re-mirror:
+        #   bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-provision-post-seed.yml --tags zot-seed
+        _cms_remediation: "see comment above this assert task"
+
+    - name: Report the image is present
+      ansible.builtin.debug:
+        msg: >-
+          dmf-cms image {{ cms_image_repository }}:{{ cms_image_tag }} is
+          present in Zot. To publish a new version: build + push to
+          ghcr.io/dmfdeploy/dmf-cms:<new-tag> (see
+          dmf-cms/scripts/publish-to-ghcr.sh), bump cms_image_tag, then
+          either re-run site.yml (auto-invokes 630) or run
+          `bin/run-playbook.sh <env>
+          ../dmf-infra/k3s-lab-bootstrap/bootstrap-provision-post-seed.yml
+          --tags zot-seed` to re-mirror without walking the rest of
+          post-seed.
+      changed_when: false
+
+    - name: Stage DMF Console chart on target
+      ansible.builtin.copy:
+        src: "{{ cms_chart_source_path }}/"
+        dest: "{{ cms_chart_stage_path }}/"
+        mode: "0644"
+        directory_mode: "0755"
+
+    # ── Catalog YAML gathering ─────────────────────────────────────────────────
+    # Read *.yaml/*.yml files from cms_catalog_source_dir, parse each one,
+    # and build a dict keyed by basename. The dict is rendered into Helm
+    # values as catalog.entries so the ConfigMap template can mount them.
+    #
+    # Per-file work is delegated to tasks/read-catalog-file.yml which
+    # slurps + b64decode + from_yaml + merges into _cms_catalog_entries.
+
+    - name: Find catalog YAML files in source dir
+      ansible.builtin.find:
+        paths: "{{ cms_catalog_source_dir }}"
+        patterns:
+          - "*.yaml"
+          - "*.yml"
+      register: _cms_catalog_files
+      failed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: Initialize catalog entries dict
+      ansible.builtin.set_fact:
+        _cms_catalog_entries: {}
+
+    - name: Read + parse + merge each catalog file
+      ansible.builtin.include_tasks: read-catalog-file.yml
+      loop: "{{ _cms_catalog_files.files | default([]) }}"
+      loop_control:
+        loop_var: _cms_catalog_file_item
+        label: "{{ _cms_catalog_file_item.path | basename }}"
+
+    - name: Catalog gather summary
+      ansible.builtin.debug:
+        msg: >-
+          catalog: gathered {{ _cms_catalog_entries | length }} entries
+          from {{ cms_catalog_source_dir }}
+          ({{ _cms_catalog_files.matched | default(0) }} files matched)
+
+    - name: Set cms_catalog_enabled based on gathered entries
+      ansible.builtin.set_fact:
+        cms_catalog_enabled: "{{ (_cms_catalog_entries | length) > 0 }}"
+      when: cms_catalog_enabled is not defined
+
+    - name: Template DMF Console Helm values
+      ansible.builtin.template:
+        src: values.yml.j2
+        dest: "{{ cms_chart_values_path }}"
+        mode: "0644"
+      no_log: true
+
+    - name: Deploy DMF Console via Helm
+      kubernetes.core.helm:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        name: "{{ cms_release_name }}"
+        chart_ref: "{{ cms_chart_stage_path }}"
+        release_namespace: "{{ cms_namespace }}"
+        create_namespace: false
+        values_files:
+          - "{{ cms_chart_values_path }}"
+        wait: true
+        wait_timeout: 600s
+
+    - name: Wait for DMF Console deployment to be ready
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ cms_release_name }}"
+        namespace: "{{ cms_namespace }}"
+      register: _cms_deployment
+      until:
+        - _cms_deployment.resources | length > 0
+        - _cms_deployment.resources[0].status.readyReplicas | default(0) | int >= 1
+      retries: "{{ cms_wait_retries }}"
+      delay: "{{ cms_wait_delay }}"
+  always:
+    - name: Release dmf-cms apply lock
+      ansible.builtin.file:
+        path: "{{ cms_lock_file }}"
+        state: absent
+      changed_when: false
+      delegate_to: localhost
+      become: false

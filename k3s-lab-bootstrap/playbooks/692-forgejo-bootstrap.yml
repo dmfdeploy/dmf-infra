@@ -1,0 +1,11 @@
+---
+- name: Configure Forgejo service user and repos
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - role: common/openbao-session
+      vars:
+        openbao_session_mode: operator
+    - stack/operator/forgejo-bootstrap

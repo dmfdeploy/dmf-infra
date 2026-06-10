@@ -1,0 +1,47 @@
+---
+blackbox_namespace: monitoring
+blackbox_helm_repo: https://prometheus-community.github.io/helm-charts
+blackbox_helm_chart_version: "11.11.0"
+
+# fullnameOverride ensures the Service is named `blackbox` (matching the
+# vendored prometheus scrape config which targets `blackbox.monitoring.svc`).
+blackbox_fullname_override: blackbox
+
+# Blackbox probe modules — must match the NetBox choice set
+# (dmf_blackbox_probe_modules). Four modules cover the DMF probe lanes.
+blackbox_modules:
+  http_2xx:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: []
+      method: GET
+      preferred_ip_protocol: ip4
+  http_2xx_insecure:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: []
+      method: GET
+      preferred_ip_protocol: ip4
+      tls_config:
+        insecure_skip_verify: true
+  tcp_connect:
+    prober: tcp
+    timeout: 5s
+  icmp:
+    prober: icmp
+    timeout: 5s
+    icmp:
+      preferred_ip_protocol: ip4
+
+# Sandbox-sized resources — blackbox is lightweight (dispatches probes,
+# no TSDB or heavy state). Sized above alertmanager (20m/64Mi) since it
+# runs multiple prober goroutines, but well under Prometheus.
+blackbox_resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 100m
+    memory: 128Mi

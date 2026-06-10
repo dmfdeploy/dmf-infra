@@ -1,0 +1,249 @@
+---
+awx_integration_vault_path: "{{ inventory_dir }}/group_vars/all/vault.yml"
+awx_integration_vault_password_file: "~/.vault_pass"
+awx_integration_openbao_namespace: openbao
+awx_integration_openbao_pod_label_selector: "app.kubernetes.io/name=openbao"
+awx_integration_openbao_breakglass_file: "{{ eso_openbao_breakglass_file | default('', true) }}"
+awx_integration_forgejo_runtime_secret_path: "{{ forgejo_runtime_secret_path | default('secret/apps/forgejo/runtime') }}"
+awx_integration_netbox_runtime_secret_path: "{{ netbox_runtime_secret_path | default('secret/apps/netbox/runtime') }}"
+awx_integration_runtime_secret_path: secret/apps/awx/runtime
+awx_integration_awx_external_host: >-
+  {{
+    awx_host
+    | default(
+        (external_base_url | default('http://' ~ (metallb_vip | default('placeholder'))))
+        | regex_replace('^https?://', '')
+        | regex_replace('/.*$', ''),
+        true
+      )
+  }}
+awx_integration_awx_scheme: >-
+  {{
+    'https'
+    if (external_base_url | default('https://' ~ awx_integration_awx_external_host)).startswith('https://')
+    else 'http'
+  }}
+awx_integration_external_base_url: >-
+  {{
+    awx_integration_awx_scheme ~ '://' ~ awx_integration_awx_external_host
+    if (awx_exposure | default('host')) == 'host'
+    else (external_base_url | default('http://' ~ (metallb_vip | default('placeholder'))))
+  }}
+awx_integration_forgejo_host: >-
+  {{
+    forgejo_host
+    | default(
+        awx_integration_external_base_url
+        | regex_replace('^https?://', '')
+        | regex_replace('/.*$', ''),
+        true
+      )
+  }}
+awx_integration_forgejo_scheme: >-
+  {{
+    'https'
+    if awx_integration_external_base_url.startswith('https://')
+    else 'http'
+  }}
+awx_integration_forgejo_base_url: "{{ awx_integration_forgejo_scheme }}://{{ awx_integration_forgejo_host }}"
+
+awx_integration_api_base: "{{ awx_integration_external_base_url ~ awx_integration_awx_path ~ '/api/v2' }}"
+awx_integration_awx_path: >-
+  {{ '' if (awx_exposure | default('host')) == 'host' else (awx_path | default('/awx')) }}
+awx_integration_netbox_path: "/netbox"
+awx_integration_netbox_namespace: "netbox"
+awx_integration_forgejo_api_base: "{{ awx_integration_forgejo_base_url }}/api/v1"
+
+# In-cluster Forgejo service URL for the SCM clones AWX performs. AWX's project
+# syncs run in its EE pods (in-cluster), so cloning the ingress host
+# (awx_integration_forgejo_base_url) needlessly goes out through Traefik and, on
+# the local-CA lane, hits the untrusted ingress cert -> sync fails. The internal
+# service serves git over plain HTTP on :3000 (no TLS, no ingress). Mirrors
+# awx_integration_netbox_url, already an in-cluster svc URL.
+# NOTE: api_base above intentionally stays on the ingress host — the configure
+# play runs on the NODE, which resolves the ingress host (321 /etc/hosts) but
+# not *.svc.cluster.local (nodes don't use cluster DNS).
+awx_integration_forgejo_namespace: "{{ forgejo_namespace | default('forgejo') }}"
+awx_integration_forgejo_internal_url: "http://forgejo-http.{{ awx_integration_forgejo_namespace }}.svc.cluster.local:3000"
+
+# Match the AWX CR admin_user. Per ADR-0028 D3 / survey §3.2 the local AWX
+# admin is decoupled from the bootstrap operator username: it is the canonical
+# `awx-break-glass` (see roles/stack/operator/awx/defaults/main.yml). Never fall
+# back to vault_bootstrap_admin_username — the operator identity must not leak
+# into the app-local admin (ADR-0024/0028).
+awx_integration_admin_user: "{{ awx_admin_user | default('awx-break-glass') }}"
+awx_integration_admin_password: "{{ awx_admin_password | default(vault_awx_admin_password | default(vault_bootstrap_admin_password | mandatory)) }}"
+awx_integration_read_admin_password_from_cluster: true
+awx_integration_admin_password_secret_namespace: "{{ awx_namespace | default('awx') }}"
+awx_integration_admin_password_secret_name: "{{ (awx_instance_name | default('awx')) ~ '-admin-password' }}"
+awx_integration_org: "Default"
+
+awx_integration_svc_user: "awx-svc"
+awx_integration_svc_password: "{{ vault_awx_svc_password | default('') }}"
+awx_integration_svc_token: "{{ vault_awx_svc_token | default('') }}"
+
+awx_integration_project_name: "awx-automation"
+awx_integration_project_branch: "main"
+awx_integration_project_scm_url: >-
+  {{ awx_integration_forgejo_internal_url ~ '/' ~ awx_integration_forgejo_user ~ '/' ~ awx_integration_project_name ~ '.git' }}
+awx_integration_inventory_path: "inventory/netbox.yml"
+awx_integration_collections_path: "collections/requirements.yml"
+
+awx_integration_inventory_name: "NetBox Inventory"
+awx_integration_inventory_source_name: "NetBox Inventory Source"
+awx_integration_netbox_url: "{{ 'http://netbox.' ~ awx_integration_netbox_namespace ~ '.svc.cluster.local' }}"
+awx_integration_netbox_token: >-
+  {{ vault_netbox_awx_token | default(netbox_sot_awx_token_effective | default(''), true) }}
+# ADR-0032: scoped catalog-writer token (ipam.service + extras.tag). Unlike the
+# awx inventory token it is NOT surfaced by export-vars (absent from
+# bootstrap-secrets.sh) — its sole source is the in-cluster OpenBao read of
+# secret/apps/netbox/runtime (key netbox_catalog_token, minted by 691-netbox-sot).
+# Defaulted empty so the source-token-read gating can detect "needs reading" and
+# the catalog JT wiring always has a defined var.
+awx_integration_netbox_catalog_token: "{{ vault_netbox_catalog_token | default('', true) }}"
+# NetBox schema generation in v4.5.0 can take several minutes due to drf-spectacular
+# filterset warnings. The 600s timeout covers this, and caching avoids re-fetching
+# on subsequent syncs. See: docs/plans/AWX NetBox Inventory Sync Fix 2026-05-04.md
+awx_integration_netbox_timeout: 600
+awx_integration_netbox_cache: true
+awx_integration_netbox_cache_timeout: 3600
+awx_integration_api_wait_retries: 60
+awx_integration_api_wait_delay: 10
+awx_integration_auth_wait_retries: 60
+awx_integration_auth_wait_delay: 10
+
+awx_integration_forgejo_user: "forgejo-svc"
+awx_integration_forgejo_token: >-
+  {{ vault_forgejo_svc_token | default(forgejo_svc_token_effective | default(''), true) }}
+
+# Phase 8 (ADR-0016): AWX SSH Machine credential path for control-node access.
+# Placeholder default — every environment must override in its private
+# inventory with the operator-local path to the private key file.
+awx_control_node_ssh_privkey_path: "/mnt/secure/awx-control-node.privkey"
+
+awx_integration_update_on_launch: true
+awx_integration_overwrite: true
+awx_integration_overwrite_vars: true
+# AWX is served with the lab CA; callers may override per environment if
+# they need to trust a different certificate chain.
+awx_integration_validate_certs: false
+
+awx_integration_sync_project: false
+awx_integration_sync_inventory: false
+awx_integration_debug: false
+
+# Move 1 + Catalog: multi-project AWX layout (ADR-0014)
+# Each entry: name, description, scm_url, roles_path fragment
+awx_catalog_projects:
+  - name: dmf-runbooks
+    description: "Thin launcher playbooks for catalog entries"
+    scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-runbooks.git"
+    roles_path: "/var/lib/awx/projects/dmf-runbooks/roles"
+  - name: dmf-media
+    description: "Media function roles and playbooks (Layer 4-5)"
+    scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
+    roles_path: "/var/lib/awx/projects/dmf-media/roles"
+  - name: dmf-infra
+    description: "Infrastructure roles and playbooks (Layer 1-3, 6)"
+    scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-infra.git"
+    roles_path: "/var/lib/awx/projects/dmf-infra/k3s-lab-bootstrap/roles"
+
+# Move 1 + Catalog: AWX job templates for catalog entries (ADR-0014)
+# Each entry maps to a thin launcher in dmf-runbooks/playbooks/.
+# The dmf-runbooks project must exist before these are created.
+awx_catalog_job_templates:
+  - name: media-launch-nmos-cpp
+    description: "Launch NMOS IS-04/05 registry + mock nodes (configure stage)"
+    playbook: "playbooks/launch-nmos-cpp.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      # ADR-0032: the launcher writes NetBox via this scoped catalog-writer
+      # token (ipam.service + extras.tag), NOT the superuser admin token.
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
+  - name: media-finalise-nmos-cpp
+    description: "Teardown NMOS workloads (finalise stage)"
+    playbook: "playbooks/teardown-nmos-cpp.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
+  - name: media-launch-mxl-videotestsrc
+    description: "Launch MXL test-pattern source (configure stage)"
+    playbook: "playbooks/launch-mxl-fabrics-demo.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      mxl_role: source
+      mxl_release: mxl-videotestsrc
+      mxl_interface: eth0
+  - name: media-finalise-mxl-videotestsrc
+    description: "Teardown MXL test-pattern source (finalise stage)"
+    playbook: "playbooks/teardown-mxl-fabrics-demo.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      mxl_release: mxl-videotestsrc
+  - name: media-launch-mxl-videotest-view
+    description: "Launch MXL test-pattern viewer (configure stage)"
+    playbook: "playbooks/launch-mxl-fabrics-demo.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      mxl_role: view
+      mxl_release: mxl-videotest-view
+      mxl_interface: eth0
+  - name: media-finalise-mxl-videotest-view
+    description: "Teardown MXL test-pattern viewer (finalise stage)"
+    playbook: "playbooks/teardown-mxl-fabrics-demo.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      mxl_release: mxl-videotest-view
+  - name: media-launch-mxl-hello
+    description: "Launch MXL Hello single-node demo (configure stage)"
+    playbook: "playbooks/launch-mxl-hello.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      mxl_release: mxl-hello
+  - name: media-finalise-mxl-hello
+    description: "Teardown MXL Hello single-node demo (finalise stage)"
+    playbook: "playbooks/teardown-mxl-hello.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      mxl_release: mxl-hello
+
+# ── Shared DMF AWX Execution Environment + Container Group (ADR-0025) ──────
+# Per ADR-0025 §8.7(b), media catalog launchers run as AWX EE pods in the
+# target namespace through a dedicated Container Group. The Container Group
+# overrides pod metadata.namespace to `nmos` and uses the `nmos-cpp-launcher`
+# ServiceAccount created by awx-integration tasks.
+awx_dmf_catalog_cg_display_name: "DMF Catalog Container Group"
+
+# The catalog launchers (media-* JTs above) run inside a custom AWX EE pod
+# pulled from cluster-internal Zot. Source of truth: ghcr.io/dmfdeploy/awx-ee,
+# mirrored to Zot by playbooks/630-zot-seed-platform.yml.
+#
+# These vars are referenced by:
+#   - playbooks/630-zot-seed-platform.yml (pull from GHCR, push to Zot)
+#   - awx-integration tasks: register the EE in AWX via
+#     /api/v2/execution_environments/ and pin it on each catalog JT via
+#     instance_groups + execution_environment fields.
+#
+# To bump: republish a new GHCR tag (see ../../../../ee/README.md), then
+# update awx_ee_catalog_tag here and re-run 630-zot-seed-platform.yml + 693.
+awx_ee_catalog_image: "zot.zot.svc.cluster.local:5000/dmf/awx-ee"
+awx_ee_catalog_tag: "0.1.1"
+awx_ee_catalog_display_name: "DMF AWX EE"
+awx_ee_catalog_description: "Shared Ansible EE for DMF Platform catalog launchers (ADR-0025)"
+
+# ── NMOS catalog artifacts (ADR-0025, Lane B) ─────────────────────────────
+# Source of truth is GHCR; playbooks/630-zot-seed-platform.yml mirrors these
+# into cluster-internal Zot before AWX catalog jobs can launch NMOS.
+nmos_cpp_registry_image: "zot.zot.svc.cluster.local:5000/dmf/nmos-cpp-registry"
+nmos_cpp_registry_tag: "0.1.0"
+nmos_cpp_node_image: "zot.zot.svc.cluster.local:5000/dmf/nmos-cpp-node"
+nmos_cpp_node_tag: "0.1.0"
+nmos_cpp_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
+nmos_cpp_chart_name: "nmos-cpp"
+nmos_cpp_chart_version: "0.1.1"
+nmos_cpp_chart_digest: "sha256:827bce1a0a769bd996033232d178ad1b057879f4619d8ef17ca1281903bd5ba0"

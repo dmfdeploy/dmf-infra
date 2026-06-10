@@ -1,0 +1,15 @@
+---
+# Deploy a private Traefik instance reachable only via Tailscale.
+#
+# This second Traefik serves all admin/operator-facing apps:
+#   - Grafana, NetBox, AWX, Forgejo HTTPS, registry
+# It uses a NodePort service (default 30443) that is reachable
+# from the node's Tailscale IP.
+
+- name: Deploy private Traefik instance
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - base/ingress-private

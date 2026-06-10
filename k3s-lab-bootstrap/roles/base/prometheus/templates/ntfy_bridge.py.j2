@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+import json
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib import request
+
+
+NTFY_URL = os.environ["NTFY_URL"]
+
+
+def first_alert(payload):
+    alerts = payload.get("alerts") or []
+    return alerts[0] if alerts else {}
+
+
+def merged_labels(payload, alert):
+    labels = {}
+    labels.update(payload.get("commonLabels") or {})
+    labels.update(alert.get("labels") or {})
+    return labels
+
+
+def title_for(payload, labels):
+    status = (payload.get("status") or "firing").upper()
+    alertname = labels.get("alertname", "Alertmanager")
+    severity = labels.get("severity")
+    if severity and severity != "none":
+        return f"{status}: {alertname} ({severity})"
+    return f"{status}: {alertname}"
+
+
+def priority_for(payload, labels):
+    if payload.get("status") == "resolved":
+        return "low"
+    return {
+        "critical": "urgent",
+        "warning": "high",
+        "info": "low",
+        "none": "min",
+    }.get(labels.get("severity", "").lower(), "default")
+
+
+def tags_for(payload, labels):
+    if payload.get("status") == "resolved":
+        return "white_check_mark"
+    return {
+        "critical": "rotating_light",
+        "warning": "warning",
+        "info": "information_source",
+        "none": "bell",
+    }.get(labels.get("severity", "").lower(), "bell")
+
+
+def body_for(payload, alert, labels):
+    annotations = {}
+    annotations.update(payload.get("commonAnnotations") or {})
+    annotations.update(alert.get("annotations") or {})
+
+    lines = []
+    summary = annotations.get("summary")
+    description = annotations.get("description")
+    if summary:
+        lines.append(summary)
+    if description and description != summary:
+        lines.append(description)
+
+    lines.append("")
+    lines.append(f"Status: {payload.get('status', 'firing')}")
+    if labels.get("severity"):
+        lines.append(f"Severity: {labels['severity']}")
+    if labels.get("namespace"):
+        lines.append(f"Namespace: {labels['namespace']}")
+    if labels.get("pod"):
+        lines.append(f"Pod: {labels['pod']}")
+    if labels.get("node"):
+        lines.append(f"Node: {labels['node']}")
+    lines.append(f"Alerts: {len(payload.get('alerts') or [])}")
+
+    generator_url = alert.get("generatorURL")
+    if generator_url:
+        lines.append(f"Source: {generator_url}")
+
+    return "\n".join(lines).strip()
+
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == "/health":
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"ok\n")
+            return
+        self.send_response(404)
+        self.end_headers()
+
+    def do_POST(self):
+        length = int(self.headers.get("content-length", "0"))
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw)
+            alert = first_alert(payload)
+            labels = merged_labels(payload, alert)
+            body = body_for(payload, alert, labels)
+            headers = {
+                "Title": title_for(payload, labels),
+                "Priority": priority_for(payload, labels),
+                "Tags": tags_for(payload, labels),
+            }
+            req = request.Request(NTFY_URL, data=body.encode("utf-8"), headers=headers, method="POST")
+            with request.urlopen(req, timeout=10) as response:
+                response.read()
+        except Exception as exc:
+            self.send_response(502)
+            self.end_headers()
+            self.wfile.write(f"ntfy bridge error: {exc}\n".encode("utf-8"))
+            return
+
+        self.send_response(202)
+        self.end_headers()
+        self.wfile.write(b"accepted\n")
+
+    def log_message(self, fmt, *args):
+        print(f"{self.address_string()} - {fmt % args}", flush=True)
+
+
+if __name__ == "__main__":
+    server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
+    server.serve_forever()

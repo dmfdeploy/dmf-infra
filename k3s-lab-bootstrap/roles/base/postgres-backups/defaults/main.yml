@@ -1,0 +1,86 @@
+---
+# Postgres backups role defaults.
+# Per-app CronJob that runs pg_dump against the in-cluster Postgres
+# service and uploads the gzipped result to the app-backups bucket.
+#
+# Each app runs in its own namespace, mounts the ESO-provided
+# s3-creds-app-backups Secret (Frozen Contract), and reads its own
+# DB credentials from the app's existing runtime Secret.
+#
+# Object key format: pg/<app>/<YYYY-MM-DDTHH-MM-SSZ>.sql.gz
+# Timestamp-prefixed — never overwrites a fixed key. B2 lifecycle
+# rules (b2-buckets.sh) handle expiry at 365 days.
+
+# Default apps to back up. Override per-env in group_vars if needed.
+postgres_backups_apps:
+  - netbox
+  - awx
+  - authentik
+  - forgejo
+
+# CronJob schedule — daily at 03:00 UTC (after OpenBao snapshot at 02:30)
+postgres_backups_schedule: "0 3 * * *"
+
+# Concurrency: forbid — don't run two dumps for the same app at once.
+postgres_backups_concurrency_policy: Forbid
+
+# Backup image — postgres:16 includes pg_dump natively.
+# An initContainer (amazon/aws-cli) copies the `aws` binary into a shared
+# emptyDir so the main container has both pg_dump and aws available.
+postgres_backups_image: "postgres:16"
+postgres_backups_awscli_image: "amazon/aws-cli:latest"
+
+# Per-app overrides — these map to each app's DB credentials Secret.
+# Each entry has:
+#   namespace: K8s namespace the CronJob runs in
+#   db_host: service name (pattern: <app>-postgres)
+#   db_port: default 5432
+#   db_user: postgres superuser or app-specific user
+#   db_name: database name to dump
+#   db_secret_name: name of the K8s Secret containing the password
+#   db_secret_key: key within that Secret holding the password
+#
+# These are conventions — verify against each app's deployment.
+postgres_backups_app_overrides:
+  netbox:
+    namespace: netbox
+    db_host: netbox-postgres
+    db_port: 5432
+    db_user: netbox
+    db_name: netbox
+    db_secret_name: netbox-runtime
+    db_secret_key: db_password
+  awx:
+    namespace: awx
+    db_host: awx-postgres
+    db_port: 5432
+    db_user: awx
+    db_name: awx
+    db_secret_name: awx-postgres-configuration
+    db_secret_key: password
+  authentik:
+    namespace: authentik
+    db_host: authentik-postgres
+    db_port: 5432
+    db_user: authentik
+    db_name: authentik
+    db_secret_name: authentik-runtime
+    db_secret_key: postgres_password
+  forgejo:
+    namespace: forgejo
+    db_host: forgejo-postgres
+    db_port: 5432
+    db_user: forgejo
+    db_name: forgejo
+    db_secret_name: forgejo-runtime
+    db_secret_key: db_password
+
+# Object key prefix pattern
+postgres_backups_key_prefix: "pg"
+
+# S3 credential Secret name from Frozen Contract
+postgres_backups_secret_name: s3-creds-app-backups
+postgres_backups_secret_mount: /etc/s3-creds
+
+# activeDeadlineSeconds — generous for large databases
+postgres_backups_deadline_seconds: 1800

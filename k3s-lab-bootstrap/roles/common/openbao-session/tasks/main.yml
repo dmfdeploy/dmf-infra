@@ -1,0 +1,99 @@
+---
+- name: Validate openbao-session inputs
+  ansible.builtin.assert:
+    that:
+      - openbao_session_breakglass_file | length > 0
+    fail_msg: >-
+      openbao_session_breakglass_file must be set for common/openbao-session.
+
+- name: Load OpenBao break-glass JSON from operator host
+  ansible.builtin.set_fact:
+    _openbao_session_breakglass: "{{ lookup('file', openbao_session_breakglass_file) | from_json }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Assert openbao_session_mode is valid
+  ansible.builtin.assert:
+    that:
+      - openbao_session_mode in ['operator', 'policy-reconciler', 'approle-reconciler']
+    fail_msg: >-
+      openbao_session_mode must be 'operator', 'policy-reconciler', or
+      'approle-reconciler' (got: '{{ openbao_session_mode }}').
+
+- name: Load OpenBao session credentials from break-glass JSON
+  ansible.builtin.set_fact:
+    _openbao_session_username: >-
+      {{
+        {
+          'operator': _openbao_session_breakglass.ops_admin_username | default(''),
+          'policy-reconciler': _openbao_session_breakglass.policy_reconciler_username | default('policy-reconciler'),
+          'approle-reconciler': _openbao_session_breakglass.approle_reconciler_username | default('approle-reconciler')
+        }[openbao_session_mode]
+      }}
+    _openbao_session_password: >-
+      {{
+        {
+          'operator': _openbao_session_breakglass.ops_admin_password | default(''),
+          'policy-reconciler': _openbao_session_breakglass.policy_reconciler_password | default(''),
+          'approle-reconciler': _openbao_session_breakglass.approle_reconciler_password | default('')
+        }[openbao_session_mode]
+      }}
+  no_log: true
+
+- name: Assert OpenBao session credentials are available
+  ansible.builtin.assert:
+    that:
+      - _openbao_session_username | length > 0
+      - _openbao_session_password | length > 0
+    fail_msg: >-
+      No {{ openbao_session_mode }} credentials found in
+      {{ openbao_session_breakglass_file }}. For mode=operator, the JSON
+      must contain `ops_admin_username`/`ops_admin_password`. For
+      mode=policy-reconciler, `policy_reconciler_password`. For
+      mode=approle-reconciler, `approle_reconciler_password`. Re-run the
+      openbao role's bootstrap to populate the missing field.
+  no_log: true
+
+- name: Discover OpenBao pod
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ openbao_session_namespace }}"
+    label_selectors:
+      - "{{ openbao_session_pod_selector }}"
+  register: _openbao_session_pod_info
+
+- name: Assert OpenBao pod exists
+  ansible.builtin.assert:
+    that:
+      - _openbao_session_pod_info.resources | length > 0
+    fail_msg: >-
+      Could not find an OpenBao pod in namespace {{ openbao_session_namespace }}
+      with selector {{ openbao_session_pod_selector }}.
+
+- name: Set OpenBao pod fact
+  ansible.builtin.set_fact:
+    _openbao_session_pod: "{{ _openbao_session_pod_info.resources[0].metadata.name }}"
+
+- name: Log into OpenBao with {{ openbao_session_mode }} userpass
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_session_namespace }}
+      exec -i {{ _openbao_session_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ _openbao_session_username | quote }} password="$P"'
+  register: _openbao_session_login_raw
+  changed_when: false
+  environment:
+    OPENBAO_PASSWORD: "{{ _openbao_session_password }}"
+  no_log: true
+
+- name: Extract OpenBao client token
+  ansible.builtin.set_fact:
+    _openbao_session_client_token: "{{ (_openbao_session_login_raw.stdout | from_json).auth.client_token }}"
+  no_log: true

@@ -1,0 +1,18 @@
+# Managed by Ansible — harden role
+[DEFAULT]
+bantime  = {{ harden_fail2ban_bantime }}
+findtime = {{ harden_fail2ban_findtime }}
+maxretry = {{ harden_fail2ban_maxretry }}
+backend  = systemd
+
+# Notify on ban (set destemail to enable)
+# destemail = admin@example.com
+# action    = %(action_mwl)s
+
+[sshd]
+enabled  = true
+port     = ssh
+filter   = sshd
+backend  = systemd
+logpath  = /var/log/auth.log
+maxretry = {{ harden_fail2ban_maxretry }}

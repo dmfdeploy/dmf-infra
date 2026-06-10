@@ -1,0 +1,336 @@
+{%- set _apex_base_url = (external_base_url | default('https://dmf.example.com')) | regex_replace('/+$', '') -%}
+{%- set _external_scheme = 'https' if _apex_base_url.startswith('https://') else 'http' -%}
+{%- set _forgejo_host = forgejo_host | default('forgejo.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _forgejo_base_url = _external_scheme ~ '://' ~ _forgejo_host -%}
+{%- set _grafana_host = grafana_host | default('grafana.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _grafana_base_url = 'https://' ~ _grafana_host -%}
+{%- set _netbox_host = netbox_host | default('netbox.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _netbox_base_url = 'https://' ~ _netbox_host -%}
+{%- set _librenms_host = librenms_host | default('librenms.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _librenms_base_url = 'https://' ~ _librenms_host -%}
+{%- set _registry_host = registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _registry_base_url = 'https://' ~ _registry_host -%}
+{%- set _dmf_cms_host = dmf_cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _dmf_cms_base_url = 'https://' ~ _dmf_cms_host -%}
+{%- set _dmf_cms_callback_path = dmf_cms_oidc_callback_path | default('/auth/callback', true) -%}
+{%- set _awx_host = awx_host | default('awx.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _awx_base_url = 'https://' ~ _awx_host -%}
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+version: 1
+metadata:
+  name: dmf-app-oidc-providers
+  labels:
+    blueprints.goauthentik.io/description: DMF app OIDC provider/application objects
+entries:
+
+  # Shared groups claim for app admin mapping
+
+  - model: authentik_providers_oauth2.scopemapping
+    id: scope-groups
+    state: present
+    identifiers:
+      name: DMF groups
+    attrs:
+      name: DMF groups
+      scope_name: groups
+      description: Expose authentik group membership to app logins
+      expression: |
+        return {
+            "groups": [group.name for group in request.user.groups.all()],
+        }
+
+  # ── Forgejo ──────────────────────────────────────────────────────────────
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: oidc-forgejo
+    state: present
+    identifiers:
+      name: Forgejo
+    attrs:
+      name: Forgejo
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
+      access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
+      refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
+      redirect_uris:
+        - matching_mode: strict
+          url: {{ (_forgejo_base_url ~ '/user/oauth2/Authentik/callback') | to_json }}
+      include_claims_in_id_token: true
+      issuer_mode: global
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      pkce_required: true
+      sub_mode: user_username
+      property_mappings:
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-openid"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-email"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [name, DMF groups]]
+
+  - model: authentik_core.application
+    id: app-forgejo
+    state: present
+    identifiers:
+      slug: forgejo
+    attrs:
+      name: Forgejo
+      slug: forgejo
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, Forgejo]]
+      meta_launch_url: {{ (_forgejo_base_url ~ '/') | to_json }}
+      meta_description: DMF Git repository management
+      open_in_new_tab: true
+
+  # ── AWX ──────────────────────────────────────────────────────────────────
+
+  - model: authentik_providers_saml.samlprovider
+    id: saml-awx
+    state: present
+    identifiers:
+      name: AWX SAML
+    attrs:
+      name: AWX SAML
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      acs_url: {{ (_awx_base_url ~ '/sso/complete/saml/') | to_json }}
+      audience: awx
+      issuer: {{ (_awx_base_url ~ '/sso/metadata/saml/') | to_json }}
+      sp_binding: post
+      signing_kp: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      sign_assertion: true
+      property_mappings:
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/saml/username"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/saml/uid"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/saml/email"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/saml/name"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/saml/groups"]]
+
+  - model: authentik_core.application
+    id: app-awx
+    state: present
+    identifiers:
+      slug: awx
+    attrs:
+      name: AWX
+      slug: awx
+      provider: !Find [authentik_providers_saml.samlprovider, [name, AWX SAML]]
+      meta_launch_url: {{ (_awx_base_url ~ '/') | to_json }}
+      meta_description: DMF automation and orchestration
+      open_in_new_tab: true
+
+  # ── NetBox ───────────────────────────────────────────────────────────────
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: oidc-netbox
+    state: present
+    identifiers:
+      name: NetBox
+    attrs:
+      name: NetBox
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
+      access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
+      refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
+      redirect_uris:
+        - matching_mode: strict
+          url: {{ (_netbox_base_url ~ '/oauth/complete/oidc/') | to_json }}
+      include_claims_in_id_token: true
+      issuer_mode: global
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      pkce_required: true
+      sub_mode: user_username
+      property_mappings:
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-openid"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-email"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [name, DMF groups]]
+
+  - model: authentik_core.application
+    id: app-netbox
+    state: present
+    identifiers:
+      slug: netbox
+    attrs:
+      name: NetBox
+      slug: netbox
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, NetBox]]
+      meta_launch_url: {{ (_netbox_base_url ~ '/') | to_json }}
+      meta_description: DMF infrastructure source of truth
+      open_in_new_tab: true
+
+  # ── LibreNMS ────────────────────────────────────────────────────────────
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: oidc-librenms
+    state: present
+    identifiers:
+      name: LibreNMS
+    attrs:
+      name: LibreNMS
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
+      access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
+      refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
+      redirect_uris:
+        - matching_mode: strict
+          url: {{ (_librenms_base_url ~ '/auth/authentik/callback') | to_json }}
+      include_claims_in_id_token: true
+      issuer_mode: global
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      pkce_required: true
+      sub_mode: user_username
+      property_mappings:
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-openid"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-email"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [name, DMF groups]]
+
+  - model: authentik_core.application
+    id: app-librenms
+    state: present
+    identifiers:
+      slug: librenms
+    attrs:
+      name: LibreNMS
+      slug: librenms
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, LibreNMS]]
+      meta_launch_url: {{ (_librenms_base_url ~ '/') | to_json }}
+      meta_description: DMF network monitoring
+      open_in_new_tab: true
+
+  # ── Grafana ──────────────────────────────────────────────────────────────
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: oidc-grafana
+    state: present
+    identifiers:
+      name: Grafana
+    attrs:
+      name: Grafana
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
+      access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
+      refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
+      redirect_uris:
+        - matching_mode: strict
+          url: {{ (_grafana_base_url ~ '/login/generic_oauth') | to_json }}
+      include_claims_in_id_token: true
+      issuer_mode: global
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      pkce_required: true
+      sub_mode: user_username
+      property_mappings:
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-openid"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-email"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [name, DMF groups]]
+
+  - model: authentik_core.application
+    id: app-grafana
+    state: present
+    identifiers:
+      slug: grafana
+    attrs:
+      name: Grafana
+      slug: grafana
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, Grafana]]
+      meta_launch_url: {{ (_grafana_base_url ~ '/') | to_json }}
+      meta_description: DMF metrics and dashboards
+      open_in_new_tab: true
+
+  # ── DMF Console ─────────────────────────────────────────────────────────
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: oidc-dmf-console
+    state: present
+    identifiers:
+      name: DMF Console
+    attrs:
+      name: DMF Console
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
+      access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
+      refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
+      redirect_uris:
+        - matching_mode: strict
+          url: {{ (_dmf_cms_base_url ~ _dmf_cms_callback_path) | to_json }}
+      include_claims_in_id_token: true
+      issuer_mode: global
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      pkce_required: true
+      sub_mode: user_username
+      property_mappings:
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-openid"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-email"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [name, DMF groups]]
+
+  - model: authentik_core.application
+    id: app-dmf-console
+    state: present
+    identifiers:
+      slug: dmf-console
+    attrs:
+      name: DMF Console
+      slug: dmf-console
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, DMF Console]]
+      meta_launch_url: {{ (_dmf_cms_base_url ~ '/') | to_json }}
+      meta_description: DMF operator control plane
+      open_in_new_tab: true
+
+  # ── Zot ─────────────────────────────────────────────────────────────────
+
+  - model: authentik_providers_oauth2.oauth2provider
+    id: oidc-zot
+    state: present
+    identifiers:
+      name: Zot
+    attrs:
+      name: Zot
+      authorization_flow: !Find [authentik_flows.flow, [slug, default-provider-authorization-implicit-consent]]
+      authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
+      invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
+      client_type: confidential
+      access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
+      access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
+      refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
+      redirect_uris:
+        - matching_mode: strict
+          url: {{ (_registry_base_url ~ '/zot/auth/callback/oidc') | to_json }}
+      include_claims_in_id_token: true
+      issuer_mode: per_provider
+      signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
+      pkce_required: true
+      sub_mode: user_username
+      property_mappings:
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-openid"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-email"]]
+        - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-profile"]]
+        - !Find [authentik_providers_oauth2.scopemapping, [name, DMF groups]]
+
+  - model: authentik_core.application
+    id: app-zot
+    state: present
+    identifiers:
+      slug: zot
+    attrs:
+      name: Zot
+      slug: zot
+      provider: !Find [authentik_providers_oauth2.oauth2provider, [name, Zot]]
+      meta_launch_url: {{ _registry_base_url | to_json }}
+      meta_description: DMF OCI registry
+      open_in_new_tab: true

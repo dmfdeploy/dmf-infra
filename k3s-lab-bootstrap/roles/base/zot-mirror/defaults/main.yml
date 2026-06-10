@@ -1,0 +1,82 @@
+---
+# Zot mirror role defaults.
+# Weekly CronJob that mirrors the in-cluster Zot registry's OCI manifests +
+# blobs to the app-backups S3 bucket using `skopeo sync` followed by
+# `aws s3 sync`. OCI-format on B2 — restorable to a fresh Zot without
+# Longhorn.
+#
+# Direction: backup (Zot HTTP → S3 target). NOT hydration.
+#
+# IMPORTANT: no PVC mount. Reading Zot's data directly via the registry
+# HTTP API avoids the Longhorn RWO single-attach constraint that would
+# block mounting `data-zot-0` while the Zot StatefulSet uses it. The
+# in-cluster service is the source of truth anyway.
+#
+# Lifecycle: hidden versions on the app-backups bucket are deleted after
+# 365 days (b2-buckets.sh) — long-tail expiry is handled at the bucket
+# level, not by `--remove` (which is NOT used).
+#
+# Object key prefix: zot/<timestamp>/ — timestamp-prefixed so each run
+# creates a new snapshot tree. Never overwrites a fixed key.
+
+# ── Schedule ─────────────────────────────────────────────────────────────────
+
+zot_mirror_schedule: "0 4 * * 0"     # weekly Sun 04:00 UTC
+zot_mirror_namespace: zot
+zot_mirror_labels:
+  app: zot-mirror
+  dmftier: "A"
+
+# ── Source registry ──────────────────────────────────────────────────────────
+# In-cluster service of the Zot StatefulSet. Use the cluster-local service
+# URL so traffic stays inside the cluster.
+
+zot_mirror_source_registry: "zot.zot.svc.cluster.local:5000"
+zot_mirror_source_tls_verify: "false"   # in-cluster service; cert is for ingress
+
+# ── Pull credentials (ADR-0033) ──────────────────────────────────────────────
+# The backup mirror is a routine, scheduled operation, so per ADR-0028 C3/C4
+# it authenticates as the scoped service account `zot-svc`, NOT break-glass
+# `admin`. zot-svc's plaintext password is pulled from OpenBao at
+# secret/apps/zot/service via an ExternalSecret using the existing `openbao`
+# ClusterSecretStore. The eso-reader policy was extended to cover
+# secret/data/apps/+/service for exactly this (mirroring the +/admin glob).
+# Mirroring needs read on all repos; zot-svc has read, so this works.
+
+zot_mirror_pull_creds_secret: zot-mirror-creds
+zot_mirror_pull_creds_openbao_path: "secret/apps/zot/service"
+zot_mirror_pull_creds_username: "zot-svc"
+zot_mirror_eso_cluster_secret_store: openbao
+
+# ── S3 credentials (Frozen Contract) ─────────────────────────────────────────
+
+zot_mirror_s3_creds_secret: s3-creds-app-backups
+zot_mirror_s3_creds_mount: /etc/s3-creds
+
+# ── Container images ─────────────────────────────────────────────────────────
+# Main container: skopeo. InitContainer: amazon/aws-cli (we copy its `aws`
+# binary into a shared emptyDir so the main container has both tools).
+
+zot_mirror_skopeo_image: "quay.io/skopeo/stable:latest"
+zot_mirror_awscli_image: "amazon/aws-cli:latest"
+
+# ── Scratch volume sizing ────────────────────────────────────────────────────
+# Zot PVC is 20Gi; OCI dir layout adds ~5% overhead. Request 25Gi ephemeral.
+
+zot_mirror_scratch_size: "25Gi"
+
+# ── Object key prefix in the bucket ──────────────────────────────────────────
+
+zot_mirror_bucket_prefix: "zot"
+
+# ── Runtime limits ───────────────────────────────────────────────────────────
+
+zot_mirror_deadline_seconds: 10800   # 3 hours
+zot_mirror_resource_requests:
+  cpu: "200m"
+  memory: "512Mi"
+  ephemeral-storage: "25Gi"
+zot_mirror_resource_limits:
+  cpu: "2"
+  memory: "2Gi"
+  ephemeral-storage: "30Gi"

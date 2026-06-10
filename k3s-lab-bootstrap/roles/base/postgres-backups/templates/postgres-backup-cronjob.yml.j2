@@ -1,0 +1,70 @@
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: "pg-backup-{{ _app_name }}"
+  namespace: {{ _app_cfg.namespace | default(_app_name) }}
+  labels:
+    app: "pg-backup-{{ _app_name }}"
+    dmftier: "A"
+spec:
+  schedule: "{{ postgres_backups_schedule }}"
+  concurrencyPolicy: "{{ postgres_backups_concurrency_policy }}"
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ postgres_backups_deadline_seconds }}
+      template:
+        metadata:
+          labels:
+            app: "pg-backup-{{ _app_name }}"
+        spec:
+          restartPolicy: Never
+          volumes:
+            - name: s3-creds
+              secret:
+                secretName: {{ postgres_backups_secret_name }}
+            - name: db-creds
+              secret:
+                secretName: {{ _app_cfg.db_secret_name }}
+            - name: backup-script
+              configMap:
+                name: pg-backup-script-{{ _app_name }}
+                defaultMode: 0755
+            # aws CLI binary copied from amazon/aws-cli initContainer
+            - name: shared-bin
+              emptyDir: {}
+          initContainers:
+            - name: aws-cli-loader
+              image: {{ postgres_backups_awscli_image }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  cp -r /usr/local/aws-cli /shared-bin/aws-cli
+                  cp /usr/local/bin/aws /shared-bin/aws
+                  chmod 0755 /shared-bin/aws /shared-bin/aws-cli/v2/current/bin/aws
+              volumeMounts:
+                - name: shared-bin
+                  mountPath: /shared-bin
+          containers:
+            - name: backup
+              image: {{ postgres_backups_image }}
+              command: ["/bin/bash", "/scripts/pg-backup.sh"]
+              env:
+                - name: PATH
+                  value: "/shared-bin/aws-cli/v2/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              volumeMounts:
+                - name: s3-creds
+                  mountPath: {{ postgres_backups_secret_mount }}
+                  readOnly: true
+                - name: db-creds
+                  mountPath: /etc/db-creds
+                  readOnly: true
+                - name: backup-script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: shared-bin
+                  mountPath: /shared-bin
+                  readOnly: true

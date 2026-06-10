@@ -1,0 +1,41 @@
+events {}
+
+http {
+  server {
+    listen 80;
+
+{% if librenms_exposure | default('host') == 'host' %}
+    location / {
+      proxy_pass http://librenms:8000;
+      proxy_set_header Host {{ librenms_external_host }};
+      proxy_set_header Accept-Encoding "";
+      proxy_set_header X-Forwarded-Proto https;
+      proxy_set_header X-Forwarded-Host {{ librenms_external_host }};
+      proxy_set_header X-Original-URI $request_uri;
+    }
+{% else %}
+    location /librenms/ {
+      rewrite ^/librenms(/.*)$ $1 break;
+      proxy_pass http://librenms:8000;
+      proxy_set_header Host {{ librenms_external_host }};
+      proxy_set_header Accept-Encoding "";
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_set_header X-Forwarded-Host {{ librenms_external_host }};
+      proxy_set_header X-Forwarded-Prefix {{ librenms_path }};
+      proxy_set_header X-Original-URI $request_uri;
+
+      proxy_redirect ~^(/.*)$ {{ librenms_path }}$1;
+      proxy_redirect ~^http://([^/]+)(/.*)$ http://$1{{ librenms_path }}$2;
+      proxy_redirect ~^https://([^/]+)(/.*)$ https://$1{{ librenms_path }}$2;
+
+      sub_filter_once off;
+      sub_filter_types text/html text/css application/javascript;
+      sub_filter 'http://{{ librenms_external_host }}/' 'http://{{ librenms_external_host }}{{ librenms_path }}/';
+      sub_filter 'https://{{ librenms_external_host }}/' 'https://{{ librenms_external_host }}{{ librenms_path }}/';
+      sub_filter 'href="/' 'href="{{ librenms_path }}/';
+      sub_filter 'src="/' 'src="{{ librenms_path }}/';
+      sub_filter 'action="/' 'action="{{ librenms_path }}/';
+    }
+{% endif %}
+  }
+}

@@ -1,0 +1,1752 @@
+---
+- name: Set AWX secret persistence mode
+  ansible.builtin.set_fact:
+    awx_integration_persist_to_openbao: "{{ awx_integration_openbao_breakglass_file | default('', true) | length > 0 }}"
+
+- name: Set effective vault password file
+  ansible.builtin.set_fact:
+    awx_integration_vault_password_file_effective: "{{ awx_integration_vault_password_file | expanduser }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Assert vault password file exists
+  ansible.builtin.stat:
+    path: "{{ awx_integration_vault_password_file_effective }}"
+  register: awx_integration_vault_passfile
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Fail if vault password file is missing
+  ansible.builtin.assert:
+    that:
+      - awx_integration_vault_passfile.stat.exists
+    fail_msg: >-
+      Vault password file not found at {{ awx_integration_vault_password_file_effective }}.
+      Create it (e.g. ~/.vault_pass) before running this playbook.
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Generate AWX service password if missing
+  ansible.builtin.set_fact:
+    awx_integration_svc_password_effective: >-
+      {{ awx_integration_svc_password
+         | default(lookup('community.general.random_string', length=24, special=false), true) }}
+  no_log: true
+
+- name: Set AWX service token value
+  ansible.builtin.set_fact:
+    awx_integration_svc_token_effective: "{{ awx_integration_svc_token }}"
+  no_log: true
+
+- name: Load OpenBao break-glass JSON for AWX integration
+  ansible.builtin.set_fact:
+    _awx_openbao_breakglass: "{{ lookup('file', awx_integration_openbao_breakglass_file) | from_json }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - awx_integration_openbao_breakglass_file | default('', true) | length > 0
+    - awx_integration_persist_to_openbao | bool
+      or awx_integration_netbox_token | default('', true) | length == 0
+      or awx_integration_forgejo_token | default('', true) | length == 0
+      or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+
+- name: Extract OpenBao credentials for AWX integration
+  ansible.builtin.set_fact:
+    _awx_openbao_eso_role_id: "{{ _awx_openbao_breakglass.eso_role_id | default('') }}"
+    _awx_openbao_eso_secret_id: "{{ _awx_openbao_breakglass.eso_secret_id | default('') }}"
+  run_once: true
+  no_log: true
+  when: _awx_openbao_breakglass is defined
+
+- name: Assert OpenBao AppRole exists for AWX source-token reads
+  ansible.builtin.assert:
+    that:
+      - _awx_openbao_eso_role_id | default('') | length > 0
+      - _awx_openbao_eso_secret_id | default('') | length > 0
+    fail_msg: >-
+      No ESO AppRole credentials found in {{ awx_integration_openbao_breakglass_file }}.
+      AWX integration needs them to read NetBox/Forgejo runtime tokens from
+      in-cluster OpenBao when vault vars are absent.
+  run_once: true
+  no_log: true
+  when:
+    - awx_integration_netbox_token | default('', true) | length == 0
+      or awx_integration_forgejo_token | default('', true) | length == 0
+      or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+
+- name: Extract OpenBao operator credentials for AWX persistence
+  ansible.builtin.set_fact:
+    _awx_openbao_username: "{{ _awx_openbao_breakglass.ops_admin_username | default('') }}"
+    _awx_openbao_password: "{{ _awx_openbao_breakglass.ops_admin_password | default('') }}"
+  run_once: true
+  no_log: true
+  when: awx_integration_persist_to_openbao | bool
+
+- name: Assert OpenBao operator credentials exist for AWX persistence
+  ansible.builtin.assert:
+    that:
+      - _awx_openbao_username | default('') | length > 0
+      - _awx_openbao_password | default('') | length > 0
+    fail_msg: >-
+      No operator credentials found in {{ awx_integration_openbao_breakglass_file }}.
+      AWX integration token persistence must write to the in-cluster OpenBao.
+  run_once: true
+  no_log: true
+  when: awx_integration_persist_to_openbao | bool
+
+- name: Discover OpenBao pod for AWX integration
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ awx_integration_openbao_namespace }}"
+    label_selectors:
+      - "{{ awx_integration_openbao_pod_label_selector }}"
+  register: _awx_openbao_pod_info
+  run_once: true
+  when:
+    - awx_integration_persist_to_openbao | bool
+      or awx_integration_netbox_token | default('', true) | length == 0
+      or awx_integration_forgejo_token | default('', true) | length == 0
+      or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+
+- name: Assert OpenBao pod exists for AWX integration
+  ansible.builtin.assert:
+    that:
+      - _awx_openbao_pod_info.resources | length > 0
+    fail_msg: >-
+      Could not find an OpenBao pod in namespace {{ awx_integration_openbao_namespace }}
+      with selector {{ awx_integration_openbao_pod_label_selector }}.
+  run_once: true
+  when:
+    - awx_integration_persist_to_openbao | bool
+      or awx_integration_netbox_token | default('', true) | length == 0
+      or awx_integration_forgejo_token | default('', true) | length == 0
+      or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+
+- name: Set OpenBao pod fact for AWX integration
+  ansible.builtin.set_fact:
+    _awx_openbao_pod: "{{ _awx_openbao_pod_info.resources[0].metadata.name }}"
+  run_once: true
+  when:
+    - awx_integration_persist_to_openbao | bool
+      or awx_integration_netbox_token | default('', true) | length == 0
+      or awx_integration_forgejo_token | default('', true) | length == 0
+      or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+
+- name: Log into OpenBao with operator userpass for AWX persistence
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ awx_integration_openbao_namespace }}
+      exec -i {{ _awx_openbao_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ _awx_openbao_username | quote }} password="$P"'
+  register: _awx_openbao_operator_login_raw
+  changed_when: false
+  run_once: true
+  environment:
+    OPENBAO_PASSWORD: "{{ _awx_openbao_password }}"
+  no_log: true
+  when: awx_integration_persist_to_openbao | bool
+
+- name: Extract OpenBao client token for AWX persistence
+  ansible.builtin.set_fact:
+    _awx_openbao_operator_client_token: "{{ (_awx_openbao_operator_login_raw.stdout | from_json).auth.client_token }}"
+  run_once: true
+  no_log: true
+  when: awx_integration_persist_to_openbao | bool
+
+- name: Log into in-cluster OpenBao for AWX source-token reads
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n' "$OPENBAO_ROLE_ID" "$OPENBAO_SECRET_ID" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ awx_integration_openbao_namespace }}
+      exec -i {{ _awx_openbao_pod }}
+      -- sh -c '
+      IFS= read -r ROLE_ID;
+      IFS= read -r SECRET_ID;
+      bao write -format=json auth/approle/login role_id="$ROLE_ID" secret_id="$SECRET_ID"'
+  register: _awx_openbao_login_raw
+  changed_when: false
+  run_once: true
+  environment:
+    OPENBAO_ROLE_ID: "{{ _awx_openbao_eso_role_id }}"
+    OPENBAO_SECRET_ID: "{{ _awx_openbao_eso_secret_id }}"
+  no_log: true
+  when:
+    - awx_integration_netbox_token | default('', true) | length == 0
+      or awx_integration_forgejo_token | default('', true) | length == 0
+      or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+
+- name: Extract OpenBao client token for AWX source-token reads
+  ansible.builtin.set_fact:
+    _awx_openbao_client_token: "{{ (_awx_openbao_login_raw.stdout | from_json).auth.client_token }}"
+  run_once: true
+  no_log: true
+  when:
+    - _awx_openbao_login_raw is defined
+    - _awx_openbao_login_raw.stdout is defined
+    - _awx_openbao_login_raw.stdout | length > 0
+
+- name: Read NetBox runtime token from in-cluster OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ awx_integration_openbao_namespace }}
+      exec -i {{ _awx_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ awx_integration_netbox_runtime_secret_path | quote }}'
+  register: _awx_openbao_netbox_raw
+  changed_when: false
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _awx_openbao_client_token }}"
+  no_log: true
+  when: >-
+    awx_integration_netbox_token | default('', true) | length == 0
+    or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+        and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+
+# Set the awx inventory token from OpenBao ONLY when it wasn't already provided
+# (vault var / export-vars). The read above may also fire purely to fetch the
+# catalog token; in that case we must not clobber a populated awx token.
+- name: Set NetBox awx inventory token from in-cluster OpenBao
+  ansible.builtin.set_fact:
+    awx_integration_netbox_token: >-
+      {{
+        ((_awx_openbao_netbox_raw.stdout | from_json).data.data.netbox_awx_token | default('', true))
+        | default((_awx_openbao_netbox_raw.stdout | from_json).data.data.vault_netbox_awx_token | default('', true), true)
+      }}
+  run_once: true
+  no_log: true
+  when:
+    - awx_integration_netbox_token | default('', true) | length == 0
+    - _awx_openbao_netbox_raw is defined
+    - _awx_openbao_netbox_raw.stdout is defined
+    - _awx_openbao_netbox_raw.stdout | length > 0
+
+# ADR-0032: catalog-writer token. Always set from the OpenBao read when present —
+# it has no other source, and the JT wiring (defaults) feeds it to the launcher.
+- name: Set NetBox catalog-writer token from in-cluster OpenBao
+  ansible.builtin.set_fact:
+    awx_integration_netbox_catalog_token: >-
+      {{
+        (_awx_openbao_netbox_raw.stdout | from_json).data.data.netbox_catalog_token | default('', true)
+      }}
+  run_once: true
+  no_log: true
+  when:
+    - _awx_openbao_netbox_raw is defined
+    - _awx_openbao_netbox_raw.stdout is defined
+    - _awx_openbao_netbox_raw.stdout | length > 0
+
+- name: Read Forgejo runtime token from in-cluster OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ awx_integration_openbao_namespace }}
+      exec -i {{ _awx_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ awx_integration_forgejo_runtime_secret_path | quote }}'
+  register: _awx_openbao_forgejo_raw
+  changed_when: false
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _awx_openbao_client_token }}"
+  no_log: true
+  when: awx_integration_forgejo_token | default('', true) | length == 0
+
+- name: Set Forgejo token from in-cluster OpenBao
+  ansible.builtin.set_fact:
+    awx_integration_forgejo_token: >-
+      {{
+        ((_awx_openbao_forgejo_raw.stdout | from_json).data.data.forgejo_svc_token | default('', true))
+        | default((_awx_openbao_forgejo_raw.stdout | from_json).data.data.vault_forgejo_svc_token | default('', true), true)
+      }}
+  run_once: true
+  no_log: true
+  when:
+    - _awx_openbao_forgejo_raw is defined
+    - _awx_openbao_forgejo_raw.stdout is defined
+    - _awx_openbao_forgejo_raw.stdout | length > 0
+
+- name: Revoke OpenBao token after AWX source-token reads
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ awx_integration_openbao_namespace }}
+      exec -i {{ _awx_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token revoke -self'
+  changed_when: false
+  failed_when: false
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _awx_openbao_client_token }}"
+  no_log: true
+  when: _awx_openbao_client_token is defined
+
+- name: Assert NetBox and Forgejo tokens exist
+  ansible.builtin.assert:
+    that:
+      - awx_integration_netbox_token | length > 0
+      - awx_integration_forgejo_token | length > 0
+    fail_msg: >-
+      Required tokens missing. Ensure NetBox and Forgejo bootstrap playbooks
+      have populated in-cluster OpenBao or vault.yml before running this playbook.
+  no_log: true
+
+- name: Resolve AWX admin identity from cluster Secret  # ADR-0024
+  ansible.builtin.include_role:
+    name: common/admin-identity-resolve
+  vars:
+    admin_resolve_app: awx-integration
+    admin_resolve_secret_ns: "{{ awx_integration_admin_password_secret_namespace }}"
+    admin_resolve_secret_name: "{{ awx_integration_admin_password_secret_name }}"
+    admin_resolve_fallback_username: "{{ awx_integration_admin_user }}"
+    admin_resolve_fallback_password: "{{ awx_integration_admin_password }}"
+  when: awx_integration_read_admin_password_from_cluster | bool
+
+- name: Apply resolved AWX admin identity  # ADR-0024
+  ansible.builtin.set_fact:
+    awx_integration_admin_user: "{{ _resolved_admin_user }}"
+    awx_integration_admin_password: "{{ _resolved_admin_password }}"
+  no_log: true
+  when: awx_integration_read_admin_password_from_cluster | bool
+
+- name: Assert AWX admin password is available
+  ansible.builtin.assert:
+    that:
+      - awx_integration_admin_password | length > 0
+    fail_msg: >-
+      AWX admin password is unavailable. Expected Kubernetes Secret
+      {{ awx_integration_admin_password_secret_namespace }}/{{ awx_integration_admin_password_secret_name }}
+      or an explicit awx_integration_admin_password.
+  no_log: true
+
+- name: Ensure NMOS namespace exists for AWX catalog launcher pods
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: nmos
+        labels:
+          dmf.layer: "5"
+          dmf.function: nmos-cpp
+
+- name: Ensure NMOS AWX launcher service account exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: nmos-cpp-launcher
+        namespace: nmos
+        labels:
+          app.kubernetes.io/name: nmos-cpp
+          app.kubernetes.io/component: awx-launcher
+          dmf.function: nmos-cpp
+
+- name: Ensure NMOS AWX launcher Role exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: nmos-cpp-launcher
+        namespace: nmos
+        labels:
+          app.kubernetes.io/name: nmos-cpp
+          app.kubernetes.io/component: awx-launcher
+          dmf.function: nmos-cpp
+      rules:
+        - apiGroups: [""]
+          resources:
+            - configmaps
+            - persistentvolumeclaims
+            - pods
+            - secrets
+            - services
+          verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
+        - apiGroups: ["apps"]
+          resources:
+            - deployments
+            - statefulsets
+          verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
+
+- name: Ensure NMOS AWX launcher RoleBinding exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: nmos-cpp-launcher
+        namespace: nmos
+        labels:
+          app.kubernetes.io/name: nmos-cpp
+          app.kubernetes.io/component: awx-launcher
+          dmf.function: nmos-cpp
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: nmos-cpp-launcher
+      subjects:
+        - kind: ServiceAccount
+          name: nmos-cpp-launcher
+          namespace: nmos
+
+- name: Ensure AWX controller can create EE pods in nmos namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: awx-job-pod-manager
+        namespace: nmos
+        labels:
+          dmf.function: nmos-cpp
+          adr: "0025"
+      rules:
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["create", "get", "list", "watch", "delete"]
+        - apiGroups: [""]
+          resources: ["pods/log"]
+          verbs: ["get", "list", "watch"]
+        - apiGroups: [""]
+          resources: ["pods/exec"]
+          verbs: ["create"]
+        - apiGroups: [""]
+          resources: ["pods/attach"]
+          verbs: ["create"]
+
+- name: Bind awx controller SA to awx-job-pod-manager role in nmos
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: awx-controller-pod-manager
+        namespace: nmos
+        labels:
+          dmf.function: nmos-cpp
+          adr: "0025"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: awx-job-pod-manager
+      subjects:
+        - kind: ServiceAccount
+          name: awx
+          namespace: awx
+
+- name: Check AWX API availability
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/ping/"
+    method: GET
+    status_code: [200, 302, 503]
+  register: awx_integration_api_check
+  until: awx_integration_api_check.status == 200
+  retries: "{{ awx_integration_api_wait_retries }}"
+  delay: "{{ awx_integration_api_wait_delay }}"
+
+- name: Wait for AWX admin authentication to work
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/me/"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_admin_me
+  until: awx_integration_admin_me.status == 200
+  retries: "{{ awx_integration_auth_wait_retries }}"
+  delay: "{{ awx_integration_auth_wait_delay }}"
+
+- name: Set NetBox inventory plugin content
+  ansible.builtin.set_fact:
+    awx_integration_netbox_inventory_content: |-
+      plugin: netbox.netbox.nb_inventory
+      api_endpoint: "{{ awx_integration_netbox_url }}"
+      token: "{{ awx_integration_netbox_token }}"
+      timeout: {{ awx_integration_netbox_timeout }}
+      validate_certs: {{ awx_integration_validate_certs | bool | lower }}
+      cache: {{ awx_integration_netbox_cache | bool | lower }}
+      cache_timeout: {{ awx_integration_netbox_cache_timeout | default(3600) }}
+      group_by:
+        - sites
+        - device_roles
+      compose:
+        ansible_host: primary_ip4.address
+    # NEUTRALIZED for the v0.1 offline sandbox (ADR-0030/0031): the project's
+    # collections/requirements.yml must NOT trigger a public galaxy.ansible.com
+    # fetch during project_update / inventory sync. netbox.netbox is BAKED into
+    # the DMF AWX EE (ee/requirements.yml) and supplied at job runtime. An empty
+    # list keeps the file declarative + present (ansible-galaxy is a no-op, no
+    # galaxy contact). Permanent fix swaps this to internal Forgejo-git sources
+    # (ADR-0034); do NOT reintroduce a galaxy-server-resolved name+version here.
+    awx_integration_collections_content: |-
+      ---
+      # Collections are baked into the DMF AWX EE image (see dmf-infra
+      # k3s-lab-bootstrap/ee/requirements.yml). Intentionally empty so
+      # project_update performs no public-galaxy fetch (ADR-0030/0031/0034).
+      collections: []
+  no_log: true
+
+- name: Validate Forgejo token
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/user"
+    method: GET
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    status_code: 200
+  register: awx_integration_forgejo_user_check
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: Ensure Forgejo repo exists
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}"
+    method: GET
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    status_code: 200
+  register: awx_integration_forgejo_repo
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: Set Forgejo repo branch
+  ansible.builtin.set_fact:
+    awx_integration_repo_branch: >-
+      {{ (awx_integration_forgejo_repo.json.default_branch | default('')) | trim
+         | default(awx_integration_project_branch, true) }}
+
+- name: Lookup NetBox inventory file in Forgejo
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}/contents/{{ awx_integration_inventory_path }}"
+    method: GET
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    status_code: [200, 404]
+  register: awx_integration_forgejo_inventory_lookup
+  no_log: true
+
+- name: Lookup collections requirements file in Forgejo
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}/contents/{{ awx_integration_collections_path }}"
+    method: GET
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    status_code: [200, 404]
+  register: awx_integration_forgejo_collections_lookup
+  no_log: true
+
+- name: Create NetBox inventory file in Forgejo
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}/contents/{{ awx_integration_inventory_path }}"
+    method: POST
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    body_format: json
+    body:
+      message: "Add NetBox inventory plugin config"
+      content: "{{ awx_integration_netbox_inventory_content | b64encode }}"
+      branch: "{{ awx_integration_repo_branch }}"
+    status_code: 201
+  when: awx_integration_forgejo_inventory_lookup.status == 404
+  no_log: true
+
+- name: Update NetBox inventory file in Forgejo
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}/contents/{{ awx_integration_inventory_path }}"
+    method: PUT
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    body_format: json
+    body:
+      message: "Update NetBox inventory plugin config"
+      content: "{{ awx_integration_netbox_inventory_content | b64encode }}"
+      sha: "{{ awx_integration_forgejo_inventory_lookup.json.sha }}"
+      branch: "{{ awx_integration_repo_branch }}"
+    status_code: 200
+  when: awx_integration_forgejo_inventory_lookup.status == 200
+  no_log: true
+
+- name: Create collections requirements file in Forgejo
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}/contents/{{ awx_integration_collections_path }}"
+    method: POST
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    body_format: json
+    body:
+      message: "Add AWX collections requirements"
+      content: "{{ awx_integration_collections_content | b64encode }}"
+      branch: "{{ awx_integration_repo_branch }}"
+    status_code: 201
+  when: awx_integration_forgejo_collections_lookup.status == 404
+  no_log: true
+
+- name: Update collections requirements file in Forgejo
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}/contents/{{ awx_integration_collections_path }}"
+    method: PUT
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    body_format: json
+    body:
+      message: "Update AWX collections requirements"
+      content: "{{ awx_integration_collections_content | b64encode }}"
+      sha: "{{ awx_integration_forgejo_collections_lookup.json.sha }}"
+      branch: "{{ awx_integration_repo_branch }}"
+    status_code: 200
+  when: awx_integration_forgejo_collections_lookup.status == 200
+  no_log: true
+
+- name: Lookup AWX organization
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/organizations/?name={{ awx_integration_org | urlencode }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_org_lookup
+
+- name: Set AWX organization id
+  ansible.builtin.set_fact:
+    awx_integration_org_id: "{{ awx_integration_org_lookup.json.results | first | default({}) | json_query('id') }}"
+
+- name: Fail if AWX organization not found
+  ansible.builtin.assert:
+    that:
+      - awx_integration_org_id is not none
+    fail_msg: "AWX organization '{{ awx_integration_org }}' not found."
+
+- name: Lookup AWX service user
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/users/?username={{ awx_integration_svc_user | urlencode }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_svc_user_lookup
+
+- name: Create AWX service user
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/users/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      username: "{{ awx_integration_svc_user }}"
+      password: "{{ awx_integration_svc_password_effective }}"
+      is_superuser: false
+      is_system_auditor: false
+    status_code: 201
+  when: awx_integration_svc_user_lookup.json.count | int == 0
+  no_log: true
+  register: awx_integration_svc_user_created
+
+- name: Set AWX service user id
+  ansible.builtin.set_fact:
+    awx_integration_svc_user_id: >-
+      {{ (awx_integration_svc_user_lookup.json.results | default([]) | first | default({})).id
+         | default(awx_integration_svc_user_created.json.id) }}
+
+# AWX binds token ownership to the AUTHENTICATING principal — a token minted as
+# admin is admin(break-glass)-owned regardless of the URL user-id. To mint an
+# awx-svc-owned token we must authenticate AS awx-svc, which needs a known
+# password. PATCH it onto the user (idempotent; covers pre-existing users whose
+# random create-time password is unknown). ADR-0028 C3/C4.
+- name: Ensure awx-svc password matches the effective value
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/users/{{ awx_integration_svc_user_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      password: "{{ awx_integration_svc_password_effective }}"
+    status_code: 200
+  no_log: true
+
+# Force re-mint if the persisted token is not owned by awx-svc (e.g. a legacy
+# break-glass-owned token). Clearing _effective makes the create task below fire
+# under awx-svc auth → a self-owned token.
+- name: Validate persisted awx-svc token ownership
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/me/"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ awx_integration_svc_token_effective }}"
+    status_code: [200, 401, 403]
+  register: _awx_integration_svc_token_me
+  failed_when: false
+  no_log: true
+  when: awx_integration_svc_token_effective | length > 0
+
+- name: Clear persisted token if not owned by awx-svc (force self-owned re-mint)
+  ansible.builtin.set_fact:
+    awx_integration_svc_token_effective: ""
+  when:
+    - awx_integration_svc_token_effective | length > 0
+    - (_awx_integration_svc_token_me.status | default(0) | int != 200)
+      or ((_awx_integration_svc_token_me.json.username | default('')) != awx_integration_svc_user)
+  no_log: true
+
+- name: Create AWX service token if missing
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/users/{{ awx_integration_svc_user_id }}/personal_tokens/"
+    method: POST
+    # Authenticate AS awx-svc so the token is self-owned (NOT admin-owned).
+    url_username: "{{ awx_integration_svc_user }}"
+    url_password: "{{ awx_integration_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      description: "awx-svc-token"
+      scope: "write"
+    status_code: 201
+  register: awx_integration_svc_token_created
+  when: awx_integration_svc_token_effective | length == 0
+  no_log: true
+
+- name: Set AWX service token from API response
+  ansible.builtin.set_fact:
+    awx_integration_svc_token_effective: "{{ awx_integration_svc_token_created.json.token | default('') }}"
+  when: awx_integration_svc_token_effective | length == 0
+  no_log: true
+
+- name: Lookup SCM credential type
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credential_types/?name=Source%20Control"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_scm_cred_type_lookup
+
+- name: Set SCM credential type id
+  ansible.builtin.set_fact:
+    awx_integration_scm_cred_type_id: "{{ awx_integration_scm_cred_type_lookup.json.results | first | default({}) | json_query('id') }}"
+
+- name: Fail if SCM credential type not found
+  ansible.builtin.assert:
+    that:
+      - awx_integration_scm_cred_type_id is not none
+    fail_msg: "AWX Source Control credential type not found."
+
+- name: Assert Forgejo SCM token is available
+  ansible.builtin.assert:
+    that:
+      - awx_integration_forgejo_token | length > 0
+    fail_msg: "Forgejo svc token is empty. Ensure forgejo-bootstrap has persisted it to OpenBao."
+
+- name: Lookup Forgejo SCM credential
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/?name=forgejo-scm&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_scm_cred_lookup
+
+- name: Create Forgejo SCM credential
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "forgejo-scm"
+      organization: "{{ awx_integration_org_id }}"
+      credential_type: "{{ awx_integration_scm_cred_type_id }}"
+      inputs:
+        username: "{{ awx_integration_forgejo_user }}"
+        password: "{{ awx_integration_forgejo_token }}"
+    status_code: 201
+  when: awx_integration_scm_cred_lookup.json.count | int == 0
+  no_log: true
+  register: awx_integration_scm_cred_created
+
+- name: Set Forgejo SCM credential id
+  ansible.builtin.set_fact:
+    awx_integration_scm_cred_id: >-
+      {{ (awx_integration_scm_cred_lookup.json.results | default([]) | first | default({})).id
+         | default(awx_integration_scm_cred_created.json.id) }}
+
+- name: Update Forgejo SCM credential token
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/{{ awx_integration_scm_cred_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      inputs:
+        username: "{{ awx_integration_forgejo_user }}"
+        password: "{{ awx_integration_forgejo_token }}"
+    status_code: 200
+  no_log: true
+
+
+- name: Lookup AWX project
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/?name={{ awx_integration_project_name | urlencode }}&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_project_lookup
+
+- name: Create AWX project
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ awx_integration_project_name }}"
+      organization: "{{ awx_integration_org_id }}"
+      scm_type: "git"
+      scm_url: "{{ awx_integration_project_scm_url }}"
+      scm_branch: "{{ awx_integration_repo_branch }}"
+      scm_update_on_launch: true
+      credential: "{{ awx_integration_scm_cred_id }}"
+    status_code: 201
+  when: awx_integration_project_lookup.json.count | int == 0
+  register: awx_integration_project_created
+
+- name: Set AWX project id
+  ansible.builtin.set_fact:
+    awx_integration_project_id: >-
+      {{ (awx_integration_project_lookup.json.results | default([]) | first | default({})).id
+         | default(awx_integration_project_created.json.id) }}
+
+- name: Update AWX project SCM settings
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ awx_integration_project_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      scm_url: "{{ awx_integration_project_scm_url }}"
+      scm_branch: "{{ awx_integration_repo_branch }}"
+      scm_update_on_launch: true
+      credential: "{{ awx_integration_scm_cred_id }}"
+      scm_delete_on_update: true
+      custom_virtualenv: ""
+    status_code: 200
+  when: awx_integration_project_lookup.json.count | int > 0
+
+- name: Set GIT_SSL_NO_VERIFY for AWX project to trust lab-signed Forgejo cert
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ awx_integration_project_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      environment_vars:
+        GIT_SSL_NO_VERIFY: "true"
+    status_code: [200, 400]
+  when: awx_integration_project_lookup.json.count | int > 0
+  register: awx_integration_project_env_set
+  failed_when: false
+
+# ---------------------------------------------------------------------------
+# Move 1 + Catalog: Multi-project AWX layout (ADR-0014)
+# ---------------------------------------------------------------------------
+# dmf-runbooks is now a proper git repo; no manual file pushes needed.
+# Playbooks are managed via git and synced by AWX.
+
+- name: Initialize catalog project IDs map
+  ansible.builtin.set_fact:
+    awx_catalog_project_ids: {}
+
+- name: Create/update AWX catalog projects
+  ansible.builtin.include_tasks: tasks/catalog-project.yml
+  loop: "{{ awx_catalog_projects }}"
+  loop_control:
+    loop_var: catalog_project
+    label: "{{ catalog_project.name }}"
+
+- name: Sync AWX project
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ awx_integration_project_id }}/update/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 202
+  when: awx_integration_sync_project | bool
+
+- name: Lookup AWX inventory
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/inventories/?name={{ awx_integration_inventory_name | urlencode }}&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_inventory_lookup
+
+- name: Create AWX inventory
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/inventories/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ awx_integration_inventory_name }}"
+      organization: "{{ awx_integration_org_id }}"
+    status_code: 201
+  when: awx_integration_inventory_lookup.json.count | int == 0
+  register: awx_integration_inventory_created
+
+- name: Set AWX inventory id
+  ansible.builtin.set_fact:
+    awx_integration_inventory_id: >-
+      {{ (awx_integration_inventory_lookup.json.results | default([]) | first | default({})).id
+         | default(awx_integration_inventory_created.json.id) }}
+
+- name: Lookup AWX inventory source
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/inventory_sources/?name={{ awx_integration_inventory_source_name | urlencode }}&inventory={{ awx_integration_inventory_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_inventory_source_lookup
+
+- name: Create AWX inventory source
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/inventory_sources/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ awx_integration_inventory_source_name }}"
+      inventory: "{{ awx_integration_inventory_id }}"
+      source: "scm"
+      source_project: "{{ awx_integration_project_id }}"
+      source_path: "{{ awx_integration_inventory_path }}"
+      update_on_launch: "{{ awx_integration_update_on_launch }}"
+      overwrite: "{{ awx_integration_overwrite }}"
+      overwrite_vars: "{{ awx_integration_overwrite_vars }}"
+    status_code: 201
+  when: awx_integration_inventory_source_lookup.json.count | int == 0
+  register: awx_integration_inventory_source_created
+
+- name: Set AWX inventory source id
+  ansible.builtin.set_fact:
+    awx_integration_inventory_source_id: >-
+      {{ (awx_integration_inventory_source_lookup.json.results | default([]) | first | default({})).id
+         | default(awx_integration_inventory_source_created.json.id) }}
+
+- name: Update AWX inventory source
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/inventory_sources/{{ awx_integration_inventory_source_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      source: "scm"
+      source_project: "{{ awx_integration_project_id }}"
+      source_path: "{{ awx_integration_inventory_path }}"
+      update_on_launch: "{{ awx_integration_update_on_launch }}"
+      overwrite: "{{ awx_integration_overwrite }}"
+      overwrite_vars: "{{ awx_integration_overwrite_vars }}"
+    status_code: 200
+  when: awx_integration_inventory_source_lookup.json.count | int > 0
+
+- name: Sync AWX inventory source
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/inventory_sources/{{ awx_integration_inventory_source_id }}/update/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 202
+  when: awx_integration_sync_inventory | bool
+
+- name: Create temp file for AWX vault edits
+  ansible.builtin.tempfile:
+    state: file
+    suffix: .yml
+  register: awx_integration_vault_tmp
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Read vault.yml header
+  ansible.builtin.slurp:
+    path: "{{ awx_integration_vault_path }}"
+  register: awx_integration_vault_slurp
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Set vault encrypted flag
+  ansible.builtin.set_fact:
+    awx_integration_vault_encrypted: "{{ (awx_integration_vault_slurp.content | b64decode).startswith('$ANSIBLE_VAULT') }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Decrypt vault.yml to temp file
+  ansible.builtin.command: >
+    ansible-vault decrypt --vault-password-file {{ awx_integration_vault_password_file_effective }}
+    --output {{ awx_integration_vault_tmp.path }} {{ awx_integration_vault_path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - not awx_integration_persist_to_openbao | bool
+    - awx_integration_vault_encrypted
+  no_log: true
+
+- name: Copy vault.yml to temp file
+  ansible.builtin.copy:
+    src: "{{ awx_integration_vault_path }}"
+    dest: "{{ awx_integration_vault_tmp.path }}"
+    mode: "0600"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - not awx_integration_persist_to_openbao | bool
+    - not awx_integration_vault_encrypted
+  no_log: true
+
+- name: Update AWX service credentials in vault
+  ansible.builtin.lineinfile:
+    path: "{{ awx_integration_vault_tmp.path }}"
+    regexp: "^{{ item.key }}:"
+    line: "{{ item.key }}: \"{{ item.value }}\""
+    create: true
+  loop:
+    - key: vault_awx_svc_password
+      value: "{{ awx_integration_svc_password_effective }}"
+    - key: vault_awx_svc_token
+      value: "{{ awx_integration_svc_token_effective }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Encrypt updated vault.yml
+  ansible.builtin.command: >
+    ansible-vault encrypt --vault-password-file {{ awx_integration_vault_password_file_effective }} {{ awx_integration_vault_tmp.path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - not awx_integration_persist_to_openbao | bool
+    - awx_integration_vault_encrypted
+  no_log: true
+
+- name: Replace vault.yml with updated version
+  ansible.builtin.command: >
+    cp -f {{ awx_integration_vault_tmp.path }} {{ awx_integration_vault_path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Cleanup temp vault file
+  ansible.builtin.file:
+    path: "{{ awx_integration_vault_tmp.path }}"
+    state: absent
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not awx_integration_persist_to_openbao | bool
+
+- name: Persist AWX integration secrets to in-cluster OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$AWX_SVC_PASSWORD"
+      "$AWX_SVC_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ awx_integration_openbao_namespace }}
+      exec -i {{ _awx_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r SVC_PASSWORD;
+      IFS= read -r SVC_TOKEN;
+      export BAO_TOKEN;
+      bao kv patch {{ awx_integration_runtime_secret_path | quote }}
+      awx_svc_password="$SVC_PASSWORD"
+      awx_svc_token="$SVC_TOKEN"
+      || bao kv put {{ awx_integration_runtime_secret_path | quote }}
+      awx_svc_password="$SVC_PASSWORD"
+      awx_svc_token="$SVC_TOKEN"'
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _awx_openbao_operator_client_token }}"
+    AWX_SVC_PASSWORD: "{{ awx_integration_svc_password_effective }}"
+    AWX_SVC_TOKEN: "{{ awx_integration_svc_token_effective }}"
+  changed_when: false
+  no_log: true
+  when: awx_integration_persist_to_openbao | bool
+
+# ---------------------------------------------------------------------------
+# Move 2: Job template for eso-openbao-health-check workflow
+# ---------------------------------------------------------------------------
+- name: Check if eso-openbao-health-check runbook exists in Forgejo
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}/contents/playbooks/runbooks/eso-openbao-health-check.yml"
+    method: GET
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    status_code: [200, 404]
+    validate_certs: "{{ awx_integration_validate_certs | bool }}"
+  register: awx_integration_runbook_exists
+
+- name: Push eso-openbao-health-check runbook to Forgejo awx-automation repo
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ awx_integration_project_name }}/contents/playbooks/runbooks/eso-openbao-health-check.yml"
+    method: POST
+    body_format: json
+    body:
+      content: "{{ lookup('file', playbook_dir ~ '/runbooks/eso-openbao-health-check.yml') | b64encode }}"
+      message: "Move 2: add eso-openbao-health-check runbook"
+      branch: "{{ awx_integration_project_branch }}"
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    status_code: [200, 201]
+    validate_certs: "{{ awx_integration_validate_certs | bool }}"
+  when: awx_integration_runbook_exists.status == 404
+
+- name: Sync AWX project to pick up the new runbook
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ awx_integration_project_id }}/update/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: {}
+    status_code: [201, 202]
+  register: awx_integration_project_update
+
+- name: Wait for AWX project sync to complete
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/project_updates/{{ awx_integration_project_update.json.id }}/"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_project_update_status
+  until: awx_integration_project_update_status.json.status in ["successful", "failed", "canceled"]
+  retries: 60
+  delay: 5
+
+- name: Assert AWX project sync succeeded
+  ansible.builtin.assert:
+    that:
+      - awx_integration_project_update_status.json.status == "successful"
+    fail_msg: "AWX project update failed: {{ awx_integration_project_update_status.json }}"
+
+- name: Lookup AWX job templates for eso-openbao-health-check
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/?name=eso-openbao-health-check&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_integration_jt_lookup
+
+- name: Create AWX job template for eso-openbao-health-check
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: eso-openbao-health-check
+      description: "ESO/OpenBao health check — Move 2 spike"
+      job_type: run
+      inventory: "{{ awx_integration_inventory_id }}"
+      project: "{{ awx_integration_project_id }}"
+      playbook: "playbooks/runbooks/eso-openbao-health-check.yml"
+      ask_variables_on_launch: false
+    status_code: 201
+  when: awx_integration_jt_lookup.json.count | int == 0
+  register: awx_integration_jt_created
+
+# ---------------------------------------------------------------------------
+# Move 1 + Catalog: Job templates for catalog entries (ADR-0014)
+# Uses the dmf-runbooks project (thin launchers).
+# Pins catalog launchers to the DMF EE and the target-namespace Container
+# Group for in-cluster Kubernetes API access (ADR-0025 §8.7(b)).
+# ---------------------------------------------------------------------------
+- name: Lookup DMF execution environment for catalog jobs
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/execution_environments/?name={{ awx_ee_catalog_display_name | urlencode }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_dmf_ee_lookup
+  run_once: true
+
+- name: Register DMF execution environment for catalog jobs
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/execution_environments/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ awx_ee_catalog_display_name }}"
+      image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
+      pull: missing
+    status_code: 201
+  register: awx_dmf_ee_created
+  run_once: true
+  when: awx_dmf_ee_lookup.json.count | int == 0
+
+- name: Update DMF execution environment for catalog jobs
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/execution_environments/{{ (awx_dmf_ee_lookup.json.results | first).id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
+      pull: missing
+    status_code: 200
+  register: awx_dmf_ee_updated
+  run_once: true
+  when: awx_dmf_ee_lookup.json.count | int > 0
+
+- name: Set DMF execution environment ID
+  ansible.builtin.set_fact:
+    awx_dmf_ee_id: >-
+      {{ (awx_dmf_ee_lookup.json.results | first).id
+         if awx_dmf_ee_lookup.json.count | int > 0
+         else awx_dmf_ee_created.json.id }}
+  run_once: true
+
+# Pin the DMF EE on the NetBox inventory source too — not just the catalog JTs.
+# inventory_update runs nb_inventory (netbox.netbox), which is baked ONLY into
+# the DMF EE; left on the default "AWX EE (latest)" the sync fails with
+# "unknown plugin 'netbox.netbox.nb_inventory'". The source has update-on-launch,
+# so the next catalog launch re-syncs the inventory under this EE (offline).
+- name: Pin DMF execution environment on the NetBox inventory source
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/inventory_sources/{{ awx_integration_inventory_source_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      execution_environment: "{{ awx_dmf_ee_id }}"
+    status_code: 200
+  run_once: true
+  when: awx_integration_inventory_source_id is defined
+
+- name: Set DMF catalog Container Group pod spec override
+  ansible.builtin.set_fact:
+    awx_dmf_catalog_pod_spec_override: |
+      apiVersion: v1
+      kind: Pod
+      metadata:
+        namespace: nmos
+      spec:
+        serviceAccountName: nmos-cpp-launcher
+        automountServiceAccountToken: true
+        containers:
+          - name: worker
+            image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
+            imagePullPolicy: IfNotPresent
+  run_once: true
+
+- name: Lookup DMF catalog Container Group
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/instance_groups/?name=dmf-catalog-cg"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_dmf_catalog_cg_lookup
+  run_once: true
+
+- name: Create DMF catalog Container Group
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/instance_groups/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "dmf-catalog-cg"
+      is_container_group: true
+      pod_spec_override: "{{ awx_dmf_catalog_pod_spec_override }}"
+    status_code: 201
+  register: awx_dmf_catalog_cg_created
+  run_once: true
+  when: awx_dmf_catalog_cg_lookup.json.count | int == 0
+
+- name: Update DMF catalog Container Group
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/instance_groups/{{ (awx_dmf_catalog_cg_lookup.json.results | first).id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      is_container_group: true
+      pod_spec_override: "{{ awx_dmf_catalog_pod_spec_override }}"
+    status_code: 200
+  register: awx_dmf_catalog_cg_updated
+  run_once: true
+  when: awx_dmf_catalog_cg_lookup.json.count | int > 0
+
+- name: Set DMF catalog Container Group ID
+  ansible.builtin.set_fact:
+    awx_dmf_catalog_cg_id: >-
+      {{ (awx_dmf_catalog_cg_lookup.json.results | first).id
+         if awx_dmf_catalog_cg_lookup.json.count | int > 0
+         else awx_dmf_catalog_cg_created.json.id }}
+  run_once: true
+
+- name: Lookup existing catalog job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/?name={{ jt_item.name | urlencode }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  loop: "{{ awx_catalog_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+  register: awx_catalog_jt_lookup_ids
+  run_once: true
+  no_log: true
+
+- name: Create AWX job templates for catalog entries (fail loud on missing playbook)
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ jt_item.name }}"
+      description: "{{ jt_item.description }}"
+      job_type: run
+      inventory: "{{ awx_integration_inventory_id }}"
+      project: "{{ awx_catalog_project_ids[jt_item.project_name] }}"
+      playbook: "{{ jt_item.playbook }}"
+      execution_environment: "{{ awx_dmf_ee_id }}"
+      instance_groups:
+        - "{{ awx_dmf_catalog_cg_id }}"
+      ask_variables_on_launch: false
+      extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
+    status_code: 201
+  loop: "{{ awx_catalog_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  when: >-
+    awx_catalog_jt_lookup_ids is defined and
+    awx_catalog_jt_lookup_ids.results[loop_index0].json.results
+    | default([]) | length == 0
+  register: awx_catalog_jt_created
+  # no_log hides the task input (admin password in url_password). The
+  # registered result IS populated, so the surface task below can show
+  # per-JT failure details. failed_when: false lets the loop complete
+  # so we see EVERY failing entry, not just the first.
+  no_log: true
+  failed_when: false
+
+- name: Surface AWX catalog JT create failures (per-entry response body)
+  ansible.builtin.debug:
+    msg: |
+      {% for r in awx_catalog_jt_created.results %}
+      {% if r.skipped | default(false) %}
+      JT '{{ r.jt_item.name }}': skipped (already exists)
+      {% elif (r.status | default(0)) == 201 %}
+      JT '{{ r.jt_item.name }}': created
+      {% else %}
+      JT '{{ r.jt_item.name }}': FAILED status={{ r.status | default('no-response') }}
+        playbook    : {{ r.jt_item.playbook }}
+        project     : {{ r.jt_item.project_name }}
+        response    : {{ r.json | default(r.content | default('(no body)')) }}
+        msg         : {{ r.msg | default('') }}
+      {% endif %}
+      {% endfor %}
+  when: awx_catalog_jt_created is defined
+
+- name: Fail role if any AWX catalog JT create returned non-201
+  ansible.builtin.fail:
+    msg: >-
+      One or more AWX catalog job template creates failed — see the
+      per-entry response bodies above. Most common cause: the playbook
+      named in awx_catalog_job_templates[].playbook is not present in
+      the AWX project's source repo. Fix the playbook reference (or
+      add the missing playbook to dmf-runbooks) and re-run.
+  when: >-
+    awx_catalog_jt_created.results
+    | rejectattr('skipped', 'defined')
+    | rejectattr('status', 'eq', 201)
+    | list | length > 0
+
+- name: Update catalog job templates with execution environment (idempotent)
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ (awx_catalog_jt_lookup_ids.results[loop_index0].json.results[0].id) }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      execution_environment: "{{ awx_dmf_ee_id }}"
+      instance_groups:
+        - "{{ awx_dmf_catalog_cg_id }}"
+      extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
+    status_code: 200
+  loop: "{{ awx_catalog_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  run_once: true
+  when:
+    - awx_catalog_jt_lookup_ids.results is defined
+    - awx_catalog_jt_lookup_ids.results[loop_index0].json.results | length > 0
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Phase 8a: Bootstrap AWX SSH privkey to OpenBao (ADR-0016)
+# Writes the control-node SSH privkey to OpenBao for credential creation.
+# This runs as part of the regular bootstrap, before credential creation.
+# ---------------------------------------------------------------------------
+- name: Read AWX SSH privkey from disk for OpenBao bootstrap
+  ansible.builtin.slurp:
+    src: "{{ awx_control_node_ssh_privkey_path }}"
+  register: _awx_ssh_privkey_slurp
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when:
+    - awx_integration_persist_to_openbao | bool
+    - awx_control_node_ssh_privkey_path is defined
+    - awx_control_node_ssh_privkey_path | length > 0
+
+- name: Bootstrap AWX SSH privkey to OpenBao (write)
+  ansible.builtin.shell: |
+    printf '%s\n%s\n' "$OPENBAO_TOKEN" "$SSH_KEY_B64" |
+    kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+    -n {{ awx_integration_openbao_namespace }} \
+    exec -i {{ _awx_openbao_pod }} \
+    -- sh -c '
+    IFS= read -r BAO_TOKEN
+    IFS= read -r SSH_KEY_B64
+    export BAO_TOKEN
+    SSH_KEY_DATA=$(echo "$SSH_KEY_B64" | base64 -d)
+    bao kv put secret/apps/awx/control_node_ssh ssh_key_data="$SSH_KEY_DATA"
+    '
+  register: _awx_ssh_bootstrap_write
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _awx_openbao_operator_client_token }}"
+    SSH_KEY_B64: "{{ _awx_ssh_privkey_slurp.content }}"
+  changed_when: false
+  no_log: true
+  when:
+    - awx_integration_persist_to_openbao | bool
+    - _awx_openbao_operator_client_token is defined
+    - _awx_ssh_privkey_slurp is defined
+    - _awx_ssh_privkey_slurp.content is defined
+
+# ---------------------------------------------------------------------------
+# Phase 8: AWX SSH Machine credential for control-node access (ADR-0016)
+# Reads privkey from OpenBao and creates the AWX Machine credential.
+# ---------------------------------------------------------------------------
+- name: Lookup Machine credential type
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credential_types/?name=Machine"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_machine_cred_type_lookup
+  run_once: true
+
+- name: Set Machine credential type id
+  ansible.builtin.set_fact:
+    awx_machine_cred_type_id: "{{ (awx_machine_cred_type_lookup.json.results | first).id }}"
+  run_once: true
+  when: awx_machine_cred_type_lookup.json.count | int > 0
+
+- name: Lookup existing awx-control-node-ssh credential
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/?name=awx-control-node-ssh&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: awx_control_node_ssh_cred_lookup
+  run_once: true
+
+- name: Read AWX control-node SSH privkey from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ awx_integration_openbao_namespace }}
+      exec -i {{ _awx_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json secret/apps/awx/control_node_ssh'
+  register: _awx_control_node_ssh_raw
+  changed_when: false
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _awx_openbao_operator_client_token }}"
+  no_log: true
+  when:
+    - awx_integration_persist_to_openbao | bool
+    - _awx_openbao_operator_client_token is defined
+  failed_when: false
+
+- name: Extract SSH key data from OpenBao
+  ansible.builtin.set_fact:
+    _awx_control_node_ssh_key: "{{ (_awx_control_node_ssh_raw.stdout | from_json).data.data.ssh_key_data }}"
+  run_once: true
+  no_log: true
+  when:
+    - _awx_control_node_ssh_raw is defined
+    - _awx_control_node_ssh_raw.stdout is defined
+    - _awx_control_node_ssh_raw.stdout | length > 0
+
+- name: Create AWX control-node SSH Machine credential
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "awx-control-node-ssh"
+      description: "SSH credential for AWX→control-node playbook execution (ADR-0016)"
+      organization: "{{ awx_integration_org_id }}"
+      credential_type: "{{ awx_machine_cred_type_id }}"
+      inputs:
+        username: "k3s-admin"
+        ssh_key_data: "{{ _awx_control_node_ssh_key }}"
+    status_code: 201
+  register: awx_control_node_ssh_cred_created
+  run_once: true
+  no_log: true
+  when:
+    - awx_control_node_ssh_cred_lookup.json.count | int == 0
+    - _awx_control_node_ssh_key is defined
+
+- name: Update existing AWX control-node SSH credential
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/{{ (awx_control_node_ssh_cred_lookup.json.results | first).id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      inputs:
+        username: "k3s-admin"
+        ssh_key_data: "{{ _awx_control_node_ssh_key }}"
+    status_code: 200
+  register: awx_control_node_ssh_cred_updated
+  run_once: true
+  no_log: true
+  when:
+    - awx_control_node_ssh_cred_lookup.json.count | int > 0
+    - _awx_control_node_ssh_key is defined
+
+- name: Set AWX control-node SSH credential id
+  ansible.builtin.set_fact:
+    awx_control_node_ssh_cred_id: >-
+      {{ (awx_control_node_ssh_cred_lookup.json.results | default([]) | first | default({})).id
+         | default(awx_control_node_ssh_cred_created.json.id) }}
+  run_once: true
+
+- name: Lookup catalog job template IDs by name
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/?name={{ jt_item.name | urlencode }}&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  loop: "{{ awx_catalog_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+  register: awx_catalog_jt_lookup
+  run_once: true
+
+- name: Update extra_vars for existing catalog job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ jt_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
+    status_code: 200
+  vars:
+    jt_id: "{{ (awx_catalog_jt_lookup.results[loop_index0].json.results[0].id) }}"
+  loop: "{{ awx_catalog_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  run_once: true
+  when:
+    - awx_catalog_jt_lookup.results is defined
+    - awx_catalog_jt_lookup.results[loop_index0].json.results | length > 0
+  no_log: true
+
+- name: Attach DMF catalog Container Group to catalog job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ jt_id }}/instance_groups/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      id: "{{ awx_dmf_catalog_cg_id }}"
+    status_code: [201, 204, 400]
+  vars:
+    jt_id: "{{ (awx_catalog_jt_lookup.results[loop_index0].json.results[0].id) }}"
+  loop: "{{ awx_catalog_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  run_once: true
+  when:
+    - awx_catalog_jt_lookup.results is defined
+    - awx_catalog_jt_lookup.results[loop_index0].json.results | length > 0
+  no_log: true
+
+- name: Attach SSH credential to catalog job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ jt_id }}/credentials/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      id: "{{ awx_control_node_ssh_cred_id }}"
+    status_code: [201, 204, 400]
+  vars:
+    jt_id: "{{ (awx_catalog_jt_lookup.results[loop_index0].json.results[0].id) }}"
+  loop: "{{ awx_catalog_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  run_once: true
+  when:
+    - awx_catalog_jt_lookup.results is defined
+    - awx_catalog_jt_lookup.results[loop_index0].json.results | length > 0

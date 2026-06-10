@@ -1,0 +1,39 @@
+---
+dmf_promsd_namespace: monitoring
+dmf_promsd_release_name: dmf-promsd
+
+# Image from cluster-internal Zot (seeded by 630-zot-seed-platform.yml).
+dmf_promsd_image_repository: "registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}/dmf-promsd"
+dmf_promsd_image_tag: "{{ dmf_promsd_image_tag_override | default(lookup('file', role_path ~ '/../../../../../../dmf-promsd/VERSION') | trim) }}"
+dmf_promsd_image_pull_policy: IfNotPresent
+
+# NetBox API — in-cluster svc DNS (ADR-0023, plain HTTP).
+# netbox_namespace is defined by the netbox role; fall back to 'netbox'.
+dmf_promsd_netbox_url: "http://netbox.{{ netbox_namespace | default('netbox') }}.svc.cluster.local"
+dmf_promsd_netbox_validate_certs: false
+
+# Cache TTL — decoupled poll cadence per ADR-0038 (Prometheus refresh
+# is 30s, adapter cache ~45s, worst-case churn ≈75s).
+dmf_promsd_cache_ttl_seconds: 45
+
+# ESO ExternalSecret
+dmf_promsd_eso_secret_name: dmf-promsd-netbox
+dmf_promsd_eso_remote_ref_key: "secret/apps/netbox/runtime"
+dmf_promsd_eso_remote_ref_property: promsd_api_token
+dmf_promsd_eso_refresh_interval: 1h
+dmf_promsd_cluster_secret_store_name: "{{ eso_cluster_secret_store_name | default('openbao') }}"
+dmf_promsd_external_secret_api_version: "{{ eso_crd_api_version | default('external-secrets.io/v1') }}"
+
+# Sandbox-sized resources — lightweight FastAPI adapter, no TSDB.
+# Sized between alertmanager (20m/64Mi) and promtail (100m/128Mi).
+dmf_promsd_resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+# Probe health endpoints.
+dmf_promsd_liveness_path: /healthz
+dmf_promsd_readiness_path: /readyz

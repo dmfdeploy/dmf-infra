@@ -1,0 +1,35 @@
+! Cisco IOS Base Configuration Template
+! Rendered by NetBox from git-backed datasource
+! Site: {{ '{{ site.name }}' }} | Device: {{ '{{ device.name }}' }}
+!
+hostname {{ '{{ device.name }}' }}
+
+! --- NTP ---
+{% for server in site.config_context.data.ntp.servers | default(['ntp1.dmf.example.com']) %}
+ntp server {{ '{{ server }}' }}
+{% endfor %}
+
+! --- DNS ---
+ip domain name {{ '{{ site.config_context.data.dns.domain }}' }}
+{% for server in site.config_context.data.dns.servers | default(['10.0.1.10']) %}
+ip name-server {{ '{{ server }}' }}
+{% endfor %}
+
+! --- Syslog ---
+{% for srv in site.config_context.data.syslog.servers | default([]) %}
+logging host {{ '{{ srv.address }}' }} {{ '{{ srv.port }}' }} {{ '{{ srv.protocol }}' }}
+logging trap {{ '{{ srv.severity }}' }}
+{% endfor %}
+
+! --- SNMP ---
+snmp-server community {{ '{{ site.config_context.data.snmp.community }}' }} RO
+{% for trap in site.config_context.data.snmp.traps | default([]) %}
+snmp-server host {{ '{{ trap.destination }}' }} version 2c {{ '{{ trap.community }}' }}
+{% endfor %}
+
+! --- Management ---
+line vty 0 15
+ transport ssh
+ exec-timeout 15 0
+!
+end

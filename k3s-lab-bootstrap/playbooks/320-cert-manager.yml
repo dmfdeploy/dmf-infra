@@ -1,0 +1,17 @@
+---
+# Playbook: 16-cert-manager.yml
+# Deploys cert-manager and configures Let's Encrypt HTTP-01 issuer.
+# Runs after ingress (Traefik) is live, before platform apps that need TLS.
+#
+# Prerequisites:
+#   - 15-ingress.yml completed (Traefik reachable)
+#   - DNS A record for every entry in cert_manager_dns_names pointing at ingress LB IP
+#   - cert_manager_acme_email set in env group_vars
+#   - cert_manager_dns_names populated with the SAN set you want on the default Traefik cert
+
+- name: Deploy cert-manager
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cert-manager

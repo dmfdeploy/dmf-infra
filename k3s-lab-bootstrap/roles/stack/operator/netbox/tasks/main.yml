@@ -1,0 +1,715 @@
+---
+- name: Create netbox namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ netbox_namespace }}"
+
+- name: Load OpenBao break-glass JSON from operator host
+  ansible.builtin.set_fact:
+    _netbox_breakglass: "{{ lookup('file', (netbox_openbao_breakglass_file | default(eso_openbao_breakglass_file | default((openbao_key_path | default('')) ~ '.json', true), true))) | from_json }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Extract OpenBao operator credentials for NetBox bootstrap writes
+  ansible.builtin.set_fact:
+    _netbox_openbao_username: "{{ _netbox_breakglass.ops_admin_username | default('') }}"
+    _netbox_openbao_password: "{{ _netbox_breakglass.ops_admin_password | default('') }}"
+  no_log: true
+
+- name: Assert OpenBao operator credentials exist for NetBox bootstrap
+  ansible.builtin.assert:
+    that:
+      - _netbox_openbao_username | length > 0
+      - _netbox_openbao_password | length > 0
+    fail_msg: >-
+      No operator credentials found for NetBox bootstrap. NetBox now persists
+      its DB, Valkey, and API pepper secrets in OpenBao.
+  no_log: true
+
+- name: Discover OpenBao pod for NetBox bootstrap writes
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ netbox_openbao_namespace }}"
+    label_selectors:
+      - "{{ netbox_openbao_pod_label_selector }}"
+  register: _netbox_openbao_pod_info
+
+- name: Assert OpenBao pod exists for NetBox bootstrap
+  ansible.builtin.assert:
+    that:
+      - _netbox_openbao_pod_info.resources | length > 0
+    fail_msg: >-
+      Could not find an OpenBao pod in namespace {{ netbox_openbao_namespace }}
+      with selector {{ netbox_openbao_pod_label_selector }}.
+
+- name: Set OpenBao pod fact for NetBox bootstrap
+  ansible.builtin.set_fact:
+    _netbox_openbao_pod: "{{ _netbox_openbao_pod_info.resources[0].metadata.name }}"
+
+- name: Log into OpenBao with operator userpass for NetBox bootstrap writes
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_openbao_namespace }}
+      exec -i {{ _netbox_openbao_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ _netbox_openbao_username | quote }} password="$P"'
+  register: _netbox_openbao_login_raw
+  changed_when: false
+  environment:
+    OPENBAO_PASSWORD: "{{ _netbox_openbao_password }}"
+  no_log: true
+
+- name: Extract OpenBao client token for NetBox bootstrap writes
+  ansible.builtin.set_fact:
+    _netbox_openbao_client_token: "{{ (_netbox_openbao_login_raw.stdout | from_json).auth.client_token }}"
+  no_log: true
+
+- name: Read current NetBox runtime secret from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_openbao_namespace }}
+      exec -i {{ _netbox_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ netbox_runtime_secret_path | quote }}'
+  register: _netbox_runtime_secret_raw
+  changed_when: false
+  failed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_openbao_client_token }}"
+  no_log: true
+
+- name: Parse current NetBox runtime secret document
+  ansible.builtin.set_fact:
+    _netbox_runtime_secret_data: >-
+      {{
+        (
+          _netbox_runtime_secret_raw.stdout | default('{}') | from_json
+        ).data.data | default({})
+      }}
+  when:
+    - _netbox_runtime_secret_raw.rc == 0
+    - _netbox_runtime_secret_raw.stdout | default('') | length > 0
+  no_log: true
+
+- name: Log NetBox OpenBao read result
+  ansible.builtin.debug:
+    msg: "NetBox OpenBao read: rc={{ _netbox_runtime_secret_raw.rc }}, has_output={{ (_netbox_runtime_secret_raw.stdout | default('') | length) > 0 }}"
+  when: _netbox_runtime_secret_raw is defined
+
+- name: Default NetBox runtime secret document
+  ansible.builtin.set_fact:
+    _netbox_runtime_secret_data: {}
+  when: _netbox_runtime_secret_data is not defined
+  no_log: true
+
+- name: Wait for NetBox control host SSH to be reachable before probing persistence state
+  ansible.builtin.wait_for_connection:
+    timeout: 300
+    sleep: 5
+  changed_when: false
+
+- name: Discover existing NetBox persistence resources
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: PersistentVolumeClaim
+    namespace: "{{ netbox_namespace }}"
+  register: _netbox_existing_pvcs
+
+- name: Discover existing NetBox StatefulSets
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    namespace: "{{ netbox_namespace }}"
+  register: _netbox_existing_statefulsets
+
+- name: Set NetBox persistence presence fact
+  ansible.builtin.set_fact:
+    _netbox_has_existing_persistence: >-
+      {{
+        (_netbox_existing_pvcs.resources | default([]) | length > 0)
+        or (_netbox_existing_statefulsets.resources | default([]) | length > 0)
+      }}
+
+- name: Assert partial NetBox runtime secret is not reused for an existing install
+  ansible.builtin.assert:
+    that:
+      - _netbox_runtime_secret_data.db_password | default('') | length > 0
+    fail_msg: >-
+      NetBox runtime secret exists in OpenBao but db_password is empty while
+      NetBox persistence already exists in the cluster.
+      This indicates the OpenBao runtime secret is stale or partial for an
+      existing NetBox install.
+      Recover by restoring the known-good db password or by deleting the
+      NetBox namespace and PVCs before rerunning lifecycle.
+  when:
+    - _netbox_runtime_secret_data.keys() | length > 0
+    - (_netbox_runtime_secret_data.db_password | default('')) | length == 0
+    - _netbox_has_existing_persistence | bool
+    - (netbox_db_password | default('')) | length == 0
+
+- name: Generate NetBox DB password when missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -base64
+      - "48"
+  register: _netbox_db_password_generated
+  changed_when: false
+  when: (_netbox_runtime_secret_data.db_password | default('')) | length == 0 and (netbox_db_password | default('')) | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Generate NetBox Valkey password when missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -base64
+      - "48"
+  register: _netbox_valkey_password_generated
+  changed_when: false
+  when: (_netbox_runtime_secret_data.valkey_password | default('')) | length == 0 and (netbox_valkey_password | default('')) | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Generate NetBox API pepper when missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -base64
+      - "48"
+  register: _netbox_api_token_pepper_generated
+  changed_when: false
+  when: (_netbox_runtime_secret_data.api_token_pepper | default('')) | length == 0 and (netbox_api_token_pepper | default('')) | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Generate NetBox secret key when missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -base64
+      - "48"
+  register: _netbox_secret_key_generated
+  changed_when: false
+  when: (_netbox_runtime_secret_data.secret_key | default('')) | length == 0 and (netbox_secret_key | default('')) | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Generate NetBox superuser API token when missing
+  ansible.builtin.command:
+    argv:
+      - openssl
+      - rand
+      - -base64
+      - "48"
+  register: _netbox_superuser_api_token_generated
+  changed_when: false
+  when: (_netbox_runtime_secret_data.superuser_api_token | default('')) | length == 0 and (netbox_superuser_api_token | default('')) | length == 0
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Set effective NetBox runtime secrets
+  ansible.builtin.set_fact:
+    netbox_db_password_effective: >-
+      {{
+        _netbox_runtime_secret_data.db_password
+        | default(_netbox_db_password_generated.stdout | default(netbox_db_password | default('')) | trim, true)
+      }}
+    netbox_valkey_password_effective: >-
+      {{
+        _netbox_runtime_secret_data.valkey_password
+        | default(_netbox_valkey_password_generated.stdout | default(netbox_valkey_password | default('')) | trim, true)
+      }}
+    netbox_api_token_pepper_effective: >-
+      {{
+        _netbox_runtime_secret_data.api_token_pepper
+        | default(_netbox_api_token_pepper_generated.stdout | default(netbox_api_token_pepper | default('')) | trim, true)
+      }}
+    netbox_secret_key_effective: >-
+      {{
+        _netbox_runtime_secret_data.secret_key
+        | default(_netbox_secret_key_generated.stdout | default(netbox_secret_key | default('')) | trim, true)
+      }}
+    netbox_superuser_api_token_effective: >-
+      {{
+        _netbox_runtime_secret_data.superuser_api_token
+        | default(_netbox_superuser_api_token_generated.stdout | default(netbox_superuser_api_token | default('')) | trim, true)
+      }}
+  no_log: true
+
+- name: Persist NetBox runtime secret to OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n%s\n%s\n%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$NETBOX_DB_PASSWORD"
+      "$NETBOX_VALKEY_PASSWORD"
+      "$NETBOX_API_TOKEN_PEPPER"
+      "$NETBOX_SECRET_KEY"
+      "$NETBOX_SUPERUSER_API_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_openbao_namespace }}
+      exec -i {{ _netbox_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r DB_PASSWORD;
+      IFS= read -r VALKEY_PASSWORD;
+      IFS= read -r API_TOKEN_PEPPER;
+      IFS= read -r SECRET_KEY;
+      IFS= read -r SUPERUSER_API_TOKEN;
+      export BAO_TOKEN;
+      bao kv put {{ netbox_runtime_secret_path | quote }}
+      db_password="$DB_PASSWORD"
+      valkey_password="$VALKEY_PASSWORD"
+      api_token_pepper="$API_TOKEN_PEPPER"
+      secret_key="$SECRET_KEY"
+      superuser_api_token="$SUPERUSER_API_TOKEN"'
+  register: _netbox_openbao_write_result
+  when:
+    - _netbox_runtime_secret_data.db_password | default('') != netbox_db_password_effective
+      or _netbox_runtime_secret_data.valkey_password | default('') != netbox_valkey_password_effective
+      or _netbox_runtime_secret_data.api_token_pepper | default('') != netbox_api_token_pepper_effective
+      or _netbox_runtime_secret_data.secret_key | default('') != netbox_secret_key_effective
+      or _netbox_runtime_secret_data.superuser_api_token | default('') != netbox_superuser_api_token_effective
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_openbao_client_token }}"
+    NETBOX_DB_PASSWORD: "{{ netbox_db_password_effective }}"
+    NETBOX_VALKEY_PASSWORD: "{{ netbox_valkey_password_effective }}"
+    NETBOX_API_TOKEN_PEPPER: "{{ netbox_api_token_pepper_effective }}"
+    NETBOX_SECRET_KEY: "{{ netbox_secret_key_effective }}"
+    NETBOX_SUPERUSER_API_TOKEN: "{{ netbox_superuser_api_token_effective }}"
+  no_log: true
+
+- name: Verify NetBox runtime secret was persisted to OpenBao
+  block:
+    - name: Read back NetBox password from OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ netbox_openbao_namespace }}
+          exec -i {{ _netbox_openbao_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json {{ netbox_runtime_secret_path | quote }}'
+      register: _netbox_openbao_raw
+      changed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _netbox_openbao_client_token }}"
+      no_log: true
+
+    - name: Extract NetBox password from OpenBao JSON
+      ansible.builtin.set_fact:
+        _netbox_openbao_verify:
+          stdout: "{{ (_netbox_openbao_raw.stdout | from_json).data.data.db_password | default('') }}"
+      no_log: true
+
+    - name: Assert NetBox DB password persisted correctly
+      ansible.builtin.assert:
+        that:
+          - _netbox_openbao_verify.stdout | trim == netbox_db_password_effective
+        fail_msg: >-
+          NetBox DB password failed to persist to OpenBao.
+          Expected: {{ netbox_db_password_effective }}
+          Got: {{ _netbox_openbao_verify.stdout | trim }}
+          This indicates OpenBao write succeeded but value is not consistent.
+          Check OpenBao policies and mount permissions.
+
+  when: _netbox_openbao_write_result is changed
+
+- name: Read NetBox OAuth client credentials from Authentik
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ authentik_namespace | default('authentik') }}"
+      - exec
+      - deploy/{{ authentik_release_name | default('authentik') }}-worker
+      - --
+      - ak
+      - shell
+      - -c
+      - >-
+        import json;
+        from authentik.providers.oauth2.models import OAuth2Provider;
+        provider = OAuth2Provider.objects.get(name="{{ netbox_oidc_provider_name }}");
+        print(json.dumps({"client_id": provider.client_id, "client_secret": provider.client_secret}))
+  register: netbox_oidc_provider_credentials
+  changed_when: false
+  no_log: true
+  when: netbox_oidc_enabled | bool
+
+- name: Parse NetBox OAuth client credentials
+  ansible.builtin.set_fact:
+    netbox_oidc_provider_credentials_parsed: "{{ netbox_oidc_provider_credentials.stdout_lines | last | from_json }}"
+  no_log: true
+  when: netbox_oidc_enabled | bool
+
+- name: Create NetBox extra config secret for API_TOKEN_PEPPERS
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: netbox-extra-config
+        namespace: "{{ netbox_namespace }}"
+      type: Opaque
+      stringData:
+        extra.yaml: |
+          API_TOKEN_PEPPERS:
+            1: "{{ netbox_api_token_pepper_effective }}"
+          {% if netbox_oidc_enabled | bool %}
+          REMOTE_AUTH_ENABLED: true
+          REMOTE_AUTH_BACKEND:
+            - social_core.backends.open_id_connect.OpenIdConnectAuth
+          REMOTE_AUTH_AUTO_CREATE_USER: true
+          SOCIAL_AUTH_BACKEND_ATTRS:
+            oidc:
+              - {{ netbox_oidc_login_label | to_json }}
+              - ""
+          SOCIAL_AUTH_OIDC_OIDC_ENDPOINT: {{ netbox_oidc_issuer_url | to_json }}
+          SOCIAL_AUTH_OIDC_KEY: {{ netbox_oidc_provider_credentials_parsed.client_id | to_json }}
+          SOCIAL_AUTH_OIDC_SECRET: {{ netbox_oidc_provider_credentials_parsed.client_secret | to_json }}
+          SOCIAL_AUTH_OIDC_SCOPE:
+            - openid
+            - profile
+            - email
+          SOCIAL_AUTH_OIDC_USERNAME_KEY: preferred_username
+          SOCIAL_AUTH_OIDC_JWT_ALGORITHMS:
+            - RS256
+          LOGIN_URL: {{ netbox_oidc_login_url | to_json }}
+          {% endif %}
+
+# Local-CA lane: publish the DMF Local CA public cert into the NetBox namespace
+# so the pod can mount it and python-social-auth trusts the Authentik ingress
+# cert during server-side OIDC discovery/token. Mirrors the zot role. Structured
+# read (NOT command+jsonpath, whose arg-splitting drops the 'ca.crt' key).
+- name: Read local CA Secret from the cluster (local-CA lane)
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ netbox_local_ca_secret }}"
+    namespace: "{{ netbox_local_ca_secret_namespace }}"
+  register: _netbox_ca_secret
+  when: netbox_local_ca_trust_enabled | bool
+
+- name: Publish local CA cert into NetBox namespace (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ netbox_local_ca_configmap }}"
+        namespace: "{{ netbox_namespace }}"
+      data:
+        ca.crt: "{{ _netbox_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
+  when:
+    - netbox_local_ca_trust_enabled | bool
+    - _netbox_ca_secret.resources | default([]) | length > 0
+    - _netbox_ca_secret.resources[0].data['ca.crt'] | default('') | length > 0
+
+- name: Stage NetBox wrapper chart on target
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../charts/netbox/"
+    dest: "{{ netbox_chart_stage_path }}/"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Template NetBox Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/netbox-values.yml
+    mode: "0644"
+
+- name: Deploy NetBox via Helm (local wrapper chart)
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: netbox
+    chart_ref: "{{ netbox_chart_stage_path }}"
+    release_namespace: "{{ netbox_namespace }}"
+    create_namespace: true
+    values_files:
+      - /tmp/netbox-values.yml
+    wait: false
+
+- name: Wait for NetBox media PVC to be bound
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: netbox-media
+    namespace: "{{ netbox_namespace }}"
+  register: netbox_media_pvc
+  until: netbox_media_pvc.resources | length > 0 and netbox_media_pvc.resources[0].status.phase == "Bound"
+  retries: "{{ netbox_wait_retries }}"
+  delay: "{{ netbox_wait_delay }}"
+
+- name: Wait for NetBox web Deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: netbox
+    namespace: "{{ netbox_namespace }}"
+  register: netbox_web
+  until:
+    - netbox_web.resources | length > 0
+    - netbox_web.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: "{{ netbox_wait_retries }}"
+  delay: "{{ netbox_wait_delay }}"
+
+- name: Wait for NetBox worker Deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: netbox-worker
+    namespace: "{{ netbox_namespace }}"
+  register: netbox_worker
+  until:
+    - netbox_worker.resources | length > 0
+    - netbox_worker.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: "{{ netbox_wait_retries }}"
+  delay: "{{ netbox_wait_delay }}"
+
+- name: Create NetBox StripPrefix Middleware
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: netbox-stripprefix
+        namespace: "{{ netbox_namespace }}"
+      spec:
+        stripPrefix:
+          prefixes:
+            - "{{ netbox_path }}"
+
+# HTTP→HTTPS redirect is handled at the Traefik entrypoint (see base/ingress).
+# Both the redirect IngressRoute and its namespace-local Middleware are
+# obsolete. Absent them to clean up after older playbook runs, then
+# delete-before-recreate the main NetBox route so any stale `tls.secretName`
+# from older runs is dropped (kubernetes.core.k8s state=present would
+# strategic-merge and keep the key).
+- name: Remove legacy NetBox redirect Middleware
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: Middleware
+    name: netbox-https-redirect
+    namespace: "{{ netbox_namespace }}"
+
+- name: Remove legacy NetBox IngressRoutes before recreate
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: IngressRoute
+    name: "{{ item }}"
+    namespace: "{{ netbox_namespace }}"
+  loop:
+    - netbox
+    - netbox-redirect
+
+- name: Create NetBox Host-based IngressRoute (private lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: netbox
+        namespace: "{{ netbox_namespace }}"
+        annotations:
+          dmf.exposure: private
+          traefik.ingress.kubernetes.io/router.ingressclass: "{{ netbox_ingress_class }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: "Host(`{{ netbox_host }}`)"
+            kind: Rule
+            services:
+              - name: netbox
+                port: 80
+  when: netbox_exposure | default('host') == 'host'
+
+- name: Create NetBox Path-based IngressRoute (public lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: netbox
+        namespace: "{{ netbox_namespace }}"
+      spec:
+        entryPoints:
+          - websecure
+        tls: {}
+        routes:
+          - match: "PathPrefix(`{{ netbox_path }}/static`)"
+            kind: Rule
+            middlewares:
+              - name: netbox-stripprefix
+            services:
+              - name: netbox
+                port: 80
+          - match: "PathPrefix(`{{ netbox_path }}`)"
+            kind: Rule
+            services:
+              - name: netbox
+                port: 80
+  when: netbox_exposure | default('host') == 'path'
+
+- name: Cleanup temp values file
+  ansible.builtin.file:
+    path: /tmp/netbox-values.yml
+    state: absent
+
+# ---------------------------------------------------------------------------
+# Workaround: patch drf-spectacular to fix schema generation hang.
+# NetBox v4.5.0 ships drf-spectacular 0.29.0 which has a bug where
+# build_mock_request() accesses original_request.auth on a WSGIRequest
+# that doesn't have the attribute, causing schema generation to fail
+# silently (HTTP 200 with 0 bytes) or hang indefinitely.
+# Fix: use getattr(original_request, 'auth', None) instead.
+# Applied as a ConfigMap volume mount over the offending file.
+# Track: https://github.com/netbox-community/netbox-docker/issues
+# ---------------------------------------------------------------------------
+# Discover the NetBox pod on the NODE via the cluster-internal API (k8s_info
+# module, run on the play target where /etc/rancher/k3s/k3s.yaml is local).
+# This replaces an inline controller-side `lookup('k8s')` that hard-failed on a
+# controller without an ambient kubeconfig (e.g. the headless dmf-init container)
+# — a `lookup` plugin always runs on the controller regardless of delegate_to,
+# so it must not be used for cluster discovery. (See openbao-session for the
+# established node-side k8s_info pattern.)
+- name: Discover NetBox pod for drf-spectacular patch
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ netbox_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=netbox"
+      - "app=netbox"
+  register: _netbox_drf_pod
+
+- name: Extract current drf-spectacular plumbing.py from NetBox pod
+  kubernetes.core.k8s_exec:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    namespace: "{{ netbox_namespace }}"
+    pod: "{{ _netbox_drf_pod.resources[0].metadata.name | default('netbox', true) }}"
+    command: >-
+      cat /opt/netbox/venv/lib/python3.12/site-packages/drf_spectacular/plumbing.py
+  register: _netbox_plumbing_raw
+  changed_when: false
+  failed_when: false
+  become: false
+
+- name: Create ConfigMap with patched drf-spectacular plumbing.py
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: netbox-drf-spectacular-patch
+        namespace: "{{ netbox_namespace }}"
+      binaryData:
+        plumbing.py: >-
+          {{
+            (_netbox_plumbing_raw.stdout | default(''))
+            | regex_replace(
+                "request\\.auth = original_request\\.auth",
+                "request.auth = getattr(original_request, 'auth', None)"
+              )
+            | b64encode
+          }}
+  when: >-
+    _netbox_plumbing_raw.stdout is defined and
+    _netbox_plumbing_raw.stdout | length > 0 and
+    'getattr(original_request' not in (_netbox_plumbing_raw.stdout | default(''))
+
+- name: Patch NetBox deployment to mount patched plumbing.py
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: netbox
+    kind: Deployment
+    namespace: "{{ netbox_namespace }}"
+    patch:
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: drf-spectacular-patch
+          configMap:
+            name: netbox-drf-spectacular-patch
+            defaultMode: 0644
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: drf-spectacular-patch
+          mountPath: /opt/netbox/venv/lib/python3.12/site-packages/drf_spectacular/plumbing.py
+          subPath: plumbing.py
+  register: _netbox_plumbing_patched
+  when: >-
+    _netbox_plumbing_raw.stdout is defined and
+    _netbox_plumbing_raw.stdout | length > 0 and
+    'getattr(original_request' not in (_netbox_plumbing_raw.stdout | default(''))
+
+- name: Wait for NetBox pod to restart after schema patch
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: netbox
+    namespace: "{{ netbox_namespace }}"
+  register: _netbox_post_patch
+  until: >-
+    _netbox_post_patch.resources | length > 0 and
+    _netbox_post_patch.resources[0].status.updatedReplicas | default(0) | int ==
+    _netbox_post_patch.resources[0].status.replicas | default(0) | int
+  retries: 30
+  delay: 10
+  when: _netbox_plumbing_patched is changed

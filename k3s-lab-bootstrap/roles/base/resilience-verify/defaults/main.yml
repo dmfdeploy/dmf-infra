@@ -1,0 +1,97 @@
+---
+# Resilience verify role defaults.
+# Two-track design:
+#   TRACK A (in-cluster): synthetic round-trip per ESO-materialized bucket
+#                         (openbao_snapshots, app_backups). PUT/HEAD/GET/DELETE
+#                         with SSE assertion on HEAD.
+#   TRACK B (host-side):  audit-bucket round-trip + Object Lock COMPLIANCE
+#                         delete-refusal test, run with delegate_to: localhost
+#                         using Phase 1's audit_log_* inventory variables.
+#
+# Audit credentials flow via Phase 1's host-cron path (export-vars), NOT
+# ESO. There is no in-cluster s3-creds-audit Secret to consume.
+#
+# --soak-prewarm: optional flag. When set, fires each backup CronJob via
+# `kubectl create job --from=cronjob/<name>` so payload paths are proved
+# in ~30 min instead of waiting for the natural 48h schedule soak.
+
+# ── Track A: in-cluster verify ───────────────────────────────────────────────
+# Each entry produces one Job that round-trips against its bucket via ESO Secret.
+
+resilience_verify_in_cluster_targets:
+  - logical: openbao_snapshots
+    namespace: openbao-system
+    secret_name: s3-creds-openbao-snapshots
+  # app_backups verifies the credentials in the Frozen Contract
+  # `s3-creds-app-backups` Secret. That Secret is ESO-materialised in the
+  # five app namespaces that have postgres-backups CronJobs (awx, netbox,
+  # authentik, forgejo, zot — see roles/base/object-storage-credentials).
+  # longhorn-system has a differently-shaped `longhorn-s3-creds` for
+  # Longhorn's BackupTarget but NOT `s3-creds-app-backups`, so running the
+  # verify Job there fails on MountVolume.SetUp. Use netbox as the
+  # neutral platform-SoT namespace where the right secret exists.
+  - logical: app_backups
+    namespace: netbox
+    secret_name: s3-creds-app-backups
+
+resilience_verify_namespace_default: openbao-system
+
+# Image for the verify Jobs — has awscli
+resilience_verify_awscli_image: "amazon/aws-cli:latest"
+
+# Job timeout and active deadline. 300s was tight in practice: the
+# amazon/aws-cli image (~120 MB) is pulled from public ECR on first
+# use, and on small-disk single-NIC nodes (CAX21) that pull alone can
+# eat 3-4 minutes — the actual S3 round-trip then exceeds the deadline.
+# 900s gives the cold-pull case room without masking a stuck Job
+# (the Job will still terminate cleanly if S3 round-trip stalls).
+# Once the image is locally cached on the nodes (subsequent runs use
+# imagePullPolicy IfNotPresent), the Job finishes in <10s — see
+# the openbao-snapshots Job, which completed in 10s once aws-cli was
+# already on its node.
+resilience_verify_job_active_deadline: 900
+
+# Ansible-side poll budget for waiting on the Job to complete. Must
+# comfortably exceed `resilience_verify_job_active_deadline` so Ansible
+# can observe BOTH success (Job completes in <10s once warm) AND
+# k8s-side deadline-exceeded failure (Job marked Failed by the
+# job-controller at deadline expiry). Total budget = retries × delay.
+# 100 × 10 = 1000s, ~10% slack over the 900s Job deadline.
+resilience_verify_wait_retries: 100
+resilience_verify_wait_delay: 10
+
+# ── Track B: host-side audit verify ──────────────────────────────────────────
+# Uses these Phase 1 inventory variables (set by bootstrap-secrets.sh export-vars):
+#   audit_log_s3_bucket
+#   audit_log_s3_endpoint
+#   audit_log_aws_region
+#   audit_log_aws_access_key_id
+#   audit_log_aws_secret_access_key
+
+# Object Lock COMPLIANCE retention for the synthetic delete-refusal test
+# (1 minute — short enough to wait through, long enough to test).
+resilience_verify_audit_lock_retain_minutes: 1
+
+# ── --soak-prewarm ───────────────────────────────────────────────────────────
+# Operator opts in with: ansible-playbook ... -e resilience_verify_soak_prewarm=true
+# CronJobs prewarmed via `kubectl create job --from=cronjob/<name>`.
+# NOTE (pane-2 footnote 2026-05-12): standalone Job created this way is NOT
+# a child of the CronJob, so concurrencyPolicy: Forbid doesn't apply. For
+# daily/weekly schedules this collision risk is vanishingly small; if any
+# schedule bumps to hourly, add a label-selector guard before prewarm.
+
+resilience_verify_soak_prewarm: false
+
+resilience_verify_prewarm_cronjobs:
+  - namespace: openbao-system
+    name: openbao-raft-snapshot
+  - namespace: netbox
+    name: pg-backup-netbox
+  - namespace: awx
+    name: pg-backup-awx
+  - namespace: authentik
+    name: pg-backup-authentik
+  - namespace: forgejo
+    name: pg-backup-forgejo
+  - namespace: zot
+    name: zot-mirror

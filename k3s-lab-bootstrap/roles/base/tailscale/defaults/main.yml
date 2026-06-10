@@ -1,0 +1,21 @@
+---
+tailscale_headscale_url: ""
+tailscale_authkey: ""
+tailscale_hostname: "k3s-node-01"
+tailscale_advertise_routes: []
+tailscale_advertise_exit_node: false
+tailscale_accept_routes: true
+tailscale_ephemeral: true
+tailscale_update_apt_cache: true
+
+# Optional host DNS override for providers whose DHCP resolvers become
+# unreliable after the Tailscale route table is active.
+tailscale_manage_system_dns: false
+tailscale_system_dns_backend: netplan
+tailscale_system_dns_interface: "{{ ansible_default_ipv4.interface | default('eth0') }}"
+tailscale_system_dns_servers: []
+tailscale_system_dns_probe_name: "{{ tailscale_headscale_url | regex_replace('^https?://', '') | regex_replace('/.*$', '') }}"
+
+# Private Traefik NodePort that tailscale0:443 DNATs to.
+# Must match ingress_private_nodeport from the ingress-private role.
+tailscale_private_nodeport: 30443

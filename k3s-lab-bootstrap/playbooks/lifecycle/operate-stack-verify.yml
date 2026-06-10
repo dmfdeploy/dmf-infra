@@ -1,0 +1,17 @@
+---
+# playbooks/lifecycle/operate-stack-verify.yml
+# STUB — real verification logic will land in a later PR.
+# DMF lifecycle: Operate stage — full-stack verify after Provision/Configure.
+- name: "Verify full stack (lifecycle: operate)"
+  hosts: localhost
+  become: false
+  gather_facts: false
+  tasks:
+    - name: TODO — verify full stack
+      ansible.builtin.debug:
+        msg: |
+          STUB: lifecycle/operate-stack-verify.yml has not yet been implemented.
+          Intended checks:
+          - All app URLs reachable on public + private lanes
+          - OIDC login succeeds for each app
+          See DMF EBU Mapping (2026-04-25).md for the operate-stage scope.

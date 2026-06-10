@@ -1,0 +1,162 @@
+---
+- name: Deploy Longhorn distributed storage
+  hosts: k3s_control[0]
+  become: true
+  vars:
+    longhorn_version: "v1.10.1"
+    longhorn_manifest_url: "https://raw.githubusercontent.com/longhorn/longhorn/{{ longhorn_version }}/deploy/longhorn.yaml"
+  tasks:
+    - name: Create longhorn-system namespace
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: longhorn-system
+
+    - name: Apply Longhorn manifests
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        src: "{{ longhorn_manifest_url }}"
+      register: longhorn_apply
+
+    - name: Wait for Longhorn manager to be ready
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        kind: DaemonSet
+        name: longhorn-manager
+        namespace: longhorn-system
+      register: longhorn_manager
+      until: >
+        longhorn_manager.resources[0].status.numberReady | default(0) ==
+        longhorn_manager.resources[0].status.desiredNumberScheduled | default(0)
+      retries: 60
+      delay: 10
+
+    - name: Set default replica count
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: longhorn.io/v1beta2
+          kind: Setting
+          metadata:
+            name: default-replica-count
+            namespace: longhorn-system
+          value: "{{ longhorn_default_replica_count | string }}"
+
+    - name: Read existing Longhorn StorageClass
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: longhorn
+      register: longhorn_storageclass
+
+    - name: Decide whether Longhorn StorageClass must be replaced
+      ansible.builtin.set_fact:
+        longhorn_storageclass_needs_replace: >-
+          {{
+            longhorn_storageclass.resources | length > 0 and
+            (
+              longhorn_storageclass.resources[0].parameters.numberOfReplicas | default('') !=
+              (longhorn_default_replica_count | string)
+            )
+          }}
+
+    - name: Read PVC usage before replacing Longhorn StorageClass
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: PersistentVolumeClaim
+      register: longhorn_pvcs
+      when: longhorn_storageclass_needs_replace
+
+    - name: Decide whether Longhorn StorageClass replacement is safe
+      ansible.builtin.set_fact:
+        longhorn_storageclass_replace_safe: >-
+          {{
+            (
+              longhorn_pvcs.resources
+              | selectattr('spec.storageClassName', 'defined')
+              | selectattr('spec.storageClassName', 'equalto', 'longhorn')
+              | list
+              | length
+            ) == 0
+          }}
+      when: longhorn_storageclass_needs_replace
+
+    - name: Warn when Longhorn StorageClass replacement is blocked by existing PVCs
+      ansible.builtin.debug:
+        msg: >-
+          Longhorn StorageClass parameters differ from the desired bootstrap config,
+          but PVCs already exist that use `longhorn`. Leaving the live StorageClass
+          unchanged and continuing the bootstrap.
+      when:
+        - longhorn_storageclass_needs_replace
+        - not longhorn_storageclass_replace_safe
+
+    - name: Update Longhorn storageclass ConfigMap template
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: longhorn-storageclass
+            namespace: longhorn-system
+          data:
+            storageclass.yaml: |
+              kind: StorageClass
+              apiVersion: storage.k8s.io/v1
+              metadata:
+                name: longhorn
+                annotations:
+                  storageclass.kubernetes.io/is-default-class: "true"
+              provisioner: driver.longhorn.io
+              allowVolumeExpansion: true
+              reclaimPolicy: "Delete"
+              volumeBindingMode: Immediate
+              parameters:
+                numberOfReplicas: "{{ longhorn_default_replica_count | string }}"
+                staleReplicaTimeout: "30"
+                fromBackup: ""
+                fsType: "ext4"
+                dataLocality: "disabled"
+                unmapMarkSnapChainRemoved: "ignored"
+                disableRevisionCounter: "true"
+                dataEngine: "v1"
+                backupTargetName: "default"
+
+    - name: Replace Longhorn StorageClass before PVCs exist
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: absent
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: longhorn
+      when:
+        - longhorn_storageclass_needs_replace
+        - longhorn_storageclass_replace_safe
+
+    - name: Wait for Longhorn StorageClass to match desired replica count
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: storage.k8s.io/v1
+        kind: StorageClass
+        name: longhorn
+      register: longhorn_storageclass_ready
+      until: >-
+        longhorn_storageclass_ready.resources | length > 0 and
+        (
+          longhorn_storageclass_ready.resources[0].parameters.numberOfReplicas | default('')
+        ) == (longhorn_default_replica_count | string)
+      retries: 30
+      delay: 5
+      when:
+        - longhorn_storageclass_needs_replace
+        - longhorn_storageclass_replace_safe

@@ -1,0 +1,5 @@
+---
+promtail_namespace: monitoring
+promtail_helm_repo: https://grafana.github.io/helm-charts
+promtail_helm_chart_version: "6.16.4"
+promtail_loki_url: "http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push"

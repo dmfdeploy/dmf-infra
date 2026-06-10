@@ -1,0 +1,78 @@
+---
+# containerd hosts.d entry for the cluster-internal Zot service.
+#
+# Why this exists:
+# - The cluster-internal Zot service (zot.zot.svc.cluster.local:5000) is
+#   plain HTTP. Without this config, containerd assumes HTTPS for any
+#   namespaced image reference and pulls fail (TLS handshake error).
+# - We use the per-host certs.d directory rather than /etc/rancher/k3s/
+#   registries.yaml because containerd hot-reloads the certs.d tree (no
+#   k3s restart needed), and because hosts.d is the upstream-documented
+#   way to set per-registry transport overrides.
+# - Required by ADR-0025 Lane B: catalog launchers running inside the
+#   cluster pull AWX EE + NMOS workload images from cluster-internal Zot
+#   via service DNS, so every node must trust that endpoint over plain
+#   HTTP.
+#
+# This task is idempotent and safe to re-run.
+
+- name: Ensure containerd certs.d directory for cluster-internal Zot exists
+  ansible.builtin.file:
+    path: "{{ k3s_containerd_certs_d_dir }}/{{ k3s_containerd_zot_internal_host }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Configure containerd hosts.toml for cluster-internal Zot plain HTTP
+  ansible.builtin.copy:
+    dest: "{{ k3s_containerd_certs_d_dir }}/{{ k3s_containerd_zot_internal_host }}/hosts.toml"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      server = "http://{{ k3s_containerd_zot_internal_host }}"
+
+      [host."http://{{ k3s_containerd_zot_internal_host }}"]
+        capabilities = ["pull", "resolve"]
+        skip_verify = true
+
+- name: Resolve cluster-internal Zot DNS from node network namespace
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    regexp: '^\s*\S+\s+zot\.zot\.svc\.cluster\.local(\s|$).*'
+    line: "{{ zot_cluster_ip }}   zot.zot.svc.cluster.local # DMF-managed ADR-0025 Lane B node-side image pulls"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Local-CA lane only: consumers that pull via the Zot INGRESS host (dmf-cms,
+# deliberately — internal cluster DNS for image pulls is unreliable on
+# multi-node clusters; see roles/stack/operator/cms cms_image_repository) hit
+# the local-CA-signed ingress cert, which containerd doesn't trust by default.
+# Pin the node-installed local CA (from 321-local-ca-trust) so the pull verifies
+# rather than skipping TLS. The host resolves via the node /etc/hosts entry that
+# 321 also writes. Cloud/lab leave k3s_containerd_zot_ingress_host empty
+# (publicly-trusted cert) -> skipped.
+- name: Ensure containerd certs.d directory for the Zot ingress host exists (local-CA lane)
+  ansible.builtin.file:
+    path: "{{ k3s_containerd_certs_d_dir }}/{{ k3s_containerd_zot_ingress_host }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: k3s_containerd_zot_ingress_host | length > 0
+
+- name: Configure containerd hosts.toml pinning the local CA for the Zot ingress (local-CA lane)
+  ansible.builtin.copy:
+    dest: "{{ k3s_containerd_certs_d_dir }}/{{ k3s_containerd_zot_ingress_host }}/hosts.toml"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      server = "https://{{ k3s_containerd_zot_ingress_host }}"
+
+      [host."https://{{ k3s_containerd_zot_ingress_host }}"]
+        capabilities = ["pull", "resolve"]
+        ca = "{{ k3s_containerd_zot_ingress_ca }}"
+  when: k3s_containerd_zot_ingress_host | length > 0

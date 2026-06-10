@@ -1,0 +1,84 @@
+---
+# DMF sandbox bootstrap: Provision — Post-seed.
+#
+# Installs the sandbox application set after OpenBao has been seeded. This
+# intentionally skips audit archival, object-storage backup credentials,
+# Longhorn backup target/recurring jobs, raft snapshots, and app backup
+# CronJobs. The monitoring vertical (prometheus + loki + promtail + grafana)
+# is gated on dmf_monitoring_profile — sandbox default is 'minimal' (set in
+# bootstrap-sandbox-profile.yml); librenms / snmp-exporter / netdisco require
+# 'full' and remain unwired here until needed.
+
+- import_playbook: bootstrap-sandbox-profile.yml
+  tags: [always, sandbox, release-profile]
+
+# ── Seed boundary guard ──────────────────────────────────────────────────────
+- name: Assert OpenBao has required bootstrap seed paths
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Establish OpenBao operator session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+
+  tasks:
+    - name: Confirm required bootstrap seed path exists
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ openbao_session_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv metadata get -format=json {{ item }} >/dev/null'
+      loop:
+        - secret/platform/bootstrap_admin
+        - secret/platform/k3s/cluster
+      changed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+
+# ── Vertical: Identity base ──────────────────────────────────────────────────
+- import_playbook: playbooks/vertical-security/110-authentik.yml
+  tags: [vertical-security, identity, authentik]
+
+# ── Layer 6xx — Application & UI (sandbox install set) ───────────────────────
+- import_playbook: playbooks/600-landing-page.yml
+  tags: [layer6, application-ui, landing]
+- import_playbook: playbooks/610-netbox.yml
+  tags: [layer6, application-ui, netbox]
+- import_playbook: playbooks/620-forgejo.yml
+  tags: [layer6, application-ui, forgejo]
+- import_playbook: playbooks/630-zot-seed-platform.yml
+  tags: [layer6, application-ui, zot-seed, platform-images]
+- import_playbook: playbooks/640-awx.yml
+  tags: [layer6, application-ui, awx]
+- import_playbook: playbooks/650-dmf-cms.yml
+  tags: [layer6, application-ui, dmf-console]
+
+# ── Vertical: Monitoring (profile-gated) ─────────────────────────────────────
+# dmf_monitoring_profile values (sandbox default = 'minimal' via
+# bootstrap-sandbox-profile.yml):
+#   minimal — prometheus + loki + promtail + grafana
+#   full    — minimal + librenms + snmp-exporter + netdisco  (not wired yet)
+#   none    — skip the whole vertical
+# Grafana is ordered last so its pre-provisioned datasources resolve against
+# already-running prometheus + loki services.
+- import_playbook: playbooks/vertical-monitoring/100-prometheus.yml
+  when: dmf_monitoring_profile | default('none') in ['minimal', 'full']
+  tags: [vertical-monitoring, prometheus]
+- import_playbook: playbooks/vertical-monitoring/150-blackbox.yml
+  when: dmf_monitoring_profile | default('none') in ['minimal', 'full']
+  tags: [vertical-monitoring, blackbox]
+- import_playbook: playbooks/vertical-monitoring/110-loki.yml
+  when: dmf_monitoring_profile | default('none') in ['minimal', 'full']
+  tags: [vertical-monitoring, loki]
+- import_playbook: playbooks/vertical-monitoring/130-promtail.yml
+  when: dmf_monitoring_profile | default('none') in ['minimal', 'full']
+  tags: [vertical-monitoring, promtail]
+- import_playbook: playbooks/vertical-monitoring/120-grafana.yml
+  when: dmf_monitoring_profile | default('none') in ['minimal', 'full']
+  tags: [vertical-monitoring, grafana]

@@ -1,0 +1,30 @@
+---
+# Read a single catalog YAML file, parse it, and merge into _cms_catalog_entries.
+# Called via include_tasks from main.yml with loop_var _cms_catalog_file_item.
+
+- name: Slurp catalog file content
+  ansible.builtin.slurp:
+    src: "{{ _cms_catalog_file_item.path }}"
+  register: _cms_catalog_slurp
+  delegate_to: localhost
+  become: false
+  failed_when: false
+
+- name: Parse catalog file and merge into entries dict
+  when:
+    - _cms_catalog_slurp.content is defined
+    - _cms_catalog_slurp.content | length > 0
+  block:
+    - name: Decode and parse catalog YAML
+      ansible.builtin.set_fact:
+        _cms_catalog_parsed: "{{ _cms_catalog_slurp.content | b64decode | from_yaml }}"
+
+    - name: Skip file without key field
+      ansible.builtin.debug:
+        msg: "catalog: {{ _cms_catalog_file_item.path }} lacks 'key' — skipping"
+      when: _cms_catalog_parsed.key is not defined
+
+    - name: Merge valid catalog entry into entries dict
+      ansible.builtin.set_fact:
+        _cms_catalog_entries: "{{ _cms_catalog_entries | combine({ _cms_catalog_file_item.path | basename: _cms_catalog_parsed }) }}"
+      when: _cms_catalog_parsed.key is defined

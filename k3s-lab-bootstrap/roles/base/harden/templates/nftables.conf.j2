@@ -1,0 +1,58 @@
+#!/usr/sbin/nft -f
+# Managed by Ansible — harden role
+# NOTE: do not flush the whole ruleset. k3s uses iptables-nft tables for
+# kube-proxy, service routing, and etcd networking. The harden role deletes
+# only this DMF-owned inet filter table before loading this file.
+
+table inet filter {
+
+    chain input {
+        type filter hook input priority filter; policy drop;
+
+        # Allow established/related
+        ct state established,related accept
+
+        # Allow loopback
+        iif lo accept
+
+        # Allow ICMP/ICMPv6 (path MTU, ping, neighbour discovery)
+        ip protocol icmp accept
+        ip6 nexthdr ipv6-icmp accept
+
+        # Allow all traffic from the private cluster network (k3s node-to-node)
+        ip saddr {{ harden_private_cidr }} accept
+
+        # SSH — allowed source IPs only
+{% for ip in harden_ssh_allow_ipv4 %}
+        ip saddr {{ ip }} tcp dport 22 accept
+{% endfor %}
+{% for ip in harden_ssh_allow_ipv6 %}
+        ip6 saddr {{ ip }} tcp dport 22 accept
+{% endfor %}
+
+        # Web traffic (VIP — MetalLB will claim the floating IP on this node)
+{% for port in harden_public_tcp_ports %}
+        tcp dport {{ port }} accept
+{% endfor %}
+
+        # Allow all traffic on the Tailscale interface (Tailscale provides
+        # its own auth and encryption — nftables should not block it).
+        # iifname matches by name string so the rule loads even before the
+        # interface exists (harden runs before the tailscale role).
+        iifname "tailscale0" accept
+
+        # Drop and log everything else (rate-limited to avoid log flood)
+        limit rate 5/minute log prefix "nftables-drop: " level warn
+        drop
+    }
+
+    chain forward {
+        type filter hook forward priority filter; policy accept;
+        # k3s installs its own forwarding rules — keep policy accept here
+        # and let k3s manage pod/service traffic via its own nftables chains
+    }
+
+    chain output {
+        type filter hook output priority filter; policy accept;
+    }
+}

@@ -1,0 +1,38 @@
+---
+# Ansible runner pod — defaults
+#
+# Spike implementation per ADR-0023 §Future direction
+# (approved spike plan, 2026-05-14).
+#
+# The runner pod is the in-cluster execution environment for configure-stage
+# ansible playbooks. Per-run k8s Jobs spawn from this infra (SA, RBAC, ns);
+# they consume the runner-job.yaml.j2 template at wrapper-invocation time.
+
+# Namespace for runner Jobs + ServiceAccount + RoleBindings.
+ansible_runner_namespace: dmf-bootstrap
+
+# ServiceAccount used by every runner Job in this namespace.
+ansible_runner_service_account: ansible-runner
+
+# Spike RBAC: cluster-admin. Narrowed post-spike to specific verbs
+# (configmaps/secrets in target namespaces, k8s.awx.ansible.com/*, etc).
+# Set to a different ClusterRole name to scope down.
+ansible_runner_cluster_role: cluster-admin
+
+# Container image — shared DMF AWX EE per ADR-0025.
+#
+# Built by ../../../ee/scripts/build.sh, published to GHCR via
+# ../../../ee/scripts/publish-to-ghcr.sh, mirrored into cluster-internal
+# Zot by playbooks/630-zot-seed-platform.yml. The Zot path is the runtime default;
+# pods pull from inside the cluster, no external dependency once Stage 4b
+# has run.
+#
+# To bump: rebuild + republish + run 630-zot-seed-platform, then update
+# ansible_runner_image_tag here. Stay version-pinned for repro — never
+# use :latest in steady state.
+#
+# Fallback: if Zot is not (yet) seeded, override ansible_runner_image to
+# `ghcr.io/dmfdeploy/awx-ee:{{ ansible_runner_image_tag }}` at run time.
+ansible_runner_image_tag: "0.1.1"
+ansible_runner_image: "registry.dmf.example.com/dmf/awx-ee:{{ ansible_runner_image_tag }}"
+ansible_runner_image_pull_policy: IfNotPresent

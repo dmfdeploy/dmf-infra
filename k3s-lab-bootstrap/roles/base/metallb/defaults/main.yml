@@ -1,0 +1,10 @@
+---
+metallb_version: "v0.14.9"
+metallb_namespace: metallb-system
+metallb_manifest_url: "https://raw.githubusercontent.com/metallb/metallb/{{ metallb_version }}/config/manifests/metallb-native.yaml"
+metallb_address_pool_name: default-pool
+metallb_address_pool_addresses:
+  - "{{ metallb_pool_cidr }}"
+metallb_l2_advertisement_name: default-l2
+metallb_bgp_advertisement_name: default-bgp
+metallb_bgp_peers: []

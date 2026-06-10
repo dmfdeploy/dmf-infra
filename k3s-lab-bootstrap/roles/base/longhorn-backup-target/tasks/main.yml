@@ -1,0 +1,106 @@
+---
+# Longhorn BackupTarget role.
+# 1. Create an ExternalSecret in longhorn-system that pulls the
+#    Frozen Contract values from OpenBao and projects them with
+#    UPPERCASE keys (Longhorn 1.10.1's requirement).
+# 2. Create the BackupTarget CR referencing the materialized Secret.
+#
+# Depends on object-storage-credentials having created the
+# `openbao-app-backups` ClusterSecretStore.
+
+- name: Ensure longhorn-system namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ longhorn_backup_target_namespace }}"
+
+# ── Step 1: ExternalSecret with UPPERCASE key template ──────────────────────
+# Frozen Contract values land in OpenBao with lowercase keys; Longhorn
+# requires UPPERCASE in the consumed Secret. The ExternalSecret's
+# `target.template.data` block does the per-field re-keying.
+
+- name: Create ExternalSecret {{ longhorn_backup_target_secret_name }} in {{ longhorn_backup_target_namespace }}
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
+      metadata:
+        name: "{{ longhorn_backup_target_secret_name }}"
+        namespace: "{{ longhorn_backup_target_namespace }}"
+      spec:
+        refreshInterval: 1h
+        secretStoreRef:
+          name: "{{ longhorn_backup_target_eso_cluster_secret_store }}"
+          kind: ClusterSecretStore
+        target:
+          name: "{{ longhorn_backup_target_secret_name }}"
+          creationPolicy: Owner
+          template:
+            engineVersion: v2
+            data:
+              AWS_ACCESS_KEY_ID: "{{ '{{ .access_key_id }}' }}"
+              AWS_SECRET_ACCESS_KEY: "{{ '{{ .secret_access_key }}' }}"
+              AWS_ENDPOINTS: "{{ '{{ .endpoint }}' }}"
+              AWS_BUCKET: "{{ '{{ .bucket }}' }}"
+              VIRTUAL_HOSTED_STYLE: "false"
+        data:
+          - secretKey: access_key_id
+            remoteRef:
+              key: "{{ longhorn_backup_target_openbao_path }}"
+              property: access_key_id
+          - secretKey: secret_access_key
+            remoteRef:
+              key: "{{ longhorn_backup_target_openbao_path }}"
+              property: secret_access_key
+          - secretKey: endpoint
+            remoteRef:
+              key: "{{ longhorn_backup_target_openbao_path }}"
+              property: endpoint
+          - secretKey: bucket
+            remoteRef:
+              key: "{{ longhorn_backup_target_openbao_path }}"
+              property: bucket
+
+- name: Wait for {{ longhorn_backup_target_secret_name }} to be materialized by ESO
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ longhorn_backup_target_secret_name }}"
+    namespace: "{{ longhorn_backup_target_namespace }}"
+  register: _lbt_secret_wait
+  until:
+    - _lbt_secret_wait.resources | length > 0
+    - _lbt_secret_wait.resources[0].data.AWS_ACCESS_KEY_ID is defined
+  retries: 24
+  delay: 5
+
+# ── Step 2: BackupTarget CR ──────────────────────────────────────────────────
+# Reads the bucket name from the materialized Secret. The ExternalSecret
+# template re-keys `bucket` → `AWS_BUCKET` to match Longhorn's UPPERCASE
+# convention. We decode it here for the backupTargetURL.
+
+- name: Resolve bucket name from materialized Secret
+  ansible.builtin.set_fact:
+    _lbt_bucket: "{{ _lbt_secret_wait.resources[0].data.AWS_BUCKET | b64decode }}"
+
+- name: Create Longhorn BackupTarget {{ longhorn_backup_target_name }}
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: longhorn.io/v1beta2
+      kind: BackupTarget
+      metadata:
+        name: "{{ longhorn_backup_target_name }}"
+        namespace: "{{ longhorn_backup_target_namespace }}"
+      spec:
+        backupTargetURL: "s3://{{ _lbt_bucket }}@{{ longhorn_backup_target_url_region }}/"
+        credentialSecret: "{{ longhorn_backup_target_secret_name }}"
+        pollInterval: "{{ longhorn_backup_target_poll_interval }}"

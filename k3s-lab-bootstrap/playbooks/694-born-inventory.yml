@@ -1,0 +1,17 @@
+---
+- name: Gather host facts for born-inventory survey
+  hosts: k3s
+  gather_facts: false
+  gather_subset:
+    - min
+    - network
+    - hardware
+    - mounts
+
+- name: Register the deployed cluster in NetBox
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - common/dmf-born-inventory

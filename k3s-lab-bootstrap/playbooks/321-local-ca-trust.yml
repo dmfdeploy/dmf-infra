@@ -1,0 +1,133 @@
+---
+# ---------------------------------------------------------------------------
+# playbooks/321-local-ca-trust.yml
+# Local-CA lane (dmf_tls_mode == 'local-ca', e.g. sandbox-single-node / WP1S):
+# wire the name resolution + trust that the cloud lane gets for free from
+# public DNS + a publicly-trusted ACME cert. Three pieces:
+#
+#   1. In-cluster DNS — a `coredns-custom` ConfigMap maps each app host to the
+#      node IP via an explicit `hosts` block, so in-cluster OIDC consumers
+#      (Forgejo -> Authentik back-channel) resolve the app hostnames. Explicit
+#      per-host entries, NOT a DNS wildcard.
+#   2. Node /etc/hosts — so the bootstrap's own external verify steps (and the
+#      operator on the node) reach https://<app>.<base-domain>.
+#   3. Node CA trust — install the cert-manager local root CA into the node
+#      trust store so validate_certs:true verify steps + operator curl succeed.
+#
+# Runs AFTER 320-cert-manager (the local CA must already exist) and BEFORE the
+# post-seed apps that resolve/trust those hosts. Entirely no-op unless
+# dmf_tls_mode == 'local-ca'.
+# ---------------------------------------------------------------------------
+
+- name: Local-CA lane — in-cluster DNS + node resolution & trust
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    _local_ca: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
+    _base_domain: "{{ cert_manager_cluster_domain | default(dmf_sandbox_base_domain | default('')) }}"
+    _node_ip: "{{ k3s_node_ip | default(k3s_advertise_address | default(ansible_host)) }}"
+    _ca_namespace: "{{ cert_manager_namespace | default('cert-manager') }}"
+    _ca_secret: "{{ cert_manager_local_ca_secret | default('dmf-local-ca') }}"
+    # App hosts to map -> node IP. Each is optional; absent ones are dropped.
+    _app_hosts: >-
+      {{ [authentik_host | default(''),
+          forgejo_host | default(''),
+          grafana_host | default(''),
+          dmf_cms_host | default(''),
+          netbox_host | default(''),
+          awx_host | default(''),
+          registry_host | default(''),
+          _base_domain]
+         | reject('equalto', '') | unique | list }}
+  tasks:
+    - name: Render coredns hosts entries (app host -> node IP)
+      ansible.builtin.set_fact:
+        _coredns_hosts_block: |-
+          {% for h in _app_hosts %}
+          {{ _node_ip }} {{ h }}
+          {% endfor %}
+      when: _local_ca | bool
+
+    # k3s CoreDNS imports /etc/coredns/custom/*.server as additional server
+    # blocks. A dedicated <base-domain>:53 block answers the explicit app hosts
+    # from the `hosts` plugin and falls through for anything else.
+    - name: Apply coredns-custom ConfigMap for the local base domain
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: coredns-custom
+            namespace: kube-system
+          data:
+            dmf-local.server: |
+              {{ _base_domain }}:53 {
+                  hosts {
+              {{ _coredns_hosts_block | indent(8, true) }}
+                      fallthrough
+                  }
+              }
+      register: _coredns_custom
+      when: _local_ca | bool
+
+    - name: Restart CoreDNS to load the custom server block
+      ansible.builtin.command:
+        cmd: k3s kubectl -n kube-system rollout restart deploy/coredns
+      changed_when: true
+      when:
+        - _local_ca | bool
+        - _coredns_custom is changed
+
+    - name: Wait for the CoreDNS rollout to complete
+      ansible.builtin.command:
+        cmd: k3s kubectl -n kube-system rollout status deploy/coredns --timeout=120s
+      changed_when: false
+      when:
+        - _local_ca | bool
+        - _coredns_custom is changed
+
+    - name: Map local app hostnames to the node in /etc/hosts
+      ansible.builtin.blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} DMF local-CA app hosts (321-local-ca-trust)"
+        block: |-
+          {% for h in _app_hosts %}
+          {{ _node_ip }} {{ h }}
+          {% endfor %}
+      when: _local_ca | bool
+
+    # Structured read (NOT `kubectl ... -o jsonpath={.data.ca\.crt}` via the
+    # command module — Ansible's arg splitting strips the backslash, so kubectl
+    # would see the nested path .data.ca.crt and return empty for the literal
+    # 'ca.crt' key).
+    - name: Read local CA Secret from the cluster
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ _ca_secret }}"
+        namespace: "{{ _ca_namespace }}"
+      register: _local_ca_secret
+      when: _local_ca | bool
+
+    - name: Install local CA into the node trust store
+      ansible.builtin.copy:
+        content: "{{ _local_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
+        dest: /usr/local/share/ca-certificates/dmf-local-ca.crt
+        mode: "0644"
+      register: _node_ca_installed
+      when:
+        - _local_ca | bool
+        - _local_ca_secret.resources | default([]) | length > 0
+        - _local_ca_secret.resources[0].data['ca.crt'] | default('') | length > 0
+
+    - name: Update node CA trust store
+      ansible.builtin.command:
+        cmd: update-ca-certificates
+      changed_when: true
+      when:
+        - _local_ca | bool
+        - _node_ca_installed is changed

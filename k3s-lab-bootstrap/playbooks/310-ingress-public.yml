@@ -1,0 +1,6 @@
+---
+- name: Bootstrap ingress and external exposure for the selected environment
+  hosts: k3s_control[0]
+  become: true
+  roles:
+    - base/ingress

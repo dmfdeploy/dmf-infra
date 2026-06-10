@@ -1,0 +1,26 @@
+---
+# Shared OpenBao operator session for DMF Console token pipelines.
+#
+# Establishes a session with the OpenBao pod using operator userpass credentials
+# from the break-glass JSON, and exports the authenticated client token for
+# downstream secret reads and writes.
+
+openbao_session_namespace: openbao
+openbao_session_pod_selector: "app.kubernetes.io/name=openbao"
+openbao_session_breakglass_file: >-
+  {{
+    eso_openbao_breakglass_file
+    | default((openbao_key_path | default('')) ~ '.json', true)
+  }}
+
+# Which OpenBao identity to authenticate as.
+#   operator           — ops_admin_username/password from break-glass JSON
+#                        (PoLP-narrow: app data only). Default.
+#   policy-reconciler  — policy_reconciler_username/password from break-glass JSON
+#                        (PoLP-narrow: sys/policies/acl/* only).
+#   approle-reconciler — approle_reconciler_username/password from break-glass JSON
+#                        (PoLP-narrow: object-storage AppRole + ESO binding only).
+# Consumers requiring more than one must call this role multiple times with
+# different modes and capture _openbao_session_client_token into per-mode local
+# facts between calls.
+openbao_session_mode: operator

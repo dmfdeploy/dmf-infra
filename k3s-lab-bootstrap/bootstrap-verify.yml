@@ -1,0 +1,64 @@
+---
+# DMF bootstrap: Verify (EBU white paper §Verify stage).
+# Runs real readiness and integration gates after Bootstrap Configure.
+#
+# This wrapper imports per-domain verifier playbooks. Each is tagged with
+# its vertical so individual checks can be targeted:
+#
+#   bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-verify.yml
+#   bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-verify.yml --tags vertical-security
+#   bin/run-playbook.sh <env> ../dmf-infra/k3s-lab-bootstrap/bootstrap-verify.yml --tags resilience-verify
+#
+# Add new verifiers here as roles gain verify tasks. Target check list
+# (TODO — verifiers still owed):
+#   - k3s nodes Ready, CoreDNS works, Traefik reachable
+#   - cert-manager certificate Ready, Longhorn StorageClass default
+#   - OpenBao initialized + unsealed + reachable (basic — beyond the
+#     identity-model check below)
+#   - NetBox API responds, Forgejo API responds, AWX API responds
+#   - Born-inventory registered, DMF Console /healthz passes
+
+# ── Vertical: Security — OpenBao identity model + AC-5 separation ──────────
+# Three-identity logins (ops-admin, policy-reconciler, approle-reconciler);
+# 5 AC-5 deny probes; 2 ClusterSecretStores Ready; 6 ExternalSecrets Ready.
+# ADR-0008 + ADR-0021 + ADR-0024 enforcement.
+- import_playbook: playbooks/verify-openbao-identity-model.yml
+  tags: [vertical-security, verify-openbao-identity]
+
+# ── Vertical: Security — bootstrap authority convergence ──────────────────
+# ADR-0028 D2 enforcement. Classifies bootstrap-time authority as sealed,
+# rotated, or explicitly retained with a revisit gate; live-checks OpenBao
+# Shamir status, root-token disposal, retained non-root identities, and the
+# app-admin helper paths that are already materialized in OpenBao.
+- import_playbook: playbooks/verify-bootstrap-convergence.yml
+  tags: [vertical-security, verify-bootstrap-convergence]
+
+# ── Vertical: Security — App-admin identity drift detection ────────────────
+# Per-app live-vs-default admin username comparison across AWX, Forgejo,
+# NetBox, Zot, Authentik. Asserts no drift. LibreNMS intentionally
+# skipped (not deployed on lab clusters). Sister to the 2026-05-14
+# App-Admin Drift Audit + Realignment plan.
+- import_playbook: playbooks/audit-admin-identities.yml
+  tags: [vertical-security, audit-admin-identities]
+
+# ── Vertical: Identity — Authentik OIDC admin bridge ───────────────────────
+# ADR-0024 / two-identity admin model. Confirms operator user is in
+# ops-admin group; each declared app has its provider + application
+# provisioned; each OIDC provider exposes the DMF groups scope.
+- import_playbook: playbooks/verify-oidc-admin-bridge.yml
+  tags: [vertical-identity, verify-oidc-bridge]
+
+# ── Vertical: Identity — ADR-0028 D8 hardening ─────────────────────────────
+# Operator passkey count (>=2 confirmed WebAuthn devices) and short OIDC
+# access-token policy on every Authentik OAuth2 provider.
+- import_playbook: playbooks/verify-d8-hardening.yml
+  tags: [vertical-identity, verify-d8-hardening]
+
+# ── Vertical: Resilience — object-storage round-trip + audit Object Lock ───
+# Synthetic round-trip per bucket (in-cluster Job for openbao_snapshots +
+# app_backups; host-side delegate_to: localhost for audit) + audit-bucket
+# Object Lock COMPLIANCE delete-refusal test. Optional --soak-prewarm via
+# `-e resilience_verify_soak_prewarm=true` to fire each backup CronJob
+# immediately rather than waiting for the natural-schedule 48h soak.
+- import_playbook: playbooks/vertical-resilience/190-resilience-verify.yml
+  tags: [vertical-resilience, verify, resilience-verify]

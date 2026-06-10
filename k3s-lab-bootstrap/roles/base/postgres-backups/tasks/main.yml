@@ -1,0 +1,43 @@
+---
+# Postgres backups — per-app CronJob role.
+# For each app in postgres_backups_apps:
+# 1. Ensures the namespace exists.
+# 2. Deploys a ConfigMap with the backup script.
+# 3. Deploys a CronJob that pg_dumps the database and uploads to S3.
+#
+# DB credentials: read from the app's own runtime Secret (mounted).
+# S3 credentials: read from s3-creds-app-backups (Frozen Contract, mounted).
+# Object key: pg/<app>/<timestamp>.sql.gz — timestamp-prefixed.
+
+- name: Ensure consumer namespaces exist
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ (postgres_backups_app_overrides[item].namespace) | default(item) }}"
+  loop: "{{ postgres_backups_apps }}"
+
+- name: Deploy per-app backup script ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'pg-backup-script.yml.j2') | from_yaml }}"
+  loop: "{{ postgres_backups_apps }}"
+  vars:
+    _app_name: "{{ item }}"
+    _app_cfg: "{{ postgres_backups_app_overrides[item] }}"
+  when: _app_cfg is defined
+
+- name: Deploy per-app postgres backup CronJobs
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'postgres-backup-cronjob.yml.j2') | from_yaml }}"
+  loop: "{{ postgres_backups_apps }}"
+  vars:
+    _app_name: "{{ item }}"
+    _app_cfg: "{{ postgres_backups_app_overrides[item] }}"
+  when: _app_cfg is defined

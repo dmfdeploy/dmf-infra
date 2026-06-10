@@ -1,0 +1,43 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  ansible-lint:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install lint tooling
+        run: pip install --quiet ansible ansible-lint yamllint
+      - name: yamllint
+        run: yamllint -s k3s-lab-bootstrap/
+      - name: ansible-lint playbooks
+        run: ansible-lint k3s-lab-bootstrap/playbooks/ -p
+      - name: syntax-check all playbooks
+        run: |
+          cd k3s-lab-bootstrap
+          for pb in playbooks/*.yml; do
+            ansible-playbook --syntax-check "$pb" || exit 1
+          done
+
+  helm-lint:
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install helm
+        run: |
+          curl -fsSL https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz \
+            | tar -xz -C /tmp
+          install -m 0755 /tmp/linux-amd64/helm /usr/local/bin/helm
+      - name: helm lint all wrapper charts
+        run: |
+          shopt -s nullglob
+          charts=(k3s-lab-bootstrap/charts/*/)
+          if [ ${#charts[@]} -eq 0 ]; then
+            echo "no charts found — nothing to lint"
+            exit 0
+          fi
+          for chart in "${charts[@]}"; do
+            echo "=== helm lint $chart ==="
+            # Subcharts are vendored; no dep update needed.
+            helm lint "$chart"
+          done

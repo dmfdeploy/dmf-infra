@@ -1,0 +1,30 @@
+---
+# Longhorn BackupTarget role defaults.
+# Creates a longhorn.io/v1beta2 BackupTarget pointing at the app-backups
+# B2 bucket via an ExternalSecret that re-keys the lowercase Frozen
+# Contract values to Longhorn's UPPERCASE expectation
+# (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINTS).
+#
+# Longhorn 1.10.1 reference:
+#   https://longhorn.io/docs/1.10.1/snapshots-and-backups/backup-and-restore/set-backup-target/
+
+longhorn_backup_target_namespace: longhorn-system
+longhorn_backup_target_name: default
+
+# OpenBao path (underscored — matches Phase 2 seed-bao state)
+longhorn_backup_target_openbao_path: "secret/platform/object-storage/app_backups"
+
+# ClusterSecretStore from qwen-left's object-storage-credentials role
+longhorn_backup_target_eso_cluster_secret_store: openbao-app-backups
+
+# Secret name materialized in longhorn-system (UPPERCASE keys, per Longhorn)
+longhorn_backup_target_secret_name: longhorn-s3-creds
+
+# Poll interval — Longhorn re-reads BackupTarget creds at this cadence
+longhorn_backup_target_poll_interval: 5m0s
+
+# B2 region (us-west-001 per b2-buckets.sh). Longhorn appends @<region> to
+# the bucket URL; the value below mirrors the bucket's region in OpenBao
+# but is only used to build the backupTargetURL — actual SDK calls use
+# AWS_DEFAULT_REGION inferred from AWS_ENDPOINTS.
+longhorn_backup_target_url_region: "us-west-001"

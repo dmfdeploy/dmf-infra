@@ -1,0 +1,34 @@
+---
+# Chrony time-discipline config for audit-grade timestamps.
+#
+# The chrony package is installed and enabled in roles/base/200-baseline.yml
+# (it's also a Longhorn prerequisite). This role replaces the distro default
+# /etc/chrony/chrony.conf with a config tuned for sub-100ms drift and
+# explicit makestep behavior, then bounces the service.
+#
+# Override `chrony_pool` per-environment in inventory if you need a regional
+# pool or a private NTP server. The default uses the Debian pool with iburst.
+
+chrony_pool: "2.debian.pool.ntp.org"
+chrony_pool_iburst: true
+
+# makestep <threshold-seconds> <updates>:
+# If a measurement indicates the clock is wrong by more than `threshold`
+# seconds, step the clock instead of slewing — but only for the first
+# `updates` measurements. Audit log timestamps must not be re-ordered by a
+# slow slew on boot, so a generous threshold + small update budget gives a
+# fast initial sync without disrupting steady state.
+chrony_makestep_threshold: 1.0
+chrony_makestep_count: 3
+
+# Enables RTC sync (writes the system clock back to the hardware clock every
+# 11 minutes) so a reboot starts close to true time.
+chrony_rtcsync: true
+
+# Conservative drift file location (chrony default).
+chrony_driftfile: /var/lib/chrony/chrony.drift
+
+# Allow chrony to act as a server for the local cluster (so peers can sync
+# from each other if pool reachability is degraded). Lock down to the
+# k3s_private_cidr only.
+chrony_allow_cidr: "{{ harden_private_cidr | default('10.0.0.0/28') }}"

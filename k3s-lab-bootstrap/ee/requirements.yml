@@ -1,0 +1,40 @@
+---
+# Ansible collections bundled into the DMF AWX EE image.
+# Version-pinned for reproducibility (plan §3 Lane A + ADR-0025 §8.3 default).
+#
+# Bumping: pick a new version, rebuild via scripts/build.sh, smoke-test
+# one 69x play (e.g. 697-cms-awx-token) and one catalog JT (e.g.
+# media-launch-nmos-cpp) before promoting.
+
+collections:
+  # Core runtime — used by every 69x play and every catalog launcher.
+  # kubernetes.core.k8s, .k8s_info appear hundreds of times across plays.
+  - name: kubernetes.core
+    version: ">=5.0.0,<6.0.0"
+
+  # Used for random_string, dict merge filters, postgresql modules,
+  # and a handful of helper modules. Range deliberately permissive to
+  # avoid frequent rebuilds for unrelated additions.
+  - name: community.general
+    version: ">=9.0.0,<11.0.0"
+
+  # POSIX modules (mount, sysctl, authorized_key, etc.). Used by a few
+  # infra plays and useful to have present rather than per-play installed.
+  - name: ansible.posix
+    version: ">=1.6.0,<2.0.0"
+
+  # docker_image, docker_login modules used by playbook 630-zot-seed-platform.yml
+  # to mirror images from GHCR into cluster-internal Zot. Also useful
+  # for future image-handling plays.
+  - name: community.docker
+    version: ">=3.10.0,<5.0.0"
+
+  # NetBox dynamic inventory (nb_inventory) for the catalog launchers' AWX
+  # "NetBox Inventory". BAKED here so project_update / inventory sync never
+  # fetches from public galaxy.ansible.com — the v0.1 offline-sandbox
+  # requirement (ADR-0030/0031). The awx-integration role's pushed
+  # collections/requirements.yml is neutralized to an empty list to match.
+  # Permanent internal git-sourced requirements: ADR-0034 (Forgejo mirror).
+  # Pairs with `pynetbox` in requirements.txt (the plugin's runtime dep).
+  - name: netbox.netbox
+    version: ">=3.15.0,<4.0.0"

@@ -1,0 +1,94 @@
+---
+# playbooks/lifecycle/operate-catalog-drift.yml
+# DMF lifecycle: Operate stage — catalog drift detector.
+#
+# For each catalog entry under dmf-media/catalog/*.yaml:
+#   1. Fetch the NetBox ipam.Service tag (by service name)
+#   2. Check Helm release presence in the cluster
+#   3. Assert agreement between NetBox lifecycle tag and Helm state
+#
+# Drift scenarios:
+#   - NetBox lifecycle:active + Helm release missing  → DRIFT
+#   - NetBox lifecycle:bootstrapped + Helm present     → DRIFT
+#
+# References:
+#   - ADR-0012: configure-stage-distinct-from-provision (lifecycle stages)
+#   - ADR-0014: awx-project-layout
+#   - Source: docs/plans/DMF Move 1 Path A Reset 2026-05-12.md §"Real remaining work — P8" (historical)
+
+- name: "Catalog drift detection (lifecycle: operate)"
+  hosts: device_roles_k3s-control-plane[0]
+  become: true
+  gather_facts: false
+  environment:
+    KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+  vars:
+    # Catalog source: dmf-media/catalog/*.yaml.
+    # When run via AWX (dmf-media project SCM-sync), the project root is
+    # available at the AWX project path. When run locally, set this var
+    # to the local dmf-media/catalog path.
+    catalog_source_dir: "{{ lookup('env', 'AWX_PROJECT_DIR') | default('/tmp/dmf-media-catalog', true) }}"
+  tasks:
+    # ── Control-node reachability override for this operate play ───────────
+    - name: Set ansible_host to node private IP (Hetzner firewall workaround)
+      ansible.builtin.set_fact:
+        ansible_host: >-
+          {{ {'k3s-node-01': '<lan-ip>',
+              'k3s-node-02': '<lan-ip>',
+              'k3s-node-03': '<lan-ip>'}[inventory_hostname] }}
+      delegate_to: localhost
+      become: false
+
+    # ── Find catalog files on the Ansible controller ─────────────────────────
+    # lookup('file') and find both run on the controller, not the target host.
+    # Catalog YAML files come from the dmf-media project (AWX SCM-sync).
+    - name: Find catalog YAML files on controller
+      ansible.builtin.find:
+        paths: "{{ catalog_source_dir }}"
+        patterns: "*.yaml,*.yml"
+        file_type: file
+      delegate_to: localhost
+      become: false
+      register: _catalog_files
+      failed_when: false
+
+    # If no catalog files were staged, fail gracefully
+    - name: Assert catalog files are present
+      ansible.builtin.assert:
+        that: _catalog_files.matched | int > 0
+        fail_msg: >
+          No catalog YAML files found at {{ catalog_source_dir }}.
+          Ensure dmf-media/catalog/*.yaml files are available (e.g. via AWX
+          dmf-media project SCM-sync or set catalog_source_dir extra-var)
+          before running drift detection.
+
+    # ── Read catalog entries ─────────────────────────────────────────────────
+    - name: Read all catalog entries
+      ansible.builtin.set_fact:
+        _catalog_entries: >-
+          {{
+            (_catalog_entries | default([])) +
+            [lookup('file', item.path) | from_yaml]
+          }}
+      loop: "{{ _catalog_files.files }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+
+    # ── Per-entry drift check ────────────────────────────────────────────────
+    - name: Check drift for each catalog entry
+      ansible.builtin.include_tasks: playbooks/lifecycle/tasks/catalog-drift-check.yml
+      loop: "{{ _catalog_entries }}"
+      loop_control:
+        loop_var: entry
+        label: "{{ entry.key | default('unknown') }}"
+
+    # ── Aggregate results ────────────────────────────────────────────────────
+    - name: Assert no drift detected
+      ansible.builtin.assert:
+        that: _drift_results | selectattr('drift', 'equalto', true) | list | length == 0
+        fail_msg: >
+          Catalog drift detected in {{ _drift_results | selectattr('drift', 'equalto', true) | list | length }}
+          entry/entries:
+          {% for r in _drift_results | selectattr('drift', 'equalto', true) | list %}
+          - {{ r.key }}: {{ r.message }}
+          {% endfor %}

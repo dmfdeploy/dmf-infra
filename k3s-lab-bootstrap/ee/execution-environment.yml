@@ -1,0 +1,49 @@
+---
+# DMF AWX Execution Environment (Lane A of the 2026-05-19 convergence plan).
+#
+# Built from the upstream Ansible AWX EE plus pinned collections and
+# DMF-specific OCI labels. Used by:
+#   - the in-cluster ansible runner pod (bootstrap-configure 69x chain;
+#     see roles/stack/operator/ansible-runner/)
+#   - AWX-spawned media catalog launchers (`media-*` JTs; ADR-0025)
+#
+# Build: roles-adjacent script at scripts/build.sh
+# Publish (public source of truth): scripts/publish-to-ghcr.sh
+# Mirror to cluster Zot (runtime registry): ../playbooks/630-zot-seed-platform.yml
+
+version: 3
+
+images:
+  base_image:
+    # Pinned upstream version. Bump deliberately, test the runner pod
+    # and one catalog JT before promoting a new pin.
+    name: quay.io/ansible/awx-ee:24.6.1
+
+dependencies:
+  # ansible-core + ansible-runner are NOT re-pinned here. The base image
+  # quay.io/ansible/awx-ee:24.6.1 ships with Python 3.9 and ansible-core
+  # 2.15.x, which is compatible with all collections we use (kubernetes.core
+  # 5.x, community.general 9.x, ansible.posix 1.x, community.docker 3.x).
+  # Pinning ansible-core to >=2.16 fails because 2.16+ requires Python 3.10+
+  # and the base image is on 3.9. To upgrade ansible-core, bump the awx-ee
+  # base tag first (e.g., to a build that ships with Python 3.11+).
+  galaxy: requirements.yml
+  python: requirements.txt
+  system: bindep.txt
+
+additional_build_steps:
+  append_final:
+    # ARG values are passed by scripts/build.sh via --build-arg.
+    # ${VAR} substitution happens at docker build time, embedding the
+    # values into the LABEL directives below.
+    - ARG IMAGE_VERSION=0.1.0
+    - ARG VCS_REF=unknown
+    - LABEL org.opencontainers.image.title="DMF AWX Execution Environment"
+    - LABEL org.opencontainers.image.description="Shared Ansible EE for DMF Platform — used by in-cluster runner pod (bootstrap-configure) and AWX catalog launchers (media-* JTs). See ADR-0025."
+    - LABEL org.opencontainers.image.source="https://github.com/dmfdeploy/dmf-infra"
+    - LABEL org.opencontainers.image.revision="${VCS_REF}"
+    - LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
+    - LABEL org.opencontainers.image.licenses="Apache-2.0"
+    - LABEL org.opencontainers.image.vendor="DMF Platform contributors"
+    - LABEL org.opencontainers.image.base.name="quay.io/ansible/awx-ee:24.6.1"
+    - LABEL org.dmfdeploy.ee.lane="A"

@@ -1,0 +1,93 @@
+---
+cms_namespace: dmf-cms
+cms_release_name: dmf-cms
+cms_chart_source_path: "{{ playbook_dir }}/../../../dmf-cms/charts/dmf-cms"
+cms_chart_stage_path: /tmp/dmf-cms-chart
+cms_chart_values_path: /tmp/dmf-cms-values.yml
+cms_wait_retries: 60
+cms_wait_delay: 5
+
+# Exposure model: host (default) or path (/console fallback).
+cms_exposure: host
+cms_host: console.{{ cert_manager_cluster_domain | default('dmf.example.com') }}
+cms_path: /console
+cms_ingress_class: traefik-private
+
+# Base domain — prefer bootstrap bundle execution copy, then inventory.
+# vault_base_domain is set by bootstrap-secrets.sh export-vars.
+base_domain: "{{ vault_base_domain | default(cert_manager_cluster_domain | default('dmf.example.com')) }}"
+
+# Logout redirect URL — where users land after OIDC sign-out.
+# Points to the platform apex (landing page).
+cms_logout_redirect_url: "https://{{ base_domain }}/"
+
+# Master enable flag — set to false to skip the entire role (e.g. when
+# the container image is not yet available in the cluster registry).
+cms_enabled: true
+
+# Runtime mode must be explicit in cluster deployments.
+cms_runtime_mode: cluster
+cms_dev_login_enabled: false
+
+# Authentik OIDC provider/application identity.
+cms_oidc_enabled: true
+cms_oidc_provider_name: DMF Console
+cms_oidc_application_slug: dmf-console
+cms_oidc_issuer_url: "https://{{ authentik_host }}/application/o/{{ cms_oidc_application_slug }}"
+
+# Runtime Secret materialized in-cluster for the app session secret and OIDC
+# client secret. This keeps the chart on a secret-ref path instead of plaintext
+# values in the Helm release payload.
+cms_runtime_secret_name: dmf-cms-runtime
+cms_runtime_secret_session_key: secretKey
+cms_runtime_secret_oidc_key: clientSecret
+
+# Optional explicit override for the app session secret. Leave empty to reuse
+# the existing k8s Secret value or generate a new one on first deploy.
+cms_secret_key: "{{ vault_cms_secret_key | default('') }}"
+
+# Image source. Uses the external registry URL so all nodes can pull via the
+# load-balanced ingress (internal cluster DNS resolution for image pulls is
+# unreliable on multi-node clusters). Build/push to this repository first.
+cms_image_repository: "registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}/dmf-cms"
+# Image tag: read from the dmf-cms checkout's VERSION file at playbook runtime.
+# This is the single source of truth — never hardcode a tag here.
+# Override with cms_image_tag_override in inventory only for hotfix testing.
+cms_image_tag: "{{ cms_image_tag_override | default(lookup('file', cms_chart_source_path ~ '/../../VERSION') | trim) }}"
+cms_image_pull_policy: IfNotPresent
+
+# Authentik API for passkey enrollment (self-service device enrollment).
+# Requires an API token stored in the runtime secret.
+cms_runtime_secret_authentik_token_key: authentikApiToken
+cms_authentik_enrollment_flow: dmf-bootstrap-passkey-enrollment
+cms_authentik_invitation_ttl_hours: 24
+
+# AWX API — in-cluster DNS. Token stored in runtime secret.
+cms_runtime_secret_awx_token_key: awxApiToken
+cms_awx_ssl_verify: false
+
+# NetBox API — in-cluster DNS. Token stored in runtime secret.
+cms_runtime_secret_netbox_token_key: netboxApiToken
+cms_netbox_ssl_verify: false
+
+# Forgejo API — in-cluster DNS. Token stored in runtime secret.
+cms_runtime_secret_forgejo_token_key: forgejoApiToken
+
+# OpenBao break-glass credentials file for operator-level access.
+cms_openbao_breakglass_file: >-
+  {{
+    eso_openbao_breakglass_file
+    | default((openbao_key_path | default('')) ~ '.json', true)
+  }}
+
+# Lock file path for serializing CMS apply operations.
+cms_lock_file: "{{ cms_lock_file_path | default('/tmp/dmf-cms.lock') }}"
+
+# Docker daemon socket for building and pushing container images.
+# Set this in your inventory if using a non-standard socket location.
+cms_docker_host: "{{ cms_docker_socket | default('unix:///var/run/docker.sock') }}"
+
+# Catalog source directory — path to dmf-media/catalog/ on the Ansible
+# controller. Catalog YAML files found here are read into the Helm values
+# and mounted into the dmf-cms pod at /etc/dmf-cms/catalog/.
+cms_catalog_source_dir: "{{ playbook_dir }}/../../../dmf-media/catalog"

@@ -1,0 +1,10 @@
+---
+# Ansible collections required for the DMF Platform.
+# Install with: ansible-galaxy collection install -r requirements.yml
+collections:
+  # Kubernetes modules — used extensively across playbooks (k8s, k8s_info, helm, helm_repository)
+  - name: kubernetes.core
+  # POSIX modules — authorized_key, firewalld, iptables, etc.
+  - name: ansible.posix
+  # General modules — json_query filter (requires jmespath), among others
+  - name: community.general

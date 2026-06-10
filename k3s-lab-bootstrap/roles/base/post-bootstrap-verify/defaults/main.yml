@@ -1,0 +1,4 @@
+---
+post_bootstrap_verify_namespace: dmf-verify
+post_bootstrap_verify_image: busybox:1.36
+post_bootstrap_verify_cleanup: true

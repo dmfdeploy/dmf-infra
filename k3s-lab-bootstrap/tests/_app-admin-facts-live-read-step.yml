@@ -1,0 +1,86 @@
+---
+# One scenario step. Duplicates the live-read resolution Jinja from
+# roles/common/app-admin-facts/tasks/main.yml so that changes to the
+# role's expressions force a matching update here.
+- name: "[{{ scenario.id }}] Seed scenario state"
+  ansible.builtin.set_fact:
+    _app_admin_existing_data: "{{ scenario.existing }}"
+    app_admin_fallback_candidates: "{{ scenario.candidates }}"
+    app_admin_fallback_username: "{{ scenario.scalar_user }}"
+    app_admin_fallback_password: "{{ scenario.scalar_pass }}"
+
+- name: "[{{ scenario.id }}] Resolve fallback candidate"
+  ansible.builtin.set_fact:
+    _app_admin_fallback_resolved: >-
+      {{
+        (app_admin_fallback_candidates
+         | rejectattr('username', 'undefined')
+         | rejectattr('password', 'undefined')
+         | rejectattr('username', 'equalto', '')
+         | rejectattr('password', 'equalto', '')
+         | list
+         | first
+        ) | default({})
+      }}
+  when: app_admin_fallback_candidates | default([]) | length > 0
+
+- name: "[{{ scenario.id }}] Reset fallback when no candidates supplied"
+  ansible.builtin.set_fact:
+    _app_admin_fallback_resolved: {}
+  when: app_admin_fallback_candidates | default([]) | length == 0
+
+- name: "[{{ scenario.id }}] Resolve source layer"
+  ansible.builtin.set_fact:
+    _app_admin_resolved_source: >-
+      {{
+        'openbao'
+        if (_app_admin_existing_data.username | default('') | length > 0
+            and _app_admin_existing_data.password | default('') | length > 0)
+        else (
+          'fallback-candidates'
+          if (_app_admin_fallback_resolved.username | default('') | length > 0
+              and _app_admin_fallback_resolved.password | default('') | length > 0)
+          else (
+            'fallback-scalar'
+            if (app_admin_fallback_username | length > 0
+                and app_admin_fallback_password | length > 0)
+            else 'no-fallback'
+          )
+        )
+      }}
+
+- name: "[{{ scenario.id }}] Set effective user/pass via source-atomic dict lookup"
+  ansible.builtin.set_fact:
+    _app_admin_effective_username: >-
+      {{
+        {
+          'openbao': _app_admin_existing_data.username | default(''),
+          'fallback-candidates': _app_admin_fallback_resolved.username | default(''),
+          'fallback-scalar': app_admin_fallback_username,
+          'no-fallback': '',
+        }[_app_admin_resolved_source]
+      }}
+    _app_admin_effective_password: >-
+      {{
+        {
+          'openbao': _app_admin_existing_data.password | default(''),
+          'fallback-candidates': _app_admin_fallback_resolved.password | default(''),
+          'fallback-scalar': app_admin_fallback_password,
+          'no-fallback': '',
+        }[_app_admin_resolved_source]
+      }}
+
+- name: "[{{ scenario.id }}] Assert resolution matches expectation"
+  ansible.builtin.assert:
+    that:
+      - _app_admin_resolved_source == scenario.expect_source
+      - _app_admin_effective_username == scenario.expect_user
+      - _app_admin_effective_password == scenario.expect_pass
+    fail_msg: >-
+      Scenario {{ scenario.id }} expected
+      source={{ scenario.expect_source }} user={{ scenario.expect_user }}
+      pass={{ scenario.expect_pass }} but resolved
+      source={{ _app_admin_resolved_source }}
+      user={{ _app_admin_effective_username }}
+      pass={{ _app_admin_effective_password }}.
+    success_msg: "{{ scenario.id }} OK (source={{ _app_admin_resolved_source }})"

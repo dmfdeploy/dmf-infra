@@ -1,0 +1,88 @@
+---
+# Seed local repos from controller filesystem paths into Forgejo (one-shot init).
+# Guard: checks that all required_files exist in the target Forgejo repo via API.
+# If all required files exist, the seed is skipped (idempotent).
+# If any are missing (404), files are created via Forgejo content API.
+#
+# Loop variable: seed_entry (key=entry name, value=dict with repo, source_path, required_files)
+# Uses forgejo_svc_user and forgejo_svc_password_effective from the parent role.
+
+- name: "Check seed source exists: {{ seed_entry.key }}"
+  ansible.builtin.stat:
+    path: "{{ seed_entry.value.source_path }}"
+  register: _seed_source_stat
+  delegate_to: localhost
+  become: false
+  failed_when: false
+
+- name: "Skip seed — source not found: {{ seed_entry.key }}"
+  ansible.builtin.debug:
+    msg: >-
+      Skipping seed for {{ seed_entry.key }}: source path
+      {{ seed_entry.value.source_path }} does not exist on the controller.
+  when: not (_seed_source_stat.stat.exists | default(false))
+
+- name: "Check required files in Forgejo repo: {{ seed_entry.key }}"
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/{{ seed_entry.value.repo }}/contents/{{ item }}"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  loop: "{{ seed_entry.value.required_files }}"
+  register: _seed_required_check
+  no_log: true
+  when: _seed_source_stat.stat.exists | default(false)
+
+- name: "Set seed-needed flag: {{ seed_entry.key }}"
+  ansible.builtin.set_fact:
+    _seed_needed: "{{ _seed_required_check.results | selectattr('status', 'equalto', 404) | list | length > 0 }}"
+  when:
+    - _seed_source_stat.stat.exists | default(false)
+    - _seed_required_check is defined
+
+- name: "Read seed files from controller: {{ seed_entry.key }}"
+  ansible.builtin.find:
+    paths: "{{ seed_entry.value.source_path }}"
+    recurse: true
+    file_type: file
+  register: _seed_local_files_raw
+  delegate_to: localhost
+  become: false
+  when:
+    - _seed_source_stat.stat.exists | default(false)
+    - _seed_needed | default(false)
+
+- name: "Filter out .git/ paths: {{ seed_entry.key }}"
+  ansible.builtin.set_fact:
+    _seed_local_files:
+      files: "{{ _seed_local_files_raw.files | rejectattr('path', 'search', '/\\.git/') | list }}"
+      matched: "{{ (_seed_local_files_raw.files | rejectattr('path', 'search', '/\\.git/') | list) | length }}"
+  when:
+    - _seed_source_stat.stat.exists | default(false)
+    - _seed_needed | default(false)
+    - _seed_local_files_raw is defined
+
+- name: "Push seed files to Forgejo: {{ seed_entry.key }}"
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/{{ seed_entry.value.repo }}/contents/{{ item.path | regex_replace('^' + seed_entry.value.source_path + '/?', '') }}"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      content: "{{ lookup('file', item.path) | b64encode }}"
+      message: "Seed: {{ item.path | regex_replace('^' + seed_entry.value.source_path + '/?', '') }} (bootstrap init)"
+      branch: main
+    status_code: [200, 201]
+  loop: "{{ _seed_local_files.files }}"
+  loop_control:
+    label: "{{ item.path | regex_replace('^' + seed_entry.value.source_path + '/?', '') }}"
+  no_log: true
+  when:
+    - _seed_source_stat.stat.exists | default(false)
+    - _seed_needed | default(false)
+    - _seed_local_files is defined
+    - _seed_local_files.matched | default(0) > 0

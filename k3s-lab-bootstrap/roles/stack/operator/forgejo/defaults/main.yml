@@ -1,0 +1,91 @@
+---
+forgejo_namespace: forgejo
+forgejo_external_host: >-
+  {{
+    forgejo_host
+    | default(
+        (external_base_url | default('http://' ~ (metallb_vip | default('placeholder'))))
+        | regex_replace('^https?://', '')
+        | regex_replace('/.*$', ''),
+        true
+      )
+  }}
+forgejo_external_scheme: >-
+  {{
+    'https'
+    if (external_base_url | default('https://' ~ forgejo_external_host)).startswith('https://')
+    else 'http'
+  }}
+forgejo_external_base_url: "{{ forgejo_external_scheme }}://{{ forgejo_external_host }}"
+forgejo_root_url: "{{ forgejo_external_base_url }}/"
+
+forgejo_chart_stage_path: /tmp/forgejo-chart
+forgejo_chart_version: "16.0.2"
+
+forgejo_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+forgejo_storage_size: 10Gi
+forgejo_pvc_name: forgejo-shared-storage
+
+# Forgejo is reachable only on the private lane (host-based app).
+# The public LB exposes apex + path-based apps; host apps resolve to tailnet
+# IPs via the reconciled wildcard A records and hit the private Traefik.
+forgejo_ingress_class_name: traefik-private
+forgejo_ingress_annotations:
+  traefik.ingress.kubernetes.io/router.entrypoints: websecure
+  traefik.ingress.kubernetes.io/router.tls: "true"
+  dmf.exposure: private
+
+# Local Forgejo admin — intentionally a fixed non-colliding break-glass
+# identity, NOT vault_bootstrap_admin_username. ADR-0028 D3 + per-app survey
+# §3.4 + §5 item 2 (2026-05-24): decoupling the local admin from the
+# operator's Authentik username crystallises the slogan (C4 — no routine
+# break-glass) and mirrors the AWX rename (ADR-0028 follow-on step 2,
+# dmf-infra c426dc0). Forgejo's `account_linking: auto` + `username_source:
+# userid` already prevents shadow accounts on OIDC login, so the rename
+# is symbolic + structural cleanup.
+#
+# The literal `forgejo-break-glass` is also referenced by
+# roles/stack/operator/forgejo-bootstrap/tasks/main.yml candidate-2 and
+# playbooks/698-cms-netbox-forgejo-tokens.yml candidate-2 (those plays
+# don't load this role so cannot read the default; keep all three in sync).
+#
+# Existing envs that bootstrapped with the prior default MUST override
+# this in env inventory before re-running, or plan a one-time live
+# migration. See survey §5 item 2.
+forgejo_admin_username: forgejo-break-glass
+# ADR-0024/0028 canonical break-glass email: per-app, per-env synthetic.
+# Must NOT fall back to vault_bootstrap_admin_email (operator email) —
+# Forgejo's OAuth2 account_linking=auto merges the operator's OIDC sign-in
+# into this break-glass User row on email collision (observed live on
+# zy9q-1015 prior to the 2026-05-28 remediation). bootstrap-secrets.sh
+# seed-bao writes the same pattern to secret/apps/forgejo/admin.email.
+forgejo_admin_email: "{{ vault_forgejo_admin_email | default('forgejo-' ~ (dmf_env_id | default('local')) ~ '@' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
+forgejo_admin_password: "{{ vault_forgejo_admin_password | default(vault_bootstrap_admin_password | mandatory) }}"
+forgejo_oauth_enabled: true
+forgejo_oauth_provider_name: Forgejo
+forgejo_oauth_authentik_name: Authentik
+forgejo_oauth_secret_name: forgejo-oauth
+forgejo_oauth_auto_discover_url: >-
+  https://{{ authentik_host }}/application/o/forgejo/.well-known/openid-configuration
+forgejo_oauth_enable_auto_registration: true
+forgejo_oauth_account_linking: auto
+forgejo_oauth_username_source: userid
+forgejo_oauth_update_avatar: true
+forgejo_oauth_openid_scopes: "openid email profile groups"
+forgejo_oauth_groups_claim_name: groups
+forgejo_oauth_admin_group: ops-admin
+
+forgejo_wait_retries: 120
+forgejo_wait_delay: 5
+
+# Local-CA trust (local-ca lane / sandbox). configure-gitea fetches the
+# Authentik OIDC discovery document over HTTPS during init; on the local-ca
+# lane that endpoint presents the in-cluster DMF Local CA cert, which the
+# Forgejo image does not trust by default. Publish the CA's PUBLIC cert into the
+# Forgejo namespace and mount it into /etc/ssl/certs (read by Go's cert loader)
+# on both the init and runtime containers. No key material is mounted. No-op on
+# the cloud/lab ACME lane (publicly-trusted certs).
+forgejo_local_ca_trust_enabled: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
+forgejo_local_ca_configmap: dmf-local-ca
+forgejo_local_ca_secret: dmf-local-ca
+forgejo_local_ca_namespace: cert-manager

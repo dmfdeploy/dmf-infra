@@ -1,0 +1,7 @@
+---
+# NetworkPolicy defaults for the OpenBao ingress boundary.
+
+network_policies_openbao_namespace: openbao
+network_policies_openbao_service_name: openbao
+network_policies_openbao_allow_cluster_peer_namespace: openbao
+network_policies_openbao_allow_eso_namespace: external-secrets

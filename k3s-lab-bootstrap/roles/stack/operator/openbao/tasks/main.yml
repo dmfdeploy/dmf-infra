@@ -1,0 +1,1869 @@
+---
+# ---------------------------------------------------------------------------
+# OpenBao — deploy, init, enable engines, create ESO and born-inventory
+# AppRoles
+# ---------------------------------------------------------------------------
+# Conventions:
+#   - kubernetes.core.k8s for K8s objects (raw definitions)
+#   - ansible.builtin.command with kubectl exec for bao CLI calls inside the pod
+#   - kubeconfig: /etc/rancher/k3s/k3s.yaml for all k8s modules
+# ---------------------------------------------------------------------------
+
+- name: Create OpenBao namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ openbao_namespace }}"
+
+- name: Create OpenBao config ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: openbao-config
+        namespace: "{{ openbao_namespace }}"
+      data:
+        config.hcl: |
+          storage "raft" {
+            path    = "/openbao/data"
+            node_id = "{{ openbao_raft_node_id }}"
+          }
+
+          listener "tcp" {
+            address         = "0.0.0.0:8200"
+            cluster_address = "0.0.0.0:8201"
+            tls_disable     = 0
+            tls_cert_file   = "/openbao/config/tls/tls.crt"
+            tls_key_file    = "/openbao/config/tls/tls.key"
+          }
+
+          api_addr      = "https://{{ openbao_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8200"
+          cluster_addr  = "https://{{ openbao_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8201"
+          disable_mlock = true
+          ui            = true
+
+- name: Wait for OpenBao TLS secret to be present
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ openbao_tls_secret_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: openbao_tls_secret
+  until:
+    - openbao_tls_secret.resources | length > 0
+    - openbao_tls_secret.resources[0].data['tls.crt'] is defined
+    - openbao_tls_secret.resources[0].data['tls.key'] is defined
+  retries: 60
+  delay: 5
+
+- name: Create OpenBao StatefulSet
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: openbao
+        namespace: "{{ openbao_namespace }}"
+        labels:
+          app.kubernetes.io/name: openbao
+      spec:
+        serviceName: openbao
+        replicas: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: openbao
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: openbao
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+            containers:
+              - name: openbao
+                image: "{{ openbao_image }}"
+                imagePullPolicy: IfNotPresent
+                command:
+                  - bao
+                args:
+                  - server
+                  - -config=/etc/openbao/config.hcl
+                ports:
+                  - name: api
+                    containerPort: 8200
+                  - name: cluster
+                    containerPort: 8201
+                env:
+                  - name: BAO_ADDR
+                    value: "https://127.0.0.1:8200"
+                  - name: BAO_CACERT
+                    value: "/openbao/config/tls/tls.crt"
+                  - name: BAO_LOCAL_ADDRESS
+                    value: "127.0.0.1"
+                volumeMounts:
+                  - name: config
+                    mountPath: /etc/openbao
+                  - name: tls
+                    mountPath: /openbao/config/tls
+                    readOnly: true
+                  - name: data
+                    mountPath: /openbao/data
+                readinessProbe:
+                  tcpSocket:
+                    port: 8200
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                livenessProbe:
+                  tcpSocket:
+                    port: 8200
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                resources: "{{ openbao_resources }}"
+            volumes:
+              - name: config
+                configMap:
+                  name: openbao-config
+              - name: tls
+                secret:
+                  secretName: "{{ openbao_tls_secret_name }}"
+        volumeClaimTemplates:
+          - metadata:
+              name: data
+            spec:
+              accessModes: [ReadWriteOnce]
+              storageClassName: "{{ openbao_storage_class }}"
+              resources:
+                requests:
+                  storage: "{{ openbao_storage_size }}"
+
+- name: Create OpenBao Service
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ openbao_service_name }}"
+        namespace: "{{ openbao_namespace }}"
+        labels:
+          app.kubernetes.io/name: openbao
+      spec:
+        selector:
+          app.kubernetes.io/name: openbao
+        ports:
+          - name: api
+            port: "{{ openbao_service_port }}"
+            targetPort: 8200
+          - name: cluster
+            port: 8201
+            targetPort: 8201
+
+- name: Wait for OpenBao StatefulSet to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    name: openbao
+    namespace: "{{ openbao_namespace }}"
+  register: openbao_sts
+  until:
+    - openbao_sts.resources | length > 0
+    - openbao_sts.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: 60
+  delay: 5
+
+# ---------------------------------------------------------------------------
+# Discover the pod name for exec calls
+# ---------------------------------------------------------------------------
+
+- name: Get OpenBao pod name
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ openbao_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=openbao"
+  register: openbao_pod_info
+
+- name: Set OpenBao pod name fact
+  ansible.builtin.set_fact:
+    openbao_pod: "{{ openbao_pod_info.resources[0].metadata.name }}"
+
+# ---------------------------------------------------------------------------
+# Check if already initialized — before password generation to gate fresh-init-only credentials
+# ---------------------------------------------------------------------------
+
+- name: Check OpenBao init status
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - bao
+      - status
+      - -format=json
+  register: openbao_status_cmd
+  changed_when: false
+  failed_when: false
+
+- name: Parse OpenBao status
+  ansible.builtin.set_fact:
+    openbao_is_initialized: >-
+      {{ (openbao_status_cmd.stdout | from_json).initialized | default(false) }}
+  when:
+    - openbao_status_cmd.stdout | default('') | length > 0
+    - openbao_status_cmd.stdout | default('') | from_json is mapping
+
+- name: Default init status if status check failed
+  ansible.builtin.set_fact:
+    openbao_is_initialized: false
+  when: openbao_is_initialized is not defined
+
+# ---------------------------------------------------------------------------
+# Load existing break-glass JSON if present — rerun idempotency path.
+# Preserves unseal keys and the operator userpass password when init won't run
+# this pass. Root token is intentionally not retained.
+# ---------------------------------------------------------------------------
+
+- name: Slurp existing break-glass JSON (localhost)
+  ansible.builtin.slurp:
+    src: "{{ openbao_key_path }}.json"
+  register: existing_breakglass_slurp
+  delegate_to: localhost
+  become: false
+  failed_when: false
+  no_log: true
+
+- name: Parse existing break-glass JSON
+  ansible.builtin.set_fact:
+    existing_breakglass: >-
+      {{ (existing_breakglass_slurp.content | b64decode | from_json)
+         if (existing_breakglass_slurp.content is defined)
+         else {} }}
+  no_log: true
+
+- name: Preload unseal keys from existing break-glass JSON (rerun path)
+  ansible.builtin.set_fact:
+    openbao_unseal_keys_hex: "{{ existing_breakglass.unseal_keys_hex | default([]) }}"
+  no_log: true
+
+- name: Preload operator credentials from existing break-glass JSON (rerun path)
+  ansible.builtin.set_fact:
+    openbao_operator_password: "{{ existing_breakglass.ops_admin_password | default('') }}"
+    openbao_policy_reconciler_password: "{{ existing_breakglass.policy_reconciler_password | default('') }}"
+    openbao_approle_reconciler_password: "{{ existing_breakglass.approle_reconciler_password | default('') }}"
+  no_log: true
+
+- name: Generate operator password if not yet available
+  ansible.builtin.set_fact:
+    openbao_operator_password: >-
+      {{ lookup('password', '/dev/null length=' ~ openbao_operator_password_length ~ ' chars=ascii_letters,digits') }}
+  when: openbao_operator_password | default('') | length == 0
+  no_log: true
+
+- name: Generate policy-reconciler password only on fresh init
+  ansible.builtin.set_fact:
+    openbao_policy_reconciler_password: >-
+      {{ lookup('password', '/dev/null length=' ~ openbao_policy_reconciler_password_length ~ ' chars=ascii_letters,digits') }}
+  when:
+    - openbao_policy_reconciler_password | default('') | length == 0
+    - not openbao_is_initialized | bool
+  no_log: true
+
+- name: Generate approle-reconciler password only on fresh init
+  ansible.builtin.set_fact:
+    openbao_approle_reconciler_password: >-
+      {{ lookup('password', '/dev/null length=' ~ openbao_approle_reconciler_password_length ~ ' chars=ascii_letters,digits') }}
+  when:
+    - openbao_approle_reconciler_password | default('') | length == 0
+    - not openbao_is_initialized | bool
+  no_log: true
+
+- name: Preload AppRole credentials from break-glass (rerun path)
+  ansible.builtin.set_fact:
+    openbao_eso_role_id: "{{ existing_breakglass.get('eso_role_id') }}"
+    openbao_eso_secret_id: "{{ existing_breakglass.get('eso_secret_id') }}"
+    openbao_born_inventory_role_id: "{{ existing_breakglass.get('born_inventory_role_id') }}"
+    openbao_born_inventory_secret_id: "{{ existing_breakglass.get('born_inventory_secret_id') }}"
+  when:
+    - existing_breakglass.get('eso_role_id') is not none
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Shamir init (only if not yet initialized)
+# ---------------------------------------------------------------------------
+
+# Guard against a footgun: disabling break-glass distribution means the local
+# automation file becomes the ONLY key custody, so the posture must be
+# self-contained (no orphaned DR shares, quorum fits the automation copy).
+- name: Assert a self-contained Shamir posture when break-glass distribution is disabled
+  ansible.builtin.assert:
+    that:
+      - openbao_shamir_shares | int == openbao_shamir_threshold | int
+      - openbao_shamir_threshold | int <= 3
+    fail_msg: >-
+      openbao_breakglass_distribution_enabled is false but the Shamir posture is
+      {{ openbao_shamir_shares }}-of-{{ openbao_shamir_threshold }}. With
+      distribution disabled the local automation file is the only key custody,
+      so set shares == threshold (no orphaned shares) and threshold <= 3 (the
+      automation copy holds up to a 3-key quorum) — e.g. 1/1 for a sandbox — or
+      re-enable distribution to keep the 3-of-5 break-glass recovery model.
+  when: not (openbao_breakglass_distribution_enabled | bool)
+
+- name: Run Shamir init
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - bao
+      - operator
+      - init
+      - -key-shares={{ openbao_shamir_shares }}
+      - -key-threshold={{ openbao_shamir_threshold }}
+      - -format=json
+  register: openbao_init_raw
+  when: not openbao_is_initialized | bool
+  no_log: true
+
+- name: Parse init output — root token and unseal keys
+  ansible.builtin.set_fact:
+    openbao_root_token: "{{ (openbao_init_raw.stdout | from_json).root_token }}"
+    openbao_unseal_keys_hex: "{{ (openbao_init_raw.stdout | from_json).unseal_keys_hex }}"
+    openbao_unseal_keys_b64: "{{ (openbao_init_raw.stdout | from_json).unseal_keys_b64 }}"
+  when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Ensure OpenBao automation key directory exists
+  ansible.builtin.file:
+    path: "{{ openbao_key_path | dirname }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Save Shamir keys to local file
+  ansible.builtin.copy:
+    content: "{{ openbao_init_raw.stdout }}"
+    dest: "{{ openbao_key_path }}.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Write Shamir shares to 5 separate custody locations at init time.
+# Shares 1, 2 → JuiceFS ({{ openbao_juicefs_mount_path }}/…)
+# Share 3    → macOS Keychain
+# Shares 4, 5 → USB OPENBAO_A ({{ openbao_usb_dir }}/…)
+# Automation file retains a quorum of 3 shares for unattended unseal.
+# ---------------------------------------------------------------------------
+
+- name: Assert OPENBAO_A USB is mounted (holds recovery shares 4+5)
+  ansible.builtin.stat:
+    path: /Volumes/OPENBAO_A
+  register: _usb_stat
+  delegate_to: localhost
+  become: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+
+- name: Fail if OPENBAO_A USB is missing
+  ansible.builtin.assert:
+    that: _usb_stat.stat.exists and _usb_stat.stat.isdir
+    fail_msg: >-
+      USB 'OPENBAO_A' is not mounted at /Volumes/OPENBAO_A. Plug it in
+      and re-run. OpenBao init writes shares 4 and 5 to this USB.
+  when:
+    - openbao_breakglass_distribution_enabled | bool
+    - openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+    - _usb_stat is defined
+
+- name: Assert JuiceFS mount is available (holds recovery shares 1+2)
+  ansible.builtin.stat:
+    path: "{{ openbao_juicefs_mount_path }}"
+  register: _juicefs_stat
+  delegate_to: localhost
+  become: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+
+- name: Fail if JuiceFS mount is missing
+  ansible.builtin.assert:
+    that: _juicefs_stat.stat.exists and _juicefs_stat.stat.isdir
+    fail_msg: >-
+      JuiceFS mount {{ openbao_juicefs_mount_path }} is not available.
+      Mount the share first — OpenBao init writes shares 1 and 2 there.
+  when:
+    - openbao_breakglass_distribution_enabled | bool
+    - openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+    - _juicefs_stat is defined
+
+# Keychain writes from this automation context are not reliably authorized via
+# direct `security add-generic-password`, but the same write succeeds through
+# `osascript`/SecurityAgent in the logged-in macOS session. Keep share 3 in the
+# login Keychain per the custody plan, using osascript as the write path.
+- name: Preflight — verify login Keychain accepts share-3 writes
+  ansible.builtin.command:
+    argv:
+      - osascript
+      - -e
+      - on run argv
+      - -e
+      - >-
+        do shell script "security add-generic-password -s " & quoted form of
+        item 1 of argv & " -a " & quoted form of item 2 of argv & " -w " &
+        quoted form of item 3 of argv & " -U"
+      - -e
+      - end run
+      - "{{ openbao_keychain_share3_service }}-write-test"
+      - share
+      - openbao-keychain-write-test
+  register: _share3_keychain_preflight
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Cleanup share-3 Keychain smoke-test item
+  ansible.builtin.command:
+    argv:
+      - osascript
+      - -e
+      - on run argv
+      - -e
+      - >-
+        do shell script "security delete-generic-password -s " & quoted form
+        of item 1 of argv & " -a " & quoted form of item 2 of argv
+      - -e
+      - end run
+      - "{{ openbao_keychain_share3_service }}-write-test"
+      - share
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Fail if login Keychain is not write-authorized for share 3
+  ansible.builtin.assert:
+    that:
+      - _share3_keychain_preflight.rc | default(1) == 0
+    fail_msg: >-
+      macOS login Keychain is not write-authorized for share 3. This run
+      follows the original custody plan and stores share 3 in service
+      '{{ openbao_keychain_share3_service }}'. Unlock or authorize the login
+      keychain in an interactive session, then re-run.
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+
+- name: Ensure environment break-glass directory on JuiceFS exists
+  ansible.builtin.file:
+    path: "{{ openbao_breakglass_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Write share 1 to JuiceFS
+  ansible.builtin.copy:
+    dest: "{{ openbao_breakglass_dir }}/share-1.json"
+    mode: "0600"
+    content: "{{ {
+        'share_index': 1,
+        'key': openbao_unseal_keys_b64[0],
+        '_notes': 'OpenBao Shamir share 1 of 5. Need any 3 of 5 to unseal. Other shares: share 2 here on JuiceFS, share 3 in macOS Keychain (service: ' ~ openbao_keychain_share3_service ~ '), shares 4+5 on USB OPENBAO_A. See Breakglass Runbook for DR.'
+      } | to_nice_json }}"
+  delegate_to: localhost
+  become: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Write share 2 to JuiceFS
+  ansible.builtin.copy:
+    dest: "{{ openbao_breakglass_dir }}/share-2.json"
+    mode: "0600"
+    content: "{{ {
+        'share_index': 2,
+        'key': openbao_unseal_keys_b64[1],
+        '_notes': 'See share-1.json for DR context.'
+      } | to_nice_json }}"
+  delegate_to: localhost
+  become: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Write share 3 to macOS Keychain
+  ansible.builtin.command:
+    argv:
+      - osascript
+      - -e
+      - on run argv
+      - -e
+      - >-
+        do shell script "security add-generic-password -s " & quoted form of
+        item 1 of argv & " -a " & quoted form of item 2 of argv & " -w " &
+        quoted form of item 3 of argv & " -U"
+      - -e
+      - end run
+      - "{{ openbao_keychain_share3_service }}"
+      - share
+      - "{{ openbao_unseal_keys_b64[2] }}"
+  register: _share3_keychain_write
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Fail if share 3 could not be written to macOS Keychain
+  ansible.builtin.assert:
+    that:
+      - _share3_keychain_write.rc | default(1) == 0
+    fail_msg: >-
+      Failed to write share 3 to macOS Keychain service
+      '{{ openbao_keychain_share3_service }}'. Unlock or authorize the login
+      keychain in an interactive session, then re-run.
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+
+- name: Ensure environment USB share directory exists on OPENBAO_A
+  ansible.builtin.file:
+    path: "{{ openbao_usb_dir }}"
+    state: directory
+    mode: "0700"
+  delegate_to: localhost
+  become: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+
+- name: Write share 4 to USB OPENBAO_A
+  ansible.builtin.copy:
+    dest: "{{ openbao_usb_dir }}/share-4.json"
+    mode: "0600"
+    content: "{{ {
+        'share_index': 4,
+        'key': openbao_unseal_keys_b64[3],
+        '_notes': 'Share 4 of 5. Keep USB unplugged except during ceremony. See Breakglass Runbook.'
+      } | to_nice_json }}"
+  delegate_to: localhost
+  become: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Write share 5 to USB OPENBAO_A
+  ansible.builtin.copy:
+    dest: "{{ openbao_usb_dir }}/share-5.json"
+    mode: "0600"
+    content: "{{ {
+        'share_index': 5,
+        'key': openbao_unseal_keys_b64[4],
+        '_notes': 'Share 5 of 5.'
+      } | to_nice_json }}"
+  delegate_to: localhost
+  become: false
+  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Write automation file (shares 1+2+3 and operator creds)
+  ansible.builtin.copy:
+    dest: "{{ openbao_key_path }}.json"
+    mode: "0600"
+    content: "{{ {
+        'unseal_keys_b64': openbao_unseal_keys_b64[0:3],
+        'ops_admin_username': openbao_operator_username,
+        'ops_admin_password': openbao_operator_password,
+        '_notes': (openbao_breakglass_distribution_enabled | bool) | ternary('Automation copy. Holds a quorum of 3 Shamir shares for unattended unseal. If this file is lost, reassemble from any 3 of: JuiceFS share-1, JuiceFS share-2, Keychain share-3, USB share-4, USB share-5.', 'Automation copy and SOLE key custody for this self-recovering (no-distribution) profile: holds the full ' ~ (openbao_shamir_shares | int) ~ '-of-' ~ (openbao_shamir_threshold | int) ~ ' unseal key set. There is no break-glass distribution — if this file is lost, re-init is required.')
+      } | to_nice_json }}"
+  delegate_to: localhost
+  become: false
+  when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Unseal (needs 3 of 5 shares)
+# ---------------------------------------------------------------------------
+
+- name: Unseal OpenBao — share 1
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - bao
+      - operator
+      - unseal
+      - "{{ openbao_unseal_keys_hex[0] }}"
+  no_log: true
+  when: openbao_unseal_keys_hex is defined
+
+- name: Unseal OpenBao — share 2
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - bao
+      - operator
+      - unseal
+      - "{{ openbao_unseal_keys_hex[1] }}"
+  no_log: true
+  when: openbao_unseal_keys_hex | default([]) | length > 1
+
+- name: Unseal OpenBao — share 3
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - bao
+      - operator
+      - unseal
+      - "{{ openbao_unseal_keys_hex[2] }}"
+  no_log: true
+  when: openbao_unseal_keys_hex | default([]) | length > 2
+
+# ---------------------------------------------------------------------------
+# Mark OpenBao as initialized and unsealed after successful fresh init
+# ---------------------------------------------------------------------------
+
+- name: Mark OpenBao as initialized and unsealed
+  ansible.builtin.set_fact:
+    openbao_is_initialized: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+# ---------------------------------------------------------------------------
+# Bootstrap-only tasks below need the root token and only run on init.
+# ---------------------------------------------------------------------------
+
+- name: Enable kv-v2 secrets engine
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao secrets enable -path=secret -version=2 -description="KV v2 for static secrets" kv'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  register: _enable_kv
+  failed_when:
+    - _enable_kv.rc != 0
+    - "'path is already in use' not in (_enable_kv.stderr | default(''))"
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Enable approle auth method
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao auth enable -description="AppRole authentication" approle'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  register: _enable_approle
+  failed_when:
+    - _enable_approle.rc != 0
+    - "'path is already in use' not in (_enable_approle.stderr | default(''))"
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Enable kubernetes auth method
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao auth enable -description="Kubernetes authentication" kubernetes'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  register: _enable_k8s
+  failed_when:
+    - _enable_k8s.rc != 0
+    - "'path is already in use' not in (_enable_k8s.stderr | default(''))"
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Enable userpass auth method
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao auth enable -description="Username/password authentication" userpass'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  register: _enable_userpass
+  failed_when:
+    - _enable_userpass.rc != 0
+    - "'path is already in use' not in (_enable_userpass.stderr | default(''))"
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Enable PKI secrets engine
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao secrets enable -path={{ openbao_pki_path }} -max-lease-ttl={{ openbao_pki_max_lease_ttl }} -description="PKI engine for internal CA" pki'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  register: _enable_pki
+  failed_when:
+    - _enable_pki.rc != 0
+    - "'path is already in use' not in (_enable_pki.stderr | default(''))"
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+# ---------------------------------------------------------------------------
+# Configure kubernetes auth backend
+# ---------------------------------------------------------------------------
+
+- name: Configure kubernetes auth backend
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/kubernetes/config
+      kubernetes_host=https://kubernetes.default.svc.cluster.local
+      kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  register: _config_k8s
+  failed_when: false
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+# ---------------------------------------------------------------------------
+# Policy apply token selection — fresh init vs rerun
+# Fresh init: use root token. Rerun: use policy-reconciler client token.
+# ---------------------------------------------------------------------------
+
+- name: Set policy apply token from root token on fresh init
+  ansible.builtin.set_fact:
+    _openbao_policy_apply_token: "{{ openbao_root_token }}"
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+  no_log: true
+
+- name: Fail if policy-reconciler credentials missing on rerun
+  ansible.builtin.fail:
+    msg: >-
+      OpenBao is already initialized but policy_reconciler_password is not
+      present in break-glass JSON at {{ openbao_key_path }}.json.
+      Provide a one-time privileged recovery token via stdin recovery variable
+      or rebuild OpenBao from clean bootstrap.
+  when:
+    - openbao_is_initialized | bool
+    - not (openbao_init_raw is defined and openbao_init_raw.changed | default(false))
+    - openbao_policy_reconciler_password | default('') | length == 0
+
+- name: Fail if approle-reconciler credentials missing on rerun
+  ansible.builtin.fail:
+    msg: >-
+      OpenBao is already initialized but approle_reconciler_password is not
+      present in break-glass JSON at {{ openbao_key_path }}.json. Root is
+      intentionally not preserved after first bootstrap. ADR-0021 forbids
+      broadening ops-admin or policy-reconciler for AppRole reconciliation.
+      Run a Shamir-backed privileged recovery ceremony to create the
+      approle-reconciler userpass user and add the password to the break-glass
+      JSON, or rebuild OpenBao from clean bootstrap.
+  when:
+    - openbao_is_initialized | bool
+    - not (openbao_init_raw is defined and openbao_init_raw.changed | default(false))
+    - openbao_approle_reconciler_password | default('') | length == 0
+
+- name: Log in as policy-reconciler (rerun path)
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_POLICY_RECONCILER_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ openbao_policy_reconciler_username }} password="$P"'
+  environment:
+    OPENBAO_POLICY_RECONCILER_PASSWORD: "{{ openbao_policy_reconciler_password }}"
+  register: _policy_reconciler_login_raw
+  changed_when: false
+  no_log: true
+  when:
+    - openbao_is_initialized | bool
+    - not (openbao_init_raw is defined and openbao_init_raw.changed | default(false))
+    - openbao_policy_reconciler_password | default('') | length > 0
+
+- name: Extract policy-reconciler client token (rerun path)
+  ansible.builtin.set_fact:
+    _openbao_policy_apply_token: >-
+      {{ (_policy_reconciler_login_raw.stdout | from_json).auth.client_token }}
+  no_log: true
+  when:
+    - _policy_reconciler_login_raw is defined
+    - _policy_reconciler_login_raw.stdout | default('') | length > 0
+
+- name: Verify approle-reconciler login on rerun path
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_APPROLE_RECONCILER_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ openbao_approle_reconciler_username }} password="$P"'
+  environment:
+    OPENBAO_APPROLE_RECONCILER_PASSWORD: "{{ openbao_approle_reconciler_password }}"
+  register: _approle_reconciler_login_raw
+  changed_when: false
+  failed_when: _approle_reconciler_login_raw.rc != 0
+  no_log: true
+  when:
+    - openbao_is_initialized | bool
+    - not (openbao_init_raw is defined and openbao_init_raw.changed | default(false))
+    - openbao_approle_reconciler_password | default('') | length > 0
+
+# ---------------------------------------------------------------------------
+# Create ESO reader policy
+# ---------------------------------------------------------------------------
+
+- name: Write app-admin-writer policy HCL in pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - |
+        cat > /tmp/app-admin-writer-policy.hcl << 'HCL'
+        path "secret/data/apps/zot/admin" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/apps/zot/admin" {
+          capabilities = ["read", "list"]
+        }
+        path "secret/data/apps/+/admin" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/apps/+/admin" {
+          capabilities = ["read", "list"]
+        }
+        path "secret/data/apps/+/breakglass" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/apps/+/breakglass" {
+          capabilities = ["read", "list"]
+        }
+        # ADR-0033: scoped machine-write service accounts (e.g. zot-svc at
+        # secret/apps/zot/service). Operator can read/rotate them via break-glass,
+        # symmetric with +/admin and +/breakglass. Routine seeding uses the
+        # temp-root path in bootstrap-secrets.sh, not this policy.
+        path "secret/data/apps/+/service" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/apps/+/service" {
+          capabilities = ["read", "list"]
+        }
+        path "secret/data/apps/authentik/bootstrap-passkey" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/apps/authentik/bootstrap-passkey" {
+          capabilities = ["read", "list"]
+        }
+        path "secret/data/apps/awx/control_node_ssh" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/apps/awx/control_node_ssh" {
+          capabilities = ["read", "list"]
+        }
+        path "secret/metadata/apps" {
+          capabilities = ["list"]
+        }
+        # Existence-only check on the two seed-bao platform paths so the
+        # post-seed guard in bootstrap-provision-post-seed.yml can verify
+        # the bundle has been seeded without exposing secret values.
+        # `metadata` returns version + timestamps only; no secret data.
+        path "secret/metadata/platform/bootstrap_admin" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/platform/k3s/cluster" {
+          capabilities = ["read"]
+        }
+        HCL
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Apply app-admin-writer policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_operator_policy_name }} /tmp/app-admin-writer-policy.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Write app-runtime-writer policy HCL in pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - |
+        cat > /tmp/app-runtime-writer-policy.hcl << 'HCL'
+        path "secret/data/apps/+/runtime" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/apps/+/runtime" {
+          capabilities = ["read", "list"]
+        }
+        path "auth/approle/role/{{ openbao_eso_role_name }}/secret-id" {
+          capabilities = ["create", "read", "update"]
+        }
+        HCL
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Apply app-runtime-writer policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_operator_runtime_policy_name }} /tmp/app-runtime-writer-policy.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+# ---------------------------------------------------------------------------
+# Create eso-reader policy — allows ESO to read app-admin and bootstrap secrets
+# ---------------------------------------------------------------------------
+
+- name: Write eso-reader policy HCL in pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - |
+        cat > /tmp/eso-reader-policy.hcl << 'HCL'
+        path "secret/data/apps/+/admin" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/apps/+/admin" {
+          capabilities = ["read", "list"]
+        }
+        path "secret/data/apps/+/breakglass" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/apps/+/breakglass" {
+          capabilities = ["read", "list"]
+        }
+        # ADR-0033: scoped machine-write service accounts (e.g. zot-svc at
+        # secret/apps/zot/service). ESO mounts these for the cron/seed paths
+        # that must NOT use the break-glass admin. Mirrors the +/admin glob.
+        path "secret/data/apps/+/service" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/apps/+/service" {
+          capabilities = ["read", "list"]
+        }
+        path "secret/data/apps/+/runtime" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/apps/+/runtime" {
+          capabilities = ["read", "list"]
+        }
+        path "secret/data/apps/authentik/bootstrap-passkey" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/apps" {
+          capabilities = ["list"]
+        }
+        path "{{ openbao_pki_path }}/issue/internal-ca" {
+          capabilities = ["create", "update"]
+        }
+        path "{{ openbao_pki_path }}/cert/ca" {
+          capabilities = ["read"]
+        }
+        HCL
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Apply eso-reader policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_eso_policy_name }} /tmp/eso-reader-policy.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+# ---------------------------------------------------------------------------
+# Create AppRole for ESO
+# ---------------------------------------------------------------------------
+
+- name: Create ESO AppRole
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/approle/role/{{ openbao_eso_role_name }}
+      token_policies=eso-reader
+      secret_id_ttl={{ openbao_eso_approle_secret_id_ttl }}
+      token_ttl=1h token_max_ttl=4h'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Read ESO AppRole role_id
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json auth/approle/role/{{ openbao_eso_role_name }}/role-id'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  register: eso_role_id_raw
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Generate ESO AppRole secret_id
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write -format=json -force auth/approle/role/{{ openbao_eso_role_name }}/secret-id'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  register: eso_secret_id_raw
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Extract ESO role_id and secret_id from init output
+  ansible.builtin.set_fact:
+    openbao_eso_role_id: "{{ (eso_role_id_raw.stdout | from_json).data.role_id }}"
+    openbao_eso_secret_id: "{{ (eso_secret_id_raw.stdout | from_json).data.secret_id }}"
+  when:
+    - eso_role_id_raw is defined
+    - eso_role_id_raw.stdout is defined
+    - eso_secret_id_raw is defined
+    - eso_secret_id_raw.stdout is defined
+  no_log: true
+
+- name: Assert ESO AppRole credentials were extracted
+  ansible.builtin.assert:
+    that:
+      - openbao_eso_role_id | default('') | length > 0
+      - openbao_eso_secret_id | default('') | length > 0
+    fail_msg: >-
+      ESO AppRole credentials could not be extracted from OpenBao.
+      This usually means the AppRole was not created during init.
+      Check: 1) OpenBao pod logs (kubectl logs -n openbao deploy/openbao)
+             2) Root token is valid and has sys/auth/* permissions
+             3) AppRole auth method is enabled
+      On rerun, provide break-glass JSON with eso_role_id/eso_secret_id
+      or rebuild OpenBao cluster from scratch.
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+# ---------------------------------------------------------------------------
+# Create AppRole for born-inventory
+# ---------------------------------------------------------------------------
+
+- name: Write born-inventory runtime-reader policy HCL in pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - |
+        cat > /tmp/born-inventory-runtime-reader-policy.hcl << 'HCL'
+        path "secret/data/apps/netbox/runtime" {
+          capabilities = ["read"]
+        }
+        HCL
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Apply born-inventory runtime-reader policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_born_inventory_policy_name }} /tmp/born-inventory-runtime-reader-policy.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Create born-inventory AppRole
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/approle/role/{{ openbao_born_inventory_role_name }}
+      token_policies={{ openbao_born_inventory_policy_name }}
+      secret_id_ttl={{ openbao_born_inventory_approle_secret_id_ttl }}
+      token_ttl={{ openbao_born_inventory_token_ttl }}
+      token_max_ttl={{ openbao_born_inventory_token_max_ttl }}'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Read born-inventory AppRole role_id
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json auth/approle/role/{{ openbao_born_inventory_role_name }}/role-id'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  register: born_inventory_role_id_raw
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Generate born-inventory AppRole secret_id
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write -format=json -force auth/approle/role/{{ openbao_born_inventory_role_name }}/secret-id'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  register: born_inventory_secret_id_raw
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Extract born-inventory role_id and secret_id from init output
+  ansible.builtin.set_fact:
+    openbao_born_inventory_role_id: "{{ (born_inventory_role_id_raw.stdout | from_json).data.role_id }}"
+    openbao_born_inventory_secret_id: "{{ (born_inventory_secret_id_raw.stdout | from_json).data.secret_id }}"
+  when:
+    - born_inventory_role_id_raw is defined
+    - born_inventory_role_id_raw.stdout is defined
+    - born_inventory_secret_id_raw is defined
+    - born_inventory_secret_id_raw.stdout is defined
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Phase 5 — operator userpass retrieval path
+# Grants human operators a narrow read on secret/data/apps/*/admin without
+# handing them the root token. Password is persisted to the break-glass
+# JSON and reused on subsequent runs.
+# (Password is preloaded and generated earlier in the role)
+# ---------------------------------------------------------------------------
+
+- name: Write app-admin-reader policy HCL in pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - |
+        cat > /tmp/app-admin-reader-policy.hcl << 'HCL'
+        path "secret/data/apps/+/admin" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/apps/+/admin" {
+          capabilities = ["read"]
+        }
+        path "secret/data/apps/+/breakglass" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/apps/+/breakglass" {
+          capabilities = ["read"]
+        }
+        path "secret/metadata/apps" {
+          capabilities = ["list"]
+        }
+        path "secret/data/apps/authentik/bootstrap-passkey" {
+          capabilities = ["read"]
+        }
+        HCL
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Apply app-admin-reader policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_operator_reader_policy_name }} /tmp/app-admin-reader-policy.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Upsert operator userpass user
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n' "$OPENBAO_TOKEN" "$OPENBAO_OPERATOR_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r P;
+      export BAO_TOKEN;
+      bao write auth/userpass/users/{{ openbao_operator_username }}
+      password="$P"
+      token_policies={{ openbao_operator_policy_name }},{{ openbao_operator_runtime_policy_name }}
+      token_ttl=1h token_max_ttl=4h'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+    OPENBAO_OPERATOR_PASSWORD: "{{ openbao_operator_password }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+# ---------------------------------------------------------------------------
+# Policy reconciliation identity — narrow permissions for reapplying policies
+# without the root token on reruns.
+# ---------------------------------------------------------------------------
+
+- name: Write policy-writer policy HCL in pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - |
+        cat > /tmp/policy-writer-policy.hcl << 'HCL'
+        path "sys/policies/acl/*" {
+          capabilities = ["create", "read", "update", "delete", "list"]
+        }
+        HCL
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Apply policy-writer policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_policy_writer_policy_name }} /tmp/policy-writer-policy.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+# ---------------------------------------------------------------------------
+# AppRole reconciliation identity (ADR-0021)
+# Narrow scope: only object-storage AppRole creation + ESO binding writes.
+# Explicit per-logical HCL — no mid-path * globs (OpenBao only supports * at end).
+# ---------------------------------------------------------------------------
+
+- name: Write approle-reconciler policy HCL in pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - |
+        cat > /tmp/approle-reconciler-writer-policy.hcl << 'HCL'
+        {% for logical in openbao_approle_reconciler_object_storage_logicals %}
+        {% set dashed = logical | replace('_', '-') %}
+        path "auth/approle/role/object-storage-{{ dashed }}" {
+          capabilities = ["create", "read", "update", "delete", "list"]
+        }
+        path "auth/approle/role/object-storage-{{ dashed }}/role-id" {
+          capabilities = ["read"]
+        }
+        path "auth/approle/role/object-storage-{{ dashed }}/secret-id" {
+          capabilities = ["create", "read", "update"]
+        }
+        path "secret/data/platform/eso-bindings/object-storage-{{ dashed }}" {
+          capabilities = ["create", "read", "update", "delete"]
+        }
+        path "secret/metadata/platform/eso-bindings/object-storage-{{ dashed }}" {
+          capabilities = ["read", "list", "delete"]
+        }
+        {% endfor %}
+        HCL
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Apply approle-reconciler-writer policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_approle_reconciler_policy_name }} /tmp/approle-reconciler-writer-policy.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Upsert policy-reconciler userpass user
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n' "$OPENBAO_TOKEN" "$OPENBAO_POLICY_RECONCILER_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r P;
+      export BAO_TOKEN;
+      bao write auth/userpass/users/{{ openbao_policy_reconciler_username }}
+      password="$P"
+      token_policies={{ openbao_policy_writer_policy_name }}
+      token_ttl=1h token_max_ttl=4h'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+    OPENBAO_POLICY_RECONCILER_PASSWORD: "{{ openbao_policy_reconciler_password }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Upsert approle-reconciler userpass user
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n' "$OPENBAO_TOKEN" "$OPENBAO_APPROLE_RECONCILER_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r P;
+      export BAO_TOKEN;
+      bao write auth/userpass/users/{{ openbao_approle_reconciler_username }}
+      password="$P"
+      token_policies={{ openbao_approle_reconciler_policy_name }}
+      token_ttl=1h token_max_ttl=4h'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+    OPENBAO_APPROLE_RECONCILER_PASSWORD: "{{ openbao_approle_reconciler_password }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+# ---------------------------------------------------------------------------
+# Save all keys to a local file (Hetzner validation mode)
+# ---------------------------------------------------------------------------
+
+- name: Compose break-glass JSON content
+  ansible.builtin.set_fact:
+    openbao_breakglass_content:
+      unseal_keys_hex: "{{ openbao_unseal_keys_hex | default(existing_breakglass.unseal_keys_hex | default([])) }}"
+      eso_role_id: "{{ openbao_eso_role_id | default(existing_breakglass.eso_role_id | default('')) }}"
+      eso_secret_id: "{{ openbao_eso_secret_id | default(existing_breakglass.eso_secret_id | default('')) }}"
+      born_inventory_role_id: "{{ openbao_born_inventory_role_id | default(existing_breakglass.born_inventory_role_id | default('')) }}"
+      born_inventory_secret_id: "{{ openbao_born_inventory_secret_id | default(existing_breakglass.born_inventory_secret_id | default('')) }}"
+      shamir_threshold: "{{ openbao_shamir_threshold }}"
+      shamir_shares: "{{ openbao_shamir_shares }}"
+      ops_admin_username: "{{ openbao_operator_username }}"
+      ops_admin_password: "{{ openbao_operator_password }}"
+      policy_reconciler_username: "{{ openbao_policy_reconciler_username }}"
+      policy_reconciler_password: "{{ openbao_policy_reconciler_password }}"
+      approle_reconciler_username: "{{ openbao_approle_reconciler_username }}"
+      approle_reconciler_password: "{{ openbao_approle_reconciler_password }}"
+  no_log: true
+
+- name: Save all OpenBao keys locally
+  ansible.builtin.copy:
+    content: "{{ openbao_breakglass_content | to_nice_json }}"
+    dest: "{{ openbao_key_path }}.json"
+    mode: "0600"
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Post-checks — verify ops-admin has correct capabilities
+# ---------------------------------------------------------------------------
+
+- name: Log in as ops-admin for capability verification
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ openbao_operator_username }} password="$P"'
+  register: _openbao_ops_admin_login
+  changed_when: false
+  environment:
+    OPENBAO_PASSWORD: "{{ openbao_operator_password }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Extract ops-admin token for capability checks
+  ansible.builtin.set_fact:
+    _openbao_ops_admin_token: "{{ (_openbao_ops_admin_login.stdout | from_json).auth.client_token }}"
+  no_log: true
+  when: _openbao_ops_admin_login is defined and _openbao_ops_admin_login.stdout | default('') | length > 0
+
+- name: Check ops-admin capabilities on Zot admin data path
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token capabilities -format=json secret/data/apps/zot/admin'
+  register: _openbao_zot_admin_data_caps
+  changed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_ops_admin_token }}"
+  no_log: true
+  when: _openbao_ops_admin_token is defined
+
+- name: Check ops-admin capabilities on Zot admin metadata path
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token capabilities -format=json secret/metadata/apps/zot/admin'
+  register: _openbao_zot_admin_meta_caps
+  changed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_ops_admin_token }}"
+  no_log: true
+  when: _openbao_ops_admin_token is defined
+
+- name: Normalize ops-admin Zot admin capabilities
+  ansible.builtin.set_fact:
+    _openbao_zot_admin_data_capabilities: >-
+      {% set parsed = _openbao_zot_admin_data_caps.stdout | from_json %}
+      {{ parsed.capabilities if parsed is mapping and parsed.capabilities is defined else parsed }}
+    _openbao_zot_admin_meta_capabilities: >-
+      {% set parsed = _openbao_zot_admin_meta_caps.stdout | from_json %}
+      {{ parsed.capabilities if parsed is mapping and parsed.capabilities is defined else parsed }}
+  when:
+    - _openbao_zot_admin_data_caps is defined
+    - _openbao_zot_admin_data_caps.stdout | default('') | length > 0
+    - _openbao_zot_admin_meta_caps is defined
+    - _openbao_zot_admin_meta_caps.stdout | default('') | length > 0
+
+- name: Verify ops-admin has read+write on Zot admin path
+  ansible.builtin.assert:
+    that:
+      - "'read' in _openbao_zot_admin_data_capabilities"
+      - "'update' in _openbao_zot_admin_data_capabilities or 'write' in _openbao_zot_admin_data_capabilities"
+      - "'read' in _openbao_zot_admin_meta_capabilities"
+    fail_msg: >-
+      OpenBao policy drift: ops-admin cannot access Zot admin secret path.
+      Expected read and write capabilities on secret/data/apps/zot/admin,
+      but got {{ _openbao_zot_admin_data_capabilities | default([]) }}.
+      This usually indicates policy overwrite/clobbering. Verify policy reconciliation
+      and rerun OpenBao bootstrap.
+  when:
+    - _openbao_zot_admin_data_capabilities is defined
+    - _openbao_zot_admin_meta_capabilities is defined
+
+- name: Check ops-admin capabilities on Authentik breakglass data path
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token capabilities -format=json secret/data/apps/authentik/breakglass'
+  register: _openbao_authentik_breakglass_data_caps
+  changed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_ops_admin_token }}"
+  no_log: true
+  when: _openbao_ops_admin_token is defined
+
+- name: Check ops-admin capabilities on Authentik breakglass metadata path
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token capabilities -format=json secret/metadata/apps/authentik/breakglass'
+  register: _openbao_authentik_breakglass_meta_caps
+  changed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_ops_admin_token }}"
+  no_log: true
+  when: _openbao_ops_admin_token is defined
+
+- name: Normalize ops-admin Authentik breakglass capabilities
+  ansible.builtin.set_fact:
+    _openbao_authentik_breakglass_data_capabilities: >-
+      {% set parsed = _openbao_authentik_breakglass_data_caps.stdout | from_json %}
+      {{ parsed.capabilities if parsed is mapping and parsed.capabilities is defined else parsed }}
+    _openbao_authentik_breakglass_meta_capabilities: >-
+      {% set parsed = _openbao_authentik_breakglass_meta_caps.stdout | from_json %}
+      {{ parsed.capabilities if parsed is mapping and parsed.capabilities is defined else parsed }}
+  when:
+    - _openbao_authentik_breakglass_data_caps is defined
+    - _openbao_authentik_breakglass_data_caps.stdout | default('') | length > 0
+    - _openbao_authentik_breakglass_meta_caps is defined
+    - _openbao_authentik_breakglass_meta_caps.stdout | default('') | length > 0
+
+- name: Verify ops-admin has read+write on Authentik breakglass path
+  ansible.builtin.assert:
+    that:
+      - "'read' in _openbao_authentik_breakglass_data_capabilities"
+      - "'update' in _openbao_authentik_breakglass_data_capabilities or 'write' in _openbao_authentik_breakglass_data_capabilities"
+      - "'read' in _openbao_authentik_breakglass_meta_capabilities"
+    fail_msg: >-
+      OpenBao policy drift: ops-admin cannot access Authentik breakglass secret path.
+      Expected read and write capabilities on secret/data/apps/authentik/breakglass,
+      but got {{ _openbao_authentik_breakglass_data_capabilities | default([]) }}.
+      This usually indicates policy overwrite/clobbering. Verify policy reconciliation
+      and rerun OpenBao bootstrap.
+  when:
+    - _openbao_authentik_breakglass_data_capabilities is defined
+    - _openbao_authentik_breakglass_meta_capabilities is defined
+
+- name: Check ops-admin capabilities on Authentik bootstrap-passkey data path
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token capabilities -format=json secret/data/apps/authentik/bootstrap-passkey'
+  register: _openbao_authentik_bootstrap_passkey_data_caps
+  changed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_ops_admin_token }}"
+  no_log: true
+  when: _openbao_ops_admin_token is defined
+
+- name: Check ops-admin capabilities on Authentik bootstrap-passkey metadata path
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token capabilities -format=json secret/metadata/apps/authentik/bootstrap-passkey'
+  register: _openbao_authentik_bootstrap_passkey_meta_caps
+  changed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_ops_admin_token }}"
+  no_log: true
+  when: _openbao_ops_admin_token is defined
+
+- name: Normalize ops-admin Authentik bootstrap-passkey capabilities
+  ansible.builtin.set_fact:
+    _openbao_authentik_bootstrap_passkey_data_capabilities: >-
+      {% set parsed = _openbao_authentik_bootstrap_passkey_data_caps.stdout | from_json %}
+      {{ parsed.capabilities if parsed is mapping and parsed.capabilities is defined else parsed }}
+    _openbao_authentik_bootstrap_passkey_meta_capabilities: >-
+      {% set parsed = _openbao_authentik_bootstrap_passkey_meta_caps.stdout | from_json %}
+      {{ parsed.capabilities if parsed is mapping and parsed.capabilities is defined else parsed }}
+  when:
+    - _openbao_authentik_bootstrap_passkey_data_caps is defined
+    - _openbao_authentik_bootstrap_passkey_data_caps.stdout | default('') | length > 0
+    - _openbao_authentik_bootstrap_passkey_meta_caps is defined
+    - _openbao_authentik_bootstrap_passkey_meta_caps.stdout | default('') | length > 0
+
+- name: Verify ops-admin has read+write on Authentik bootstrap-passkey path
+  ansible.builtin.assert:
+    that:
+      - "'read' in _openbao_authentik_bootstrap_passkey_data_capabilities"
+      - "'update' in _openbao_authentik_bootstrap_passkey_data_capabilities or 'write' in _openbao_authentik_bootstrap_passkey_data_capabilities"
+      - "'read' in _openbao_authentik_bootstrap_passkey_meta_capabilities"
+    fail_msg: >-
+      OpenBao policy drift: ops-admin cannot access Authentik bootstrap-passkey secret path.
+      Expected read and write capabilities on secret/data/apps/authentik/bootstrap-passkey,
+      but got {{ _openbao_authentik_bootstrap_passkey_data_capabilities | default([]) }}.
+      This usually indicates policy overwrite/clobbering. Verify policy reconciliation
+      and rerun OpenBao bootstrap.
+  when:
+    - _openbao_authentik_bootstrap_passkey_data_capabilities is defined
+    - _openbao_authentik_bootstrap_passkey_meta_capabilities is defined
+
+# ---------------------------------------------------------------------------
+# Dispose root token
+# ---------------------------------------------------------------------------
+
+- name: Revoke root token
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token revoke -self'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  register: _openbao_root_revoke
+  changed_when: _openbao_root_revoke.rc == 0
+  failed_when: false
+  no_log: true
+  when:
+    - openbao_dispose_root_token | bool
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Assert root token revocation succeeded
+  ansible.builtin.assert:
+    that:
+      - _openbao_root_revoke.rc | default(1) == 0
+    fail_msg: >-
+      Root token revocation did not succeed. Verify OpenBao health and confirm
+      the break-glass state before continuing.
+  when:
+    - openbao_dispose_root_token | bool
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+# ---------------------------------------------------------------------------
+# Report
+# ---------------------------------------------------------------------------
+
+- name: Report OpenBao deployment summary
+  ansible.builtin.debug:
+    msg: |
+      OpenBao deployed in namespace {{ openbao_namespace }}
+      Service: {{ openbao_service_name }}.{{ openbao_namespace }}.svc:{{ openbao_service_port }}
+      Shamir: {{ openbao_shamir_threshold }}-of-{{ openbao_shamir_shares }}
+      Keys saved to: {{ openbao_key_path }}.json
+      Engines enabled: {{ openbao_engines | join(', ') }}
+      ESO AppRole: {{ openbao_eso_role_name }}
+      Operator userpass: {{ openbao_operator_username }} (policy: {{ openbao_operator_policy_name }})
+      Next step: run 24-external-secrets-operator.yml

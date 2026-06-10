@@ -1,0 +1,4 @@
+---
+# Minimal profile for the first public gate (the tree predates strict ansible-lint).
+# Tighten over time. See https://ansible.readthedocs.io/projects/lint/profiles/
+profile: min

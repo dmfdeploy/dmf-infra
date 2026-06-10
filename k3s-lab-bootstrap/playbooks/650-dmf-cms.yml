@@ -1,0 +1,8 @@
+---
+- name: Deploy DMF Console
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - stack/operator/cms

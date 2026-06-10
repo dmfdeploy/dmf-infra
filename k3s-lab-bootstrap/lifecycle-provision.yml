@@ -1,0 +1,29 @@
+---
+# DMF lifecycle: Provision stage — compatibility wrapper.
+#
+# Imports the split bootstrap wrappers in sequence for backwards compatibility.
+# Existing operator muscle memory and docs rely on this file.
+#
+# For a fresh bootstrap, the canonical path is:
+#   1. dmf-env/bin/bootstrap-secrets.sh init <env>
+#   2. dmf-env/bin/bootstrap-secrets.sh seed-bao <env>
+#   3. dmf-env/bin/run-playbook.sh <env> bootstrap-provision-pre-seed.yml
+#   4. dmf-env/bin/run-playbook.sh <env> bootstrap-provision-post-seed.yml
+#   5. dmf-env/bin/run-playbook.sh <env> bootstrap-configure.yml
+#   6. dmf-env/bin/run-playbook.sh <env> bootstrap-verify.yml
+#
+# This wrapper re-runs the full sequence as one playbook. It is NOT the
+# canonical first-run path unless the encrypted bundle has already been
+# seeded into OpenBao.
+
+# ── Bootstrap Provision: Pre-seed (host → container platform → OpenBao+ESO) ──
+- import_playbook: bootstrap-provision-pre-seed.yml
+
+# ── Bootstrap Provision: Post-seed (monitoring base + Layer 6 vanilla apps) ───
+- import_playbook: bootstrap-provision-post-seed.yml
+
+# ── Bootstrap Configure (cross-app wiring, OIDC, automation) ─────────────────
+- import_playbook: bootstrap-configure.yml
+
+# ── Bootstrap Verify (readiness gates) ────────────────────────────────────────
+- import_playbook: bootstrap-verify.yml

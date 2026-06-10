@@ -1,0 +1,217 @@
+---
+- name: Create Forgejo namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ forgejo_namespace }}"
+
+- name: Read Forgejo OAuth client credentials from Authentik
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ authentik_namespace | default('authentik') }}"
+      - exec
+      - deploy/{{ authentik_release_name | default('authentik') }}-worker
+      - --
+      - ak
+      - shell
+      - -c
+      - >-
+        import json;
+        from authentik.providers.oauth2.models import OAuth2Provider;
+        provider = OAuth2Provider.objects.get(name="{{ forgejo_oauth_provider_name }}");
+        print(json.dumps({"client_id": provider.client_id, "client_secret": provider.client_secret}))
+  register: forgejo_oauth_provider_credentials
+  changed_when: false
+  no_log: true
+  when: forgejo_oauth_enabled | bool
+
+- name: Parse Forgejo OAuth client credentials
+  ansible.builtin.set_fact:
+    forgejo_oauth_provider_credentials_parsed: "{{ forgejo_oauth_provider_credentials.stdout_lines | last | from_json }}"
+  no_log: true
+  when: forgejo_oauth_enabled | bool
+
+- name: Create Forgejo OAuth secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ forgejo_oauth_secret_name }}"
+        namespace: "{{ forgejo_namespace }}"
+      type: Opaque
+      stringData:
+        key: "{{ forgejo_oauth_provider_credentials_parsed.client_id }}"
+        secret: "{{ forgejo_oauth_provider_credentials_parsed.client_secret }}"
+  when: forgejo_oauth_enabled | bool
+  no_log: true
+
+- name: Remove legacy Forgejo Traefik middlewares
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: Middleware
+    name: "{{ item }}"
+    namespace: "{{ forgejo_namespace }}"
+  loop:
+    - forgejo-stripprefix
+    - forgejo-redirect
+
+# Local-CA lane: publish the DMF Local CA public cert into the Forgejo
+# namespace so the chart's extraVolumes mount can trust it during init.
+- name: Ensure Forgejo namespace exists (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ forgejo_namespace }}"
+  when: forgejo_local_ca_trust_enabled | bool
+
+# Structured read — NOT `kubectl ... -o jsonpath={.data.ca\.crt}` via the
+# command module, whose arg splitting strips the backslash (kubectl would then
+# read the nested path .data.ca.crt and return empty for the literal 'ca.crt').
+- name: Read local CA Secret from the cluster (local-CA lane)
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ forgejo_local_ca_secret }}"
+    namespace: "{{ forgejo_local_ca_namespace }}"
+  register: _forgejo_ca_secret
+  when: forgejo_local_ca_trust_enabled | bool
+
+- name: Publish local CA cert into Forgejo namespace (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ forgejo_local_ca_configmap }}"
+        namespace: "{{ forgejo_namespace }}"
+      data:
+        ca.crt: "{{ _forgejo_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
+  when:
+    - forgejo_local_ca_trust_enabled | bool
+    - _forgejo_ca_secret.resources | default([]) | length > 0
+    - _forgejo_ca_secret.resources[0].data['ca.crt'] | default('') | length > 0
+
+- name: Stage Forgejo chart on target
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../charts/forgejo/"
+    dest: "{{ forgejo_chart_stage_path }}/"
+    mode: "0644"
+    directory_mode: "0755"
+
+- name: Template Forgejo Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/forgejo-values.yml
+    mode: "0644"
+
+- name: Deploy Forgejo via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: forgejo
+    chart_ref: "{{ forgejo_chart_stage_path }}"
+    release_namespace: "{{ forgejo_namespace }}"
+    create_namespace: true
+    values_files:
+      - /tmp/forgejo-values.yml
+    wait: false
+
+- name: Restart Forgejo after OAuth secret refresh
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ forgejo_namespace }}"
+      - rollout
+      - restart
+      - deployment/forgejo
+  changed_when: true
+  when: forgejo_oauth_enabled | bool
+
+- name: Wait for Forgejo PVC to be bound
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: PersistentVolumeClaim
+    name: "{{ forgejo_pvc_name }}"
+    namespace: "{{ forgejo_namespace }}"
+  register: forgejo_pvc
+  until:
+    - forgejo_pvc.resources | length > 0
+    - forgejo_pvc.resources[0].status.phase == "Bound"
+  retries: "{{ forgejo_wait_retries }}"
+  delay: "{{ forgejo_wait_delay }}"
+
+- name: Wait for Forgejo Deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: forgejo
+    namespace: "{{ forgejo_namespace }}"
+  register: forgejo_deployment
+  until:
+    - forgejo_deployment.resources | length > 0
+    - forgejo_deployment.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: "{{ forgejo_wait_retries }}"
+  delay: "{{ forgejo_wait_delay }}"
+
+- name: Wait for Forgejo Ingress to exist
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: networking.k8s.io/v1
+    kind: Ingress
+    name: forgejo
+    namespace: "{{ forgejo_namespace }}"
+  register: forgejo_ingress
+  until: forgejo_ingress.resources | length > 0
+  retries: "{{ forgejo_wait_retries }}"
+  delay: "{{ forgejo_wait_delay }}"
+
+- name: Verify Forgejo root path externally
+  ansible.builtin.uri:
+    url: "{{ forgejo_root_url }}"
+    method: GET
+    validate_certs: true
+    status_code: [200, 302, 303]
+  register: forgejo_root_check
+  retries: "{{ forgejo_wait_retries }}"
+  delay: "{{ forgejo_wait_delay }}"
+  until: forgejo_root_check.status in [200, 302, 303]
+
+- name: Verify Forgejo API version externally
+  ansible.builtin.uri:
+    url: "{{ forgejo_external_base_url }}/api/v1/version"
+    method: GET
+    validate_certs: true
+    status_code: 200
+  register: forgejo_api_check
+  retries: "{{ forgejo_wait_retries }}"
+  delay: "{{ forgejo_wait_delay }}"
+  until: forgejo_api_check.status == 200
+
+- name: Cleanup temp values file
+  ansible.builtin.file:
+    path: /tmp/forgejo-values.yml
+    state: absent

@@ -1,0 +1,91 @@
+---
+- name: Create metallb-system namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ metallb_namespace }}"
+        labels:
+          pod-security.kubernetes.io/enforce: privileged
+          pod-security.kubernetes.io/audit: privileged
+          pod-security.kubernetes.io/warn: privileged
+
+- name: Apply MetalLB manifests
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    src: "{{ metallb_manifest_url }}"
+
+- name: Wait for MetalLB controller to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: controller
+    namespace: "{{ metallb_namespace }}"
+  register: metallb_controller
+  until: metallb_controller.resources[0].status.readyReplicas | default(0) >= 1
+  retries: 30
+  delay: 10
+
+- name: Create MetalLB IPAddressPool
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: "{{ metallb_address_pool_name }}"
+        namespace: "{{ metallb_namespace }}"
+      spec:
+        addresses: "{{ metallb_address_pool_addresses }}"
+
+- name: Create MetalLB L2Advertisement
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: L2Advertisement
+      metadata:
+        name: "{{ metallb_l2_advertisement_name }}"
+        namespace: "{{ metallb_namespace }}"
+      spec:
+        ipAddressPools:
+          - "{{ metallb_address_pool_name }}"
+  when: cluster_ingress_mode == 'metallb-l2'
+
+- name: Create MetalLB BGP peers
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta2
+      kind: BGPPeer
+      metadata:
+        name: "{{ item.name }}"
+        namespace: "{{ metallb_namespace }}"
+      spec:
+        myASN: "{{ item.my_asn }}"
+        peerASN: "{{ item.peer_asn }}"
+        peerAddress: "{{ item.peer_address }}"
+  loop: "{{ metallb_bgp_peers }}"
+  when: cluster_ingress_mode == 'metallb-bgp'
+
+- name: Create MetalLB BGPAdvertisement
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: metallb.io/v1beta1
+      kind: BGPAdvertisement
+      metadata:
+        name: "{{ metallb_bgp_advertisement_name }}"
+        namespace: "{{ metallb_namespace }}"
+      spec:
+        ipAddressPools:
+          - "{{ metallb_address_pool_name }}"
+  when: cluster_ingress_mode == 'metallb-bgp'

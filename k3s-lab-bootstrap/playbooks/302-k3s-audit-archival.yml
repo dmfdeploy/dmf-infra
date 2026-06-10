@@ -1,0 +1,19 @@
+---
+# Audit-log archival: ship the k3s API audit log to an S3-compatible Object
+# Lock bucket every day. Separated from 300-k3s.yml so bucket / SSE / Object
+# Lock settings can be rolled out without touching k3s install state.
+#
+# Skip-by-default: the role short-circuits via end_host when
+# audit_log_s3_bucket is empty. Live envs set it (with credentials) via
+# inventory group_vars; for the OSS Mode A clone the operator points it at
+# any S3-compatible endpoint (Backblaze B2, MinIO, etc).
+#
+# See:
+#   - docs/processes/audit-log-retention-policy.md
+#   - roles/base/audit-log-archival/defaults/main.yml
+- name: Configure k3s audit log archival
+  hosts: k3s_control
+  become: true
+  gather_facts: true
+  roles:
+    - base/audit-log-archival

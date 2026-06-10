@@ -1,0 +1,85 @@
+---
+image:
+  repository: {{ cms_image_repository | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com')) ~ '/dmf-cms') | to_json }}
+  tag: {{ cms_image_tag | default('0.1.0') | to_json }}
+  pullPolicy: {{ cms_image_pull_policy | default('IfNotPresent') | to_json }}
+
+service:
+  type: ClusterIP
+  port: 8000
+
+podAnnotations:
+  checksum/runtime-secret: {{ _cms_runtime_secret_data_merged | to_nice_json | hash('sha256') }}
+
+ingress:
+  enabled: true
+  className: {{ cms_ingress_class | to_json }}
+  annotations: {}
+  exposureMode: {{ cms_exposure | to_json }}
+  host: >-
+    {{
+      cms_host
+      if (cms_exposure | default('host')) == 'host'
+      else ((external_base_url | default('https://' ~ (cert_manager_cluster_domain | default('dmf.example.com')))) | regex_replace('^https?://', '') | regex_replace('/.*$', ''))
+    }}
+  pathType: Prefix
+
+env:
+  appContractPath: /app/config/app-contracts.yaml
+  runtimeMode: {{ cms_runtime_mode | to_json }}
+  secretKey: {{ cms_secret_key | default('') | to_json }}
+  secretKeySecret:
+    existingSecretName: {{ cms_runtime_secret_name | to_json }}
+    key: {{ cms_runtime_secret_session_key | to_json }}
+  devLoginEnabled: {{ cms_dev_login_enabled | to_json }}
+
+oidc:
+  enabled: {{ cms_oidc_enabled | to_json }}
+  # Public canonical issuer — used to build the browser authorize redirect + iss.
+  issuerUrl: {{ cms_oidc_issuer_url | to_json }}
+  # Cluster-internal back-channel for discovery/token/userinfo (ADR-0023): these
+  # server-side calls go over plain HTTP via service DNS, never the public ingress.
+  # The browser-facing authorize endpoint still derives from issuerUrl above.
+  backchannelIssuerUrl: {{ ("http://authentik-server." ~ (authentik_namespace | default('authentik')) ~ ".svc.cluster.local/application/o/" ~ cms_oidc_application_slug) | to_json }}
+  clientId: {{ dmf_cms_oidc_provider_credentials_parsed.client_id | to_json }}
+  clientSecret:
+    existingSecretName: {{ cms_runtime_secret_name | to_json }}
+    key: {{ cms_runtime_secret_oidc_key | to_json }}
+  logoutRedirectUrl: {{ cms_logout_redirect_url | default('https://' ~ (base_domain | default(cert_manager_cluster_domain | default('dmf.example.com'))) ~ '/') | to_json }}
+
+authentik:
+  # Cluster-internal back-channel for management API calls (ADR-0023).
+  apiUrl: {{ ("http://authentik-server." ~ (authentik_namespace | default('authentik')) ~ ".svc.cluster.local") | to_json }}
+  # Public, browser-resolvable base for user-facing passkey enrollment URLs.
+  publicBaseUrl: {{ ("https://" ~ authentik_host) | to_json }}
+  apiToken:
+    existingSecretName: {{ cms_runtime_secret_name | to_json }}
+    key: {{ cms_runtime_secret_authentik_token_key | to_json }}
+  enrollmentFlow: {{ cms_authentik_enrollment_flow | to_json }}
+  invitationTtl: {{ cms_authentik_invitation_ttl_hours | to_json }}
+
+awx:
+  apiUrl: {{ ("http://awx-service." ~ (awx_namespace | default('awx')) ~ ".svc.cluster.local") | to_json }}
+  apiToken:
+    existingSecretName: {{ cms_runtime_secret_name | to_json }}
+    key: {{ cms_runtime_secret_awx_token_key | to_json }}
+  sslVerify: {{ cms_awx_ssl_verify | default(false) | to_json }}
+
+netbox:
+  apiUrl: {{ ("http://netbox." ~ (netbox_namespace | default('netbox')) ~ ".svc.cluster.local") | to_json }}
+  apiToken:
+    existingSecretName: {{ cms_runtime_secret_name | to_json }}
+    key: {{ cms_runtime_secret_netbox_token_key | to_json }}
+  sslVerify: {{ cms_netbox_ssl_verify | default(false) | to_json }}
+
+forgejo:
+  apiUrl: {{ ("http://forgejo-http." ~ (forgejo_namespace | default('forgejo')) ~ ".svc.cluster.local:3000") | to_json }}
+  apiToken:
+    existingSecretName: {{ cms_runtime_secret_name | to_json }}
+    key: {{ cms_runtime_secret_forgejo_token_key | to_json }}
+
+resources: {}
+
+catalog:
+  enabled: {{ cms_catalog_enabled | default(false) | to_json }}
+  entries: {{ _cms_catalog_entries | default({}) | to_nice_json }}

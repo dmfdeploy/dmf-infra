@@ -1,0 +1,10 @@
+---
+- name: Configure NetBox service accounts and tokens
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  # The netbox-sot role now also seeds the monitoring taxonomy and the
+  # scoped PromSD reader token alongside the existing service accounts.
+  roles:
+    - base/cluster-ready
+    - stack/operator/netbox-sot

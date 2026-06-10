@@ -1,0 +1,31 @@
+---
+# DMF sandbox bootstrap: Verify.
+#
+# Runs the verifiers that currently match the sandbox service shape. Verifiers
+# that assume object-storage backup bindings, Longhorn, or resilience buckets
+# stay out of this wrapper until they become capability-aware.
+
+- import_playbook: bootstrap-sandbox-profile.yml
+  tags: [always, sandbox, release-profile]
+
+# ── Layer 3 — basic k3s readiness ────────────────────────────────────────────
+- import_playbook: playbooks/301-k3s-verify.yml
+  tags: [layer3, container-platform, k3s, verify]
+
+# ── Vertical: Security — bootstrap authority convergence ─────────────────────
+- import_playbook: playbooks/verify-bootstrap-convergence.yml
+  tags: [vertical-security, verify-bootstrap-convergence]
+
+# ── Vertical: Security — app-admin identity drift detection ──────────────────
+- import_playbook: playbooks/audit-admin-identities.yml
+  tags: [vertical-security, audit-admin-identities]
+
+# ── Vertical: Identity — Authentik OIDC and passkey hardening ────────────────
+- import_playbook: playbooks/verify-oidc-admin-bridge.yml
+  tags: [vertical-identity, verify-oidc-bridge]
+- import_playbook: playbooks/verify-d8-hardening.yml
+  tags: [vertical-identity, verify-d8-hardening]
+
+# ── Layer 6 — console smoke ──────────────────────────────────────────────────
+- import_playbook: playbooks/699-cms-smoke-test.yml
+  tags: [layer6, application-ui, dmf-console, verify, smoke-test]

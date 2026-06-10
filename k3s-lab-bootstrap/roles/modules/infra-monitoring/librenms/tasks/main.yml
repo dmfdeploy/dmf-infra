@@ -1,0 +1,351 @@
+---
+- name: Create librenms namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ librenms_namespace }}"
+
+- name: Add librenms Helm repository
+  kubernetes.core.helm_repository:
+    name: librenms
+    repo_url: "{{ librenms_helm_repo }}"
+
+- name: Template LibreNMS Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/librenms-values.yml
+    mode: "0644"
+
+- name: Deploy LibreNMS via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: librenms
+    chart_ref: librenms/librenms
+    chart_version: "{{ librenms_helm_chart_version }}"
+    release_namespace: "{{ librenms_namespace }}"
+    create_namespace: true
+    values_files:
+      - /tmp/librenms-values.yml
+    wait: true
+    wait_timeout: 600s
+
+- name: Read LibreNMS Authentik OAuth client credentials from Authentik
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ authentik_namespace | default('authentik') }}"
+      - exec
+      - deploy/{{ authentik_release_name | default('authentik') }}-worker
+      - --
+      - ak
+      - shell
+      - -c
+      - >-
+        import json;
+        from authentik.providers.oauth2.models import OAuth2Provider;
+        provider = OAuth2Provider.objects.get(name="{{ librenms_oidc_provider_name }}");
+        print(json.dumps({"client_id": provider.client_id, "client_secret": provider.client_secret}))
+  register: librenms_oidc_provider_credentials
+  changed_when: false
+  no_log: true
+  when: librenms_oidc_enabled | bool
+
+- name: Parse LibreNMS Authentik OAuth client credentials
+  ansible.builtin.set_fact:
+    librenms_oidc_provider_credentials_parsed: "{{ librenms_oidc_provider_credentials.stdout_lines | last | from_json }}"
+  no_log: true
+  when: librenms_oidc_enabled | bool
+
+- name: Check whether LibreNMS Authentik Socialite plugin is installed
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - exec
+      - -n
+      - "{{ librenms_namespace }}"
+      - deploy/librenms-frontend
+      - --
+      - sh
+      - -lc
+      - test -d /opt/librenms/vendor/socialiteproviders/authentik
+  register: librenms_oidc_plugin_check
+  changed_when: false
+  failed_when: false
+  when: librenms_oidc_enabled | bool
+
+- name: Install LibreNMS Authentik Socialite plugin
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - exec
+      - -n
+      - "{{ librenms_namespace }}"
+      - deploy/librenms-frontend
+      - --
+      - lnms
+      - plugin:add
+      - socialiteproviders/authentik
+  when:
+    - librenms_oidc_enabled | bool
+    - librenms_oidc_plugin_check.rc | default(1) != 0
+
+- name: Configure LibreNMS Authentik Socialite settings
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - exec
+      - -n
+      - "{{ librenms_namespace }}"
+      - deploy/librenms-frontend
+      - --
+      - lnms
+      - config:set
+      - "{{ item.key }}"
+      - "{{ item.value }}"
+  loop:
+    - { key: "auth.socialite.redirect", value: "{{ 'true' if librenms_oidc_redirect | bool else 'false' }}" }
+    - { key: "auth.socialite.register", value: "{{ 'true' if librenms_oidc_register | bool else 'false' }}" }
+    - { key: "auth.socialite.default_role", value: "{{ librenms_oidc_default_role }}" }
+    - { key: "auth.socialite.scopes", value: "{{ librenms_oidc_scopes }}" }
+    - { key: "auth.socialite.claims.{{ librenms_oidc_admin_group }}.roles", value: '["admin"]' }
+    - { key: "auth.socialite.configs.{{ librenms_oidc_socialite_key }}.base_url", value: "{{ librenms_oidc_socialite_base_url }}" }
+    - { key: "auth.socialite.configs.{{ librenms_oidc_socialite_key }}.redirect", value: "{{ librenms_oidc_redirect_uri }}" }
+    - { key: "auth.socialite.configs.{{ librenms_oidc_socialite_key }}.client_id", value: "{{ librenms_oidc_provider_credentials_parsed.client_id }}" }
+    - { key: "auth.socialite.configs.{{ librenms_oidc_socialite_key }}.client_secret", value: "{{ librenms_oidc_provider_credentials_parsed.client_secret }}" }
+    - { key: "auth.socialite.configs.{{ librenms_oidc_socialite_key }}.listener", value: "{{ librenms_oidc_socialite_listener }}" }
+  when: librenms_oidc_enabled | bool
+  no_log: true
+
+- name: Restart LibreNMS frontend after OIDC refresh
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ librenms_namespace }}"
+      - rollout
+      - restart
+      - deployment/librenms-frontend
+  changed_when: true
+  when: librenms_oidc_enabled | bool
+
+- name: Wait for LibreNMS frontend to roll out after OIDC refresh
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: librenms-frontend
+    namespace: "{{ librenms_namespace }}"
+  register: librenms_frontend_rollout
+  until:
+    - librenms_frontend_rollout.resources | length > 0
+    - librenms_frontend_rollout.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: 60
+  delay: 10
+  when: librenms_oidc_enabled | bool
+
+- name: Create LibreNMS proxy ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    template: nginx-configmap.yml.j2
+
+- name: Compute LibreNMS proxy config checksum
+  ansible.builtin.set_fact:
+    librenms_proxy_config_checksum: "{{ lookup('template', 'nginx.conf.j2') | hash('sha1') }}"
+
+- name: Deploy LibreNMS proxy
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: librenms-proxy
+        namespace: "{{ librenms_namespace }}"
+        labels:
+          app.kubernetes.io/name: librenms-proxy
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: librenms-proxy
+        template:
+          metadata:
+            annotations:
+              librenms/proxy-config-checksum: "{{ librenms_proxy_config_checksum }}"
+            labels:
+              app.kubernetes.io/name: librenms-proxy
+          spec:
+            containers:
+              - name: nginx
+                image: "{{ librenms_proxy_image }}"
+                ports:
+                  - containerPort: 80
+                volumeMounts:
+                  - name: nginx-config
+                    mountPath: /etc/nginx/nginx.conf
+                    subPath: nginx.conf
+            volumes:
+              - name: nginx-config
+                configMap:
+                  name: librenms-proxy-nginx
+
+- name: Create LibreNMS proxy Service
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: librenms-proxy
+        namespace: "{{ librenms_namespace }}"
+      spec:
+        selector:
+          app.kubernetes.io/name: librenms-proxy
+        ports:
+          - name: http
+            protocol: TCP
+            port: 80
+            targetPort: 80
+
+- name: Create Traefik redirect middleware for LibreNMS
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: Middleware
+      metadata:
+        name: librenms-redirect
+        namespace: "{{ librenms_namespace }}"
+      spec:
+        redirectRegex:
+          permanent: true
+          regex: "^http://(.*){{ librenms_path }}$"
+          replacement: "http://$1{{ librenms_path }}/"
+  when: librenms_exposure | default('host') == 'path'
+
+- name: Create LibreNMS Host-based IngressRoute (private lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: librenms
+        namespace: "{{ librenms_namespace }}"
+        annotations:
+          traefik.ingress.kubernetes.io/router.ingressclass: "{{ librenms_ingress_class }}"
+          dmf.exposure: private
+      spec:
+        entryPoints:
+          - websecure
+        routes:
+          - match: "Host(`{{ librenms_external_host }}`)"
+            kind: Rule
+            services:
+              - name: librenms-proxy
+                port: 80
+  when: librenms_exposure | default('host') == 'host'
+
+- name: Create LibreNMS Path-based IngressRoute (public lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: librenms
+        namespace: "{{ librenms_namespace }}"
+      spec:
+        entryPoints:
+          - web
+        routes:
+          - match: "PathPrefix(`{{ librenms_path }}`)"
+            kind: Rule
+            middlewares:
+              - name: librenms-redirect
+            services:
+              - name: librenms-proxy
+                port: 80
+  when: librenms_exposure | default('host') == 'path'
+
+- name: Get LibreNMS MySQL password
+  ansible.builtin.command: >
+    sudo k3s kubectl get secret -n {{ librenms_namespace }} librenms-mysql
+    -o jsonpath='{.data.mysql-password}'
+  register: librenms_mysql_password_b64
+  changed_when: false
+  no_log: true
+
+- name: Decode LibreNMS MySQL password
+  ansible.builtin.set_fact:
+    librenms_mysql_password: "{{ librenms_mysql_password_b64.stdout | b64decode }}"
+  no_log: true
+
+- name: Check LibreNMS user count
+  ansible.builtin.command: >
+    sudo k3s kubectl exec -n {{ librenms_namespace }} librenms-mysql-0 -- mysql
+    -u librenms -p'{{ librenms_mysql_password }}' -D librenms -N -B
+    -e "SELECT COUNT(*) FROM users;"
+  register: librenms_user_count
+  changed_when: false
+  retries: 10
+  delay: 10
+  until: librenms_user_count.rc == 0
+  no_log: true
+
+- name: Generate LibreNMS admin password when unset
+  ansible.builtin.command: openssl rand -base64 24
+  register: librenms_admin_password_generated
+  changed_when: false
+  when:
+    - librenms_user_count.stdout | trim == "0"
+    - librenms_admin_password | length == 0
+
+- name: Set LibreNMS admin password fact
+  ansible.builtin.set_fact:
+    librenms_admin_password_effective: >-
+      {{ (librenms_admin_password | length > 0)
+         | ternary(librenms_admin_password, librenms_admin_password_generated.stdout | trim) }}
+  when: librenms_user_count.stdout | trim == "0"
+  no_log: true
+
+- name: Create LibreNMS admin user if missing
+  ansible.builtin.command: >
+    sudo k3s kubectl exec -n {{ librenms_namespace }} deploy/librenms-frontend -- /bin/sh -c
+    "su -s /bin/sh librenms -c '/opt/librenms/lnms user:add {{ librenms_admin_username }}
+    -p {{ librenms_admin_password_effective }} -r admin -e {{ librenms_admin_email }} -n'"
+  when: librenms_user_count.stdout | trim == "0"
+  no_log: true
+
+- name: Show LibreNMS admin credentials
+  ansible.builtin.debug:
+    msg: >-
+      LibreNMS admin user created: {{ librenms_admin_username }} /
+      {{ librenms_admin_password_effective }}
+  when: librenms_user_count.stdout | trim == "0"
+
+- name: Cleanup temp values file
+  ansible.builtin.file:
+    path: /tmp/librenms-values.yml
+    state: absent

@@ -1,0 +1,87 @@
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: zot-mirror
+  namespace: {{ zot_mirror_namespace }}
+  labels:
+    app: zot-mirror
+    dmftier: "A"
+spec:
+  schedule: "{{ zot_mirror_schedule }}"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: {{ zot_mirror_deadline_seconds }}
+      template:
+        metadata:
+          labels:
+            app: zot-mirror
+        spec:
+          restartPolicy: Never
+          volumes:
+            # Frozen Contract Secret — B2 credentials
+            - name: s3-creds
+              secret:
+                secretName: {{ zot_mirror_s3_creds_secret }}
+            # Zot pull credentials — from ExternalSecret materialized by ESO
+            - name: pull-creds
+              secret:
+                secretName: {{ zot_mirror_pull_creds_secret }}
+            # Mirror pipeline script
+            - name: mirror-script
+              configMap:
+                name: zot-mirror-script
+                defaultMode: 0755
+            # Scratch space for the OCI dir layout dump.
+            # emptyDir not PVC — ephemeral per-job; Longhorn RWO would
+            # prevent the CronJob from mounting Zot's data PVC anyway.
+            - name: scratch
+              emptyDir:
+                sizeLimit: {{ zot_mirror_scratch_size }}
+            # Shared bin dir for the aws CLI binary copied from the init container
+            - name: shared-bin
+              emptyDir: {}
+          initContainers:
+            # Copy the aws CLI binary out of amazon/aws-cli into a shared
+            # emptyDir so the skopeo-based main container can use it.
+            - name: aws-cli-loader
+              image: {{ zot_mirror_awscli_image }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  cp -r /usr/local/aws-cli /shared-bin/aws-cli
+                  chmod 0755 /shared-bin/aws-cli/v2/current/bin/aws
+              volumeMounts:
+                - name: shared-bin
+                  mountPath: /shared-bin
+          containers:
+            - name: mirror
+              image: {{ zot_mirror_skopeo_image }}
+              command: ["/bin/bash", "/scripts/zot-mirror.sh"]
+              env:
+                # aws CLI's internal layout expects this path; we point at the
+                # copy laid down by the init container.
+                - name: PATH
+                  value: "/shared-bin/aws-cli/v2/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              resources:
+                requests: {{ zot_mirror_resource_requests | to_json }}
+                limits: {{ zot_mirror_resource_limits | to_json }}
+              volumeMounts:
+                - name: s3-creds
+                  mountPath: {{ zot_mirror_s3_creds_mount }}
+                  readOnly: true
+                - name: pull-creds
+                  mountPath: /etc/pull-creds
+                  readOnly: true
+                - name: mirror-script
+                  mountPath: /scripts
+                  readOnly: true
+                - name: scratch
+                  mountPath: /scratch
+                - name: shared-bin
+                  mountPath: /shared-bin
+                  readOnly: true

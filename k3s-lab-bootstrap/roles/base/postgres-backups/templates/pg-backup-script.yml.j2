@@ -1,0 +1,57 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pg-backup-script-{{ _app_name }}
+  namespace: {{ _app_cfg.namespace | default(_app_name) }}
+data:
+  pg-backup.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Per-app pg_dump + S3 upload.
+    # DB credentials from mounted app Secret (NOT env).
+    # S3 credentials from Frozen Contract Secret (NOT env, NOT argv).
+    # Object key: pg/<app>/<timestamp>.sql.gz — timestamp-prefixed.
+
+    APP="{{ _app_name }}"
+    MOUNT_DIR="{{ postgres_backups_secret_mount }}"
+    DB_SECRET_DIR="/etc/db-creds"
+    DB_HOST="{{ _app_cfg.db_host }}"
+    DB_PORT="{{ _app_cfg.db_port }}"
+    DB_USER="{{ _app_cfg.db_user }}"
+    DB_NAME="{{ _app_cfg.db_name }}"
+    DUMP_FILE="/tmp/${APP}-dump.sql.gz"
+
+    # Read DB password from app's runtime Secret (mounted separately)
+    DB_PASSWORD="$(cat "${DB_SECRET_DIR}/{{ _app_cfg.db_secret_key }}")"
+
+    # Read S3 credentials from Frozen Contract Secret
+    ACCESS_KEY_ID="$(cat "${MOUNT_DIR}/access_key_id")"
+    SECRET_ACCESS_KEY="$(cat "${MOUNT_DIR}/secret_access_key")"
+    BUCKET="$(cat "${MOUNT_DIR}/bucket")"
+    ENDPOINT="$(cat "${MOUNT_DIR}/endpoint")"
+    REGION="$(cat "${MOUNT_DIR}/region")"
+
+    # Run pg_dump and gzip inline
+    PGPASSWORD="${DB_PASSWORD}" pg_dump \
+      -h "${DB_HOST}" \
+      -p "${DB_PORT}" \
+      -U "${DB_USER}" \
+      -d "${DB_NAME}" \
+      --no-owner --no-privileges \
+      | gzip > "${DUMP_FILE}"
+
+    # Upload to S3
+    TIMESTAMP="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+    OBJECT_KEY="{{ postgres_backups_key_prefix }}/${APP}/${TIMESTAMP}.sql.gz"
+
+    AWS_ACCESS_KEY_ID="${ACCESS_KEY_ID}" \
+    AWS_SECRET_ACCESS_KEY="${SECRET_ACCESS_KEY}" \
+    AWS_DEFAULT_REGION="${REGION}" \
+      aws s3 cp "${DUMP_FILE}" "s3://${BUCKET}/${OBJECT_KEY}" \
+        --endpoint-url "${ENDPOINT}" \
+        --sse AES256
+
+    rm -f "${DUMP_FILE}"
+    echo "Backup uploaded: s3://${BUCKET}/${OBJECT_KEY}"

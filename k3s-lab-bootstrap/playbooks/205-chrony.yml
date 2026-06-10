@@ -1,0 +1,10 @@
+---
+# Audit-grade time discipline.
+# Runs after 200-baseline (which installs chrony) and before 210-harden.
+# See docs/processes/audit-log-retention-policy.md for the contract.
+- name: Configure chrony for audit-grade time sync
+  hosts: all
+  become: true
+  gather_facts: true
+  roles:
+    - base/chrony

@@ -1,0 +1,188 @@
+---
+# External Secrets Operator: install + wire a ClusterSecretStore at OpenBao.
+
+- name: Validate required vars
+  ansible.builtin.assert:
+    that:
+      - eso_openbao_url | length > 0
+      - eso_openbao_role_id | length > 0
+      - eso_openbao_secret_id | length > 0
+    msg: "eso_openbao_url, eso_openbao_role_id and eso_openbao_secret_id must be set (see 24-external-secrets-operator.yml pre_tasks)"
+
+- name: Create external-secrets namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ eso_namespace }}"
+
+- name: Add external-secrets Helm repository
+  kubernetes.core.helm_repository:
+    name: external-secrets
+    repo_url: "{{ eso_helm_repo }}"
+
+- name: Install External Secrets Operator via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: external-secrets
+    chart_ref: "external-secrets/{{ eso_helm_chart }}"
+    chart_version: "{{ eso_helm_version }}"
+    release_namespace: "{{ eso_namespace }}"
+    create_namespace: false
+    wait: true
+    wait_timeout: 300s
+    values:
+      installCRDs: true
+
+- name: Wait for ClusterSecretStore CRD to be established
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apiextensions.k8s.io/v1
+    kind: CustomResourceDefinition
+    name: clustersecretstores.external-secrets.io
+  register: _eso_css_crd
+  until:
+    - _eso_css_crd.resources | length > 0
+    - (_eso_css_crd.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Established') | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 24
+  delay: 5
+
+- name: Create AppRole credentials Secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ eso_approle_secret_name }}"
+        namespace: "{{ eso_namespace }}"
+      type: Opaque
+      stringData:
+        id: "{{ eso_openbao_secret_id }}"
+  no_log: true
+
+- name: Read OpenBao TLS secret for ESO trust
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ openbao_tls_secret_name | default('openbao-tls') }}"
+    namespace: "{{ openbao_namespace | default('openbao') }}"
+  register: _eso_openbao_tls_secret
+  when: eso_openbao_url | default('') is match('^https://')
+
+- name: Set ESO OpenBao CA bundle from TLS secret
+  ansible.builtin.set_fact:
+    eso_openbao_ca_bundle: "{{ _eso_openbao_tls_secret.resources[0].data['tls.crt'] | b64decode }}"
+  when:
+    - eso_openbao_url | default('') is match('^https://')
+    - _eso_openbao_tls_secret.resources | length > 0
+
+- name: Create ClusterSecretStore (OpenBao/Vault provider, AppRole)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: "{{ eso_crd_api_version }}"
+      kind: ClusterSecretStore
+      metadata:
+        name: "{{ eso_cluster_secret_store_name }}"
+      spec:
+        provider:
+          vault:
+            server: "{{ eso_openbao_url }}"
+            path: "{{ eso_openbao_kv_mount }}"
+            version: "{{ eso_openbao_kv_version }}"
+            caBundle: "{{ eso_openbao_ca_bundle | b64encode if eso_openbao_ca_bundle | length > 0 else omit }}"
+            auth:
+              appRole:
+                path: "{{ eso_openbao_approle_mount }}"
+                roleId: "{{ eso_openbao_role_id }}"
+                secretRef:
+                  name: "{{ eso_approle_secret_name }}"
+                  namespace: "{{ eso_namespace }}"
+                  key: id
+
+- name: Wait for ClusterSecretStore to become Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: "{{ eso_crd_api_version }}"
+    kind: ClusterSecretStore
+    name: "{{ eso_cluster_secret_store_name }}"
+  register: _eso_css
+  until:
+    - _eso_css.resources | length > 0
+    - (_eso_css.resources[0].status.conditions | default([]) | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 24
+  delay: 5
+
+# ---------------------------------------------------------------------------
+# Smoke test — prove ESO can read a known secret end-to-end
+# ---------------------------------------------------------------------------
+
+- name: Create smoke-test namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ eso_smoketest_namespace }}"
+  when: eso_smoketest_enabled | bool
+
+- name: Create smoke-test ExternalSecret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: "{{ eso_crd_api_version }}"
+      kind: ExternalSecret
+      metadata:
+        name: "{{ eso_smoketest_external_secret_name }}"
+        namespace: "{{ eso_smoketest_namespace }}"
+      spec:
+        refreshInterval: 1h
+        secretStoreRef:
+          name: "{{ eso_cluster_secret_store_name }}"
+          kind: ClusterSecretStore
+        target:
+          name: "{{ eso_smoketest_target_secret_name }}"
+          creationPolicy: Owner
+        data:
+          - secretKey: "{{ eso_smoketest_remote_property }}"
+            remoteRef:
+              key: "{{ eso_smoketest_remote_key }}"
+              property: "{{ eso_smoketest_remote_property }}"
+  when: eso_smoketest_enabled | bool
+
+- name: Wait for ExternalSecret to materialize target Secret
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ eso_smoketest_target_secret_name }}"
+    namespace: "{{ eso_smoketest_namespace }}"
+  register: _eso_smoketest_secret
+  until:
+    - _eso_smoketest_secret.resources | length > 0
+    - (_eso_smoketest_secret.resources[0].data | default({})) | dict2items | selectattr('key', 'equalto', eso_smoketest_remote_property) | list | length > 0
+  retries: "{{ eso_smoketest_wait_retries }}"
+  delay: "{{ eso_smoketest_wait_delay }}"
+  when: eso_smoketest_enabled | bool
+
+- name: Report ESO deployment summary
+  ansible.builtin.debug:
+    msg: |
+      ESO installed in namespace {{ eso_namespace }} (chart {{ eso_helm_version }})
+      ClusterSecretStore: {{ eso_cluster_secret_store_name }} -> {{ eso_openbao_url }}
+      Auth: {{ eso_openbao_auth_method }} (mount={{ eso_openbao_approle_mount }})
+      KV mount: {{ eso_openbao_kv_mount }} (version={{ eso_openbao_kv_version }})
+      {% if eso_smoketest_enabled %}
+      Smoke test PASSED -- {{ eso_smoketest_namespace }}/{{ eso_smoketest_target_secret_name }}
+      key '{{ eso_smoketest_remote_property }}' is present
+      {% endif %}

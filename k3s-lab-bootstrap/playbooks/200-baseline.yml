@@ -1,0 +1,189 @@
+---
+- name: Baseline configuration for k3s nodes (Debian/Ubuntu)
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    baseline_update_apt_cache: true
+    baseline_apt_cache_valid_time: 3600
+    baseline_apt_timeout_seconds: 20
+    baseline_apt_retries: 2
+    baseline_packages:
+      - ca-certificates
+      - curl
+      - gnupg
+      - iproute2
+      - iptables
+      - socat
+      - conntrack
+      - chrony
+      # Longhorn prerequisites / common storage tooling
+      - open-iscsi
+      - nfs-common
+      # Required for ansible.builtin.pip (Debian 12 uses externally-managed Python)
+      - python3-pip
+    # Kubernetes + Longhorn kernel modules
+    baseline_kernel_modules:
+      - overlay
+      - br_netfilter
+      - iscsi_tcp
+    baseline_sysctls:
+      - { name: "net.ipv4.ip_forward", value: "1" }
+      - { name: "net.bridge.bridge-nf-call-iptables", value: "1" }
+      - { name: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+    # Set to true if you want passwordless sudo for dev on all nodes
+    enable_passwordless_sudo_for_dev: true
+  handlers:
+    - name: Restart chrony
+      ansible.builtin.service:
+        name: chrony
+        state: restarted
+    - name: Reload sysctl
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+  tasks:
+    - name: Bound apt acquire timeouts
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/99-dmf-acquire-timeouts
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          Acquire::http::Timeout "{{ baseline_apt_timeout_seconds }}";
+          Acquire::https::Timeout "{{ baseline_apt_timeout_seconds }}";
+          Acquire::Retries "{{ baseline_apt_retries }}";
+    - name: Ensure apt cache is up to date
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: "{{ baseline_apt_cache_valid_time }}"
+      when: baseline_update_apt_cache | bool
+    - name: Install baseline packages
+      ansible.builtin.apt:
+        name: "{{ baseline_packages }}"
+        state: present
+    - name: Install ripgrep on control node
+      ansible.builtin.apt:
+        name: ripgrep
+        state: present
+      when: inventory_hostname == k3s_control_node
+    # Trixie (Debian 13) ships apt-managed PyYAML 6.0.2 with no pip RECORD.
+    # Any pip install that pulls PyYAML>=6.0.3 as a transitive dep (e.g. kubernetes)
+    # fails unless we pre-install PyYAML with --ignore-installed first.
+    # This is safe on Debian 12 too (pip just upgrades PyYAML normally).
+    - name: Pre-install PyYAML (trixie-safe — apt 6.0.2 has no RECORD)
+      ansible.builtin.pip:
+        name: "PyYAML>=6.0.3"
+        extra_args: "--break-system-packages --ignore-installed"
+    - name: Install kubernetes Python library (required for kubernetes.core modules)
+      ansible.builtin.pip:
+        name: kubernetes
+        # --break-system-packages is the Debian/Ubuntu default for externally-managed
+        # Python. --ignore-installed is also included here so that even if the
+        # PyYAML pre-task were skipped, pip would not try to uninstall the apt wheel.
+        extra_args: "{{ baseline_pip_extra_args | default('--break-system-packages --ignore-installed') }}"
+    - name: Check if helm is already installed
+      ansible.builtin.stat:
+        path: /usr/local/bin/helm
+      register: helm_binary
+    - name: Install helm binary
+      ansible.builtin.get_url:
+        url: "https://get.helm.sh/helm-v3.18.4-linux-arm64.tar.gz"
+        dest: /tmp/helm.tar.gz
+        mode: "0755"
+      when: not helm_binary.stat.exists and ansible_facts["architecture"] == "aarch64"
+    - name: Install helm binary (amd64 fallback)
+      ansible.builtin.get_url:
+        url: "https://get.helm.sh/helm-v3.18.4-linux-amd64.tar.gz"
+        dest: /tmp/helm.tar.gz
+        mode: "0755"
+      when: not helm_binary.stat.exists and ansible_facts["architecture"] != "aarch64"
+    - name: Extract helm binary
+      ansible.builtin.unarchive:
+        src: /tmp/helm.tar.gz
+        dest: /tmp/
+        remote_src: true
+      when: not helm_binary.stat.exists
+    - name: Move helm binary to /usr/local/bin
+      ansible.builtin.copy:
+        src: "/tmp/linux-{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}/helm"
+        dest: /usr/local/bin/helm
+        owner: root
+        group: root
+        mode: "0755"
+        remote_src: true
+      when: not helm_binary.stat.exists
+    - name: Clean up helm download
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /tmp/helm.tar.gz
+        - "/tmp/linux-{{ 'arm64' if ansible_facts['architecture'] == 'aarch64' else 'amd64' }}"
+      when: not helm_binary.stat.exists
+    - name: Enable and start chrony
+      ansible.builtin.service:
+        name: chrony
+        enabled: true
+        state: started
+      when: not ansible_check_mode
+    - name: Disable swap immediately (if enabled)
+      ansible.builtin.command: swapoff -a
+      register: swapoff_result
+      changed_when: swapoff_result.rc == 0
+      failed_when: false
+    - name: Remove swap entries from /etc/fstab (so swap stays off after reboot)
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^(?!#)(.*\s+swap\s+.*)$'
+        replace: '# \1'
+        backup: true
+    - name: Ensure kernel modules config file exists
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          overlay
+          br_netfilter
+          iscsi_tcp
+    - name: Load required kernel modules now
+      ansible.builtin.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop: "{{ baseline_kernel_modules }}"
+      failed_when: false
+    - name: Ensure sysctl settings for Kubernetes networking
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-k8s.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+      notify: Reload sysctl
+    - name: Apply sysctl settings immediately
+      ansible.builtin.command: sysctl --system
+      changed_when: false
+    - name: Ensure iscsid is enabled and running (Longhorn requires iSCSI initiator)
+      ansible.builtin.service:
+        name: iscsid
+        enabled: true
+        state: started
+    - name: Stop/disable multipathd if present (can interfere with iSCSI devices on some systems)
+      ansible.builtin.service:
+        name: multipathd
+        enabled: false
+        state: stopped
+      failed_when: false
+    - name: Configure passwordless sudo for dev (lab use only)
+      when: enable_passwordless_sudo_for_dev
+      ansible.builtin.copy:
+        dest: /etc/sudoers.d/dev
+        owner: root
+        group: root
+        mode: "0440"
+        content: "dev ALL=(ALL) NOPASSWD:ALL\n"
+        validate: "visudo -cf %s"

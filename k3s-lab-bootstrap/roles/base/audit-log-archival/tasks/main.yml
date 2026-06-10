@@ -1,0 +1,127 @@
+---
+- name: Skip audit log archival when no bucket is configured
+  ansible.builtin.meta: end_host
+  when: audit_log_s3_bucket | default('') | length == 0
+
+- name: Assert AWS credentials are supplied when bucket is configured
+  # Without this, the precheck (and the 02:00 cron) would silently fail
+  # later. Fail loudly during the play so the operator sees a clear
+  # provisioning-time error instead of a silent archival outage.
+  ansible.builtin.assert:
+    that:
+      - audit_log_aws_access_key_id | default('') | length > 0
+      - audit_log_aws_secret_access_key | default('') | length > 0
+    fail_msg: >-
+      audit_log_s3_bucket is set ('{{ audit_log_s3_bucket }}') but
+      audit_log_aws_access_key_id / audit_log_aws_secret_access_key are
+      empty. Set them in inventory group_vars (kept out of git per
+      ADR-0007) or unset audit_log_s3_bucket to disable archival.
+
+- name: Ensure audit log directory exists
+  ansible.builtin.file:
+    path: "{{ audit_log_archive_local_dir }}"
+    state: directory
+    mode: "0755"
+
+- name: Ensure archival working directory exists
+  ansible.builtin.file:
+    path: "{{ audit_log_work_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Ensure /root/.aws exists for the AWS-CLI credentials profile
+  ansible.builtin.file:
+    path: /root/.aws
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install awscli for audit log uploads
+  ansible.builtin.package:
+    name: awscli
+    state: present
+
+# Write the audit-archive credentials profile into /root/.aws/credentials.
+# AWS CLI reads this file via SDK at API-call time — credentials never
+# traverse /proc/<pid>/environ, so ADR-0007's "secrets never in env" rule
+# is respected. The ini_file module upserts our named section without
+# clobbering any other profiles that may already exist on the host.
+- name: Write audit-archive AWS profile (access key id)
+  community.general.ini_file:
+    path: /root/.aws/credentials
+    section: "{{ audit_log_aws_profile }}"
+    option: aws_access_key_id
+    value: "{{ audit_log_aws_access_key_id }}"
+    owner: root
+    group: root
+    mode: "0600"
+    create: true
+    no_extra_spaces: true
+  no_log: true
+
+- name: Write audit-archive AWS profile (secret access key)
+  community.general.ini_file:
+    path: /root/.aws/credentials
+    section: "{{ audit_log_aws_profile }}"
+    option: aws_secret_access_key
+    value: "{{ audit_log_aws_secret_access_key }}"
+    owner: root
+    group: root
+    mode: "0600"
+    create: true
+    no_extra_spaces: true
+  no_log: true
+
+- name: Write audit-archive AWS profile (region)
+  community.general.ini_file:
+    path: /root/.aws/credentials
+    section: "{{ audit_log_aws_profile }}"
+    option: region
+    value: "{{ audit_log_aws_region }}"
+    owner: root
+    group: root
+    mode: "0600"
+    create: true
+    no_extra_spaces: true
+  when: audit_log_aws_region | default('') | length > 0
+
+# Bucket existence precheck — always runs once we get past the assert above.
+# Uses the same profile the cron will use; if credentials are wrong, this
+# fails the play with a clear AWS error instead of silently scheduling a
+# broken cron.
+- name: Verify audit bucket is reachable (precheck)
+  ansible.builtin.command: >-
+    aws --profile {{ audit_log_aws_profile }}
+    s3api head-bucket
+    --bucket {{ audit_log_s3_bucket }}
+    {{ ('--endpoint-url=' ~ audit_log_s3_endpoint) if audit_log_s3_endpoint | length > 0 else '' }}
+  changed_when: false
+  register: _audit_bucket_check
+  failed_when: _audit_bucket_check.rc != 0
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Deploy k3s audit log archival script
+  ansible.builtin.template:
+    src: archive-k3s-audit-logs.sh.j2
+    dest: /usr/local/bin/archive-k3s-audit-logs.sh
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Schedule daily k3s audit log archival
+  ansible.builtin.cron:
+    name: Archive k3s audit logs
+    minute: "{{ audit_log_archive_cron_minute }}"
+    hour: "{{ audit_log_archive_cron_hour }}"
+    job: /usr/local/bin/archive-k3s-audit-logs.sh
+    user: root
+    state: present
+
+- name: Remove legacy /etc/dmf/audit-archive.env (superseded by AWS profile)
+  ansible.builtin.file:
+    path: /etc/dmf/audit-archive.env
+    state: absent

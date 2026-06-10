@@ -1,0 +1,13 @@
+# Python packages bundled into the DMF AWX EE image.
+# These satisfy kubernetes.core's dependencies (k8s, k8s_info modules
+# need the kubernetes/openshift python clients at runtime) and provide
+# JSON-patch support used by community.kubernetes/k8s_json_patch.
+
+kubernetes>=28.0.0,<32.0.0
+openshift>=0.13
+jsonpatch
+
+# Runtime dependency of netbox.netbox's nb_inventory plugin (baked in
+# requirements.yml). Required so the NetBox dynamic inventory resolves
+# offline from the EE — no public galaxy/pip fetch at job time.
+pynetbox>=7.0.0,<8.0.0

@@ -1,0 +1,423 @@
+#!/bin/sh
+# Generate landing page HTML — open-source project showcase for the DMF Platform.
+# Static OSS content + generation timestamp for staleness detection.
+
+# ── Open-source project data (embedded at build time) ─────────────────────────
+OSS_DATA_FILE="/oss-data/oss-projects.sh"
+if [ -f "$OSS_DATA_FILE" ]; then
+  . "$OSS_DATA_FILE"
+else
+  OSS_PROJECTS=""
+fi
+
+GEN_TS=$(date -u +%s)
+GEN_LABEL=$(date -u +"%Y-%m-%d %H:%M UTC")
+
+# ── Build OSS project cards HTML ──────────────────────────────────────────────
+if [ -n "$OSS_PROJECTS" ]; then
+  printf '%s\n' "$OSS_PROJECTS" | while IFS='|' read -r name logo license homepage description; do
+    [ -z "$name" ] && continue
+    esc_name=$(printf '%s' "$name" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    esc_logo=$(printf '%s' "$logo" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    esc_license=$(printf '%s' "$license" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    esc_homepage=$(printf '%s' "$homepage" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    esc_desc=$(printf '%s' "$description" | sed 's/\\/\\\\/g; s/"/\\"/g')
+    esc_initials=$(printf '%s' "$name" | cut -c1-3 | tr '[:lower:]' '[:upper:]')
+    printf '      <a href="%s" class="oss-card" target="_blank" rel="noopener noreferrer">\n' "$esc_homepage"
+    printf '        <div class="oss-card-logo">\n'
+    printf '          <img src="%s" alt="%s" loading="lazy" onerror="this.parentElement.innerHTML=\x27<span class=logo-fallback>%s</span>\x27">\n' "$esc_logo" "$esc_name" "$esc_initials"
+    printf '        </div>\n'
+    printf '        <h2>%s</h2>\n' "$esc_name"
+    printf '        <p class="oss-card-desc">%s</p>\n' "$esc_desc"
+    printf '        <div class="oss-card-footer">\n'
+    printf '          <span class="license-badge">%s</span>\n' "$esc_license"
+    printf '          <span class="oss-card-meta"><svg class="ico" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H3a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-3M9 1h6v6M15 1 8 8"/></svg> project site</span>\n'
+    printf '        </div>\n'
+    printf '      </a>\n'
+  done > /tmp/oss-cards.html
+  OSS_CARDS=$(cat /tmp/oss-cards.html)
+fi
+
+# Copy static assets (logos) into the HTML volume for nginx to serve
+if [ -d /assets-src ]; then
+  mkdir -p /html/assets
+  cp -f /assets-src/* /html/assets/ 2>/dev/null || true
+fi
+
+# ── Write full HTML ───────────────────────────────────────────────────────────
+PAGE_CREATED="$(date -u +"%Y-%m-%d %H:%M UTC")"
+PAGE_YEAR="$(date -u +%Y)"
+
+# Build console URL from inventory variables
+CMS_HOST="{{ dmf_cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) }}"
+PRECONNECT_HOST="{{ dmf_cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) }}"
+CONSOLE_URL="https://${CMS_HOST}"
+
+cat > /html/index.html << ENDOFHTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="The EBU's Dynamic Media Facility (DMF) — an open-source infrastructure lab exploring containerized broadcast workflows on k3s.">
+  <title>{{ landing_page_title }}</title>
+{% if dmf_cms_host is defined or cert_manager_cluster_domain is defined %}
+  <link rel="preconnect" href="https://${PRECONNECT_HOST}" crossorigin>
+{% endif %}
+  <style>
+    :root {
+      /* dmf-cms design tokens — authoritative values from frontend/src/index.css */
+      --bg: #0b121f;
+      --panel: #151e2d;
+      --sidebar: #111927;
+      --border: #1f2937;
+      --accent: #7c3aed;
+      --accent-blue: #3b82f6;
+      --accent-green: #22c55e;
+      --warning: #efc15a;
+      --muted: #9ca3af;
+      --text: #e2e8f0;
+
+      /* status colours */
+      --green: #22c55e;
+      --green-bg: rgba(34, 197, 94, 0.12);
+      --green-border: rgba(34, 197, 94, 0.25);
+    }
+
+    /* ── Reset & base ───────────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+                   "Helvetica Neue", Arial, sans-serif;
+      background: var(--bg);
+      min-height: 100vh;
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    a { color: inherit; }
+    .ico { display: inline-block; vertical-align: -0.125em; flex-shrink: 0; }
+
+    /* ── Top bar (platform header) ──────────────────────────── */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      background: var(--bg);
+      border-bottom: 1px solid var(--border);
+    }
+    .topbar-inner {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      height: 56px;
+      padding: 0 1.5rem;
+    }
+    .topbar-brand {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      text-decoration: none;
+      color: var(--text);
+    }
+    .topbar-icon {
+      width: 48px;
+      height: 48px;
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+    }
+    .topbar-icon img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+    }
+    .topbar-title {
+      font-weight: 700;
+      font-size: 0.95rem;
+      letter-spacing: -0.01em;
+    }
+
+    /* nav links */
+    .topbar-nav {
+      display: flex;
+      align-items: center;
+      gap: 1.5rem;
+    }
+    .topbar-nav a {
+      font-size: 0.85rem;
+      font-weight: 500;
+      color: var(--muted);
+      text-decoration: none;
+      transition: color 0.15s ease;
+    }
+    .topbar-nav a:hover { color: var(--text); }
+
+    /* sign-in button — matches dmf-cms .btn-primary */
+    .topbar-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      padding: 0.5rem 1rem;
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-decoration: none;
+      border-radius: 8px;
+      transition: background 0.15s ease;
+      white-space: nowrap;
+    }
+    .topbar-cta:hover { background: #6d28d9; }
+    .topbar-cta i { font-size: 0.75rem; }
+
+    /* ── Page body ──────────────────────────────────────────── */
+    .page {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem 2.5rem;
+    }
+
+    /* ── Hero section ───────────────────────────────────────── */
+    .hero { margin-bottom: 3rem; }
+    .hero-kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-weight: 600;
+      color: var(--accent);
+      margin-bottom: 0.75rem;
+    }
+    .hero-kicker i { font-size: 0.75rem; }
+    .hero h1 {
+      font-size: clamp(1.75rem, 4vw, 2.5rem);
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.15;
+      color: var(--text);
+      margin-bottom: 0.75rem;
+    }
+    .hero-sub {
+      font-size: 1.05rem;
+      line-height: 1.6;
+      color: var(--muted);
+      max-width: 680px;
+    }
+    .hero-sub strong { color: var(--text); font-weight: 600; }
+    .hero-sub a { color: var(--accent); text-decoration: none; font-weight: 600; }
+    .hero-sub a:hover { text-decoration: underline; }
+
+    /* ── Section header ─────────────────────────────────────── */
+    .section-header {
+      margin-bottom: 1.5rem;
+    }
+    .section-header h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+    }
+    .section-header p {
+      font-size: 0.9rem;
+      color: var(--muted);
+      max-width: 560px;
+    }
+
+    /* ── OSS project cards ──────────────────────────────────── */
+    .oss-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 1rem;
+    }
+    .oss-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+    .oss-card:hover {
+      transform: translateY(-2px);
+      border-color: var(--accent);
+      box-shadow: 0 8px 20px rgba(124, 58, 237, 0.12);
+    }
+    .oss-card-logo {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      background: var(--green-bg);
+      border: 1px solid var(--green-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 1rem;
+      overflow: hidden;
+      flex-shrink: 0;
+    }
+    .oss-card-logo img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      padding: 5px;
+    }
+    .logo-fallback {
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: 0.04em;
+    }
+    .oss-card h2 {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      margin-bottom: 0.35rem;
+      color: var(--text);
+    }
+    .oss-card-desc {
+      font-size: 0.8rem;
+      line-height: 1.5;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+      flex-grow: 1;
+    }
+    .oss-card-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      width: 100%;
+      margin-top: auto;
+    }
+    .license-badge {
+      display: inline-block;
+      padding: 0.15rem 0.5rem;
+      font-size: 0.65rem;
+      font-weight: 500;
+      background: var(--green-bg);
+      border: 1px solid var(--green-border);
+      border-radius: 999px;
+      color: var(--green);
+      white-space: nowrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                   "Liberation Mono", "Courier New", monospace;
+    }
+    .oss-card-meta {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      font-size: 0.65rem;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .oss-card-meta i { font-size: 0.6rem; }
+
+    /* ── Footer ─────────────────────────────────────────────── */
+    .footer {
+      text-align: center;
+      padding: 3rem 0 2rem;
+      color: var(--muted);
+      font-size: 0.8rem;
+    }
+    .footer p + p { margin-top: 0.35rem; }
+    .footer a { color: var(--accent); text-decoration: none; }
+    .footer a:hover { text-decoration: underline; }
+    .footer-generated.is-stale {
+      color: #ef4444;
+      font-weight: 600;
+    }
+
+    /* ── Responsive ─────────────────────────────────────────── */
+    @media (max-width: 640px) {
+      .topbar-inner { padding: 0 1rem; }
+      .topbar-nav { display: none; }
+      .page { padding: 2rem 1rem 2rem; }
+      .hero h1 { font-size: 1.5rem; }
+      .oss-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Top bar -->
+  <nav class="topbar">
+    <div class="topbar-inner">
+      <a href="/" class="topbar-brand">
+{% if landing_page_logo_url %}
+        <span class="topbar-icon"><img src="{{ landing_page_logo_url }}" alt="{{ landing_page_logo_alt }}"></span>
+{% else %}
+        <span class="topbar-icon">DMF</span>
+{% endif %}
+        <span class="topbar-title">{{ landing_page_title }}</span>
+      </a>
+      <div class="topbar-nav">
+        <a href="#mission">Mission</a>
+        <a href="#projects">Projects</a>
+      </div>
+      <a href="${CONSOLE_URL}" class="topbar-cta">
+        <svg class="ico" viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 8H4M8 5l3 3-3 3"/><rect x="1" y="2" width="12" height="12" rx="2"/></svg>
+        Sign In
+      </a>
+    </div>
+  </nav>
+
+  <!-- Page body -->
+  <main class="page">
+
+    <!-- Hero -->
+    <section class="hero" id="mission">
+      <div class="hero-kicker"><svg class="ico" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3"/><circle cx="8" cy="8" r="0.5" fill="currentColor"/></svg> Mission</div>
+      <h1>Dynamic Media Facility</h1>
+      <p class="hero-sub">
+        The EBU's <strong>Dynamic Media Facility (DMF)</strong> is an architectural playbook for transitioning broadcast production from static hardware to software-defined, containerized workflows. This lab is a hands-on exploration of that concept — a small k3s cluster where we're learning how media functions, orchestration, and open infrastructure fit together.
+      </p>
+    </section>
+
+    <!-- Open-source showcase -->
+    <section id="projects">
+      <div class="section-header">
+        <h2>Open-Source Projects</h2>
+        <p>The tools powering this lab. Each card links to the project homepage.</p>
+      </div>
+      <div class="oss-grid">
+${OSS_CARDS}
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <p>Running on <a href="https://k3s.io">k3s</a> with <a href="https://traefik.io">Traefik</a></p>
+      <p>Copyright &copy; ${PAGE_YEAR} dmfdeploy contributors.</p>
+      <p>Generated <span class="footer-generated" data-generated="${GEN_TS}">${GEN_LABEL}</span></p>
+    </footer>
+  </main>
+
+  <script>
+    (function () {
+      // Use embedded timestamp — no network request needed
+      function checkStaleness() {
+        const el = document.querySelector('.footer-generated');
+        if (!el) return;
+        const ts = Number(el.dataset.generated);
+        if (!Number.isFinite(ts)) return;
+        el.classList.toggle('is-stale', Math.floor(Date.now() / 1000) - ts > 300);
+      }
+
+      checkStaleness();
+      setInterval(checkStaleness, 60000);
+    })();
+  </script>
+</body>
+</html>
+ENDOFHTML
+
+echo "Generated OSS showcase landing page"

@@ -1,0 +1,1000 @@
+---
+# Wire AWX service-account token for DMF Console workflow launches.
+#
+# Runs after AWX integration (693-awx-integration.yml) and the DMF Console
+# deploy (650-dmf-cms.yml). Creates a dmf-cms-svc user in AWX, grants it
+# permission to execute the chosen workflow job template, generates a personal
+# token, persists it to OpenBao, patches the K8s runtime secret, and rolls
+# the CMS deployment.
+#
+# The token is stored at secret/apps/awx/runtime → cms_api_token in OpenBao
+# and injected into the dmf-cms-runtime K8s Secret under key `awxApiToken`.
+# When available, the durable AWX service-user password from OpenBao is used
+# for token creation so reruns do not depend on the AWX admin Secret.
+#
+# Idempotency: if the K8s Secret already contains awxApiToken, the entire
+# AWX provisioning is skipped — no user creation, RBAC, token generation,
+# OpenBao write, or rollout. The K8s Secret is the source of truth for
+# "is this playbook done?"
+- name: Wire AWX service-account token for DMF Console
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  vars:
+    cms_awx_svc_user: dmf-cms-svc
+    cms_awx_svc_token_name: dmf-cms-svc-token
+    cms_awx_target_job_template: eso-openbao-health-check
+    # Catalog launchers the Console drives — dmf-cms-svc needs JobTemplate
+    # Execute on these (least-priv; no system admin). Granted additively
+    # alongside the health-check JT below.
+    cms_awx_catalog_job_templates:
+      - media-launch-nmos-cpp
+      - media-finalise-nmos-cpp
+      - media-launch-mxl-hello
+      - media-finalise-mxl-hello
+      - media-launch-mxl-videotestsrc
+      - media-finalise-mxl-videotestsrc
+      - media-launch-mxl-videotest-view
+      - media-finalise-mxl-videotest-view
+    cms_awx_inventory_label: "NetBox"
+
+  roles:
+    - base/cluster-ready
+
+  tasks:
+    - name: Set AWX API base from awx-integration pattern
+      ansible.builtin.set_fact:
+        _cms_awx_api_base: >-
+          {{
+            'https://' ~ (awx_host | default('awx.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))))
+            if (awx_exposure | default('host')) == 'host'
+            else (external_base_url | default('http://' ~ metallb_vip))
+          }}{{ '/api/v2' if (awx_exposure | default('host')) == 'host' else (awx_base_path | default('/awx')) ~ '/api/v2' }}
+
+    - name: Establish OpenBao operator session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_breakglass_file: "{{ eso_openbao_breakglass_file | default((openbao_key_path | default('')) ~ '.json', true) }}"
+        openbao_session_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+
+    - name: Read AWX runtime secret from OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json secret/apps/awx/runtime'
+      register: _cms_awx_runtime_secret_raw
+      changed_when: false
+      failed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    - name: Parse AWX runtime secret from OpenBao
+      ansible.builtin.set_fact:
+        _cms_awx_runtime_secret_data: >-
+          {{
+            (
+              _cms_awx_runtime_secret_raw.stdout | default('{}') | from_json
+            ).data.data | default({})
+          }}
+      when:
+        - _cms_awx_runtime_secret_raw.rc | default(1) == 0
+        - _cms_awx_runtime_secret_raw.stdout | default('') | length > 0
+      no_log: true
+
+    - name: Default AWX runtime secret data
+      ansible.builtin.set_fact:
+        _cms_awx_runtime_secret_data: {}
+      when: _cms_awx_runtime_secret_data is not defined
+      no_log: true
+
+    # dmf-cms-svc's OWN password (key cms_svc_password) — NOT awx_svc_password
+    # (that is the awx-svc identity). AWX binds token ownership to the
+    # AUTHENTICATING principal, so the token must be minted while authenticated
+    # AS dmf-cms-svc; that requires dmf-cms-svc's own password. Empty on first
+    # run → generated + PATCHed onto the user + persisted below.
+    - name: Set dmf-cms-svc password from OpenBao when available
+      ansible.builtin.set_fact:
+        _cms_awx_service_password: "{{ _cms_awx_runtime_secret_data.cms_svc_password | default('') }}"
+      no_log: true
+
+    # AWX admin lives in the awx-admin-password K8s Secret (password) and the
+    # AWX CR (admin_user). The wrapper-exported vault_awx_admin_password is
+    # regenerated on every run and does NOT match what AWX was created with —
+    # using it gives 401 against the AWX API. Resolve via common helper so
+    # both username and password come from authoritative live sources.
+    # See ADR-0024 (two-identity admin model + live-state read).
+    - name: Resolve AWX admin identity for CMS token provisioning
+      ansible.builtin.include_role:
+        name: common/admin-identity-resolve
+      vars:
+        admin_resolve_app: awx-for-cms-token
+        admin_resolve_secret_ns: "{{ cms_awx_namespace | default('awx') }}"
+        admin_resolve_secret_name: "{{ cms_awx_admin_secret_name | default('awx-admin-password') }}"
+        # ADR-0028 D3 (2026-05-24): the AWX local admin defaults to
+        # `awx-break-glass` (see roles/stack/operator/awx/defaults/main.yml).
+        # 697 does not load the awx role, so this fallback cannot ride the
+        # chart default; the literal is duplicated here as the canonical
+        # fallback. Keep in sync if the chart default changes.
+        admin_resolve_fallback_username: "{{ awx_admin_user | default('awx-break-glass') }}"
+        admin_resolve_fallback_password: "{{ vault_bootstrap_admin_password | default('') }}"
+
+    - name: Assert AWX admin password resolved
+      ansible.builtin.assert:
+        that:
+          - _resolved_admin_password | length > 0
+        fail_msg: >-
+          AWX admin password could not be resolved. Expected K8s Secret
+          '{{ cms_awx_admin_secret_name | default('awx-admin-password') }}'
+          in namespace '{{ cms_awx_namespace | default('awx') }}' to carry
+          a non-empty 'password' key, or vault_bootstrap_admin_password to
+          be set. Confirm 640-awx.yml has run successfully.
+      no_log: true
+
+    - name: Alias resolved admin identity to playbook-local facts
+      ansible.builtin.set_fact:
+        _cms_awx_admin_user: "{{ _resolved_admin_user }}"
+        _cms_awx_admin_password: "{{ _resolved_admin_password }}"
+      no_log: true
+
+    - name: Choose AWX credentials for token generation
+      ansible.builtin.set_fact:
+        _cms_awx_token_user: >-
+          {{
+            cms_awx_svc_user
+            if _cms_awx_service_password | default('') | length > 0
+            else _cms_awx_admin_user
+          }}
+        _cms_awx_token_password: >-
+          {{
+            _cms_awx_service_password
+            if _cms_awx_service_password | default('') | length > 0
+            else _cms_awx_admin_password
+          }}
+      no_log: true
+
+    - name: Check AWX API availability
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/ping/"
+        method: GET
+        status_code: [200, 302, 503]
+      register: _cms_awx_api_check
+      until: _cms_awx_api_check.status == 200
+      retries: 30
+      delay: 10
+
+    # ── Idempotency gate: check K8s Secret & OpenBao ─────────────────────
+    - name: Check if AWX token already exists in DMF Console runtime Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+      register: _cms_awx_k8s_check
+      no_log: true
+
+    - name: Check if AWX token exists in OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json secret/apps/awx/runtime'
+      register: _cms_awx_openbao_check
+      changed_when: false
+      failed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    - name: Parse OpenBao token
+      ansible.builtin.set_fact:
+        _cms_awx_openbao_token: >-
+          {{
+            (_cms_awx_openbao_check.stdout | from_json).data.data.cms_api_token | default('')
+            if _cms_awx_openbao_check.rc == 0
+            else ''
+          }}
+      no_log: true
+
+    - name: Set idempotency flag from K8s Secret and OpenBao
+      ansible.builtin.set_fact:
+        _cms_awx_token_already_provisioned: >-
+          {{
+            (_cms_awx_k8s_check.resources[0].data.awxApiToken | default('') | length > 0)
+            or (_cms_awx_openbao_token | length > 0)
+          }}
+      no_log: true
+
+    - name: Log token source discovery
+      ansible.builtin.debug:
+        msg: |
+          Token availability check:
+            K8s Secret has token: {{ (_cms_awx_k8s_check.resources[0].data.awxApiToken | default('') | length) > 0 }}
+            OpenBao has token: {{ _cms_awx_openbao_token | length > 0 }}
+            Provisioning needed: {{ not _cms_awx_token_already_provisioned }}
+
+    - name: Validate existing AWX token if present
+      block:
+        - name: Test existing token from Secret
+          ansible.builtin.uri:
+            url: "{{ _cms_awx_api_base }}/me/"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ (_cms_awx_k8s_check.resources[0].data.awxApiToken | b64decode) }}"
+            status_code: [200, 401, 403]
+          register: _cms_awx_existing_token_test
+          changed_when: false
+          failed_when: false
+          no_log: true
+          when: _cms_awx_k8s_check.resources | length > 0
+
+        - name: Extract username from /me response
+          ansible.builtin.set_fact:
+            _cms_awx_existing_token_user: >-
+              {{
+                _cms_awx_existing_token_test.json.username | default(
+                  _cms_awx_existing_token_test.json.results[0].username | default('(not found)')
+                )
+              }}
+          no_log: true
+          when: _cms_awx_k8s_check.resources | length > 0
+
+        - name: Check if existing token is for correct service account
+          ansible.builtin.set_fact:
+            _cms_awx_token_valid: >-
+              {{
+                _cms_awx_existing_token_test.status == 200 and
+                _cms_awx_existing_token_user == cms_awx_svc_user
+              }}
+          no_log: true
+          when: _cms_awx_k8s_check.resources | length > 0
+
+        - name: Mark token as invalid if K8s Secret missing
+          ansible.builtin.set_fact:
+            _cms_awx_token_valid: false
+          when: _cms_awx_k8s_check.resources | length == 0
+
+        - name: Log token validation result
+          ansible.builtin.debug:
+            msg: >-
+              Existing AWX token validation:
+              status={{ _cms_awx_existing_token_test.status | default('(no Secret)') }},
+              username={{ _cms_awx_existing_token_test.json.username | default('(none)') }},
+              valid={{ _cms_awx_token_valid }}
+          when: _cms_awx_k8s_check.resources | length > 0
+
+      when: _cms_awx_token_already_provisioned | bool
+      no_log: true
+
+    - name: Skip AWX provisioning (token already provisioned and valid)
+      ansible.builtin.debug:
+        msg: >-
+          AWX token already present in Secret
+          '{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}'
+          and authenticates as {{ cms_awx_svc_user }}.
+          Skipping user creation, RBAC, token generation, and rollout.
+      when:
+        - _cms_awx_token_already_provisioned | bool
+        - _cms_awx_token_valid | default(false) | bool
+
+    - name: Force token regeneration if existing token is invalid
+      ansible.builtin.set_fact:
+        _cms_awx_token_already_provisioned: false
+      when:
+        - _cms_awx_token_already_provisioned | bool
+        - not (_cms_awx_token_valid | default(false) | bool)
+
+    # ── Create AWX service user (skip if already done) ───────────────────
+    - name: Lookup AWX service user
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/users/?username={{ cms_awx_svc_user | urlencode }}"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_svc_user_lookup
+      when: not _cms_awx_token_already_provisioned
+
+    - name: Create AWX service user
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/users/"
+        method: POST
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          username: "{{ cms_awx_svc_user }}"
+          password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+          is_superuser: false
+          is_system_auditor: false
+        status_code: 201
+      when: >-
+        not _cms_awx_token_already_provisioned and
+        _cms_awx_svc_user_lookup.json.count | int == 0
+      no_log: true
+      register: _cms_awx_svc_user_created
+
+    - name: Set AWX service user id
+      ansible.builtin.set_fact:
+        _cms_awx_svc_user_id: >-
+          {{
+            (_cms_awx_svc_user_lookup.json.results | default([]) | first | default({})).id
+            | default(_cms_awx_svc_user_created.json.id)
+          }}
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    # ── Ensure dmf-cms-svc has a KNOWN password ──────────────────────────
+    # AWX binds token ownership to the AUTHENTICATING principal, so a token
+    # minted while authenticated as admin is admin-owned regardless of the
+    # URL user-id or `description`. To get a dmf-cms-svc-owned token we must
+    # mint it authenticated AS dmf-cms-svc — which needs a known password.
+    # Generate if not yet persisted, then PATCH it onto the user (covers both
+    # the freshly-created user and a pre-existing one whose random create-time
+    # password is unknown). ADR-0028 C3/C4 scoped-machine-identity.
+    - name: Derive dmf-cms-svc password (persisted value or fresh)
+      ansible.builtin.set_fact:
+        _cms_awx_svc_password: >-
+          {{
+            _cms_awx_service_password
+            if (_cms_awx_service_password | default('') | length > 0)
+            else lookup('community.general.random_string', length=24, special=false)
+          }}
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Set dmf-cms-svc password on the AWX user
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/users/{{ _cms_awx_svc_user_id }}/"
+        method: PATCH
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          password: "{{ _cms_awx_svc_password }}"
+        status_code: 200
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Use dmf-cms-svc credentials for token minting (self-owned)
+      ansible.builtin.set_fact:
+        _cms_awx_service_password: "{{ _cms_awx_svc_password }}"
+        _cms_awx_token_user: "{{ cms_awx_svc_user }}"
+        _cms_awx_token_password: "{{ _cms_awx_svc_password }}"
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    # ── Grant Inventory Use on NetBox inventory ─────────────────────────
+    - name: List all inventories to find NetBox
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/inventories/"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_inventories_list
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Find NetBox inventory by name
+      ansible.builtin.set_fact:
+        _cms_awx_netbox_inventory_id: >-
+          {{
+            (_cms_awx_inventories_list.json.results
+             | selectattr('name', 'match', cms_awx_inventory_label)
+             | list
+             | first
+             | default({})).id
+          }}
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Assert NetBox inventory was found
+      ansible.builtin.assert:
+        that:
+          - _cms_awx_netbox_inventory_id | default(0) | int > 0
+        fail_msg: >-
+          Could not find inventory matching '{{ cms_awx_inventory_label }}' in AWX.
+          Inventories must be configured before wiring the DMF Console service account.
+      when: not _cms_awx_token_already_provisioned
+
+    - name: Get Inventory Use role definition
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/role_definitions/?name=Inventory%20Use"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_inventory_roles
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Find inventory use role definition
+      ansible.builtin.set_fact:
+        _cms_awx_inventory_use_role_id: >-
+          {{
+            (_cms_awx_inventory_roles.json.results
+             | selectattr('name', 'equalto', 'Inventory Use')
+             | list
+             | first
+             | default({})).id
+          }}
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Assert Inventory Use role was found
+      ansible.builtin.assert:
+        that:
+          - _cms_awx_inventory_use_role_id | default(0) | int > 0
+        fail_msg: >-
+          Could not find Inventory Use role in AWX.
+          This should be available by default in AWX inventories.
+      when: not _cms_awx_token_already_provisioned
+
+    - name: Grant Inventory Use to DMF Console service account
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/role_user_assignments/"
+        method: POST
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          user: "{{ _cms_awx_svc_user_id }}"
+          role_definition: "{{ _cms_awx_inventory_use_role_id }}"
+          object_id: "{{ _cms_awx_netbox_inventory_id }}"
+        status_code: [201, 400]  # 400 if assignment already exists
+      register: _cms_awx_inventory_grant
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    # ── Grant Job Template Execute on target template ────────────────────
+    - name: Find target job template by name
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/job_templates/?name={{ cms_awx_target_job_template | urlencode }}"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_target_template_lookup
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Assert target job template was found
+      ansible.builtin.assert:
+        that:
+          - _cms_awx_target_template_lookup.json.count | default(0) | int > 0
+        fail_msg: >-
+          Could not find job template '{{ cms_awx_target_job_template }}' in AWX.
+          The target template must exist before wiring the DMF Console service account.
+      when: not _cms_awx_token_already_provisioned
+
+    - name: Set target job template ID
+      ansible.builtin.set_fact:
+        _cms_awx_target_template_id: >-
+          {{
+            (_cms_awx_target_template_lookup.json.results[0]).id
+          }}
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Get JobTemplate Execute role definition
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/role_definitions/?name=JobTemplate%20Execute"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_template_roles
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Find job template execute role definition
+      ansible.builtin.set_fact:
+        _cms_awx_template_execute_role_id: >-
+          {{
+            (_cms_awx_template_roles.json.results
+             | selectattr('name', 'equalto', 'JobTemplate Execute')
+             | list
+             | first
+             | default({})).id
+          }}
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Assert JobTemplate Execute role was found
+      ansible.builtin.assert:
+        that:
+          - _cms_awx_template_execute_role_id | default(0) | int > 0
+        fail_msg: >-
+          Could not find JobTemplate Execute role in AWX.
+          This should be available by default for AWX job templates.
+      when: not _cms_awx_token_already_provisioned
+
+    - name: Grant JobTemplate Execute to DMF Console service account
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/role_user_assignments/"
+        method: POST
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          user: "{{ _cms_awx_svc_user_id }}"
+          role_definition: "{{ _cms_awx_template_execute_role_id }}"
+          object_id: "{{ _cms_awx_target_template_id }}"
+        status_code: [201, 400]  # 400 if assignment already exists
+      register: _cms_awx_template_grant
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    # ── Additionally grant Execute on the catalog launcher JTs ───────────
+    # Least-priv: dmf-cms-svc gets JobTemplate Execute on exactly the catalog
+    # launchers the Console drives. Resilient — any not-yet-present JT is
+    # simply skipped (empty id list → no-op).
+    - name: List job templates for catalog grants
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/job_templates/?page_size=200"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_all_jts
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Resolve catalog launcher JT ids
+      ansible.builtin.set_fact:
+        _cms_awx_catalog_jt_ids: >-
+          {{
+            _cms_awx_all_jts.json.results
+            | selectattr('name', 'in', cms_awx_catalog_job_templates)
+            | map(attribute='id') | list
+          }}
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Grant JobTemplate Execute on each catalog launcher
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/role_user_assignments/"
+        method: POST
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          user: "{{ _cms_awx_svc_user_id }}"
+          role_definition: "{{ _cms_awx_template_execute_role_id }}"
+          object_id: "{{ item }}"
+        status_code: [201, 400]  # 400 if assignment already exists
+      loop: "{{ _cms_awx_catalog_jt_ids | default([]) }}"
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    # ── Create AWX personal token (always create fresh for provisioning) ─
+    - name: Check for existing personal token with same description
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/users/{{ _cms_awx_svc_user_id }}/personal_tokens/?description={{ cms_awx_svc_token_name | urlencode }}"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_existing_tokens
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Revoke existing personal tokens (idempotent recreation)
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/users/{{ _cms_awx_svc_user_id }}/personal_tokens/{{ item.id }}/"
+        method: DELETE
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: [200, 204, 404]
+      loop: "{{ _cms_awx_existing_tokens.json.results | default([]) }}"
+      when: >-
+        not _cms_awx_token_already_provisioned and
+        _cms_awx_existing_tokens.json.count | default(0) | int > 0
+      no_log: true
+
+    - name: Lookup authenticated AWX user for token creation
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/me/"
+        method: GET
+        url_username: "{{ _cms_awx_token_user }}"
+        url_password: "{{ _cms_awx_token_password }}"
+        force_basic_auth: true
+        status_code: [200, 401, 403]
+      register: _cms_awx_token_user_me
+      no_log: true
+      when:
+        - _cms_awx_service_password | default('') | length > 0
+        - not _cms_awx_token_already_provisioned
+      failed_when: false
+
+    - name: Set AWX token auth mode
+      ansible.builtin.set_fact:
+        _cms_awx_use_service_credentials: >-
+          {{
+            _cms_awx_token_user_me.status | default(0) | int == 200
+          }}
+      no_log: true
+      when:
+        - _cms_awx_service_password | default('') | length > 0
+        - not _cms_awx_token_already_provisioned
+
+    - name: Extract user ID from /me response
+      ansible.builtin.set_fact:
+        _cms_awx_token_user_me_id: >-
+          {{
+            _cms_awx_token_user_me.json.id | default(
+              _cms_awx_token_user_me.json.results[0].id | default('')
+            )
+          }}
+      no_log: true
+      when:
+        - not _cms_awx_token_already_provisioned
+        - _cms_awx_use_service_credentials | default(false) | bool
+
+    - name: Set AWX token owner id
+      ansible.builtin.set_fact:
+        _cms_awx_token_owner_id: >-
+          {{
+            _cms_awx_token_user_me_id
+            if (_cms_awx_use_service_credentials | default(false) | bool and (_cms_awx_token_user_me_id | default('') | string | length > 0))
+            else _cms_awx_svc_user_id
+          }}
+      no_log: true
+      when: not _cms_awx_token_already_provisioned
+
+    - name: Create AWX personal token for DMF Console
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/users/{{ _cms_awx_token_owner_id }}/personal_tokens/"
+        method: POST
+        url_username: >-
+          {{
+            _cms_awx_token_user
+            if (_cms_awx_use_service_credentials | default(false) | bool)
+            else _cms_awx_admin_user
+          }}
+        url_password: >-
+          {{
+            _cms_awx_token_password
+            if (_cms_awx_use_service_credentials | default(false) | bool)
+            else _cms_awx_admin_password
+          }}
+        force_basic_auth: true
+        body_format: json
+        body:
+          description: "{{ cms_awx_svc_token_name }}"
+          scope: "write"
+        status_code: 201
+      register: _cms_awx_svc_token_created
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Parse AWX personal token result
+      ansible.builtin.set_fact:
+        _cms_awx_svc_token: "{{ _cms_awx_svc_token_created.json.token | default('') }}"
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Assert AWX personal token was returned
+      ansible.builtin.assert:
+        that:
+          - _cms_awx_svc_token | default('') | length > 0
+        fail_msg: "AWX did not return a personal token for {{ cms_awx_svc_user }}."
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    - name: Test newly created token immediately
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/users/{{ _cms_awx_svc_user_id }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _cms_awx_svc_token }}"
+        status_code: [200, 401, 403]
+      register: _cms_awx_new_token_test
+      changed_when: false
+      when: not _cms_awx_token_already_provisioned
+      no_log: true
+
+    # ── Persist to OpenBao ───────────────────────────────────────────────
+    - name: Read current AWX runtime secret from OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json secret/apps/awx/runtime'
+      register: _cms_awx_runtime_secret_raw
+      changed_when: false
+      failed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
+      when: not _cms_awx_token_already_provisioned
+
+    - name: Parse current AWX runtime secret from OpenBao
+      ansible.builtin.set_fact:
+        _cms_awx_runtime_secret_data: >-
+          {{
+            (
+              _cms_awx_runtime_secret_raw.stdout | default('{}') | from_json
+            ).data.data | default({})
+          }}
+      when: >-
+        not _cms_awx_token_already_provisioned
+        and _cms_awx_runtime_secret_raw.rc == 0
+        and _cms_awx_runtime_secret_raw.stdout | default('') | length > 0
+      no_log: true
+
+    - name: Default AWX runtime secret from OpenBao
+      ansible.builtin.set_fact:
+        _cms_awx_runtime_secret_data: {}
+      when:
+        - _cms_awx_runtime_secret_data is not defined
+        - not _cms_awx_token_already_provisioned
+      no_log: true
+
+    # MERGE (bao kv patch), never `bao kv put` — secret/apps/awx/runtime also
+    # holds awx_svc_password / awx_svc_token; a whole-secret PUT wipes siblings
+    # (known 69x-class bug). Persist BOTH the token and dmf-cms-svc's password
+    # so reruns are stable + the svc identity survives.
+    - name: Persist AWX token to OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n%s\n%s\n'
+          "$OPENBAO_TOKEN"
+          "$CMS_API_TOKEN"
+          "$CMS_SVC_PASSWORD" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          IFS= read -r API_TOKEN;
+          IFS= read -r SVC_PASSWORD;
+          export BAO_TOKEN;
+          bao kv patch secret/apps/awx/runtime cms_api_token="$API_TOKEN" cms_svc_password="$SVC_PASSWORD"'
+      register: _cms_awx_openbao_write_result
+      when: not _cms_awx_token_already_provisioned
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+        CMS_API_TOKEN: "{{ _cms_awx_svc_token }}"
+        CMS_SVC_PASSWORD: "{{ _cms_awx_svc_password | default('') }}"
+      no_log: true
+
+    - name: Verify AWX token was persisted to OpenBao
+      block:
+        - name: Read back AWX token from OpenBao
+          ansible.builtin.shell:
+            cmd: >-
+              printf '%s\n' "$OPENBAO_TOKEN" |
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ cms_openbao_namespace | default('openbao') }}
+              exec -i {{ _openbao_session_pod }}
+              -- sh -c '
+              IFS= read -r BAO_TOKEN;
+              export BAO_TOKEN;
+              bao kv get -format=json secret/apps/awx/runtime'
+          register: _cms_awx_openbao_raw
+          changed_when: false
+          failed_when: false
+          environment:
+            OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+          no_log: true
+
+        - name: Extract AWX token from OpenBao JSON
+          ansible.builtin.set_fact:
+            _cms_awx_openbao_verify:
+              rc: "{{ _cms_awx_openbao_raw.rc }}"
+              stdout: "{{ (_cms_awx_openbao_raw.stdout | from_json).data.data.cms_api_token | default('') }}"
+              stderr: "{{ _cms_awx_openbao_raw.stderr }}"
+          no_log: true
+
+        - name: Debug AWX token OpenBao read output
+          ansible.builtin.debug:
+            msg: |
+              rc: {{ _cms_awx_openbao_verify.rc }}
+              stdout: '{{ _cms_awx_openbao_verify.stdout }}'
+              stderr: '{{ _cms_awx_openbao_verify.stderr }}'
+          when: not _cms_awx_token_recovered_from_openbao | default(false) | bool
+
+        - name: Assert AWX token read succeeded from OpenBao
+          ansible.builtin.assert:
+            that:
+              - _cms_awx_openbao_verify.rc == 0
+            fail_msg: |
+              Failed to read AWX token back from OpenBao.
+              Return code: {{ _cms_awx_openbao_verify.rc }}
+              stderr: {{ _cms_awx_openbao_verify.stderr | default('(none)') }}
+              Check OpenBao is accessible and secret path exists.
+          when: not _cms_awx_token_recovered_from_openbao | default(false) | bool
+
+        - name: Assert AWX token was persisted correctly to OpenBao
+          ansible.builtin.assert:
+            that:
+              - _cms_awx_openbao_verify.stdout | trim == _cms_awx_svc_token
+            fail_msg: |
+              AWX service account token failed to persist to OpenBao.
+              Expected: {{ _cms_awx_svc_token }}
+              Got: {{ _cms_awx_openbao_verify.stdout | trim }}
+              This indicates OpenBao write succeeded but value is not consistent.
+              Check OpenBao policies and mount permissions for secret/apps/awx/runtime.
+          when: _cms_awx_openbao_verify.rc == 0
+
+      when: not _cms_awx_token_already_provisioned
+
+    # ── Recover token from OpenBao if missing from K8s ──────────────────
+    - name: Recover AWX token from OpenBao if K8s Secret is missing it
+      block:
+        - name: Test OpenBao token to verify it's valid
+          ansible.builtin.uri:
+            url: "{{ _cms_awx_api_base }}/me/"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ _cms_awx_openbao_token }}"
+            status_code: [200, 401, 403]
+          register: _cms_awx_recovered_token_test
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Extract username from recovered token /me response
+          ansible.builtin.set_fact:
+            _cms_awx_recovered_token_user: >-
+              {{
+                _cms_awx_recovered_token_test.json.username | default(
+                  _cms_awx_recovered_token_test.json.results[0].username | default('(not found)')
+                )
+              }}
+          no_log: true
+
+        - name: Check if recovered token is for correct service account
+          ansible.builtin.set_fact:
+            _cms_awx_recovered_token_valid: >-
+              {{
+                _cms_awx_recovered_token_test.status == 200 and
+                _cms_awx_recovered_token_user == cms_awx_svc_user
+              }}
+          no_log: true
+
+        - name: Proceed with recovery if token is valid
+          block:
+            - name: Alert that K8s Secret was missing token, recovering from OpenBao
+              ansible.builtin.debug:
+                msg: >-
+                  AWX token found in OpenBao and is valid for {{ cms_awx_svc_user }}.
+                  Restoring token to K8s Secret from OpenBao recovery path.
+
+            - name: Set recovered token for K8s update
+              ansible.builtin.set_fact:
+                _cms_awx_svc_token: "{{ _cms_awx_openbao_token }}"
+                _cms_awx_token_recovered_from_openbao: true
+              no_log: true
+
+          when: _cms_awx_recovered_token_valid | bool
+
+        - name: Force token regeneration if recovered token is invalid
+          ansible.builtin.debug:
+            msg: >-
+              AWX token found in OpenBao but is INVALID or for wrong user
+              (got {{ _cms_awx_recovered_token_user }}, expected {{ cms_awx_svc_user }}).
+              Forcing token regeneration.
+          when: not (_cms_awx_recovered_token_valid | bool)
+
+      when:
+        - _cms_awx_openbao_token | length > 0
+        - (_cms_awx_k8s_check.resources[0].data.awxApiToken | default('') | length) == 0
+
+    - name: Mark token as not needing regeneration if recovered from OpenBao
+      ansible.builtin.set_fact:
+        _cms_awx_token_already_provisioned: true
+      when: _cms_awx_token_recovered_from_openbao | default(false) | bool
+      no_log: true
+
+    # ── Patch K8s secret and roll ────────────────────────────────────────
+    - name: Read current DMF Console runtime Secret for checksum
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+      register: _cms_runtime_secret_current
+      no_log: true
+      when: >-
+        not _cms_awx_token_already_provisioned
+        or _cms_awx_token_recovered_from_openbao | default(false) | bool
+
+    - name: Compute new runtime Secret checksum including AWX token
+      ansible.builtin.set_fact:
+        _cms_runtime_secret_checksum: >-
+          {{
+            (_cms_runtime_secret_current.resources[0].data | default({})
+             | combine({
+                 'awxApiToken': (_cms_awx_svc_token | b64encode)
+               })
+             | to_nice_json | hash('sha256'))
+          }}
+      when: >-
+        not _cms_awx_token_already_provisioned
+        or _cms_awx_token_recovered_from_openbao | default(false) | bool
+      no_log: true
+
+    - name: Patch DMF Console runtime Secret with AWX API token
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+            namespace: "{{ cms_namespace | default('dmf-cms') }}"
+          type: Opaque
+          stringData:
+            awxApiToken: "{{ _cms_awx_svc_token }}"
+      when: >-
+        not _cms_awx_token_already_provisioned
+        or _cms_awx_token_recovered_from_openbao | default(false) | bool
+      no_log: true
+
+    - name: Patch DMF Console Deployment checksum annotation to trigger rollout
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ cms_release_name | default('dmf-cms') }}"
+            namespace: "{{ cms_namespace | default('dmf-cms') }}"
+          spec:
+            template:
+              metadata:
+                annotations:
+                  checksum/runtime-secret: "{{ _cms_runtime_secret_checksum }}"
+      when: not _cms_awx_token_already_provisioned
+
+    - name: Wait for DMF Console Deployment to be ready
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ cms_release_name | default('dmf-cms') }}"
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+      register: _cms_awx_deployment_ready
+      until:
+        - _cms_awx_deployment_ready.resources | length > 0
+        - _cms_awx_deployment_ready.resources[0].status.readyReplicas | default(0) | int >= 1
+      retries: 60
+      delay: 5

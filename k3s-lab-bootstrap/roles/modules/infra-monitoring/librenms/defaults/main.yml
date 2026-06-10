@@ -1,0 +1,43 @@
+---
+librenms_namespace: librenms
+librenms_exposure: host
+librenms_host: "librenms.{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+librenms_ingress_class: traefik-private
+librenms_path: /librenms
+librenms_helm_repo: https://www.librenms.org/helm-charts
+librenms_helm_chart_version: "7.1.0"
+librenms_image_tag: "25.12.0"
+librenms_external_scheme: https
+librenms_external_base_url: >-
+  {{ (librenms_external_scheme ~ '://' ~ librenms_host)
+     if (librenms_exposure | default('host')) == 'host'
+     else (external_base_url | default('http://' ~ metallb_vip)) }}
+
+librenms_storage_class: longhorn
+librenms_rrd_size: "1Gi"
+librenms_rrd_journal_size: "1Gi"
+librenms_mysql_storage_size: "1Gi"
+librenms_redis_storage_size: "1Gi"
+
+librenms_base_url: >-
+  {{ librenms_external_base_url
+     if (librenms_exposure | default('host')) == 'host'
+     else (librenms_external_base_url ~ librenms_path) }}
+librenms_external_host: "{{ librenms_external_base_url | regex_replace('^https?://', '') | regex_replace('/.*$', '') }}"
+librenms_proxy_image: "nginx:1.27-alpine"
+
+librenms_admin_username: admin
+librenms_admin_password: ""
+librenms_admin_email: admin@example.com
+
+librenms_oidc_enabled: true
+librenms_oidc_provider_name: LibreNMS
+librenms_oidc_socialite_key: authentik
+librenms_oidc_socialite_listener: "\\SocialiteProviders\\Authentik\\AuthentikExtendSocialite"
+librenms_oidc_socialite_base_url: "https://{{ authentik_host }}"
+librenms_oidc_redirect_uri: "{{ librenms_base_url }}/auth/{{ librenms_oidc_socialite_key }}/callback"
+librenms_oidc_scopes: '["openid","profile","email","groups"]'
+librenms_oidc_admin_group: ops-admin
+librenms_oidc_default_role: none
+librenms_oidc_register: true
+librenms_oidc_redirect: true

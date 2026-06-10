@@ -1,0 +1,16 @@
+# System packages bundled into the DMF AWX EE image.
+# The awx-ee base typically has these; declaring them here makes the
+# build reproducible if the base ever drops one.
+#
+# Format: <package> [platform:<distro>] (bindep.org / fedora-style tags)
+# awx-ee:24.6.1 is Fedora-based so platform:rpm applies.
+
+helm [platform:rpm]
+git [platform:rpm]
+ca-certificates [platform:rpm]
+# skopeo: registry-to-registry copy for playbook 630-zot-seed-platform.yml.
+# Pre-positioned here so the future ADR-0025 Lane B migration (Stage 4b
+# moves from workstation localhost to in-cluster ansible-runner pod) is a
+# one-line `hosts:` change in the playbook. Not consumed inside the EE
+# today since 630 runs workstation-side; rebuild is not urgent.
+skopeo [platform:rpm]

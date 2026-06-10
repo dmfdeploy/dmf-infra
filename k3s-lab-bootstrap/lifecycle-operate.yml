@@ -1,0 +1,18 @@
+---
+# DMF lifecycle: Operate + Monitor & Update stages (EBU white paper p.4).
+# Runtime checks against a deployed facility — full-stack verify, Phase 2
+# Layer-6 integration tests, OIDC login probes, DR drills, day-0 inventory
+# snapshots. Read-only; never mutates.
+- import_playbook: playbooks/lifecycle/operate-stack-verify.yml
+  tags: [lifecycle-operate, verify, stack]
+
+# Phase 2 validation gate: exercises the Layer-6 playbooks in order and checks
+# the CMS, born-inventory, and Zot endpoints after each deployment step.
+- import_playbook: playbooks/lifecycle/test-layer6.yml
+  tags: [lifecycle-operate, verify, stack, layer6, phase2]
+
+# Catalog drift detector: verifies NetBox lifecycle tags agree with Helm
+# release presence for all dmf-media/catalog/*.yaml entries.
+# References ADR-0012 (stage split) + ADR-0014 (AWX project layout).
+- import_playbook: playbooks/lifecycle/operate-catalog-drift.yml
+  tags: [lifecycle-operate, verify, catalog, drift]

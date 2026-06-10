@@ -1,0 +1,124 @@
+---
+- name: Install hardening packages
+  ansible.builtin.apt:
+    name:
+      - fail2ban
+      - unattended-upgrades
+      - apt-listchanges
+      - nftables
+      - rsyslog
+    state: present
+    update_cache: "{{ harden_update_apt_cache | bool }}"
+
+# ── Non-root admin user ──────────────────────────────────────────────────────
+
+- name: Create admin group
+  ansible.builtin.group:
+    name: "{{ harden_admin_user }}"
+    state: present
+
+- name: Create admin user
+  ansible.builtin.user:
+    name: "{{ harden_admin_user }}"
+    group: "{{ harden_admin_user }}"
+    groups: sudo
+    shell: /bin/bash
+    create_home: true
+    state: present
+
+- name: Add SSH public key for admin user
+  ansible.posix.authorized_key:
+    user: "{{ harden_admin_user }}"
+    key: "{{ harden_admin_pubkey }}"
+    state: present
+  when: harden_admin_pubkey | length > 0
+
+- name: Allow sudo without password for admin user
+  ansible.builtin.copy:
+    dest: "/etc/sudoers.d/{{ harden_admin_user }}"
+    content: "{{ harden_admin_user }} ALL=(ALL) NOPASSWD:ALL\n"
+    mode: "0440"
+    validate: "visudo -cf %s"
+
+# ── SSH hardening ─────────────────────────────────────────────────────────────
+
+- name: Harden SSH daemon configuration
+  ansible.builtin.blockinfile:
+    path: /etc/ssh/sshd_config
+    marker: "# {mark} ANSIBLE MANAGED — hardening"
+    block: |
+      PermitRootLogin prohibit-password
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+      AuthorizedKeysFile .ssh/authorized_keys
+      AllowUsers {{ harden_admin_user }} root
+      MaxAuthTries 3
+      LoginGraceTime 20
+      ClientAliveInterval 300
+      ClientAliveCountMax 2
+      X11Forwarding no
+      AllowTcpForwarding no
+      PrintMotd no
+  notify: Restart sshd
+
+# ── nftables (OS-level firewall) ──────────────────────────────────────────────
+
+- name: Deploy nftables ruleset
+  ansible.builtin.template:
+    src: nftables.conf.j2
+    dest: /etc/nftables.conf
+    mode: "0640"
+    validate: "/usr/sbin/nft -c -f %s"
+  notify: Apply nftables ruleset
+
+- name: Remove existing DMF nftables table before first load
+  ansible.builtin.command: /usr/sbin/nft delete table inet filter
+  register: harden_nft_delete_table
+  changed_when: harden_nft_delete_table.rc == 0
+  failed_when:
+    - harden_nft_delete_table.rc != 0
+    - "'No such file or directory' not in harden_nft_delete_table.stderr"
+
+- name: Enable and start nftables
+  ansible.builtin.systemd:
+    name: nftables
+    enabled: true
+    state: started
+
+# ── Fail2ban ──────────────────────────────────────────────────────────────────
+
+- name: Deploy fail2ban jail config
+  ansible.builtin.template:
+    src: jail.local.j2
+    dest: /etc/fail2ban/jail.local
+    mode: "0644"
+  notify: Restart fail2ban
+
+- name: Enable and start fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    enabled: true
+    state: started
+
+# ── Unattended upgrades ───────────────────────────────────────────────────────
+
+- name: Configure unattended-upgrades
+  ansible.builtin.template:
+    src: 50unattended-upgrades.j2
+    dest: /etc/apt/apt.conf.d/50unattended-upgrades
+    mode: "0644"
+
+- name: Enable automatic updates
+  ansible.builtin.copy:
+    dest: /etc/apt/apt.conf.d/20auto-upgrades
+    content: |
+      APT::Periodic::Update-Package-Lists "1";
+      APT::Periodic::Unattended-Upgrade "1";
+      APT::Periodic::AutocleanInterval "7";
+    mode: "0644"
+
+# ── Cloud firewall (provider-specific, optional) ─────────────────────────────
+
+- name: Apply cloud firewall rules
+  ansible.builtin.include_tasks: "{{ harden_cloud_firewall_tasks }}"
+  when: harden_cloud_firewall_tasks | length > 0

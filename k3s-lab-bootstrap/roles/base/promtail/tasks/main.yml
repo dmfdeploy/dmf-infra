@@ -1,0 +1,39 @@
+---
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ promtail_namespace }}"
+
+- name: Add grafana Helm repository
+  kubernetes.core.helm_repository:
+    name: grafana
+    repo_url: "{{ promtail_helm_repo }}"
+
+- name: Template Promtail Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/promtail-values.yml
+    mode: "0644"
+
+- name: Deploy Promtail via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: promtail
+    chart_ref: grafana/promtail
+    chart_version: "{{ promtail_helm_chart_version }}"
+    release_namespace: "{{ promtail_namespace }}"
+    create_namespace: true
+    values_files:
+      - /tmp/promtail-values.yml
+    wait: true
+    wait_timeout: 300s
+
+- name: Cleanup temp values file
+  ansible.builtin.file:
+    path: /tmp/promtail-values.yml
+    state: absent

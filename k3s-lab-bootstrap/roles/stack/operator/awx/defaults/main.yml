@@ -1,0 +1,246 @@
+---
+awx_namespace: awx
+awx_helm_repo: https://ansible-community.github.io/awx-operator-helm/
+awx_operator_version: "3.2.1"
+
+# AWX instance configuration
+awx_instance_name: awx
+# Local AWX admin username — intentionally a fixed non-colliding break-glass
+# identity, NOT vault_bootstrap_admin_username. ADR-0028 D3 + per-app survey
+# §3.2 (2026-05-24): when the local admin username matches the
+# SAML-projected operator username, social_django's create_user step
+# appends a UUID suffix on first SAML login, producing a shadow superuser
+# (observed on g2r6-foa9 as `<operator>22daa48fb6594ba3`). Decoupling the
+# break-glass identity from the operator's Authentik username eliminates
+# the collision and removes the shadow class entirely.
+#
+# Existing envs that bootstrapped with the prior default (i.e. the
+# operator's username) MUST override this in env inventory before
+# re-running this role, or plan a one-time live migration. See
+# docs/plans/DMF Per-App Identity Feasibility Survey 2026-05-24.md §5
+# item 1 for the migration path.
+awx_admin_user: awx-break-glass
+# ADR-0024/0028 canonical break-glass email: per-app, per-env synthetic.
+# Must NOT fall back to vault_bootstrap_admin_email (operator email) — AWX's
+# SAML default SOCIAL_AUTH pipeline would merge the operator's SSO into this
+# break-glass User row on a username collision (the AWX shadow-superuser
+# class documented in ADR-0028 lines 66-70), and an email collision is the
+# analogous failure mode for the OIDC pipeline. bootstrap-secrets.sh seed-bao
+# writes the same pattern to secret/apps/awx/admin.email.
+awx_admin_email: "{{ vault_awx_admin_email | default('awx-' ~ (dmf_env_id | default('local')) ~ '@' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
+awx_admin_password: "{{ vault_awx_admin_password | default(vault_bootstrap_admin_password | mandatory) }}"
+
+# Storage configuration
+# Role-specific storage class defaults to the global dmf_storage_class if set,
+# otherwise falls back to the cloud/site default (longhorn).
+awx_postgres_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+awx_postgres_storage_size: 1Gi
+awx_projects_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+awx_projects_storage_size: 1Gi
+
+# Projects persistence access mode - ReadWriteMany for multi-pod cloud
+# deployments; set to ReadWriteOnce for single-node / local-path profiles.
+awx_projects_storage_access_mode: ReadWriteMany
+
+# Ingress configuration
+awx_path: /awx
+awx_service_type: ClusterIP
+
+# Exposure model — "host" (cloud lane default) or "path" (airgapped/flypack).
+awx_exposure: host
+awx_host: awx.dmf.example.com
+awx_ingress_class: traefik-private
+awx_external_scheme: https
+awx_external_base_url: "{{ awx_external_scheme }}://{{ awx_host }}"
+awx_public_base_url: >-
+  {{
+    awx_external_base_url
+    if (awx_exposure | default('host')) == 'host'
+    else ((external_base_url | default('http://' ~ (metallb_vip | default('placeholder')))) | regex_replace('/+$', '') ~ awx_path)
+  }}
+
+# Authentik SAML SSO for human AWX access. API automation still uses the local
+# bootstrap admin/service token path, not browser SAML.
+awx_saml_enabled: true
+awx_saml_idp_name: authentik
+awx_saml_admin_group: ops-admin
+awx_saml_sp_entity_id: awx
+awx_saml_acs_url: "{{ awx_public_base_url }}/sso/complete/saml/"
+awx_saml_sp_metadata_url: "{{ awx_public_base_url }}/sso/metadata/saml/"
+awx_saml_authentik_base_url: "{{ 'https://' ~ (authentik_host | default('auth.dmf.example.com')) }}"
+awx_saml_authentik_namespace: "{{ authentik_namespace | default('authentik') }}"
+awx_saml_authentik_server_deploy: "{{ (authentik_release_name | default('authentik')) ~ '-server' }}"
+awx_saml_authentik_signing_kp: "authentik Self-signed Certificate"
+awx_saml_application_slug: awx
+awx_saml_idp_sso_url: "{{ awx_saml_authentik_base_url }}/application/saml/{{ awx_saml_application_slug }}/sso/binding/redirect/"
+awx_saml_idp_entity_id: "{{ awx_saml_sp_metadata_url }}"
+awx_saml_idp_certificate: ""
+awx_saml_certificate_discovery_retries: 18
+awx_saml_certificate_discovery_delay: 10
+awx_saml_login_redirect_override: "/sso/login/saml/?idp={{ awx_saml_idp_name }}"
+awx_saml_org_info:
+  en-US:
+    name: DMF
+    displayname: DMF
+    url: "{{ awx_saml_authentik_base_url }}"
+awx_saml_technical_contact:
+  givenName: DMF Admin
+  emailAddress: "{{ cert_manager_acme_email | default('admin@example.com') }}"
+awx_saml_support_contact:
+  givenName: DMF Admin
+  emailAddress: "{{ cert_manager_acme_email | default('admin@example.com') }}"
+awx_saml_user_flags_by_attr:
+  is_superuser_attr: "http://schemas.xmlsoap.org/claims/Group"
+  is_superuser_value:
+    - "{{ awx_saml_admin_group }}"
+  remove_superusers: false
+  remove_system_auditors: false
+
+# Optional explicit SOCIAL_AUTH_PIPELINE override. Default off: AWX's
+# in-built pipeline is used as-is. ADR-0028 D3 / survey §3.2: an explicit
+# pipeline that ensures `associate_by_email` runs before `create_user`
+# (mirroring NetBox's pattern at
+# roles/stack/operator/netbox/templates/values.yml.j2 SOCIAL_AUTH_PIPELINE)
+# is the belt-and-suspenders fix for username-collision shadow accounts.
+# The architectural fix is the `awx_admin_user` rename above; this
+# explicit pipeline tightens behaviour for additional collision scenarios.
+#
+# Opt-in path: set `awx_saml_explicit_pipeline: true` in env inventory
+# after live-testing on the target AWX version. The step names below
+# match AWX 24.x (awx-operator 3.2.x). Newer AWX versions may add/remove
+# pipeline functions; verify against AWX source before flipping on.
+awx_saml_explicit_pipeline: false
+awx_saml_social_auth_pipeline:
+  - social_core.pipeline.social_auth.social_details
+  - social_core.pipeline.social_auth.social_uid
+  - social_core.pipeline.social_auth.auth_allowed
+  - social_core.pipeline.social_auth.social_user
+  - social_core.pipeline.user.get_username
+  - social_core.pipeline.social_auth.associate_by_email
+  - social_core.pipeline.user.create_user
+  - social_core.pipeline.social_auth.associate_user
+  - social_core.pipeline.social_auth.load_extra_data
+  - social_core.pipeline.user.user_details
+  - awx.sso.pipeline.check_user_found_or_created
+  - awx.sso.pipeline.set_is_active_for_new_user
+  - awx.sso.pipeline.prevent_inactive_login
+  - awx.sso.pipeline.update_user_orgs
+  - awx.sso.pipeline.update_user_teams
+  - awx.sso.pipeline.update_user_flags
+  - awx.sso.pipeline.update_user_orgs_by_saml_attr
+  - awx.sso.pipeline.update_user_teams_by_saml_attr
+
+# Scheduling and resources (tune for lab sizing)
+awx_web_resource_requirements:
+  requests:
+    cpu: 100m
+    memory: 768Mi
+  limits:
+    cpu: 500m
+    memory: 1536Mi
+
+awx_task_resource_requirements:
+  requests:
+    cpu: 200m
+    memory: 1024Mi
+  limits:
+    cpu: 1000m
+    memory: 2048Mi
+
+# Single-node sandbox fit (WP1S Phase 3, dmf_awx_profile ==
+# single-node-low-concurrency). Both UNDEFINED by default so the lab/cloud
+# rendered CR is unchanged; the sandbox profile prelude
+# (bootstrap-sandbox-profile.yml) sets them only when the fit profile is
+# active. The gate is load-bearing — a global fork ceiling and a small
+# postgres must never leak to the lab lane, which wants throughput.
+#
+#   awx_max_forks: 5                       # global per-job fork ceiling (MAX_FORKS)
+#   awx_postgres_resource_requirements:    # managed-postgres requests/limits
+#     requests: { cpu: 50m, memory: 256Mi }
+#     limits:   { cpu: 1000m, memory: 768Mi }
+#
+# NOT settable here: job concurrency cap (max_concurrent_jobs) and per-job EE
+# pod memory — both live on the InstanceGroup and need a REST PATCH via
+# awx-integration. See the DEFERRED note in templates/awx-instance.yml.j2.
+
+# Prefer spreading AWX web/task across nodes
+awx_web_affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: awx
+          topologyKey: kubernetes.io/hostname
+
+awx_task_affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: awx
+          topologyKey: kubernetes.io/hostname
+
+# AWX execution environment pod spec override (ADR-0014, Phase 8)
+# Enables service account token mounting for catalog job execution.
+# Jobs can then authenticate to Kubernetes API as awx-runner-sa.
+awx_ee_pod_spec_override: |
+  {
+    "serviceAccountName": "awx-runner-sa",
+    "automountServiceAccountToken": true,
+    "containers": [
+      {
+        "name": "awx-ee",
+        "volumeMounts": [
+          {
+            "name": "sa-token",
+            "mountPath": "/var/run/secrets/kubernetes.io/serviceaccount",
+            "readOnly": true
+          }
+        ]
+      }
+    ],
+    "volumes": [
+      {
+        "name": "sa-token",
+        "projected": {
+          "sources": [
+            {
+              "serviceAccountToken": {
+                "audience": "https://kubernetes.default.svc.cluster.local",
+                "expirationSeconds": 3600,
+                "path": "token"
+              }
+            },
+            {
+              "configMap": {
+                "name": "kube-root-ca.crt",
+                "items": [
+                  {
+                    "key": "ca.crt",
+                    "path": "ca.crt"
+                  }
+                ]
+              }
+            },
+            {
+              "downwardAPI": {
+                "items": [
+                  {
+                    "path": "namespace",
+                    "fieldRef": {
+                      "apiVersion": "v1",
+                      "fieldPath": "metadata.namespace"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    ]
+  }

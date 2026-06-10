@@ -1,0 +1,45 @@
+---
+# External Secrets Operator — install + wire ClusterSecretStore at OpenBao.
+#
+# role_id / secret_id are pulled from the OpenBao break-glass JSON on the
+# operator's local machine. The path is controlled by
+# `eso_openbao_breakglass_file`. For Hetzner lab this is set in
+# inventories/hetzner-arm/group_vars/all/eso.yml
+#
+# When this role is reused for flypack / standalone, override
+# `eso_openbao_breakglass_file` or set `eso_openbao_role_id`
+# / `eso_openbao_secret_id` directly (e.g. from a factory-generated source).
+
+- name: Deploy External Secrets Operator
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Normalize legacy in-cluster OpenBao URL to the TLS endpoint
+      ansible.builtin.set_fact:
+        eso_openbao_url: "https://openbao.openbao.svc.cluster.local:8200"
+      when:
+        - eso_openbao_url | default('') is match('^http://openbao\\.')
+
+    - name: Load OpenBao break-glass JSON from operator host
+      ansible.builtin.set_fact:
+        _eso_breakglass: "{{ lookup('file', eso_openbao_breakglass_file) | from_json }}"
+      delegate_to: localhost
+      become: false
+      no_log: true
+      when:
+        - eso_openbao_breakglass_file | default('') | length > 0
+        - eso_openbao_role_id | default('') | length == 0
+
+    - name: Inject role_id / secret_id from break-glass JSON
+      ansible.builtin.set_fact:
+        eso_openbao_role_id: "{{ _eso_breakglass.eso_role_id }}"
+        eso_openbao_secret_id: "{{ _eso_breakglass.eso_secret_id }}"
+      no_log: true
+      when:
+        - _eso_breakglass is defined
+
+  roles:
+    - base/cluster-ready
+    - base/external-secrets

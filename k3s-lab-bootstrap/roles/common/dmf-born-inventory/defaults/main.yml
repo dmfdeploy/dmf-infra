@@ -1,0 +1,219 @@
+---
+dmf_born_inventory_enabled: true
+
+# Fallback chain for the legacy env_name var (still consumed by a few
+# prose comments + the final report):
+#   1. topology.environment_name — set by hand in some manifests
+#   2. dmf_inventory_env_name    — injected by dmf-env/bin/run-playbook.sh
+#                                  from the inventory directory name; this
+#                                  is the reliable signal for legacy envs
+#                                  like hetzner-arm / aliyun-123
+#   3. dmf_env_id                — new wizard-rendered envs
+#   4. 'hetzner-arm'             — last-resort literal so existing
+#                                  hetzner-arm behavior is preserved
+dmf_born_inventory_env_name: >-
+  {{ topology.environment_name
+     | default(dmf_inventory_env_name
+       | default(dmf_env_id | default('hetzner-arm'))) }}
+
+# --- env schema (init-wizard 2026-05-19) ---
+# Four orthogonal fields. env_id is the opaque identifier; env_label is a
+# display-only human name; provider + architecture are structured enums.
+# Legacy envs that pre-date this schema leave provider/architecture/label
+# empty, which keeps the NetBox custom-field patches no-op for them.
+# env_id falls through dmf_inventory_env_name so legacy aliyun-123 gets
+# the inventory-directory name as its cluster/site identifier rather
+# than the literal 'hetzner-arm'.
+dmf_born_inventory_env_id: >-
+  {{ dmf_env_id
+     | default(topology.env_id
+       | default(dmf_inventory_env_name | default('hetzner-arm'))) }}
+dmf_born_inventory_env_label: >-
+  {{ dmf_env_label | default(topology.env_label | default('')) }}
+dmf_born_inventory_provider: >-
+  {{ dmf_provider | default(topology.provider | default('')) }}
+dmf_born_inventory_architecture: >-
+  {{ dmf_architecture | default(topology.architecture | default('')) }}
+
+# Site name uses env_label when set, falling back to env_id. The `true`
+# arg to default also treats empty strings as "missing" so a literal "" label
+# never produces "DMF  " with a trailing space.
+dmf_born_inventory_site_name: >-
+  DMF {{ dmf_born_inventory_env_label | default(dmf_born_inventory_env_id, true) }}
+dmf_born_inventory_site_slug: "{{ dmf_born_inventory_site_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+dmf_born_inventory_tenant_name: "DMF"
+dmf_born_inventory_tenant_slug: "dmf"
+# Cluster name is the structural identifier — always env_id (slug-shaped).
+dmf_born_inventory_cluster_name: "{{ dmf_born_inventory_env_id }}"
+dmf_born_inventory_cluster_type_name: "k3s"
+dmf_born_inventory_platform_name: "Debian 12"
+# Manufacturer derived from provider; falls back to Hetzner so the legacy
+# hetzner-arm env stays unchanged. aliyun-123 already misreported as
+# Hetzner under the old hardcoded default — see follow-up in the plan.
+dmf_born_inventory_manufacturer_name: >-
+  {{ {'hetzner': 'Hetzner', 'aliyun': 'Aliyun', 'aws': 'AWS'}.get(dmf_born_inventory_provider, 'Hetzner') }}
+dmf_born_inventory_device_role_control_plane: "k3s-control-plane"
+dmf_born_inventory_device_role_worker: "k3s-worker"
+dmf_born_inventory_device_role_load_balancer: "load-balancer"
+dmf_born_inventory_load_balancer_name: "dmf-traefik"
+dmf_born_inventory_load_balancer_device_type_name: "Hetzner Cloud Load Balancer"
+dmf_born_inventory_load_balancer_interface_name: "public"
+dmf_born_inventory_tailscale_interface_name: "tailscale0"
+dmf_born_inventory_traefik_service_name: "{{ cluster_ingress_service_name | default('traefik') }}"
+dmf_born_inventory_traefik_service_namespace: "{{ cluster_ingress_service_namespace | default('kube-system') }}"
+dmf_born_inventory_tag_name: "dmf-day0"
+
+dmf_born_inventory_openbao_namespace: openbao
+dmf_born_inventory_openbao_pod_label_selector: "app.kubernetes.io/name=openbao"
+dmf_born_inventory_openbao_approle_role_id_key: born_inventory_role_id
+dmf_born_inventory_openbao_approle_secret_id_key: born_inventory_secret_id
+dmf_born_inventory_openbao_breakglass_file: >-
+  {{
+    eso_openbao_breakglass_file
+    | default((openbao_key_path | default('')) ~ '.json', true)
+  }}
+dmf_born_inventory_netbox_runtime_secret_path: >-
+  {{ netbox_runtime_secret_path | default('secret/apps/netbox/runtime') }}
+dmf_born_inventory_netbox_admin_token: ""
+
+dmf_born_inventory_netbox_host: >-
+  {{
+    netbox_host
+    | default(
+        'netbox.' ~ (cert_manager_cluster_domain | default('dmf.example.com')),
+        true
+      )
+  }}
+dmf_born_inventory_netbox_scheme: >-
+  {{
+    'https'
+    if (external_base_url | default('https://' ~ dmf_born_inventory_netbox_host)).startswith('https://')
+    else 'http'
+  }}
+dmf_born_inventory_netbox_path: >-
+  {{ '' if (netbox_exposure | default('host')) == 'host' else (netbox_base_path | default('/netbox')) }}
+dmf_born_inventory_netbox_api_base: >-
+  {{
+    dmf_born_inventory_netbox_scheme ~ '://' ~ dmf_born_inventory_netbox_host
+    if (netbox_exposure | default('host')) == 'host'
+    else (external_base_url | default('http://' ~ metallb_vip))
+  }}{{ dmf_born_inventory_netbox_path }}/api
+# NetBox is served with the lab CA; callers may override per environment if
+# they need to trust a different certificate chain.
+dmf_born_inventory_netbox_validate_certs: false
+
+dmf_born_inventory_report_path: /tmp/dmf-born-inventory-report.json
+dmf_born_inventory_default_status: active
+
+# L6 app registration as ipam.Service objects.
+# Each entry: key, display_name, exposure (public|private), oidc_client_id (or '').
+dmf_born_inventory_apps:
+  - key: landing
+    display_name: Landing Page
+    exposure: public
+    oidc_client_id: ""
+  - key: authentik
+    display_name: Authentik
+    exposure: public
+    oidc_client_id: authentik
+  - key: forgejo
+    display_name: Forgejo
+    exposure: private
+    oidc_client_id: forgejo
+  - key: awx
+    display_name: AWX
+    exposure: private
+    oidc_client_id: awx
+  - key: netbox
+    display_name: NetBox
+    exposure: private
+    oidc_client_id: netbox
+  - key: grafana
+    display_name: Grafana
+    exposure: private
+    oidc_client_id: grafana
+  - key: prometheus
+    display_name: Prometheus
+    exposure: private
+    oidc_client_id: ""
+  - key: loki
+    display_name: Loki
+    exposure: private
+    oidc_client_id: ""
+  - key: zot
+    display_name: Zot Registry
+    exposure: private
+    oidc_client_id: zot
+  - key: dmf-cms
+    display_name: DMF Console
+    exposure: public
+    oidc_client_id: dmf-cms
+
+# ── Monitoring stamping on ipam.Service (WP7) ─────────────────────────────
+# Born-inventory stamps monitoring tags + probe_module custom field on each
+# registered L6 app service so the dmf-promsd adapter can discover them via
+# NetBox-SD.
+#
+# Default: monitoring:probe (blackbox probe). Born-inventoried platform apps
+# are web apps with no Prometheus /metrics endpoint — they must be probed,
+# not scraped. The RARE override case is an app that genuinely exposes
+# /metrics, which sets {tag: monitoring:scrape, metrics_port: N}.
+dmf_born_inventory_monitoring_tag: "monitoring:probe"
+
+# Default probe module for the probe lane.
+dmf_born_inventory_default_probe_module: http_2xx
+
+# Per-app monitoring overrides. key -> {tag, probe_module?, metrics_port?}.
+# When an app exposes /metrics, override to {tag: monitoring:scrape, metrics_port: N}.
+# For probe lane overrides, set {tag: monitoring:probe, probe_module: http_2xx_insecure}.
+dmf_born_inventory_app_monitoring_overrides: {}
+# Example (app with a /metrics endpoint):
+#   dmf_born_inventory_app_monitoring_overrides:
+#     prometheus: { tag: "monitoring:scrape", metrics_port: 9090 }
+
+# Per-app Kubernetes cluster coordinates (ADR-0038 Amendment A).
+# Maps app key -> {service, namespace, port} for the in-cluster Service.
+# Used to stamp cluster_service/cluster_namespace/cluster_port custom fields
+# on the ipam.Service record so dmf-promsd can compose svc-DNS probe targets.
+# Values sourced from live cluster: kubectl get svc -A on montest.
+dmf_born_inventory_app_cluster_coords:
+  grafana:
+    service: grafana
+    namespace: monitoring
+    port: 80
+  netbox:
+    service: netbox
+    namespace: netbox
+    port: 80
+  awx:
+    service: awx-service
+    namespace: awx
+    port: 80
+  forgejo:
+    service: forgejo-http
+    namespace: forgejo
+    port: 3000
+  loki:
+    service: loki
+    namespace: monitoring
+    port: 3100
+  prometheus:
+    service: prometheus-server
+    namespace: monitoring
+    port: 80
+  zot:
+    service: zot
+    namespace: zot
+    port: 5000
+  dmf-cms:
+    service: dmf-cms
+    namespace: dmf-cms
+    port: 8000
+  authentik:
+    service: authentik-server
+    namespace: authentik
+    port: 80
+  landing:
+    service: landing-page
+    namespace: default
+    port: 80

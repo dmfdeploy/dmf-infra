@@ -1,0 +1,24 @@
+---
+loki_namespace: monitoring
+# 50 GiB sized for 30-day operator retention + 6-month security-stream retention
+# on a single-binary lab cluster. Recompute when stream volume changes
+# materially. See audit-log-retention-policy.md for the retention contract.
+loki_storage_size: 50Gi
+loki_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+# Default retention (also used as the floor for any stream without an explicit
+# rule). Aligns with operator activity retention in
+# docs/processes/audit-log-retention-policy.md.
+loki_retention: 720h          # 30 days
+# Per-stream retention overrides applied via limits_config.retention_stream
+# below. Security streams (k3s API audit, Authentik audit, app-security) carry
+# a 6-month retention; everything else falls through to loki_retention.
+loki_security_retention: 4380h  # 6 months (≈ 182.5 days)
+# Compactor controls (must stay enabled for retention to be enforced; see the
+# pre-Tier-A bug where retention_period was set but compactor was disabled).
+loki_compactor_retention_delete_delay: 2h
+loki_compactor_retention_delete_worker_count: 150
+loki_path: /loki
+loki_helm_repo: https://grafana.github.io/helm-charts
+loki_helm_chart_version: "6.6.2"
+loki_wait_retries: 60
+loki_wait_delay: 5

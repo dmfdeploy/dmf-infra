@@ -1,0 +1,8 @@
+---
+- name: Deploy OpenBao network policies
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: true
+  roles:
+    - base/cluster-ready
+    - base/network-policies

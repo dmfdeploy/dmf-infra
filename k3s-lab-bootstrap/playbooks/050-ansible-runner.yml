@@ -1,0 +1,15 @@
+---
+# Install the in-cluster ansible runner foundation (namespace, SA, RBAC).
+#
+# Runs early in the configure stage — must complete before any playbook
+# that relies on `bin/run-playbook-in-cluster.sh`. Idempotent; safe to
+# re-run.
+#
+# References: ADR-0023 §Future direction (approved spike plan, 2026-05-14)
+- name: Install in-cluster ansible runner foundation
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - stack/operator/ansible-runner

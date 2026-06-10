@@ -1,0 +1,53 @@
+---
+# DMF sandbox bootstrap: Provision — Pre-seed.
+#
+# Single-node release profile path. It reuses the same atomic playbooks as the
+# lab where possible, but deliberately omits multi-node/cloud-only components:
+# private ingress, Headscale/Tailscale, Longhorn, audit archival, and the
+# Longhorn-shaped container-platform verifier.
+#
+# Next step: dmf-env/bin/bootstrap-secrets.sh seed-bao <env>
+# Then: bootstrap-sandbox-provision-post-seed.yml
+
+- import_playbook: bootstrap-sandbox-profile.yml
+  tags: [always, sandbox, release-profile]
+
+# ── Layer 2xx — Host Platform (preflight + baseline + hardening) ─────────────
+- import_playbook: playbooks/219-host-verify.yml
+  tags: [bootstrap-preflight, layer2, host-platform, verify]
+- import_playbook: playbooks/200-baseline.yml
+  tags: [layer2, host-platform, baseline]
+- import_playbook: playbooks/205-chrony.yml
+  tags: [layer2, host-platform, security, time-sync, chrony]
+- import_playbook: playbooks/210-harden.yml
+  tags: [layer2, host-platform, security]
+- import_playbook: playbooks/211-kernel-cve-mitigations.yml
+  tags: [layer2, host-platform, security, kernel-cve-mitigations]
+
+# ── Layer 3xx — Container Platform ───────────────────────────────────────────
+- import_playbook: playbooks/300-k3s.yml
+  tags: [layer3, container-platform, k3s]
+- import_playbook: playbooks/301-k3s-verify.yml
+  tags: [layer3, container-platform, k3s, verify]
+- import_playbook: playbooks/310-ingress-public.yml
+  tags: [layer3, container-platform, ingress, public-lane]
+- import_playbook: playbooks/320-cert-manager.yml
+  tags: [layer3, container-platform, tls]
+- import_playbook: playbooks/321-local-ca-trust.yml
+  tags: [layer3, container-platform, tls, local-ca, dns]
+- import_playbook: playbooks/331-registry-zot.yml
+  tags: [layer3, container-platform, registry]
+
+# ── Vertical: Security base ──────────────────────────────────────────────────
+- import_playbook: playbooks/vertical-security/100-openbao.yml
+  tags: [vertical-security, secrets, openbao]
+- import_playbook: playbooks/vertical-security/120-network-policies.yml
+  tags: [vertical-security, networking, network-policies]
+
+# ── Vertical: Orchestration base ─────────────────────────────────────────────
+- import_playbook: playbooks/vertical-orchestration/100-eso.yml
+  tags: [vertical-orchestration, secrets, eso]
+- import_playbook: playbooks/vertical-orchestration/110-eso-secret-rotation.yml
+  tags: [vertical-orchestration, secrets, eso, rotation]
+- import_playbook: playbooks/vertical-orchestration/120-ops-admin-rotation.yml
+  tags: [vertical-orchestration, secrets, openbao, rotation]

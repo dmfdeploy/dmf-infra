@@ -1,0 +1,128 @@
+---
+# playbooks/lifecycle/tasks/catalog-drift-check.yml
+# Per-catalog-entry drift check (included via operate-catalog-drift.yml).
+#
+# For a single catalog entry `entry`:
+#   1. Query NetBox ipam.Service by entry.provision.netbox_service.name
+#   2. Extract the lifecycle tag (lifecycle:active or lifecycle:bootstrapped)
+#   3. Check Helm release presence via helm_info
+#   4. Assert agreement; record drift if mismatch
+
+# ── 1. Query NetBox for the service record ───────────────────────────────────
+- name: "Drift check: query NetBox for {{ entry.key }}"
+  ansible.builtin.uri:
+    url: "{{ netbox_api_url }}/api/ipam/services/?name={{ entry.provision.netbox_service.name | urlencode }}"
+    method: GET
+    headers:
+      Authorization: "Token {{ netbox_admin_token }}"
+    validate_certs: false
+    return_content: true
+    timeout: 30
+  no_log: true
+  register: _nb_service_lookup
+
+- name: "Drift check: extract NetBox service tags for {{ entry.key }}"
+  ansible.builtin.set_fact:
+    _nb_service_exists: >-
+      {{ _nb_service_lookup.json.results | length > 0 }}
+    _nb_service_tags: >-
+      {{
+        (_nb_service_lookup.json.results | first).tags
+        if _nb_service_lookup.json.results | length > 0
+        else []
+      }}
+    _nb_service_tag_names: >-
+      {{
+        (_nb_service_lookup.json.results | first).tags | map(attribute='name') | list
+        if _nb_service_lookup.json.results | length > 0
+        else []
+      }}
+  no_log: true
+
+# ── 2. Determine NetBox lifecycle state ──────────────────────────────────────
+- name: "Drift check: determine NetBox lifecycle for {{ entry.key }}"
+  ansible.builtin.set_fact:
+    _nb_lifecycle: >-
+      {{
+        'active' if 'lifecycle:active' in _nb_service_tag_names
+        else ('bootstrapped' if 'lifecycle:bootstrapped' in _nb_service_tag_names
+        else 'unknown')
+      }}
+  no_log: true
+
+# ── 3. Check Helm release presence ──────────────────────────────────────────
+# The Helm release name is the catalog entry's chart name; the namespace
+# is read from entry.provision.namespace (catalog-schema source of truth,
+# per decision catalog-namespace-source-of-truth — Option A, 2026-05-12).
+- name: "Drift check: assert provision.namespace present for {{ entry.key }}"
+  ansible.builtin.assert:
+    that: entry.provision.namespace is defined
+    fail_msg: >
+      Catalog entry '{{ entry.key }}' lacks provision.namespace.
+      Required since 2026-05-12 — see docs/architecture/DMF Function
+      Catalog Model.md and decisions-open.md `catalog-namespace-source-of-truth`.
+
+- name: "Drift check: check Helm release for {{ entry.key }}"
+  kubernetes.core.helm_info:
+    name: "{{ entry.provision.chart.name }}"
+    namespace: "{{ entry.provision.namespace }}"
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+  register: _helm_release
+  failed_when: false
+  no_log: false
+
+- name: "Drift check: determine Helm release state for {{ entry.key }}"
+  ansible.builtin.set_fact:
+    _helm_present: >-
+      {{
+        _helm_release.status is defined and
+        _helm_release.status is not none and
+        (_helm_release.status | length > 0)
+      }}
+
+# ── 4. Assert agreement ─────────────────────────────────────────────────────
+- name: "Drift check: assert agreement for {{ entry.key }}"
+  ansible.builtin.set_fact:
+    _drift: false
+    _drift_message: ""
+
+- name: "Drift check: active-but-missing for {{ entry.key }}"
+  ansible.builtin.set_fact:
+    _drift: true
+    _drift_message: "NetBox lifecycle:active but Helm release '{{ entry.provision.chart.name }}' is missing — workload absent despite active tag"
+  when: _nb_lifecycle == 'active' and not _helm_present
+
+- name: "Drift check: bootstrapped-but-present for {{ entry.key }}"
+  ansible.builtin.set_fact:
+    _drift: true
+    _drift_message: "NetBox lifecycle:bootstrapped but Helm release '{{ entry.provision.chart.name }}' is present — workload running despite bootstrapped tag"
+  when: _nb_lifecycle == 'bootstrapped' and _helm_present
+
+- name: "Drift check: no-service-record for {{ entry.key }}"
+  ansible.builtin.set_fact:
+    _drift: true
+    _drift_message: "No NetBox ipam.Service record found for service name '{{ entry.provision.netbox_service.name }}' — catalog entry not registered"
+  when: not _nb_service_exists
+
+# ── 5. Record result ────────────────────────────────────────────────────────
+- name: "Drift check: record result for {{ entry.key }}"
+  ansible.builtin.set_fact:
+    _drift_results: >-
+      {{
+        (_drift_results | default([])) + [{
+          'key': entry.key,
+          'chart': entry.provision.chart.name,
+          'netbox_lifecycle': _nb_lifecycle,
+          'helm_present': _helm_present,
+          'drift': _drift,
+          'message': _drift_message
+        }]
+      }}
+
+- name: "Drift check: report for {{ entry.key }}"
+  ansible.builtin.debug:
+    msg: >-
+      {{ entry.key }}:
+      NetBox={{ _nb_lifecycle }},
+      Helm={{ 'present' if _helm_present else 'absent' }},
+      Drift={{ 'YES — ' + _drift_message if _drift else 'no' }}

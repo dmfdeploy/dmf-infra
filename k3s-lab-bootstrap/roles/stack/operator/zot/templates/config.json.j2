@@ -1,0 +1,120 @@
+{%- set _auth_enabled = zot_oidc_enabled | bool -%}
+{
+  "distSpecVersion": "1.1.0",
+  "storage": {
+    "rootDirectory": "/var/lib/zot",
+    "dedupe": true,
+    "gc": true
+  },
+  "http": {
+    "address": "0.0.0.0",
+    "port": "5000",
+    {% if _auth_enabled %}
+    "externalUrl": {{ zot_oidc_external_url | to_json }},
+    {% endif %}
+    "auth": {
+      "htpasswd": {
+        "path": "/secret/htpasswd"
+      }{% if _auth_enabled %},
+      "openid": {
+        "providers": {
+          "{{ zot_oidc_provider_key }}": {
+            "name": {{ zot_oidc_authentik_provider_name | to_json }},
+            "clientid": {{ zot_oidc_client_id | default('') | to_json }},
+            "clientsecret": {{ zot_oidc_client_secret | default('') | to_json }},
+            "issuer": {{ zot_oidc_issuer_url | to_json }},
+            "scopes": {{ zot_oidc_scopes | to_json }},
+            "keypath": ""
+          }
+        }
+      }{% endif %}
+    },
+    {% if _auth_enabled %}
+    "accessControl": {
+      "repositories": {
+        "**": {
+          "anonymousPolicy": ["read"],
+          "defaultPolicy": ["read"],
+          "policies": [
+            {
+              "groups": {{ [zot_oidc_admin_group] | to_json }},
+              "actions": ["read", "create", "update", "delete"]
+            },
+            {
+              "users": {{ [zot_service_user] | to_json }},
+              "actions": ["read", "create", "update"]
+            }
+          ]
+        }
+      },
+      "adminPolicy": {
+        "users": {{ [zot_admin_user] | to_json }},
+        "actions": ["read", "create", "update", "delete"]
+      }
+    }
+    {% elif zot_anonymous_read %}
+    {# ADR-0033: anon read for consumer pulls; zot-svc gets scoped write
+       (read,create,update — NO delete); admin is the sole adminPolicy user
+       (break-glass full access). Before ADR-0033 the defaultPolicy was
+       read,create,update,delete — i.e. ANY authenticated user had full write
+       incl. delete. This is the live default (zot_oidc_enabled: false). #}
+    "accessControl": {
+      "repositories": {
+        "**": {
+          "anonymousPolicy": ["read"],
+          "defaultPolicy": ["read"],
+          "policies": [
+            {
+              "users": {{ [zot_service_user] | to_json }},
+              "actions": ["read", "create", "update"]
+            }
+          ]
+        }
+      },
+      "adminPolicy": {
+        "users": {{ [zot_admin_user] | to_json }},
+        "actions": ["read", "create", "update", "delete"]
+      }
+    }
+    {% else %}
+    {# ADR-0033: no anonymous access; same scoped shape — zot-svc push-only,
+       admin break-glass full. Authenticated non-policy users get read only. #}
+    "accessControl": {
+      "repositories": {
+        "**": {
+          "defaultPolicy": ["read"],
+          "policies": [
+            {
+              "users": {{ [zot_service_user] | to_json }},
+              "actions": ["read", "create", "update"]
+            }
+          ]
+        }
+      },
+      "adminPolicy": {
+        "users": {{ [zot_admin_user] | to_json }},
+        "actions": ["read", "create", "update", "delete"]
+      }
+    }
+    {% endif %}
+  },
+  "log": {
+    "level": "{{ zot_log_level }}"
+  },
+  "extensions": {
+{% if zot_metrics_enabled %}
+    "metrics": {
+      "enable": true,
+      "prometheus": {
+        "path": "/metrics"
+      }
+    },
+{% endif %}
+    "search": {
+      "enable": true
+    },
+    "ui": {
+      "enable": true
+    }
+  }
+}

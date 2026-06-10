@@ -1,0 +1,74 @@
+---
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitStages:
+  - "RequestReceived"
+rules:
+  # OpenBao exec is bootstrap-only and credential-bearing today.
+  # Keep who/when but drop the request body until the shell->stdin refactor lands.
+  - level: Metadata
+    verbs: ["create"]
+    resources:
+      - group: ""
+        resources: ["pods/exec", "pods/portforward", "pods/attach", "pods/ephemeralcontainers"]
+    namespaces:
+      - openbao
+    omitStages:
+      - "RequestReceived"
+
+  # Other critical namespaces: keep full request body for forensics.
+  # Any credential-bearing exec into these namespaces is itself an incident.
+  - level: RequestResponse
+    verbs: ["create"]
+    resources:
+      - group: ""
+        resources: ["pods/exec", "pods/portforward", "pods/attach", "pods/ephemeralcontainers"]
+      - group: ""
+        resources: ["serviceaccounts/token"]
+      - group: authentication.k8s.io
+        resources: ["tokenreviews"]
+    namespaces:
+      - authentik
+      - dmf-cms
+      - awx
+    omitStages:
+      - "RequestReceived"
+
+  # Secret writes: keep who/when/which, never capture the value.
+  # The request body of a Secret create/update IS the secret.
+  - level: Metadata
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+    resources:
+      - group: ""
+        resources: ["secrets"]
+    omitStages:
+      - "RequestReceived"
+
+  # Other security-sensitive writes: full body.
+  - level: RequestResponse
+    verbs: ["create", "update", "patch", "delete", "deletecollection"]
+    resources:
+      - group: ""
+        resources: ["configmaps", "serviceaccounts"]
+      - group: rbac.authorization.k8s.io
+        resources: ["roles", "rolebindings", "clusterroles", "clusterrolebindings"]
+      - group: networking.k8s.io
+        resources: ["networkpolicies"]
+    omitStages:
+      - "RequestReceived"
+
+  # Pod reads in kube-system are useful for incident reconstruction.
+  - level: Metadata
+    verbs: ["get", "list", "watch"]
+    resources:
+      - group: ""
+        resources: ["pods", "pods/log"]
+    namespaces:
+      - kube-system
+    omitStages:
+      - "RequestReceived"
+
+  # Default to metadata for the remaining API surface.
+  - level: Metadata
+    omitStages:
+      - "RequestReceived"

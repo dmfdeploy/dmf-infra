@@ -1,0 +1,389 @@
+---
+- name: Create Zot namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ zot_namespace }}"
+
+- name: Read Zot OAuth client credentials from Authentik
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ authentik_namespace | default('authentik') }}"
+      - exec
+      - deploy/{{ authentik_release_name | default('authentik') }}-worker
+      - --
+      - ak
+      - shell
+      - -c
+      - >-
+        import json;
+        from authentik.providers.oauth2.models import OAuth2Provider;
+        provider = OAuth2Provider.objects.get(name="{{ zot_oidc_authentik_provider_name }}");
+        print(json.dumps({"client_id": provider.client_id, "client_secret": provider.client_secret}))
+  register: zot_oidc_provider_credentials
+  changed_when: false
+  no_log: true
+  retries: 30
+  delay: 5
+  until:
+    - zot_oidc_provider_credentials.rc == 0
+    - zot_oidc_provider_credentials.stdout_lines | length > 0
+  when: zot_oidc_enabled | bool
+
+- name: Parse Zot OAuth client credentials
+  ansible.builtin.set_fact:
+    zot_oidc_client_id: "{{ (zot_oidc_provider_credentials.stdout_lines | last | from_json).client_id }}"
+    zot_oidc_client_secret: "{{ (zot_oidc_provider_credentials.stdout_lines | last | from_json).client_secret }}"
+  no_log: true
+  when: zot_oidc_enabled | bool
+
+- name: Render Zot config
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: /tmp/zot-config.json
+    mode: "0644"
+
+- name: Load rendered Zot config
+  ansible.builtin.slurp:
+    src: /tmp/zot-config.json
+  register: zot_config_slurped
+
+- name: Remove legacy Zot config ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: v1
+    kind: ConfigMap
+    name: zot-config
+    namespace: "{{ zot_namespace }}"
+
+- name: Create Zot config Secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: zot-config
+        namespace: "{{ zot_namespace }}"
+      type: Opaque
+      stringData:
+        config.json: "{{ zot_config_slurped.content | b64decode }}"
+
+- name: Read existing Zot StatefulSet
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    name: zot
+    namespace: "{{ zot_namespace }}"
+  register: zot_existing_sts
+  changed_when: false
+
+- name: Remove stale Zot StatefulSet when config still uses ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: apps/v1
+    kind: StatefulSet
+    name: zot
+    namespace: "{{ zot_namespace }}"
+  when:
+    - zot_existing_sts.resources | length > 0
+    - (zot_existing_sts.resources[0].spec.template.spec.volumes | default([]) | selectattr('configMap', 'defined') | list | length) > 0
+
+- name: Wait for stale Zot StatefulSet removal
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    name: zot
+    namespace: "{{ zot_namespace }}"
+  register: zot_sts_removed
+  changed_when: false
+  until: zot_sts_removed.resources | length == 0
+  retries: 30
+  delay: 2
+  when:
+    - zot_existing_sts.resources | length > 0
+    - (zot_existing_sts.resources[0].spec.template.spec.volumes | default([]) | selectattr('configMap', 'defined') | list | length) > 0
+
+- name: Generate bcrypt htpasswd line for admin (break-glass)
+  # Jinja's `password_hash('bcrypt')` filter goes through passlib, whose
+  # bcrypt backend hits a `bcrypt.__about__.__version__` AttributeError on
+  # bcrypt 5.x (the controller's pip-installed bcrypt is recent). passlib
+  # traps the error and silently falls through to a different backend that
+  # in observed runs produced a hash that doesn't verify against the
+  # input — leaving Zot rejecting every authenticated push.
+  #
+  # Shell out to `htpasswd -nbB` instead. It's part of apache2-utils on
+  # Linux and ships with macOS, produces a deterministic-format bcrypt
+  # hash, and is what every other htpasswd-consuming tool exercises.
+  # Password is fed via stdin to keep it out of argv.
+  ansible.builtin.command:
+    argv: [htpasswd, -inB, -C, "10", "{{ zot_admin_user }}"]
+    stdin: "{{ zot_admin_password }}"
+  register: _zot_htpasswd_cli
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Generate bcrypt htpasswd line for zot-svc (machine-write service account)
+  # ADR-0033: the scoped service account that every authenticated WRITE path
+  # (630 seed + zot-mirror backup) uses. Same bcrypt mechanism as admin above;
+  # password fed via stdin. Both lines land in the single `htpasswd` Secret key.
+  ansible.builtin.command:
+    argv: [htpasswd, -inB, -C, "10", "{{ zot_service_user }}"]
+    stdin: "{{ zot_service_password }}"
+  register: _zot_svc_htpasswd_cli
+  changed_when: false
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Set Zot htpasswd lines (admin break-glass + zot-svc machine-write)
+  # The htpasswd file holds BOTH users, newline-joined in one Secret key.
+  # `zot_htpasswd_combined` is the source of truth for both the Secret body
+  # and the rollout-trigger hash, so a change to EITHER credential rolls the
+  # pod (Zot only reads htpasswd at process start).
+  ansible.builtin.set_fact:
+    zot_admin_htpasswd_line: "{{ _zot_htpasswd_cli.stdout | trim }}"
+    zot_service_htpasswd_line: "{{ _zot_svc_htpasswd_cli.stdout | trim }}"
+    zot_htpasswd_combined: "{{ (_zot_htpasswd_cli.stdout | trim) ~ '\n' ~ (_zot_svc_htpasswd_cli.stdout | trim) }}"
+  no_log: true
+
+- name: Create Zot htpasswd secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: zot-htpasswd
+        namespace: "{{ zot_namespace }}"
+      type: Opaque
+      stringData:
+        htpasswd: "{{ zot_htpasswd_combined }}"
+
+# Local-CA lane: publish the DMF Local CA public cert into the Zot namespace so
+# the StatefulSet can mount it; without it Zot's OIDC relying-party panics on
+# the Authentik discovery fetch (x509). Structured read (NOT command+jsonpath,
+# whose arg-splitting drops the 'ca.crt' key).
+- name: Read local CA Secret from the cluster (local-CA lane)
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ zot_local_ca_secret }}"
+    namespace: "{{ zot_local_ca_namespace }}"
+  register: _zot_ca_secret
+  when: zot_local_ca_trust_enabled | bool
+
+- name: Publish local CA cert into Zot namespace (local-CA lane)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ zot_local_ca_configmap }}"
+        namespace: "{{ zot_namespace }}"
+      data:
+        ca.crt: "{{ _zot_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
+  when:
+    - zot_local_ca_trust_enabled | bool
+    - _zot_ca_secret.resources | default([]) | length > 0
+    - _zot_ca_secret.resources[0].data['ca.crt'] | default('') | length > 0
+
+- name: Create Zot StatefulSet
+  vars:
+    # On the local-CA lane, additionally mount the published CA into
+    # /etc/ssl/certs so Zot's Go OIDC client trusts the Authentik ingress cert.
+    _zot_volume_mounts: >-
+      {{ [
+           {'name': 'config', 'mountPath': '/etc/zot', 'readOnly': true},
+           {'name': 'htpasswd', 'mountPath': '/secret', 'readOnly': true},
+           {'name': 'data', 'mountPath': '/var/lib/zot'}
+         ] + ([
+           {'name': 'dmf-local-ca', 'mountPath': '/etc/ssl/certs/dmf-local-ca.crt',
+            'subPath': 'ca.crt', 'readOnly': true}
+         ] if zot_local_ca_trust_enabled | bool else []) }}
+    _zot_volumes: >-
+      {{ [
+           {'name': 'config', 'secret': {'secretName': 'zot-config'}},
+           {'name': 'htpasswd', 'secret': {'secretName': 'zot-htpasswd'}}
+         ] + ([
+           {'name': 'dmf-local-ca', 'configMap': {'name': zot_local_ca_configmap}}
+         ] if zot_local_ca_trust_enabled | bool else []) }}
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: zot
+        namespace: "{{ zot_namespace }}"
+        labels:
+          app.kubernetes.io/name: zot
+      spec:
+        serviceName: zot
+        replicas: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: zot
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: zot
+            annotations:
+              # Hash the COMBINED htpasswd content (admin + zot-svc) so a
+              # change to EITHER credential triggers a pod rollout. Without
+              # this, k8s eventually refreshes the mounted Secret but Zot only
+              # reads htpasswd at process start, so the running pod keeps
+              # serving the old credentials until manually restarted.
+              dmf.example.com/htpasswd-hash: "{{ zot_htpasswd_combined | hash('sha256') }}"
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              fsGroup: 1000
+            containers:
+              - name: zot
+                image: "{{ zot_image }}"
+                imagePullPolicy: "{{ zot_image_pull_policy }}"
+                args:
+                  - serve
+                  - /etc/zot/config.json
+                ports:
+                  - name: http
+                    containerPort: 5000
+                volumeMounts: "{{ _zot_volume_mounts }}"
+                readinessProbe:
+                  httpGet:
+                    path: /v2/
+                    port: 5000
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                livenessProbe:
+                  httpGet:
+                    path: /v2/
+                    port: 5000
+                  initialDelaySeconds: 30
+                  periodSeconds: 30
+                resources: "{{ zot_resources }}"
+            volumes: "{{ _zot_volumes }}"
+        volumeClaimTemplates:
+          - metadata:
+              name: data
+            spec:
+              accessModes: [ReadWriteOnce]
+              storageClassName: "{{ zot_storage_class }}"
+              resources:
+                requests:
+                  storage: "{{ zot_storage_size }}"
+
+- name: Create Zot Service
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: zot
+        namespace: "{{ zot_namespace }}"
+        labels:
+          app.kubernetes.io/name: zot
+      spec:
+        clusterIP: "{{ zot_cluster_ip }}"
+        selector:
+          app.kubernetes.io/name: zot
+        ports:
+          - name: http
+            port: 5000
+            targetPort: 5000
+
+- name: Request TLS certificate for Zot via cert-manager
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: zot-tls
+        namespace: "{{ zot_namespace }}"
+      spec:
+        secretName: zot-tls
+        issuerRef:
+          name: "{{ zot_ingress_cert_issuer }}"
+          kind: ClusterIssuer
+        dnsNames:
+          - "{{ zot_ingress_host }}"
+
+- name: Create Zot IngressRoute (host-based)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: traefik.io/v1alpha1
+      kind: IngressRoute
+      metadata:
+        name: zot
+        namespace: "{{ zot_namespace }}"
+      spec:
+        entryPoints:
+          - "{{ zot_ingress_entrypoint }}"
+        tls:
+          secretName: zot-tls
+        routes:
+          - match: "Host(`{{ zot_ingress_host }}`)"
+            kind: Rule
+            services:
+              - name: zot
+                port: 5000
+
+- name: Roll Zot StatefulSet to pick up the new config Secret
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ zot_namespace }}"
+      - rollout
+      - restart
+      - statefulset/zot
+  changed_when: true
+  when: zot_oidc_enabled | bool
+
+- name: Wait for Zot StatefulSet to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    name: zot
+    namespace: "{{ zot_namespace }}"
+  register: zot_sts
+  until:
+    - zot_sts.resources | length > 0
+    - zot_sts.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: 60
+  delay: 5
+
+- name: Report Zot URL
+  ansible.builtin.debug:
+    msg: "Zot registry reachable at https://{{ zot_ingress_host }} (login: {{ zot_admin_user }})"

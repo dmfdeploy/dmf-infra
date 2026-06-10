@@ -1,0 +1,222 @@
+---
+# Read-only audit of live admin identities vs role defaults.
+#
+# Per the 2026-05-14 audit plan (DMF App Admin Account Drift Audit and
+# Realignment Plan): for each app with a local admin account, query the
+# live cluster for the actual admin username, compare against the role
+# default, and report drift.
+#
+# Purpose: surface drift in 2 minutes (instead of waiting for a
+# bootstrap-configure failure) on any new env. Especially useful before
+# attempting a re-bootstrap of an existing env whose admin accounts may
+# have been touched out-of-band.
+#
+# No write paths. No secrets in argv. No passwords echoed — the queries
+# below only list usernames (gitea admin user list, Django
+# is_superuser filter, htpasswd field 1, group-membership names).
+#
+# Run:
+#   bin/run-playbook.sh <env> \
+#     ../dmf-infra/k3s-lab-bootstrap/playbooks/audit-admin-identities.yml
+#
+- name: Audit live admin identities vs role defaults
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  tags:
+    - vertical-security
+    - audit-admin-identities
+
+  vars:
+    # Expected role defaults — match the role-defaults grep at audit time.
+    # ADR-0028 D3 (2026-05-24): AWX / NetBox / Forgejo local admin defaults
+    # are decoupled break-glass literals. Audit playbook does not load the
+    # chart roles, so inventory-supplied values take precedence; the
+    # fallback literals below mirror the chart-role defaults and must be
+    # kept in sync if either changes.
+    audit_expected_awx: >-
+      {{ awx_admin_user | default('awx-break-glass') }}
+    audit_expected_forgejo: >-
+      {{ forgejo_admin_username | default('forgejo-break-glass') }}
+    audit_expected_netbox: >-
+      {{ netbox_sot_admin_username
+         | default(netbox_superuser_username | default('netbox-break-glass')) }}
+    # ADR-0033: Zot's htpasswd holds TWO users — `admin` (break-glass) and
+    # `zot-svc` (scoped machine-write). Expect exactly both; the assertion
+    # below is an order-independent set match, so it also catches a missing
+    # zot-svc and any unexpected extra user (drift).
+    audit_expected_zot:
+      - "{{ zot_admin_user | default('admin') }}"
+      - "{{ zot_service_user | default('zot-svc') }}"
+    audit_expected_authentik: akadmin  # role hardcodes
+    # LibreNMS is intentionally skipped — not deployed on lab clusters yet
+    # per the 2026-05-14 audit; revisit when the monitoring vertical ships.
+
+  tasks:
+    # ────────────────────────────────────────────────────────────────
+    # Per-app queries (read-only). Each pre-filters output to one
+    # username per line so downstream parsing is just stdout_lines.
+    # ────────────────────────────────────────────────────────────────
+    - name: Query AWX live superusers
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n awx
+          exec deploy/awx-web
+          -- awx-manage shell_plus -c
+          "from django.contrib.auth import get_user_model; U=get_user_model();
+          print('\\n'.join(u.username for u in U.objects.filter(is_superuser=True, is_active=True)))"
+      register: _audit_awx_users
+      changed_when: false
+      failed_when: false
+
+    - name: Query Forgejo live admin users
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n forgejo
+          exec deploy/forgejo
+          -- sh -c '
+          /usr/local/bin/gitea admin user list --admin
+          --config /data/gitea/conf/app.ini | awk "NR>1 {print \$2}"'
+      register: _audit_forgejo_users
+      changed_when: false
+      failed_when: false
+
+    - name: Query NetBox live superusers
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n netbox
+          exec deploy/netbox
+          -- python /opt/netbox/netbox/manage.py shell -c
+          "from users.models import User;
+          print('\\n'.join(u.username for u in User.objects.filter(is_superuser=True, is_active=True)))"
+      register: _audit_netbox_users
+      changed_when: false
+      failed_when: false
+
+    - name: Query Zot htpasswd username
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n zot
+          get secret zot-htpasswd
+          -o jsonpath='{.data.htpasswd}'
+          | base64 -d | cut -d: -f1
+      register: _audit_zot_user
+      changed_when: false
+      failed_when: false
+
+    - name: Query Authentik admin group members
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n authentik
+          exec deploy/authentik-server
+          -- ak shell -c
+          "from authentik.core.models import Group;
+          g=Group.objects.filter(name='authentik Admins').first();
+          print('\\n'.join(u.username for u in (g.users.all() if g else []) if u.is_active))"
+      register: _audit_authentik_users
+      changed_when: false
+      failed_when: false
+
+    # ────────────────────────────────────────────────────────────────
+    # Per-app debug + assert. Each block prints the comparison and
+    # asserts no-drift (expected username appears in live list).
+    # ────────────────────────────────────────────────────────────────
+    - name: Audit AWX
+      ansible.builtin.debug:
+        msg: |-
+          awx:
+            expected: {{ audit_expected_awx }}
+            live:     {{ _audit_awx_users.stdout_lines | default([]) }}
+            rc:       {{ _audit_awx_users.rc | default(-1) }}
+
+    - name: Assert AWX no drift
+      ansible.builtin.assert:
+        that:
+          - _audit_awx_users.rc | default(-1) == 0
+          - audit_expected_awx in (_audit_awx_users.stdout_lines | default([]))
+        fail_msg: >-
+          AWX drift: expected superuser '{{ audit_expected_awx }}' not in
+          live list {{ _audit_awx_users.stdout_lines | default([]) }}.
+
+    - name: Audit Forgejo
+      ansible.builtin.debug:
+        msg: |-
+          forgejo:
+            expected: {{ audit_expected_forgejo }}
+            live:     {{ _audit_forgejo_users.stdout_lines | default([]) }}
+            rc:       {{ _audit_forgejo_users.rc | default(-1) }}
+
+    - name: Assert Forgejo no drift
+      ansible.builtin.assert:
+        that:
+          - _audit_forgejo_users.rc | default(-1) == 0
+          - audit_expected_forgejo in (_audit_forgejo_users.stdout_lines | default([]))
+        fail_msg: >-
+          Forgejo drift: expected admin '{{ audit_expected_forgejo }}' not in
+          live list {{ _audit_forgejo_users.stdout_lines | default([]) }}.
+
+    - name: Audit NetBox
+      ansible.builtin.debug:
+        msg: |-
+          netbox:
+            expected: {{ audit_expected_netbox }}
+            live:     {{ _audit_netbox_users.stdout_lines | default([]) }}
+            rc:       {{ _audit_netbox_users.rc | default(-1) }}
+
+    - name: Assert NetBox no drift
+      ansible.builtin.assert:
+        that:
+          - _audit_netbox_users.rc | default(-1) == 0
+          - audit_expected_netbox in (_audit_netbox_users.stdout_lines | default([]))
+        fail_msg: >-
+          NetBox drift: expected superuser '{{ audit_expected_netbox }}' not in
+          live list {{ _audit_netbox_users.stdout_lines | default([]) }}.
+
+    - name: Audit Zot
+      ansible.builtin.debug:
+        msg: |-
+          zot:
+            expected: {{ audit_expected_zot | sort }}
+            live:     {{ _audit_zot_user.stdout_lines | default([]) | map('trim') | select | list | sort }}
+            rc:       {{ _audit_zot_user.rc | default(-1) }}
+
+    - name: Assert Zot no drift
+      ansible.builtin.assert:
+        that:
+          - _audit_zot_user.rc | default(-1) == 0
+          - (audit_expected_zot | sort) == (_audit_zot_user.stdout_lines | default([]) | map('trim') | select | list | sort)
+        fail_msg: >-
+          Zot drift: expected htpasswd users {{ audit_expected_zot | sort }} but live
+          is {{ _audit_zot_user.stdout_lines | default([]) | map('trim') | select | list | sort }}.
+
+    - name: Audit Authentik
+      ansible.builtin.debug:
+        msg: |-
+          authentik:
+            expected: {{ audit_expected_authentik }}
+            live:     {{ _audit_authentik_users.stdout_lines | default([]) }}
+            rc:       {{ _audit_authentik_users.rc | default(-1) }}
+
+    - name: Assert Authentik no drift
+      ansible.builtin.assert:
+        that:
+          - _audit_authentik_users.rc | default(-1) == 0
+          - audit_expected_authentik in (_audit_authentik_users.stdout_lines | default([]))
+        fail_msg: >-
+          Authentik drift: expected admin '{{ audit_expected_authentik }}' not in
+          'authentik Admins' group membership {{ _audit_authentik_users.stdout_lines | default([]) }}.
+
+    # ────────────────────────────────────────────────────────────────
+    # Summary
+    # ────────────────────────────────────────────────────────────────
+    - name: Summarise audit
+      ansible.builtin.debug:
+        msg: |-
+          App-admin identity audit on this env: all assertions passed.
+            apps audited: 5 (awx, forgejo, netbox, zot, authentik)
+            LibreNMS:     intentionally skipped (not deployed on lab clusters)

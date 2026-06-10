@@ -1,0 +1,96 @@
+---
+# cluster-ready: gate that all cluster infrastructure components are running.
+#
+# NOTE (2026-05-05): every `kubernetes.core.k8s_info` register must guard its
+# `until` condition with `| default([])` before accessing `.resources`. The
+# module returns an error dict (no `.resources` key) when the API server is
+# not yet ready, causing `TypeError: object of type 'dict' has no attribute
+# 'resources'` on the first evaluation. The `| default([])` ensures the `until`
+# evaluates to length 0 rather than erroring, so retries continue normally.
+#
+- name: Wait for nodes to be Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Node
+  register: cluster_nodes
+  until: >
+    (cluster_nodes.resources | default([]) | length) > 0 and
+    (cluster_nodes.resources | default([]) | json_query("[?status.conditions[?type=='Ready' && status=='True']]") | length)
+      == (cluster_nodes.resources | default([]) | length)
+  retries: "{{ cluster_ready_retries }}"
+  delay: "{{ cluster_ready_delay }}"
+
+- name: Wait for CoreDNS to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: coredns
+    namespace: kube-system
+  register: coredns
+  until: (coredns.resources | default([]) | length) > 0 and coredns.resources[0].status.readyReplicas | default(0) >= 1
+  retries: "{{ cluster_ready_retries }}"
+  delay: "{{ cluster_ready_delay }}"
+
+- name: Wait for Traefik to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: traefik
+    namespace: kube-system
+  register: traefik
+  until: (traefik.resources | default([]) | length) > 0 and traefik.resources[0].status.readyReplicas | default(0) >= 1
+  retries: "{{ cluster_ready_retries }}"
+  delay: "{{ cluster_ready_delay }}"
+
+- name: Check if Longhorn is installed
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Namespace
+    name: longhorn-system
+  register: longhorn_ns
+
+- name: Wait for Longhorn CSIDriver to be registered
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: storage.k8s.io/v1
+    kind: CSIDriver
+    name: driver.longhorn.io
+  register: longhorn_csi_driver
+  until: longhorn_csi_driver.resources | length > 0
+  retries: "{{ cluster_ready_retries }}"
+  delay: "{{ cluster_ready_delay }}"
+  when:
+    - cluster_ready_wait_for_longhorn
+    - longhorn_ns.resources | length > 0
+
+- name: Wait for Longhorn CSI plugin to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: DaemonSet
+    name: longhorn-csi-plugin
+    namespace: longhorn-system
+  register: longhorn_csi_plugin
+  until: >
+    longhorn_csi_plugin.resources[0].status.numberReady | default(0)
+      == longhorn_csi_plugin.resources[0].status.desiredNumberScheduled | default(0) and
+    longhorn_csi_plugin.resources[0].status.numberReady | default(0) > 0
+  retries: "{{ cluster_ready_retries }}"
+  delay: "{{ cluster_ready_delay }}"
+  when:
+    - cluster_ready_wait_for_longhorn
+    - longhorn_ns.resources | length > 0
+
+- name: Wait for Longhorn StorageClass to exist
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: storage.k8s.io/v1
+    kind: StorageClass
+    name: longhorn
+  register: longhorn_sc
+  until: longhorn_sc.resources | length > 0
+  retries: "{{ cluster_ready_retries }}"
+  delay: "{{ cluster_ready_delay }}"
+  when:
+    - cluster_ready_wait_for_longhorn
+    - cluster_ready_wait_for_storageclass
+    - longhorn_ns.resources | length > 0

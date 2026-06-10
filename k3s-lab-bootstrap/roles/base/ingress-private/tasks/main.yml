@@ -1,0 +1,134 @@
+---
+# Deploy a second, private Traefik instance reachable only via Tailscale.
+#
+# This Traefik serves as the ingress for all admin/operator-facing apps
+# (Grafana, NetBox, AWX, Forgejo HTTPS, registry). It uses a NodePort
+# service that is reachable from the node's Tailscale IP.
+
+- name: Create private Traefik namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ ingress_private_namespace }}"
+
+- name: Check private Traefik Helm release
+  ansible.builtin.command: >-
+    helm --kubeconfig /etc/rancher/k3s/k3s.yaml
+    -n {{ ingress_private_namespace }}
+    status {{ ingress_private_release_name }}
+  register: _ingress_private_helm_status
+  changed_when: false
+  failed_when: false
+
+- name: Add Traefik Helm repository
+  kubernetes.core.helm_repository:
+    name: traefik
+    repo_url: "{{ ingress_private_helm_repo }}"
+  when: >
+    ingress_private_force_helm_upgrade | bool or
+    _ingress_private_helm_status.rc != 0
+
+- name: Deploy private Traefik instance
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: "{{ ingress_private_release_name }}"
+    chart_ref: "{{ ingress_private_chart_ref }}"
+    chart_version: "{{ ingress_private_chart_version | default(omit) }}"
+    release_namespace: "{{ ingress_private_namespace }}"
+    create_namespace: false
+    skip_crds: "{{ ingress_private_skip_crds | bool }}"
+    wait: true
+    wait_timeout: 300s
+    values:
+      ingressClass:
+        enabled: true
+        name: "{{ ingress_private_ingressclass }}"
+        isDefaultClass: false
+      providers:
+        kubernetesCRD:
+          allowCrossNamespace: true
+          allowEmptyServices: true
+        kubernetesIngress:
+          ingressClass: "{{ ingress_private_ingressclass }}"
+      service:
+        type: NodePort
+        spec:
+          externalTrafficPolicy: Cluster
+        nodePorts:
+          websecure: "{{ ingress_private_nodeport }}"
+      ports:
+        web:
+          expose:
+            default: false
+        websecure:
+          expose:
+            default: true
+          nodePort: "{{ ingress_private_nodeport }}"
+      logs:
+        general:
+          level: INFO
+        access:
+          enabled: false
+      # Entrypoint-level timeouts via additionalArguments — portable across
+      # chart majors (chart's `ports.<ep>.transport` schema is unstable).
+      # Defaults sized for cluster-internal registry uploads through
+      # workstation → Tailscale → traefik-private path. See defaults/main.yml
+      # for rationale.
+      additionalArguments:
+        - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout={{ ingress_private_responding_timeouts.readTimeout }}"
+        - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout={{ ingress_private_responding_timeouts.writeTimeout }}"
+        - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout={{ ingress_private_responding_timeouts.idleTimeout }}"
+  when: >
+    ingress_private_force_helm_upgrade | bool or
+    _ingress_private_helm_status.rc != 0
+
+- name: Reuse existing private Traefik release
+  ansible.builtin.debug:
+    msg: "Private Traefik Helm release already exists; skipping network-backed Helm upgrade."
+  when:
+    - not ingress_private_force_helm_upgrade | bool
+    - _ingress_private_helm_status.rc == 0
+
+- name: Wait for private Traefik deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ ingress_private_release_name }}"
+    namespace: "{{ ingress_private_namespace }}"
+  register: _private_traefik_deploy
+  until:
+    - _private_traefik_deploy.resources | length > 0
+    - _private_traefik_deploy.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: 30
+  delay: 10
+
+- name: Fetch private Traefik Service for type assertion
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Service
+    name: "{{ ingress_private_release_name }}"
+    namespace: "{{ ingress_private_namespace }}"
+  register: _private_traefik_svc
+
+- name: Assert private Traefik Service rendered as NodePort
+  ansible.builtin.assert:
+    that:
+      - _private_traefik_svc.resources | length == 1
+      - _private_traefik_svc.resources[0].spec.type == "NodePort"
+    fail_msg: >-
+      Private Traefik Service rendered as
+      {{ (_private_traefik_svc.resources[0].spec.type | default('missing'))
+         if _private_traefik_svc.resources | length > 0 else 'missing' }},
+      expected NodePort. The Traefik chart values schema likely changed —
+      check ingress_private_chart_version pin (defaults/main.yml) against
+      the `service:` block in this role's helm task.
+
+- name: Report private Traefik deployment
+  ansible.builtin.debug:
+    msg: "Private Traefik ready on NodePort {{ ingress_private_nodeport }}, ingressClass: {{ ingress_private_ingressclass }}"

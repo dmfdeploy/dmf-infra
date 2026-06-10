@@ -1,0 +1,740 @@
+---
+# Wire NetBox and Forgejo service-account tokens for DMF Console v0.4.0.
+#
+# Runs after the DMF Console deploy (650-dmf-cms.yml) and the respective
+# service bootstrap playbooks (691-netbox-sot.yml, 692-forgejo-bootstrap.yml).
+#
+# Creates read-only service accounts in both systems, persists tokens to
+# OpenBao, patches the dmf-cms-runtime K8s Secret, and rolls the CMS
+# deployment.
+#
+# Tokens stored:
+#   secret/apps/netbox/runtime  → cms_api_token  → dmf-cms-runtime / netboxApiToken
+#   secret/apps/forgejo/runtime → cms_api_token  → dmf-cms-runtime / forgejoApiToken
+#
+# Idempotency: if both tokens already exist in the K8s Secret, the entire
+# provisioning is skipped — no user creation, RBAC, token generation,
+# OpenBao write, or rollout.
+- name: Wire NetBox and Forgejo tokens for DMF Console
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  vars:
+    # NetBox
+    cms_netbox_svc_user: dmf-cms-svc
+    cms_netbox_svc_token_name: dmf-cms-console
+    # NetBox token creation bypasses HTTP auth — `manage.py shell` inside the
+    # pod creates the token directly via the ORM. No admin-username variable
+    # needed here. (See line ~78 below for the shell-out pattern.)
+
+    # Forgejo
+    cms_forgejo_svc_user: dmf-cms-svc
+    cms_forgejo_svc_token_name: dmf-cms-console
+    # Forgejo admin identity is resolved by `common/app-admin-facts` in
+    # `live-read` mode against `secret/apps/forgejo/admin` (see the
+    # "Resolve Forgejo admin identity (live-read)" task below). The
+    # paired vault-pair fallback (vault_bootstrap_admin_username +
+    # vault_forgejo_admin_password || vault_bootstrap_admin_password)
+    # matches the candidate-2 chain used by `forgejo-bootstrap` itself
+    # so a wizard-fresh greenfield works without override.
+    # No `cms_forgejo_admin_user` variable.
+
+  roles:
+    - base/cluster-ready
+
+  tasks:
+    # ==================================================================
+    # OpenBao login (shared by NetBox and Forgejo sections)
+    # ==================================================================
+    - name: Establish OpenBao operator session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_breakglass_file: "{{ eso_openbao_breakglass_file | default((openbao_key_path | default('')) ~ '.json', true) }}"
+        openbao_session_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+
+    # ==================================================================
+    # Idempotency gate: check both tokens in K8s Secret
+    # ==================================================================
+    - name: Check if NetBox and Forgejo tokens already exist in DMF Console runtime Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+      register: _cms_k8s_secret_check
+      no_log: true
+
+    - name: Set idempotency flags
+      ansible.builtin.set_fact:
+        _cms_netbox_token_exists: >-
+          {{ (_cms_k8s_secret_check.resources[0].data.netboxApiToken | default('') | length) > 0 }}
+        _cms_forgejo_token_exists: >-
+          {{ (_cms_k8s_secret_check.resources[0].data.forgejoApiToken | default('') | length) > 0 }}
+      no_log: true
+
+    - name: Log token availability
+      ansible.builtin.debug:
+        msg: |
+          K8s Secret token check:
+            NetBox token exists: {{ _cms_netbox_token_exists }}
+            Forgejo token exists: {{ _cms_forgejo_token_exists }}
+
+    # ==================================================================
+    # NETBOX: Create service account token
+    # ==================================================================
+    # NetBox token creation uses `manage.py shell` inside the pod — it
+    # interacts with the Django ORM directly and does NOT need the admin
+    # password. The pod exec runs with cluster-admin privileges.
+    # ==================================================================
+
+    - name: Read existing NetBox token from OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json secret/apps/netbox/runtime'
+      register: _cms_netbox_openbao_check
+      changed_when: false
+      failed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    - name: Parse existing NetBox token from OpenBao
+      ansible.builtin.set_fact:
+        _cms_netbox_openbao_token: >-
+          {{
+            (_cms_netbox_openbao_check.stdout | from_json).data.data.cms_api_token | default('')
+            if _cms_netbox_openbao_check.rc == 0
+            else ''
+          }}
+      no_log: true
+
+    - name: Use existing NetBox token from OpenBao if K8s Secret lacks it
+      ansible.builtin.set_fact:
+        _cms_netbox_svc_token: "{{ _cms_netbox_openbao_token }}"
+        _cms_netbox_token_recovered: true
+      when:
+        - not _cms_netbox_token_exists | bool
+        - _cms_netbox_openbao_token | length > 0
+      no_log: true
+
+    - name: Build NetBox token creation command
+      ansible.builtin.set_fact:
+        _cms_netbox_token_cmd: |-
+          cat > /tmp/cms-nbs-token.py << 'PY'
+          import json
+          from users.models import Token, User
+          from users.constants import TOKEN_PREFIX
+
+          username = '{{ cms_netbox_svc_user }}'
+          token_name = '{{ cms_netbox_svc_token_name }}'
+
+          # Create service user if it doesn't exist
+          user, created = User.objects.get_or_create(
+              username=username,
+              defaults={
+                  'email': '{{ cms_netbox_svc_user }}@dmf.example.com',
+              }
+          )
+          if created:
+              import secrets
+              user.set_password(secrets.token_urlsafe(24))
+              user.save()
+
+          # Delete existing token with same description (idempotent recreation)
+          Token.objects.filter(user=user, description=token_name).delete()
+
+          # Create new token
+          token = Token.objects.create(user=user, description=token_name)
+          full_token = f'{TOKEN_PREFIX}{token.key}.{token.token}'
+          print(json.dumps({'key': full_token, 'created': True}))
+          PY
+          /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/cms-nbs-token.py | tail -n 1
+      when:
+        - not _cms_netbox_token_exists | bool
+        - not _cms_netbox_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Create NetBox service user and token via Django shell
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - k3s
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ cms_netbox_namespace | default('netbox') }}"
+          - exec
+          - deploy/netbox
+          - --
+          - /bin/sh
+          - -c
+          - "{{ _cms_netbox_token_cmd }}"
+      register: _cms_netbox_token_result
+      changed_when: true
+      when:
+        - not _cms_netbox_token_exists | bool
+        - not _cms_netbox_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Parse NetBox token result
+      ansible.builtin.set_fact:
+        _cms_netbox_token_data: >-
+          {{
+            (
+              _cms_netbox_token_result.stdout_lines
+              | select('match', '^\{.*\}$')
+              | list
+              | last
+              | from_json
+            )
+          }}
+      when:
+        - not _cms_netbox_token_exists | bool
+        - not _cms_netbox_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Assert NetBox API token was returned
+      ansible.builtin.assert:
+        that:
+          - _cms_netbox_token_data.key | default('') | length > 0
+        fail_msg: "NetBox did not return an API token for {{ cms_netbox_svc_user }}."
+      when:
+        - not _cms_netbox_token_exists | bool
+        - not _cms_netbox_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Set NetBox token fact
+      ansible.builtin.set_fact:
+        _cms_netbox_svc_token: "{{ _cms_netbox_token_data.key }}"
+      when:
+        - not _cms_netbox_token_exists | bool
+        - not _cms_netbox_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Test NetBox API connectivity (token validation deferred to consumption)
+      ansible.builtin.uri:
+        url: "{{ cms_netbox_api_url | default('https://' ~ (netbox_host | default('netbox.dmf.example.com'))) }}/api/"
+        method: GET
+        status_code: [200]
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      register: _cms_netbox_api_test
+      changed_when: false
+      when: _cms_netbox_svc_token is defined
+      no_log: true
+
+    - name: Persist NetBox token to OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n%s\n'
+          "$OPENBAO_TOKEN"
+          "$CMS_API_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          IFS= read -r API_TOKEN;
+          export BAO_TOKEN;
+          bao kv patch secret/apps/netbox/runtime cms_api_token="$API_TOKEN"'
+      register: _cms_netbox_openbao_write
+      when:
+        - _cms_netbox_svc_token is defined
+        - not _cms_netbox_token_recovered | default(false) | bool
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+        CMS_API_TOKEN: "{{ _cms_netbox_svc_token }}"
+      no_log: true
+
+    - name: Verify NetBox token was persisted to OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json secret/apps/netbox/runtime'
+      register: _cms_netbox_openbao_verify
+      changed_when: false
+      failed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
+      when: _cms_netbox_svc_token is defined
+
+    - name: Assert NetBox token read back from OpenBao
+      ansible.builtin.assert:
+        that:
+          - (_cms_netbox_openbao_verify.stdout | from_json).data.data.cms_api_token | default('') | length > 0
+        fail_msg: >-
+          Failed to read NetBox token back from OpenBao after write.
+          Check OpenBao policies and mount permissions for secret/apps/netbox/runtime.
+      when:
+        - _cms_netbox_svc_token is defined
+        - not _cms_netbox_token_recovered | default(false) | bool
+      no_log: true
+
+    # ==================================================================
+    # FORGEJO: Create service account token
+    # ==================================================================
+    # Pattern follows the forgejo-bootstrap role: create/update service
+    # user via admin API, then authenticate as that user to create a
+    # personal token.
+    #
+    # The Forgejo admin identity is resolved by common/app-admin-facts in
+    # live-read mode against the canonical OpenBao path
+    # `secret/apps/forgejo/admin`. Fallback chain (source-atomic — each
+    # layer supplies both username and password or the layer is skipped):
+    #   1. OpenBao secret/apps/forgejo/admin
+    #   2. forgejo_admin_username + forgejo_admin_password (a deployer
+    #      that has set both explicitly)
+    #   3. canonical `forgejo-break-glass` (matches what the forgejo
+    #      chart provisions per ADR-0028 D3 — see
+    #      roles/stack/operator/forgejo/defaults/main.yml) +
+    #      (vault_forgejo_admin_password || vault_bootstrap_admin_password)
+    #      — matches the candidate-2 vault-pair inside
+    #      roles/stack/operator/forgejo-bootstrap/tasks/main.yml
+    # No literal `dmfadmin`/`changeme` last-resort: if all three layers
+    # fail, the helper sets source=no-fallback and the assert below
+    # fails loud.
+    # ==================================================================
+
+    - name: Resolve Forgejo admin identity (live-read)
+      ansible.builtin.include_role:
+        name: common/app-admin-facts
+      vars:
+        app_admin_mode: live-read
+        app_admin_app_name: forgejo
+        app_admin_fact_prefix: _cms_forgejo_admin
+        app_admin_secret_path: secret/apps/forgejo/admin
+        app_admin_fallback_candidates:
+          - username: "{{ forgejo_admin_username | default('') }}"
+            password: "{{ forgejo_admin_password | default('') }}"
+          - username: forgejo-break-glass
+            password: >-
+              {{
+                vault_forgejo_admin_password
+                | default(vault_bootstrap_admin_password | default(''), true)
+              }}
+      when: not _cms_forgejo_token_exists | bool
+
+    - name: Assert Forgejo admin credentials are available
+      ansible.builtin.assert:
+        that:
+          - _cms_forgejo_admin_username | default('') | length > 0
+          - _cms_forgejo_admin_password | default('') | length > 0
+        fail_msg: >-
+          Forgejo admin credentials are not available
+          (common/app-admin-facts resolved
+          source={{ _cms_forgejo_admin_source | default('unset') }}).
+          Either store both fields at OpenBao path
+          secret/apps/forgejo/admin (`username` + `password` — the
+          canonical pattern common/app-admin-facts maintains), set
+          `forgejo_admin_username` + `forgejo_admin_password`
+          explicitly, or define vault_forgejo_admin_password OR
+          vault_bootstrap_admin_password (paired with the canonical
+          `forgejo-break-glass` break-glass identity per ADR-0028 D3).
+      when: not _cms_forgejo_token_exists | bool
+      no_log: true
+
+    - name: Read existing Forgejo token from OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json secret/apps/forgejo/runtime'
+      register: _cms_forgejo_openbao_check
+      changed_when: false
+      failed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    - name: Parse existing Forgejo token from OpenBao
+      ansible.builtin.set_fact:
+        _cms_forgejo_openbao_token: >-
+          {{
+            (_cms_forgejo_openbao_check.stdout | from_json).data.data.cms_api_token | default('')
+            if _cms_forgejo_openbao_check.rc == 0
+            else ''
+          }}
+      no_log: true
+
+    - name: Use existing Forgejo token from OpenBao if K8s Secret lacks it
+      ansible.builtin.set_fact:
+        _cms_forgejo_svc_token: "{{ _cms_forgejo_openbao_token }}"
+        _cms_forgejo_token_recovered: true
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - _cms_forgejo_openbao_token | length > 0
+      no_log: true
+
+    - name: Generate Forgejo service user password
+      ansible.builtin.command: openssl rand -base64 24
+      register: _cms_forgejo_svc_password_gen
+      changed_when: false
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Set Forgejo service user password fact
+      ansible.builtin.set_fact:
+        _cms_forgejo_svc_password: "{{ _cms_forgejo_svc_password_gen.stdout | trim }}"
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Check if Forgejo service user already exists
+      ansible.builtin.uri:
+        url: "{{ cms_forgejo_api_url | default('https://' ~ (forgejo_host | default('forgejo.dmf.example.com'))) }}/api/v1/users/{{ cms_forgejo_svc_user }}"
+        method: GET
+        url_username: "{{ _cms_forgejo_admin_username }}"
+        url_password: "{{ _cms_forgejo_admin_password }}"
+        force_basic_auth: true
+        status_code: [200, 404]
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      register: _cms_forgejo_user_check
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Create Forgejo service user
+      ansible.builtin.uri:
+        url: "{{ cms_forgejo_api_url | default('https://' ~ (forgejo_host | default('forgejo.dmf.example.com'))) }}/api/v1/admin/users"
+        method: POST
+        url_username: "{{ _cms_forgejo_admin_username }}"
+        url_password: "{{ _cms_forgejo_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          username: "{{ cms_forgejo_svc_user }}"
+          email: "{{ cms_forgejo_svc_user }}@dmf.example.com"
+          password: "{{ _cms_forgejo_svc_password }}"
+          send_notify: false
+          must_change_password: false
+          active: true
+        status_code: [201, 400]
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      register: _cms_forgejo_user_create
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+        - _cms_forgejo_user_check.status | default(200) == 404
+      no_log: true
+
+    - name: Update Forgejo service user password if user exists
+      ansible.builtin.uri:
+        url: "{{ cms_forgejo_api_url | default('https://' ~ (forgejo_host | default('forgejo.dmf.example.com'))) }}/api/v1/admin/users/{{ cms_forgejo_svc_user }}"
+        method: PATCH
+        url_username: "{{ _cms_forgejo_admin_username }}"
+        url_password: "{{ _cms_forgejo_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          password: "{{ _cms_forgejo_svc_password }}"
+          must_change_password: false
+        status_code: 200
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+        - _cms_forgejo_user_check.status | default(200) == 200
+      no_log: true
+
+    - name: Delete existing Forgejo service token for idempotent recreation
+      ansible.builtin.uri:
+        url: "{{ cms_forgejo_api_url | default('https://' ~ (forgejo_host | default('forgejo.dmf.example.com'))) }}/api/v1/users/{{ cms_forgejo_svc_user }}/tokens"
+        method: GET
+        url_username: "{{ cms_forgejo_svc_user }}"
+        url_password: "{{ _cms_forgejo_svc_password }}"
+        force_basic_auth: true
+        status_code: 200
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      register: _cms_forgejo_existing_tokens
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Revoke existing Forgejo service tokens
+      ansible.builtin.uri:
+        url: "{{ cms_forgejo_api_url | default('https://' ~ (forgejo_host | default('forgejo.dmf.example.com'))) }}/api/v1/users/{{ cms_forgejo_svc_user }}/tokens/{{ item.id }}"
+        method: DELETE
+        url_username: "{{ cms_forgejo_svc_user }}"
+        url_password: "{{ _cms_forgejo_svc_password }}"
+        force_basic_auth: true
+        status_code: [204, 404]
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      loop: "{{ _cms_forgejo_existing_tokens.json | default([]) | selectattr('name', 'equalto', cms_forgejo_svc_token_name) | list }}"
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+        - (_cms_forgejo_existing_tokens.json | default([]) | selectattr('name', 'equalto', cms_forgejo_svc_token_name) | list | length) > 0
+      no_log: true
+
+    - name: Create Forgejo service account token
+      ansible.builtin.uri:
+        url: "{{ cms_forgejo_api_url | default('https://' ~ (forgejo_host | default('forgejo.dmf.example.com'))) }}/api/v1/users/{{ cms_forgejo_svc_user }}/tokens"
+        method: POST
+        url_username: "{{ cms_forgejo_svc_user }}"
+        url_password: "{{ _cms_forgejo_svc_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          name: "{{ cms_forgejo_svc_token_name }}"
+          scopes:
+            - read:user
+            - read:repository
+            - read:issue
+            - read:organization
+        status_code: 201
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      register: _cms_forgejo_token_result
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Parse Forgejo token result
+      ansible.builtin.set_fact:
+        _cms_forgejo_svc_token: "{{ _cms_forgejo_token_result.json.sha1 | default('') }}"
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Assert Forgejo API token was returned
+      ansible.builtin.assert:
+        that:
+          - _cms_forgejo_svc_token | default('') | length > 0
+        fail_msg: "Forgejo did not return an API token for {{ cms_forgejo_svc_user }}."
+      when:
+        - not _cms_forgejo_token_exists | bool
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Test Forgejo token against API
+      ansible.builtin.uri:
+        url: "{{ cms_forgejo_api_url | default('https://' ~ (forgejo_host | default('forgejo.dmf.example.com'))) }}/api/v1/user"
+        method: GET
+        headers:
+          Authorization: "token {{ _cms_forgejo_svc_token }}"
+        status_code: [200, 401, 403]
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      register: _cms_forgejo_token_test
+      changed_when: false
+      failed_when: false
+      when: _cms_forgejo_svc_token is defined
+      no_log: true
+
+    - name: Validate Forgejo token test
+      ansible.builtin.assert:
+        that:
+          - _cms_forgejo_token_test.status == 200
+        fail_msg: >-
+          Forgejo token test failed with status {{ _cms_forgejo_token_test.status | default('N/A') }}.
+          The token may be invalid or the Forgejo API URL may be wrong.
+      when:
+        - _cms_forgejo_svc_token is defined
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Persist Forgejo token to OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n%s\n'
+          "$OPENBAO_TOKEN"
+          "$CMS_API_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          IFS= read -r API_TOKEN;
+          export BAO_TOKEN;
+          bao kv patch secret/apps/forgejo/runtime cms_api_token="$API_TOKEN"'
+      register: _cms_forgejo_openbao_write
+      when:
+        - _cms_forgejo_svc_token is defined
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+        CMS_API_TOKEN: "{{ _cms_forgejo_svc_token }}"
+      no_log: true
+
+    - name: Verify Forgejo token was persisted to OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ cms_openbao_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json secret/apps/forgejo/runtime'
+      register: _cms_forgejo_openbao_verify
+      changed_when: false
+      failed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
+      when: _cms_forgejo_svc_token is defined
+
+    - name: Assert Forgejo token read back from OpenBao
+      ansible.builtin.assert:
+        that:
+          - (_cms_forgejo_openbao_verify.stdout | from_json).data.data.cms_api_token | default('') | length > 0
+        fail_msg: >-
+          Failed to read Forgejo token back from OpenBao after write.
+          Check OpenBao policies and mount permissions for secret/apps/forgejo/runtime.
+      when:
+        - _cms_forgejo_svc_token is defined
+        - not _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    # ==================================================================
+    # Patch K8s Secret and roll Deployment
+    # ==================================================================
+    - name: Read current DMF Console runtime Secret for checksum
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+      register: _cms_runtime_secret_current
+      when: >-
+        not _cms_netbox_token_exists | bool
+        or not _cms_forgejo_token_exists | bool
+        or _cms_netbox_token_recovered | default(false) | bool
+        or _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Build new secret data dict for checksum
+      ansible.builtin.set_fact:
+        _cms_new_secret_data: >-
+          {{
+            (_cms_runtime_secret_current.resources[0].data | default({}))
+            | combine(
+                (_cms_netbox_svc_token is defined) | ternary(
+                  {'netboxApiToken': (_cms_netbox_svc_token | b64encode)}, {}
+                ),
+                (_cms_forgejo_svc_token is defined) | ternary(
+                  {'forgejoApiToken': (_cms_forgejo_svc_token | b64encode)}, {}
+                )
+              )
+          }}
+      when: >-
+        not _cms_netbox_token_exists | bool
+        or not _cms_forgejo_token_exists | bool
+        or _cms_netbox_token_recovered | default(false) | bool
+        or _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Compute new runtime Secret checksum
+      ansible.builtin.set_fact:
+        _cms_runtime_secret_checksum: >-
+          {{ (_cms_new_secret_data | to_nice_json | hash('sha256')) }}
+      when: >-
+        not _cms_netbox_token_exists | bool
+        or not _cms_forgejo_token_exists | bool
+        or _cms_netbox_token_recovered | default(false) | bool
+        or _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Build stringData for DMF Console runtime Secret patch
+      ansible.builtin.set_fact:
+        _cms_runtime_secret_stringdata: >-
+          {{
+            (
+              (_cms_netbox_svc_token is defined) | ternary(
+                {'netboxApiToken': _cms_netbox_svc_token}, {}
+              )
+            )
+            | combine(
+              (_cms_forgejo_svc_token is defined) | ternary(
+                {'forgejoApiToken': _cms_forgejo_svc_token}, {}
+              )
+            )
+          }}
+      when: >-
+        not _cms_netbox_token_exists | bool
+        or not _cms_forgejo_token_exists | bool
+        or _cms_netbox_token_recovered | default(false) | bool
+        or _cms_forgejo_token_recovered | default(false) | bool
+      no_log: true
+
+    - name: Patch DMF Console runtime Secret with NetBox and Forgejo tokens
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Secret
+          metadata:
+            name: "{{ cms_runtime_secret_name | default('dmf-cms-runtime') }}"
+            namespace: "{{ cms_namespace | default('dmf-cms') }}"
+          type: Opaque
+          stringData: "{{ _cms_runtime_secret_stringdata }}"
+      when:
+        - _cms_runtime_secret_stringdata is defined
+        - _cms_runtime_secret_stringdata | length > 0
+      no_log: true
+
+    - name: Patch DMF Console Deployment checksum annotation to trigger rollout
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ cms_release_name | default('dmf-cms') }}"
+            namespace: "{{ cms_namespace | default('dmf-cms') }}"
+          spec:
+            template:
+              metadata:
+                annotations:
+                  checksum/runtime-secret: "{{ _cms_runtime_secret_checksum }}"
+      when: >-
+        (not _cms_netbox_token_exists | bool)
+        or (not _cms_forgejo_token_exists | bool)
+
+    - name: Wait for DMF Console Deployment to be ready
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: apps/v1
+        kind: Deployment
+        name: "{{ cms_release_name | default('dmf-cms') }}"
+        namespace: "{{ cms_namespace | default('dmf-cms') }}"
+      register: _cms_deployment_ready
+      until:
+        - _cms_deployment_ready.resources | length > 0
+        - _cms_deployment_ready.resources[0].status.readyReplicas | default(0) | int >= 1
+      retries: 60
+      delay: 5
+      when: >-
+        (not _cms_netbox_token_exists | bool)
+        or (not _cms_forgejo_token_exists | bool)

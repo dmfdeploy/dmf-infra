@@ -1,0 +1,48 @@
+global:
+  envFrom:
+    - secretRef:
+        name: {{ authentik_runtime_secret_name }}
+  volumes:
+    - name: authentik-secrets
+      secret:
+        secretName: {{ authentik_runtime_secret_name }}
+  volumeMounts:
+    - name: authentik-secrets
+      mountPath: /authentik-secrets
+      readOnly: true
+
+authentik:
+  log_level: {{ authentik_log_level }}
+  secret_key: "file:///authentik-secrets/secret_key"
+  error_reporting:
+    enabled: false
+  web:
+    path: {{ authentik_web_path }}
+  postgresql:
+    password: "file:///authentik-secrets/password"
+
+blueprints:
+  configMaps:
+{% if authentik_blueprints_enabled %}
+    - {{ authentik_blueprints_configmap_name }}
+{% endif %}
+
+server:
+  replicas: {{ authentik_server_replicas }}
+  ingress:
+    enabled: false
+
+worker:
+  replicas: {{ authentik_worker_replicas }}
+
+postgresql:
+  enabled: true
+  auth:
+    username: authentik
+    database: authentik
+    existingSecret: {{ authentik_runtime_secret_name }}
+  primary:
+    persistence:
+      enabled: true
+      storageClass: {{ authentik_postgresql_storage_class }}
+      size: {{ authentik_postgresql_storage_size }}

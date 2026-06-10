@@ -1,0 +1,60 @@
+---
+config:
+  clients:
+    - url: {{ promtail_loki_url }}
+  # Scrape the k3s API server audit log on each control-plane node so the
+  # forensic trail lands in Loki alongside app logs. The k3s server writes
+  # the audit log on the host filesystem at /var/log/kubernetes/audit.log
+  # (configured in roles/base/k3s/templates/k3s-audit-logging.conf.j2).
+  #
+  # The `job: k3s-audit` label triggers the security-stream retention rule
+  # in roles/stack/operator/loki/templates/values.yml.j2
+  # (loki_security_retention, default 4380h / ~6 months). The Loki
+  # compactor *deletes* entries past that retention window — it does not
+  # archive them. The host-file copy goes to a separate WORM S3 path via
+  # the audit-log-archival role (see roles/base/audit-log-archival).
+  #
+  # NOTE the __path__ glob: k3s rotates by lumberjack semantics so older
+  # files appear as audit-YYYY-MM-DDTHH-MM-SS.SSS.log next to audit.log.
+  # Scraping both means Promtail doesn't lose lines that rotated between
+  # scrape ticks; positions.yaml de-dupes by inode.
+  snippets:
+    extraScrapeConfigs: |
+      - job_name: k3s-audit
+        static_configs:
+          - targets:
+              - localhost
+            labels:
+              job: k3s-audit
+              host: ${HOSTNAME}
+              __path__: /var/log/kubernetes/audit*.log
+
+# Explicit hostPath mount for /var/log/kubernetes — the upstream chart's
+# default mount of /var/log is enough today, but declaring the narrower
+# mount keeps the audit pipeline working even if upstream tightens defaults.
+# Read-only because Promtail must not write to the audit log directory.
+extraVolumes:
+  - name: var-log-kubernetes
+    hostPath:
+      path: /var/log/kubernetes
+      type: DirectoryOrCreate
+extraVolumeMounts:
+  - name: var-log-kubernetes
+    mountPath: /var/log/kubernetes
+    readOnly: true
+
+# Tolerate all node taints so Promtail scrapes every control-plane node;
+# k3s control-plane nodes inherit the NoSchedule taint until the cloud CCM
+# clears it, and the audit log lives on every server node.
+tolerations:
+  - effect: NoSchedule
+    operator: Exists
+  - effect: NoExecute
+    operator: Exists
+
+# Enable env-var expansion in the rendered config so the `host: ${HOSTNAME}`
+# label in extraScrapeConfigs resolves to the actual node hostname at
+# Promtail start time. Without -config.expand-env=true, Promtail reads
+# `${HOSTNAME}` as a literal string per Grafana docs.
+extraArgs:
+  - -config.expand-env=true

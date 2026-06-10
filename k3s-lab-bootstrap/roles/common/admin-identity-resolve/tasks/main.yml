@@ -1,0 +1,51 @@
+---
+- name: "Validate admin-identity-resolve inputs for {{ admin_resolve_app | default('<unset>') }}"
+  ansible.builtin.assert:
+    that:
+      - admin_resolve_app | default('') | length > 0
+      - admin_resolve_secret_ns | default('') | length > 0
+      - admin_resolve_secret_name | default('') | length > 0
+      - admin_resolve_fallback_username is defined
+      - admin_resolve_fallback_password is defined
+    fail_msg: >-
+      admin-identity-resolve requires admin_resolve_app, admin_resolve_secret_ns,
+      admin_resolve_secret_name, admin_resolve_fallback_username and
+      admin_resolve_fallback_password to be set by the caller.
+
+- name: "Read live admin Secret for {{ admin_resolve_app }}"
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    namespace: "{{ admin_resolve_secret_ns }}"
+    name: "{{ admin_resolve_secret_name }}"
+  register: _admin_resolve_secret
+  no_log: true
+
+- name: "Resolve admin identity for {{ admin_resolve_app }}"
+  ansible.builtin.set_fact:
+    _resolved_admin_user: >-
+      {{
+        (_admin_resolve_secret.resources[0].data[admin_resolve_username_key] | b64decode)
+        if (_admin_resolve_secret.resources | length > 0
+            and admin_resolve_username_key in (_admin_resolve_secret.resources[0].data | default({})))
+        else admin_resolve_fallback_username
+      }}
+    _resolved_admin_password: >-
+      {{
+        (_admin_resolve_secret.resources[0].data[admin_resolve_password_key] | b64decode)
+        if (_admin_resolve_secret.resources | length > 0
+            and admin_resolve_password_key in (_admin_resolve_secret.resources[0].data | default({})))
+        else admin_resolve_fallback_password
+      }}
+    _resolved_admin_source: >-
+      {{
+        ('cluster Secret ' ~ admin_resolve_secret_ns ~ '/' ~ admin_resolve_secret_name)
+        if (_admin_resolve_secret.resources | length > 0)
+        else 'fallback (caller-supplied vault_bootstrap_admin_*)'
+      }}
+  no_log: true
+
+- name: "Log resolved admin source for {{ admin_resolve_app }}"
+  ansible.builtin.debug:
+    msg: "{{ admin_resolve_app }} admin resolved from {{ _resolved_admin_source }}."

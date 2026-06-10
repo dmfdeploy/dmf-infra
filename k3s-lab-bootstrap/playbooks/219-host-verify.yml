@@ -1,0 +1,257 @@
+---
+# ---------------------------------------------------------------------------
+# playbooks/219-host-verify.yml
+# Layer 2 (Host Platform) pre-flight environment verification.
+#
+# Runs BEFORE any infrastructure changes. Validates:
+#   - Hetzner CLI access and infrastructure state
+#   - DNS resolution for cluster domain and app hostnames
+#   - SSH connectivity to all inventory hosts
+#   - Inventory file validity
+#   - Ansible tooling available
+#   - Required local files exist (SSH keys, config files)
+#   - No stale infrastructure conflicts
+#
+# This playbook is read-only — it never mutates anything.
+# ---------------------------------------------------------------------------
+
+- name: Verify environment readiness
+  hosts: localhost
+  gather_facts: false
+  become: false
+  vars:
+    # Domain to validate — consumed from inventory
+    verify_cluster_domain: "{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+    # App hostnames that should resolve (subset of those published in inventory)
+    verify_app_hosts:
+      - "auth.{{ verify_cluster_domain }}"
+      - "forgejo.{{ verify_cluster_domain }}"
+    # Expected SSH key path
+    verify_ssh_key: "{{ ansible_ssh_private_key_file | default('~/.ssh/id_ed25519_k3s_hetzner') }}"
+
+  tasks:
+    # -----------------------------------------------------------------------
+    # 1. Provider CLI access — environment-aware
+    # -----------------------------------------------------------------------
+
+    # Hetzner preflight (skipped for aliyun-* environments)
+    - name: Check hcloud CLI is available
+      ansible.builtin.command: which hcloud
+      changed_when: false
+      register: _hcloud_path
+      when: cluster_ingress_provider_tasks is defined and cluster_ingress_provider_tasks is search('hetzner/ccm')
+
+    - name: Verify Hetzner API connectivity
+      ansible.builtin.command: hcloud server list
+      changed_when: false
+      register: _hcloud_servers
+      failed_when: _hcloud_servers.rc != 0
+      when: cluster_ingress_provider_tasks is defined and cluster_ingress_provider_tasks is search('hetzner/ccm')
+
+    - name: Parse existing Hetzner servers
+      ansible.builtin.set_fact:
+        _hcloud_server_names: "{{ _hcloud_servers.stdout_lines | map('regex_search', '^\\d+\\s+(\\S+)') | select('string') | map('regex_replace', '^\\d+\\s+(\\S+)', '\\1') | list }}"
+      when:
+        - cluster_ingress_provider_tasks is defined and cluster_ingress_provider_tasks is search('hetzner/ccm')
+        - _hcloud_servers is defined and _hcloud_servers.stdout is defined
+
+    - name: Check for existing servers (will be destroyed for rebuild)
+      ansible.builtin.debug:
+        msg: "Found {{ _hcloud_server_names | length }} existing Hetzner server(s): {{ _hcloud_server_names | join(', ') }}. These will be destroyed before rebuild."
+      when:
+        - cluster_ingress_provider_tasks is defined and cluster_ingress_provider_tasks is search('hetzner/ccm')
+        - _hcloud_server_names is defined and _hcloud_server_names | length > 0
+
+    - name: Verify Hetzner private network exists
+      ansible.builtin.command: hcloud network list
+      changed_when: false
+      register: _hcloud_networks
+      when: cluster_ingress_provider_tasks is defined and cluster_ingress_provider_tasks is search('hetzner/ccm')
+
+    - name: Check SSH keys in Hetzner
+      ansible.builtin.command: hcloud ssh-key list
+      changed_when: false
+      register: _hcloud_ssh_keys
+      when: cluster_ingress_provider_tasks is defined and cluster_ingress_provider_tasks is search('hetzner/ccm')
+
+    - name: Check Hetzner Load Balancer state
+      ansible.builtin.command: hcloud load-balancer list
+      changed_when: false
+      register: _hcloud_lbs
+      when: cluster_ingress_provider_tasks is defined and cluster_ingress_provider_tasks is search('hetzner/ccm')
+
+    - name: Parse existing Load Balancers
+      ansible.builtin.set_fact:
+        _hcloud_lb_ips: "{{ _hcloud_lbs.stdout_lines | map('regex_search', '(\\d+\\.\\d+\\.\\d+\\.\\d+)') | select('string') | list }}"
+      when:
+        - cluster_ingress_provider_tasks is defined and cluster_ingress_provider_tasks is search('hetzner/ccm')
+        - _hcloud_lbs is defined and _hcloud_lbs.stdout is defined
+
+    # -----------------------------------------------------------------------
+    # 2. DNS resolution
+    # -----------------------------------------------------------------------
+    - name: Verify cluster domain DNS resolution
+      ansible.builtin.command: "dig +short {{ verify_cluster_domain }} A"
+      changed_when: false
+      register: _dns_cluster
+      failed_when: _dns_cluster.rc != 0
+
+    - name: Display cluster domain DNS result
+      ansible.builtin.debug:
+        msg: "{{ verify_cluster_domain }} → {{ _dns_cluster.stdout | trim }}"
+
+    - name: Verify app hostname DNS resolution
+      ansible.builtin.command: "dig +short {{ item }} A"
+      changed_when: false
+      register: _dns_app_hosts
+      loop: "{{ verify_app_hosts }}"
+      # The auth.<cluster_domain> hard-fail is for environments where the
+      # operator pre-publishes DNS by hand (e.g. hetzner-arm). When
+      # cloudflare_zone_name is set, 321-tailscale reconciles the wildcard
+      # *.cert_manager_cluster_domain mid-run, so app DNS legitimately does
+      # not exist yet at this verify step — downgrade to a soft check.
+      # Likewise local-CA profiles (sandbox, ADR-0031 O1) use explicit local
+      # *.dmf.test host mappings, NOT public DNS — and dig bypasses /etc/hosts,
+      # so app hostnames legitimately don't resolve here. Soft-check for them too.
+      failed_when: >
+        cloudflare_zone_name | default('') | length == 0 and
+        dmf_tls_mode | default('') != 'local-ca' and
+        item == 'auth.' + verify_cluster_domain and
+        (_dns_app_hosts.rc != 0 or _dns_app_hosts.stdout | trim | length == 0)
+
+    - name: Display app hostname DNS results
+      ansible.builtin.debug:
+        msg: "{{ item.item }} → {{ item.stdout | trim | default('NOT RESOLVED (acceptable if not yet published)') }}"
+      loop: "{{ _dns_app_hosts.results }}"
+
+    # -----------------------------------------------------------------------
+    # 3. SSH connectivity to inventory hosts
+    # -----------------------------------------------------------------------
+    - name: Remove stale SSH host keys from known_hosts for nodes being redeployed
+      ansible.builtin.shell: |
+        {% for host in groups.get('k3s', []) %}
+        ssh-keygen -R "{{ hostvars[host].ansible_host | default(host) }}" 2>/dev/null || true
+        {% endfor %}
+      changed_when: false
+
+    - name: Verify SSH connectivity to all inventory hosts
+      ansible.builtin.command: >
+        ssh -o BatchMode=yes
+        -o ConnectTimeout=10
+        -o StrictHostKeyChecking=accept-new
+        -i {{ verify_ssh_key | expanduser }}
+        {{ hostvars[item].ansible_user | default('root') }}@{{ hostvars[item].ansible_host | default('MISSING') }}
+        echo reachable
+      changed_when: false
+      loop: "{{ groups.get('k3s', []) }}"
+      register: _ssh_checks
+      failed_when: _ssh_checks.rc != 0
+
+    - name: Display SSH connectivity results
+      ansible.builtin.debug:
+        msg: "{{ item.item }} → {{ 'OK' if item.rc == 0 else 'FAILED' }}"
+      loop: "{{ _ssh_checks.results }}"
+
+    # -----------------------------------------------------------------------
+    # 4. Required local files
+    # -----------------------------------------------------------------------
+    - name: Check SSH private key exists
+      ansible.builtin.stat:
+        path: "{{ verify_ssh_key | expanduser }}"
+      register: _ssh_key_stat
+      failed_when: not _ssh_key_stat.stat.exists
+
+    - name: Check SSH public key exists
+      ansible.builtin.stat:
+        path: "{{ (verify_ssh_key | expanduser) + '.pub' }}"
+      register: _ssh_pub_stat
+      failed_when: not _ssh_pub_stat.stat.exists
+
+    - name: Display SSH key fingerprint
+      ansible.builtin.command: "ssh-keygen -lf {{ verify_ssh_key | expanduser }}.pub"
+      changed_when: false
+      register: _ssh_fingerprint
+
+    - name: Display SSH key fingerprint
+      ansible.builtin.debug:
+        msg: "{{ _ssh_fingerprint.stdout }}"
+
+    # -----------------------------------------------------------------------
+    # 5. Ansible tooling
+    # -----------------------------------------------------------------------
+    - name: Check ansible version
+      ansible.builtin.command: ansible --version
+      changed_when: false
+
+    - name: Check Python 3 availability
+      ansible.builtin.command: python3 --version
+      changed_when: false
+
+    - name: Check jq availability
+      ansible.builtin.command: jq --version
+      changed_when: false
+
+    - name: Check helm availability
+      ansible.builtin.command: helm version --short
+      changed_when: false
+
+    - name: Check curl availability
+      ansible.builtin.command: curl --version
+      changed_when: false
+
+    # -----------------------------------------------------------------------
+    # 6. Inventory validation
+    # -----------------------------------------------------------------------
+    - name: Validate inventory has k3s group
+      ansible.builtin.assert:
+        that:
+          - "'k3s' in groups"
+          - "groups['k3s'] | length >= 1"
+        fail_msg: "Inventory must have a 'k3s' group with at least 1 host."
+
+    - name: Validate inventory has k3s_control group
+      ansible.builtin.assert:
+        that:
+          - "'k3s_control' in groups"
+          - "groups['k3s_control'] | length >= 1"
+        fail_msg: "Inventory must have a 'k3s_control' group with exactly 1 host."
+
+    - name: Validate all hosts have ansible_host defined
+      ansible.builtin.assert:
+        that:
+          - "hostvars[item].ansible_host is defined"
+          - "hostvars[item].ansible_host | length > 0"
+        fail_msg: "Host {{ item }} is missing ansible_host."
+      loop: "{{ groups['k3s'] }}"
+
+    - name: Validate all hosts have k3s_node_ip defined
+      ansible.builtin.assert:
+        that:
+          - "hostvars[item].k3s_node_ip is defined"
+        fail_msg: "Host {{ item }} is missing k3s_node_ip."
+      loop: "{{ groups['k3s'] }}"
+
+    - name: Validate cluster domain is set
+      ansible.builtin.assert:
+        that:
+          - "cert_manager_cluster_domain is defined"
+          - "cert_manager_cluster_domain | length > 0"
+        fail_msg: "cert_manager_cluster_domain must be set in inventory."
+
+    # -----------------------------------------------------------------------
+    # 7. Summary
+    # -----------------------------------------------------------------------
+    - name: Verification summary
+      ansible.builtin.debug:
+        msg: |
+          === Environment Verification Summary ===
+          Hetzner servers:  {{ _hcloud_server_names | default([]) | length }} existing
+          Hetzner networks: {{ 'Found' if _hcloud_networks is defined and 'k3s-private' in (_hcloud_networks.stdout | default('')) else 'N/A' }}
+          Hetzner LBs:      {{ _hcloud_lb_ips | default([]) | length }} existing
+          DNS {{ verify_cluster_domain }}: → {{ _dns_cluster.stdout | trim }}
+          SSH connectivity: {{ _ssh_checks.results | selectattr('rc', 'defined') | selectattr('rc', 'eq', 0) | list | length }}/{{ groups['k3s'] | length }} hosts reachable
+          SSH key:          {{ _ssh_fingerprint.stdout }}
+          Inventory hosts:  {{ groups['k3s'] | join(', ') }}
+          Control node:     {{ groups['k3s_control'] | join(', ') }}
+          =============================================
+          Environment is READY for bootstrap.

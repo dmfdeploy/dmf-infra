@@ -1,0 +1,765 @@
+---
+# ---------------------------------------------------------------------------
+# Resolve the Forgejo admin identity (username + password) via
+# common/app-admin-facts in live-read mode. The helper reads
+# secret/apps/forgejo/admin from OpenBao via the operator session the
+# caller (692-forgejo-bootstrap.yml) established, and falls back through
+# a paired source-atomic chain:
+#   1. forgejo_admin_username + forgejo_admin_password (explicit caller
+#      override; defaults are empty strings)
+#   2. canonical break-glass identity `forgejo-break-glass` (matches what
+#      the forgejo chart provisions per ADR-0028 D3 / survey §5 item 2,
+#      see roles/stack/operator/forgejo/defaults/main.yml) paired with
+#      vault_forgejo_admin_password | default(vault_bootstrap_admin_password).
+#      Pre-ADR-0028 this candidate used vault_bootstrap_admin_username,
+#      which no longer matches the chart-provisioned admin after the
+#      D3 rename.
+# `_forgejo_admin_resolved_*` facts come back from the helper; the
+# set_fact below rebinds forgejo_admin_username + _password to those
+# values so the existing 15 downstream `url_username` /
+# `url_password` references continue to work unchanged.
+# ---------------------------------------------------------------------------
+- name: Resolve Forgejo admin identity (live-read)
+  ansible.builtin.include_role:
+    name: common/app-admin-facts
+  vars:
+    app_admin_mode: live-read
+    app_admin_app_name: forgejo
+    app_admin_fact_prefix: _forgejo_admin_resolved
+    app_admin_secret_path: secret/apps/forgejo/admin
+    app_admin_fallback_candidates:
+      - username: "{{ forgejo_admin_username | default('') }}"
+        password: "{{ forgejo_admin_password | default('') }}"
+      - username: forgejo-break-glass
+        password: >-
+          {{
+            vault_forgejo_admin_password
+            | default(vault_bootstrap_admin_password | default(''), true)
+          }}
+
+- name: Rebind forgejo_admin_{username,password} from helper resolution
+  ansible.builtin.set_fact:
+    forgejo_admin_username: "{{ _forgejo_admin_resolved_username }}"
+    forgejo_admin_password: "{{ _forgejo_admin_resolved_password }}"
+  no_log: true
+
+- name: Assert Forgejo admin credentials are available
+  ansible.builtin.assert:
+    that:
+      - forgejo_admin_username | length > 0
+      - forgejo_admin_password | length > 0
+    fail_msg: >-
+      Forgejo admin credentials are not available
+      (common/app-admin-facts resolved
+      source={{ _forgejo_admin_resolved_source | default('unset') }}).
+      Either store both fields at OpenBao path
+      secret/apps/forgejo/admin (`username` + `password` — the
+      canonical pattern common/app-admin-facts maintains), set
+      `forgejo_admin_username` + `forgejo_admin_password` explicitly,
+      or define vault_forgejo_admin_password OR
+      vault_bootstrap_admin_password (paired with the canonical
+      `forgejo-break-glass` break-glass identity per ADR-0028 D3).
+  no_log: true
+
+- name: Set effective Forgejo admin token
+  ansible.builtin.set_fact:
+    forgejo_admin_token_effective: >-
+      {{ (forgejo_admin_token | length > 0)
+         | ternary(forgejo_admin_token, forgejo_admin_token_input) }}
+  no_log: true
+
+- name: Generate Forgejo service password if missing
+  ansible.builtin.command: openssl rand -base64 24
+  register: forgejo_svc_password_generated
+  changed_when: false
+  when: forgejo_svc_password | length == 0
+  delegate_to: localhost
+  become: false
+
+- name: Set effective Forgejo service credentials
+  ansible.builtin.set_fact:
+    forgejo_svc_password_effective: >-
+      {{ (forgejo_svc_password | length > 0)
+         | ternary(forgejo_svc_password, forgejo_svc_password_generated.stdout | default('') | trim) }}
+    forgejo_svc_token_effective: >-
+      {{ forgejo_svc_token | default('') }}
+  no_log: true
+
+- name: Set Forgejo secret persistence mode
+  ansible.builtin.set_fact:
+    forgejo_persist_to_openbao: "{{ forgejo_openbao_breakglass_file | default('', true) | length > 0 }}"
+
+- name: Assert vault password file exists
+  ansible.builtin.set_fact:
+    forgejo_vault_password_file_effective: "{{ forgejo_vault_password_file | expanduser }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Check vault password file
+  ansible.builtin.stat:
+    path: "{{ forgejo_vault_password_file_effective }}"
+  register: forgejo_vault_passfile
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Fail if vault password file is missing
+  ansible.builtin.assert:
+    that:
+      - forgejo_vault_passfile.stat.exists
+    fail_msg: >-
+      Vault password file not found at {{ forgejo_vault_password_file_effective }}.
+      Create it (e.g. ~/.vault_pass) before running this playbook.
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Check Forgejo API availability
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/version"
+    method: GET
+    status_code: 200
+
+- name: Lookup Forgejo admin tokens
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/users/{{ forgejo_admin_username }}/tokens"
+    method: GET
+    url_username: "{{ forgejo_admin_username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: forgejo_admin_tokens
+  no_log: true
+
+- name: Delete existing Forgejo admin token with same name
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/users/{{ forgejo_admin_username }}/tokens/{{ item.id }}"
+    method: DELETE
+    url_username: "{{ forgejo_admin_username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    status_code: 204
+  loop: "{{ forgejo_admin_tokens.json | selectattr('name', 'equalto', forgejo_admin_token_name) | list }}"
+  when:
+    - forgejo_admin_token_effective | length == 0
+    - forgejo_admin_tokens.json | selectattr('name', 'equalto', forgejo_admin_token_name) | list | length > 0
+  no_log: true
+
+- name: Create Forgejo admin token
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/users/{{ forgejo_admin_username }}/tokens"
+    method: POST
+    url_username: "{{ forgejo_admin_username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ forgejo_admin_token_name }}"
+      scopes: "{{ forgejo_admin_token_scopes }}"
+    status_code: 201
+  register: forgejo_admin_token_created
+  when: forgejo_admin_token_effective | length == 0
+
+- name: Set admin token from API response
+  ansible.builtin.set_fact:
+    forgejo_admin_token_effective: >-
+      {{ (forgejo_admin_token_effective | length > 0)
+         | ternary(forgejo_admin_token_effective, forgejo_admin_token_created.json.sha1 | default('')) }}
+  when: forgejo_admin_token_effective | length == 0
+  no_log: true
+
+- name: Lookup Forgejo service user
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/users/{{ forgejo_svc_user }}"
+    method: GET
+    url_username: "{{ forgejo_admin_username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: forgejo_svc_user_lookup
+
+- name: Create Forgejo service user
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/admin/users"
+    method: POST
+    url_username: "{{ forgejo_admin_username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      username: "{{ forgejo_svc_user }}"
+      email: "{{ forgejo_svc_email }}"
+      password: "{{ forgejo_svc_password_effective }}"
+      must_change_password: false
+      send_notify: false
+      active: true
+    status_code: 201
+  when: forgejo_svc_user_lookup.status == 404
+  no_log: true
+
+- name: Update Forgejo service user password
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/admin/users/{{ forgejo_svc_user }}"
+    method: PATCH
+    url_username: "{{ forgejo_admin_username }}"
+    url_password: "{{ forgejo_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      password: "{{ forgejo_svc_password_effective }}"
+      must_change_password: false
+      active: true
+    status_code: 200
+  when: forgejo_svc_user_lookup.status == 200
+  no_log: true
+
+- name: Lookup Forgejo token
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/users/{{ forgejo_svc_user }}/tokens"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: 200
+  register: forgejo_svc_tokens
+  no_log: true
+
+- name: Validate Forgejo service token
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/user"
+    method: GET
+    headers:
+      Authorization: "token {{ forgejo_svc_token_effective }}"
+    status_code: [200, 401, 403]
+  register: forgejo_svc_token_check
+  when: forgejo_svc_token_effective | length > 0
+  no_log: true
+
+- name: Clear Forgejo service token if invalid
+  ansible.builtin.set_fact:
+    forgejo_svc_token_effective: ""
+  when:
+    - forgejo_svc_token_effective | length > 0
+    - forgejo_svc_token_check.status | default(0) != 200
+  no_log: true
+
+- name: Delete existing Forgejo service token if invalid or missing
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/users/{{ forgejo_svc_user }}/tokens/{{ item.id }}"
+    method: DELETE
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: 204
+  loop: "{{ forgejo_svc_tokens.json | selectattr('name', 'equalto', forgejo_svc_user ~ '-token-awx') | list }}"
+  when:
+    - forgejo_svc_token_effective | length == 0
+    - forgejo_svc_tokens.json | selectattr('name', 'equalto', forgejo_svc_user ~ '-token-awx') | list | length > 0
+  no_log: true
+
+- name: Create Forgejo token
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/users/{{ forgejo_svc_user }}/tokens"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ forgejo_svc_user }}-token-awx"
+      scopes: "{{ forgejo_svc_token_scopes }}"
+    status_code: 201
+  register: forgejo_svc_token_created
+  when: forgejo_svc_token_effective | length == 0
+  no_log: true
+
+- name: Set Forgejo service token from API response
+  ansible.builtin.set_fact:
+    forgejo_svc_token_effective: >-
+      {{ (forgejo_svc_token_effective | length > 0)
+         | ternary(forgejo_svc_token_effective, forgejo_svc_token_created.json.sha1 | default('')) }}
+  when: forgejo_svc_token_effective | length == 0
+  no_log: true
+
+- name: Ensure Forgejo repos exist (mirror-listed repos handled separately below)
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/{{ item }}"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  loop: "{{ forgejo_repos | difference((forgejo_mirror_repos | default({})).keys() | list) }}"
+  register: forgejo_repo_lookup
+  no_log: true
+
+- name: Create Forgejo repos
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/user/repos"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ item.item }}"
+      private: true
+      auto_init: true
+      default_branch: main
+    status_code: 201
+  loop: "{{ forgejo_repo_lookup.results }}"
+  when: item.status == 404
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Seed local repos from controller filesystem paths (one-shot init).
+# Guarded on required content: skips if all required files already exist.
+# Replaces the README-only push for repos listed in forgejo_seed_repos.
+# ---------------------------------------------------------------------------
+- name: Seed local repos into Forgejo
+  ansible.builtin.include_tasks: seed-local-repos.yml
+  loop: "{{ forgejo_seed_repos | dict2items }}"
+  loop_control:
+    loop_var: seed_entry
+    label: "{{ seed_entry.key }}"
+  when: forgejo_seed_repos is defined and forgejo_seed_repos | length > 0
+
+# ---------------------------------------------------------------------------
+# Public-publish flow (2026-05-21): cluster Forgejo pulls catalog repos from
+# the canonical GitHub source. Forgejo only honors mirror state at repo
+# creation time via /repos/migrate, not on PATCH — see
+# tasks/ensure-mirror-repo.yml for the empirical findings + the
+# create/delete-and-recreate/no-op idempotency.
+# ---------------------------------------------------------------------------
+- name: Ensure Forgejo pull-mirror repos
+  ansible.builtin.include_tasks: ensure-mirror-repo.yml
+  loop: "{{ forgejo_mirror_repos | dict2items }}"
+  loop_control:
+    loop_var: mirror_entry
+    label: "{{ mirror_entry.key }}"
+  when: forgejo_mirror_repos is defined and forgejo_mirror_repos | length > 0
+
+- name: Push initial README to dmf-runbooks repo
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/dmf-runbooks/contents/README.md"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      content: "{{ '# dmf-runbooks\n\nThin launcher playbooks for DMF catalog entries.\nSee ADR-0014 for AWX project layout.\n' | b64encode }}"
+      message: "Initial README for catalog launcher playbooks"
+      branch: main
+    status_code: [200, 201]
+  register: _dmf_runbooks_init
+  failed_when: false
+  when: >-
+    'dmf-runbooks' not in (forgejo_mirror_repos | default({}))
+    and not (forgejo_seed_repos is defined and
+             'dmf-runbooks' in forgejo_seed_repos and
+             forgejo_seed_repos['dmf-runbooks'].source_path is defined and
+             forgejo_seed_repos['dmf-runbooks'].source_path != '/dev/null/dmf-runbooks')
+
+# ---------------------------------------------------------------------------
+# NetBox external datasource: seed netbox-data repo with example structure
+# covering all 5 use cases (config context, templates, exports, policy,
+# generated input). Each file is created only if it doesn't already exist
+# (404 status on GET → POST create), so operator edits via PR are preserved.
+# ---------------------------------------------------------------------------
+- name: Seed netbox-data repo — config context (site/role/platform variables)
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/config-contexts/sites.yaml"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: _nb_site_ctx_check
+  no_log: true
+
+- name: Push config context — site variables
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/config-contexts/sites.yaml"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      content: "{{ lookup('template', 'netbox-data/config-contexts/sites.yaml.j2') | b64encode }}"
+      message: "Seed config context: site-level variables"
+      branch: main
+    status_code: [200, 201]
+  when: _nb_site_ctx_check.status == 404
+  no_log: true
+
+- name: Seed netbox-data repo — device config templates (Cisco/Arista/Juniper)
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/templates/device-cisco-base.j2"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: _nb_tmpl_cisco_check
+  no_log: true
+
+- name: Push template — Cisco base config
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/templates/device-cisco-base.j2"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      content: "{{ lookup('file', role_path + '/templates/netbox-data/templates/device-cisco-base.j2.j2') | b64encode }}"
+      message: "Seed template: Cisco base config"
+      branch: main
+    status_code: [200, 201]
+  when: _nb_tmpl_cisco_check.status == 404
+  no_log: true
+
+- name: Seed netbox-data repo — export templates (cable list / commissioning)
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/export-templates/cable-list.csv.j2"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: _nb_export_cable_check
+  no_log: true
+
+- name: Push export template — cable list CSV
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/export-templates/cable-list.csv.j2"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      content: "{{ lookup('file', role_path + '/templates/netbox-data/export-templates/cable-list.csv.j2.j2') | b64encode }}"
+      message: "Seed export template: cable list CSV"
+      branch: main
+    status_code: [200, 201]
+  when: _nb_export_cable_check.status == 404
+  no_log: true
+
+- name: Seed netbox-data repo — policy/convention data (NTP/DNS/VLAN/PTP)
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/policy/conventions.yaml"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: _nb_policy_check
+  no_log: true
+
+- name: Push policy — naming conventions and domain data
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/policy/conventions.yaml"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      content: "{{ lookup('template', 'netbox-data/policy/conventions.yaml.j2') | b64encode }}"
+      message: "Seed policy: naming conventions and domain data"
+      branch: main
+    status_code: [200, 201]
+  when: _nb_policy_check.status == 404
+  no_log: true
+
+- name: Seed netbox-data repo — generated input README
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/generated-inputs/README.md"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: _nb_gen_readme_check
+  no_log: true
+
+- name: Push generated-inputs README
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/generated-inputs/README.md"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      content: "{{ '# generated-inputs/\n\nMachine-generated YAML consumed by NetBox via git datasource.\nCommit via PR from automation pipelines (e.g. discovery scripts).\nNetBox syncs on interval or manual trigger.\n\nNOTE: *.md files are ignored by the datasource ignore_rules.\nUse .yaml or .yml extension for files that should be synced.\n' | b64encode }}"
+      message: "Seed generated-inputs directory marker"
+      branch: main
+    status_code: [200, 201]
+  when: _nb_gen_readme_check.status == 404
+  no_log: true
+
+- name: Push netbox-data repo README
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/README.md"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: _nb_readme_check
+  no_log: true
+
+- name: Push netbox-data README
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/netbox-data/contents/README.md"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      content: "{{ '# netbox-data\n\nGit-backed external datasource for NetBox.\nSynced via NetBox Data Sources (core model).\n\n## Structure\n```\n├── config-contexts/   # JSON/YAML for site, role, platform, tenant variables\n├── templates/         # Jinja2 for device configs, ZTP, PTP/ST2110 profiles\n├── export-templates/  # CSV/Markdown/JSON reports, cable lists, commissioning\n├── policy/            # NTP, DNS, VLAN conventions, PTP domains, SNMP profiles\n└── generated-inputs/  # Machine-generated YAML from discovery scripts\n```\n\n## Use\n1. NetBox creates a Data Source pointing at this repo\n2. NetBox syncs files as DataFile objects into its database\n3. Automation pipelines can PR changes for review before NetBox consumes them\n' | b64encode }}"
+      message: "Initial README for netbox-data repo"
+      branch: main
+    status_code: [200, 201]
+  when: _nb_readme_check.status == 404
+  no_log: true
+
+- name: Create temp file for Forgejo vault edits
+  ansible.builtin.tempfile:
+    state: file
+    suffix: .yml
+  register: forgejo_vault_tmp
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Ensure temp vault file is readable
+  ansible.builtin.file:
+    path: "{{ forgejo_vault_tmp.path }}"
+    mode: "0600"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Read vault.yml header
+  ansible.builtin.slurp:
+    path: "{{ forgejo_vault_path }}"
+  register: forgejo_vault_slurp
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Set vault encrypted flag
+  ansible.builtin.set_fact:
+    forgejo_vault_encrypted: "{{ (forgejo_vault_slurp.content | b64decode).startswith('$ANSIBLE_VAULT') }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Decrypt vault.yml to temp file
+  ansible.builtin.command: >
+    ansible-vault decrypt --vault-password-file {{ forgejo_vault_password_file_effective }}
+    --output {{ forgejo_vault_tmp.path }} {{ forgejo_vault_path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - not forgejo_persist_to_openbao | bool
+    - forgejo_vault_encrypted
+  no_log: true
+
+- name: Copy vault.yml to temp file
+  ansible.builtin.copy:
+    src: "{{ forgejo_vault_path }}"
+    dest: "{{ forgejo_vault_tmp.path }}"
+    mode: "0600"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - not forgejo_persist_to_openbao | bool
+    - not forgejo_vault_encrypted
+  no_log: true
+
+- name: Update Forgejo tokens in vault
+  ansible.builtin.lineinfile:
+    path: "{{ forgejo_vault_tmp.path }}"
+    regexp: "^{{ item.key }}:"
+    line: "{{ item.key }}: \"{{ item.value }}\""
+    create: true
+  loop:
+    - key: vault_forgejo_admin_token
+      value: "{{ forgejo_admin_token_effective }}"
+    - key: vault_forgejo_svc_password
+      value: "{{ forgejo_svc_password_effective }}"
+    - key: vault_forgejo_svc_token
+      value: "{{ forgejo_svc_token_effective }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Encrypt updated vault.yml
+  ansible.builtin.command: >
+    ansible-vault encrypt --vault-password-file {{ forgejo_vault_password_file_effective }} {{ forgejo_vault_tmp.path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when:
+    - not forgejo_persist_to_openbao | bool
+    - forgejo_vault_encrypted
+  no_log: true
+
+- name: Check updated vault temp file
+  ansible.builtin.stat:
+    path: "{{ forgejo_vault_tmp.path }}"
+  register: forgejo_vault_tmp_stat
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Replace vault.yml with updated version
+  ansible.builtin.command: >
+    cp -f {{ forgejo_vault_tmp.path }} {{ forgejo_vault_path }}
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Cleanup temp vault file
+  ansible.builtin.file:
+    path: "{{ forgejo_vault_tmp.path }}"
+    state: absent
+  run_once: true
+  delegate_to: localhost
+  become: false
+  when: not forgejo_persist_to_openbao | bool
+
+- name: Load OpenBao break-glass JSON for Forgejo persistence
+  ansible.builtin.set_fact:
+    _forgejo_openbao_breakglass: "{{ lookup('file', forgejo_openbao_breakglass_file) | from_json }}"
+  run_once: true
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: forgejo_persist_to_openbao | bool
+
+- name: Extract OpenBao operator credentials for Forgejo persistence
+  ansible.builtin.set_fact:
+    _forgejo_openbao_username: "{{ _forgejo_openbao_breakglass.ops_admin_username | default('') }}"
+    _forgejo_openbao_password: "{{ _forgejo_openbao_breakglass.ops_admin_password | default('') }}"
+  run_once: true
+  no_log: true
+  when: forgejo_persist_to_openbao | bool
+
+- name: Assert OpenBao operator credentials exist for Forgejo persistence
+  ansible.builtin.assert:
+    that:
+      - _forgejo_openbao_username | length > 0
+      - _forgejo_openbao_password | length > 0
+    fail_msg: >-
+      No operator credentials found in {{ forgejo_openbao_breakglass_file }}.
+      Forgejo integration token persistence must write to the in-cluster OpenBao.
+  run_once: true
+  no_log: true
+  when: forgejo_persist_to_openbao | bool
+
+- name: Discover OpenBao pod for Forgejo persistence
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ forgejo_openbao_namespace }}"
+    label_selectors:
+      - "{{ forgejo_openbao_pod_label_selector }}"
+  register: _forgejo_openbao_pod_info
+  run_once: true
+  when: forgejo_persist_to_openbao | bool
+
+- name: Assert OpenBao pod exists for Forgejo persistence
+  ansible.builtin.assert:
+    that:
+      - _forgejo_openbao_pod_info.resources | length > 0
+    fail_msg: >-
+      Could not find an OpenBao pod in namespace {{ forgejo_openbao_namespace }}
+      with selector {{ forgejo_openbao_pod_label_selector }}.
+  run_once: true
+  when: forgejo_persist_to_openbao | bool
+
+- name: Set OpenBao pod fact for Forgejo persistence
+  ansible.builtin.set_fact:
+    _forgejo_openbao_pod: "{{ _forgejo_openbao_pod_info.resources[0].metadata.name }}"
+  run_once: true
+  when: forgejo_persist_to_openbao | bool
+
+- name: Log into OpenBao with operator userpass for Forgejo persistence
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ forgejo_openbao_namespace }}
+      exec -i {{ _forgejo_openbao_pod }}
+      -- sh -c '
+      IFS= read -r P;
+      bao write -format=json auth/userpass/login/{{ _forgejo_openbao_username | quote }} password="$P"'
+  register: _forgejo_openbao_login_raw
+  changed_when: false
+  run_once: true
+  environment:
+    OPENBAO_PASSWORD: "{{ _forgejo_openbao_password }}"
+  no_log: true
+  when: forgejo_persist_to_openbao | bool
+
+- name: Extract OpenBao client token for Forgejo persistence
+  ansible.builtin.set_fact:
+    _forgejo_openbao_client_token: "{{ (_forgejo_openbao_login_raw.stdout | from_json).auth.client_token }}"
+  run_once: true
+  no_log: true
+  when: forgejo_persist_to_openbao | bool
+
+- name: Persist Forgejo integration secrets to in-cluster OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$FORGEJO_ADMIN_TOKEN"
+      "$FORGEJO_SVC_PASSWORD"
+      "$FORGEJO_SVC_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ forgejo_openbao_namespace }}
+      exec -i {{ _forgejo_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r ADMIN_TOKEN;
+      IFS= read -r SVC_PASSWORD;
+      IFS= read -r SVC_TOKEN;
+      export BAO_TOKEN;
+      bao kv put {{ forgejo_runtime_secret_path | quote }}
+      forgejo_admin_token="$ADMIN_TOKEN"
+      forgejo_svc_password="$SVC_PASSWORD"
+      forgejo_svc_token="$SVC_TOKEN"'
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _forgejo_openbao_client_token }}"
+    FORGEJO_ADMIN_TOKEN: "{{ forgejo_admin_token_effective }}"
+    FORGEJO_SVC_PASSWORD: "{{ forgejo_svc_password_effective }}"
+    FORGEJO_SVC_TOKEN: "{{ forgejo_svc_token_effective }}"
+  no_log: true
+  when: forgejo_persist_to_openbao | bool

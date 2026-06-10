@@ -1,0 +1,36 @@
+---
+# DMF bootstrap: Configure (EBU white paper §Configure stage).
+# Wires cross-app relationships between already-installed platform apps.
+# Must run after OpenBao has been seeded and Layer 6 apps are deployed.
+#
+# Distinct from Provision (ADR-0012): Configure creates OIDC integrations,
+# service accounts, tokens, and automation wiring — not app installs.
+
+# ── Identity overlays ────────────────────────────────────────────────────────
+- import_playbook: playbooks/vertical-security/191-zot-oidc.yml
+  tags: [vertical-security, identity, registry, authentik, oidc]
+
+# ── Source of Truth and automation wiring ────────────────────────────────────
+# 692 before 691: netbox-sot reads the Forgejo svc token from OpenBao for the
+# Git datasource config, so Forgejo must be bootstrapped (and its token
+# persisted) before NetBox SoT runs.
+- import_playbook: playbooks/692-forgejo-bootstrap.yml
+  tags: [layer6, application-ui, forgejo, bootstrap]
+- import_playbook: playbooks/691-netbox-sot.yml
+  tags: [layer6, application-ui, netbox, sot]
+- import_playbook: playbooks/693-awx-integration.yml
+  tags: [layer6, application-ui, awx, integration]
+- import_playbook: playbooks/694-born-inventory.yml
+  tags: [layer6, application-ui, inventory, netbox, reconcile]
+- import_playbook: playbooks/vertical-monitoring/160-promsd.yml
+  tags: [vertical-monitoring, promsd]
+
+# ── CMS integration wiring ───────────────────────────────────────────────────
+- import_playbook: playbooks/696-cms-authentik-api.yml
+  tags: [layer6, application-ui, dmf-console, identity, authentik, api]
+- import_playbook: playbooks/697-cms-awx-token.yml
+  tags: [layer6, application-ui, dmf-console, identity, awx, api]
+- import_playbook: playbooks/698-cms-netbox-forgejo-tokens.yml
+  tags: [layer6, application-ui, dmf-console, netbox, forgejo, api]
+- import_playbook: playbooks/699-cms-smoke-test.yml
+  tags: [layer6, application-ui, dmf-console, verify, smoke-test]

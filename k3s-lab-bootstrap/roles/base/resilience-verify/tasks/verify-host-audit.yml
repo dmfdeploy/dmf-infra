@@ -1,0 +1,191 @@
+---
+# Track B — host-side audit-bucket verify.
+# Audit credentials live in Phase 1 inventory variables (set by
+# bootstrap-secrets.sh export-vars) — there is no in-cluster
+# s3-creds-audit Secret. So we run the synthetic round-trip + Object
+# Lock COMPLIANCE delete-refusal test from the workstation, not in-cluster.
+#
+# Required Ansible variables (set by Phase 1):
+#   audit_log_s3_bucket
+#   audit_log_s3_endpoint
+#   audit_log_aws_region
+#   audit_log_aws_access_key_id
+#   audit_log_aws_secret_access_key
+#
+# Execution model: the script body runs inside the same
+# `amazon/aws-cli` container we use for in-cluster Track A, but invoked
+# locally via Docker (Colima on macOS, native dockerd on Linux). The
+# refactor eliminates the previous dependency on the operator's
+# workstation Python + aws CLI install (Homebrew Python 3.14 had a
+# libexpat ABI mismatch on macOS that broke `aws s3api` entirely). Once
+# Lane B's in-cluster ansible-runner pod is wired up, this play can
+# flip from `delegate_to: localhost` + `docker run` to running inside
+# the runner pod itself — same image, same script, different host.
+#
+# ADR-0007 compliance: credentials are passed to the container via
+# `docker run -e VAR` (no =value), so they live only in the spawned
+# docker CLI process's environment block — never in argv, never in
+# logs, never in the container's image layer. `no_log: true` is kept
+# as belt-and-braces.
+
+- name: Verify Phase 1 audit_log_* inventory vars are present
+  ansible.builtin.assert:
+    that:
+      - audit_log_s3_bucket is defined and audit_log_s3_bucket | length > 0
+      - audit_log_s3_endpoint is defined
+      - audit_log_aws_access_key_id is defined and audit_log_aws_access_key_id | length > 0
+      - audit_log_aws_secret_access_key is defined and audit_log_aws_secret_access_key | length > 0
+    fail_msg: |
+      Audit verify cannot run: Phase 1's audit_log_* variables are not
+      populated. Run `dmf-env/bin/bootstrap-secrets.sh export-vars <env>`
+      first.
+
+- name: Check Docker is available on the workstation
+  ansible.builtin.command:
+    cmd: docker info
+  delegate_to: localhost
+  become: false
+  register: _rv_docker_ping
+  changed_when: false
+  failed_when: false
+
+- name: Fail fast if Docker daemon is not reachable
+  ansible.builtin.fail:
+    msg: |
+      `docker info` returned rc={{ _rv_docker_ping.rc }} on the
+      workstation; the audit verify needs a running Docker daemon to
+      run the {{ resilience_verify_awscli_image }} container. On
+      macOS, start Colima (`colima start`). On Linux, ensure dockerd
+      is running and the current user is in the `docker` group.
+  when: _rv_docker_ping.rc != 0
+
+- name: Audit verify — synthetic round-trip + Object Lock delete refusal (containerised)
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --rm
+      # Pass-through env vars (no =VALUE form keeps secrets out of argv;
+      # docker reads from the spawned process's environment, set below).
+      - -e
+      - AWS_ACCESS_KEY_ID
+      - -e
+      - AWS_SECRET_ACCESS_KEY
+      - -e
+      - AWS_DEFAULT_REGION
+      - -e
+      - BUCKET
+      - -e
+      - ENDPOINT
+      - -e
+      - RETAIN_MINUTES
+      - --entrypoint
+      - /bin/sh
+      - "{{ resilience_verify_awscli_image }}"
+      - -c
+      - |
+        set -euo pipefail
+        STAMP=$(date -u +%Y-%m-%dT%H-%M-%SZ)
+        KEY="resilience-verify/${STAMP}.locked.probe"
+        # Container is Linux (Amazon Linux 2 base); GNU date `-d` works
+        # natively — no macOS BSD-date fallback needed.
+        RETAIN=$(date -u -d "+${RETAIN_MINUTES} minute" +%Y-%m-%dT%H:%M:%SZ)
+
+        # PUT with Object Lock COMPLIANCE retention. Capture the VersionId
+        # so we can target the locked version specifically during the
+        # delete-refusal test (see below).
+        echo "audit verify probe ${STAMP}" > /tmp/audit-probe.txt
+        PUT_JSON=$(aws s3api put-object \
+          --bucket "$BUCKET" --key "$KEY" \
+          --body /tmp/audit-probe.txt \
+          --endpoint-url "$ENDPOINT" \
+          --server-side-encryption AES256 \
+          --object-lock-mode COMPLIANCE \
+          --object-lock-retain-until-date "$RETAIN" \
+          --output json)
+        echo "$PUT_JSON"
+        VERSION_ID=$(echo "$PUT_JSON" \
+          | grep -oE '"VersionId":[[:space:]]*"[^"]+"' \
+          | head -1 \
+          | sed -E 's/.*"VersionId":[[:space:]]*"([^"]+)".*/\1/')
+        if [ -z "$VERSION_ID" ]; then
+          echo "FAIL: PUT response did not include a VersionId. Object Lock"
+          echo "      requires versioning to be enabled on the bucket;"
+          echo "      check that the audit bucket has versioning=Enabled."
+          exit 1
+        fi
+
+        # HEAD — assert ServerSideEncryption + ObjectLockMode are present.
+        # Use grep -E with POSIX `[[:space:]]*` instead of `\s*` (which is
+        # a Perl-regex extension not supported by stock grep BRE).
+        HEAD_JSON=$(aws s3api head-object \
+          --bucket "$BUCKET" --key "$KEY" \
+          --endpoint-url "$ENDPOINT" \
+          --output json)
+        echo "$HEAD_JSON"
+        echo "$HEAD_JSON" | grep -q '"ServerSideEncryption"' \
+          || { echo "FAIL: SSE header absent"; exit 1; }
+        echo "$HEAD_JSON" | grep -E -q '"ObjectLockMode":[[:space:]]*"COMPLIANCE"' \
+          || { echo "FAIL: Object Lock mode not COMPLIANCE"; exit 1; }
+
+        # DELETE the locked VERSION — must be refused while retention is
+        # active. Note the --version-id: without it, S3/B2 creates a
+        # delete-marker overlay (a tombstone), which Object Lock does NOT
+        # refuse (a marker doesn't violate the lock — the underlying
+        # version is still intact). Targeting the version-id specifically
+        # is what tests the lock's actual refusal behavior.
+        if aws s3api delete-object \
+             --bucket "$BUCKET" --key "$KEY" \
+             --version-id "$VERSION_ID" \
+             --endpoint-url "$ENDPOINT" 2>&1; then
+          echo "FAIL: Object Lock delete refusal did not trigger — "
+          echo "      versioned delete-object against the locked version "
+          echo "      should have returned AccessDenied / 403."
+          exit 1
+        fi
+        echo "PASS: Object Lock COMPLIANCE delete refused as expected"
+
+        # Wait through retention then clean up the version explicitly.
+        # Plain delete-object (no --version-id) would leave a delete-marker
+        # plus the original version on the bucket; with --version-id the
+        # version itself is removed.
+        echo "Waiting ${RETAIN_MINUTES}m + 5s for retention to expire..."
+        sleep $(( RETAIN_MINUTES * 60 + 5 ))
+        aws s3api delete-object \
+          --bucket "$BUCKET" --key "$KEY" \
+          --version-id "$VERSION_ID" \
+          --endpoint-url "$ENDPOINT"
+        echo "PASS: audit-bucket round-trip + Object Lock test complete"
+  environment:
+    AWS_ACCESS_KEY_ID: "{{ audit_log_aws_access_key_id }}"
+    AWS_SECRET_ACCESS_KEY: "{{ audit_log_aws_secret_access_key }}"
+    AWS_DEFAULT_REGION: "{{ audit_log_aws_region }}"
+    BUCKET: "{{ audit_log_s3_bucket }}"
+    ENDPOINT: "{{ audit_log_s3_endpoint }}"
+    RETAIN_MINUTES: "{{ resilience_verify_audit_lock_retain_minutes }}"
+  register: _rv_audit_result
+  # no_log: belt-and-braces. Even though creds travel only through
+  # `environment:` and `docker run -e NAME` (not argv), some Ansible
+  # callback plugins log environment dicts. Keep `no_log: true` to be
+  # safe. The registered _rv_audit_result IS populated, so the surface
+  # task below still prints stdout/stderr tails on failure.
+  no_log: true
+  failed_when: false
+
+- name: Surface audit verify outcome
+  ansible.builtin.debug:
+    msg: |
+      Audit verify: {{ 'PASS' if _rv_audit_result.rc == 0 else 'FAIL (rc=' ~ _rv_audit_result.rc ~ ')' }}
+      {%- if _rv_audit_result.rc != 0 %}
+      stderr tail:
+      {{ (_rv_audit_result.stderr_lines | default([]))[-10:] | join('\n') }}
+      stdout tail:
+      {{ (_rv_audit_result.stdout_lines | default([]))[-10:] | join('\n') }}
+      {%- endif %}
+
+- name: Fail role if audit verify failed
+  ansible.builtin.fail:
+    msg: "Audit verify failed (rc={{ _rv_audit_result.rc }}); see stderr/stdout tails above."
+  when: _rv_audit_result.rc != 0

@@ -1,0 +1,104 @@
+---
+authentik_namespace: authentik
+authentik_release_name: authentik
+
+authentik_helm_repo: https://charts.goauthentik.io
+authentik_helm_chart: authentik
+authentik_helm_version: "2026.2.2"
+
+authentik_host: "auth.{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+authentik_web_path: /
+authentik_log_level: info
+
+authentik_server_replicas: 1
+authentik_worker_replicas: 1
+
+authentik_runtime_secret_path: secret/apps/authentik/runtime
+authentik_admin_secret_path: secret/apps/authentik/admin
+authentik_breakglass_secret_path: secret/apps/authentik/breakglass
+
+authentik_runtime_secret_name: authentik-env
+authentik_breakglass_secret_name: authentik-breakglass-user
+authentik_blueprints_configmap_name: authentik-blueprints
+authentik_blueprints_enabled: true
+authentik_blueprints_globs:
+  - "{{ role_path }}/files/blueprints/*.yaml"
+  - "{{ role_path }}/templates/blueprints/*.yaml.j2"
+authentik_cleanup_legacy_webauthn_login_binding: true
+authentik_default_authentication_flow_slug: default-authentication-flow
+authentik_legacy_webauthn_stage_name: dmf-webauthn-stage
+authentik_legacy_webauthn_stage_order: 25
+# Identity of the bootstrap (operator) passkey user. These are placeholder
+# defaults; every real environment MUST override them in its private
+# inventory (e.g. dmf-env/inventories/<env>/group_vars/all/main.yml).
+# Public repos must never carry an operator's real identity.
+authentik_bootstrap_passkey_username: operator
+authentik_bootstrap_passkey_email: operator@dmf.example.com
+authentik_bootstrap_passkey_name: DMF Operator
+authentik_bootstrap_passkey_enrollment_flow_slug: dmf-bootstrap-passkey-enrollment
+authentik_bootstrap_passkey_login_flow_slug: dmf-passkey-login
+authentik_bootstrap_passkey_invitation_name: dmf-bootstrap-passkey
+authentik_bootstrap_passkey_invitation_ttl_hours: 24
+authentik_bootstrap_passkey_min_confirmed_devices: 2
+authentik_bootstrap_passkey_secret_path: secret/apps/authentik/bootstrap-passkey
+dmf_cms_oidc_callback_path: /auth/callback
+
+# ADR-0028 D8: short OIDC access tokens. Format is authentik's duration
+# syntax: hours=1;minutes=2;seconds=3. Refresh validity is intentionally
+# shift-sized by default; access tokens remain the short-lived bearer.
+authentik_oidc_access_code_validity: minutes=1
+authentik_oidc_access_token_validity: minutes=15
+authentik_oidc_refresh_token_validity: hours=8
+
+authentik_cluster_secret_store_name: "{{ eso_cluster_secret_store_name | default('openbao') }}"
+authentik_external_secret_api_version: "{{ eso_crd_api_version | default('external-secrets.io/v1') }}"
+authentik_external_secret_refresh_interval: 1h
+
+authentik_openbao_namespace: openbao
+authentik_openbao_pod_label_selector: "app.kubernetes.io/name=openbao"
+authentik_openbao_breakglass_file: >-
+  {{
+    eso_openbao_breakglass_file
+    | default((openbao_key_path | default('')) ~ '.json', true)
+  }}
+
+authentik_postgresql_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+authentik_postgresql_storage_size: 8Gi
+
+authentik_bootstrap_admin_username: akadmin
+authentik_breakglass_username: break-glass
+authentik_breakglass_display_name: Break Glass
+authentik_breakglass_group_name: break-glass
+authentik_breakglass_admin_group_name: authentik Admins
+authentik_breakglass_user_type: internal
+authentik_breakglass_user_path: users
+authentik_breakglass_is_active: true
+
+authentik_secret_key_bytes: 48
+authentik_bootstrap_token_bytes: 32
+authentik_postgresql_password_bytes: 32
+
+# ntfy topic URL for operator-facing operational notifications
+# (passkey enrollment, certificate expiry warnings, etc.).
+#
+# Default: construct from the per-env dmf_env_id + the operator passkey
+# username (= wizard-collected OPERATOR_USERNAME per ADR-0024). This gives
+# every fresh env a working push channel without per-env config — operator
+# subscribes to https://ntfy.sh/dmf-<env_id>-<username> on their device.
+# Topic entropy comes from the random dmf_env_id slug (`xxxx-xxxx`).
+#
+# Fallback chain (in order):
+#   1. dmf_ntfy_url (explicit per-env override; wizard may render this)
+#   2. constructed dmf-<env_id>-<username> on ntfy.sh
+#   3. prometheus_alertmanager_ntfy_url (legacy shared topic)
+#   4. empty (skips ntfy task)
+authentik_ntfy_url: >-
+  {{
+    dmf_ntfy_url
+    | default(
+        ('https://ntfy.sh/dmf-' ~ dmf_env_id ~ '-' ~ authentik_bootstrap_passkey_username)
+        if (dmf_env_id | default('') | length > 0
+            and authentik_bootstrap_passkey_username | default('') | length > 0)
+        else prometheus_alertmanager_ntfy_url | default('')
+    )
+  }}

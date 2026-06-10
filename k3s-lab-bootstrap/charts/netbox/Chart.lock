@@ -1,0 +1,6 @@
+dependencies:
+- name: netbox
+  repository: https://netbox-community.github.io/netbox-chart
+  version: 7.3.0
+digest: sha256:19f3250df2b20a0a1b601b875cf0661d4b6b01aa333d33bba54d831c79d1aede
+generated: "2026-04-17T13:59:31.649447+02:00"

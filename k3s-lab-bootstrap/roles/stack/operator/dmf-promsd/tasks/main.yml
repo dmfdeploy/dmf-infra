@@ -1,0 +1,139 @@
+---
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ dmf_promsd_namespace }}"
+
+# ── ESO ExternalSecret: NetBox promsd_api_token ────────────────────────
+- name: Create dmf-promsd NetBox ExternalSecret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: "{{ dmf_promsd_external_secret_api_version }}"
+      kind: ExternalSecret
+      metadata:
+        name: "{{ dmf_promsd_eso_secret_name }}"
+        namespace: "{{ dmf_promsd_namespace }}"
+      spec:
+        refreshInterval: "{{ dmf_promsd_eso_refresh_interval }}"
+        secretStoreRef:
+          name: "{{ dmf_promsd_cluster_secret_store_name }}"
+          kind: ClusterSecretStore
+        target:
+          name: "{{ dmf_promsd_eso_secret_name }}"
+          creationPolicy: Owner
+        data:
+          - secretKey: netboxToken
+            remoteRef:
+              key: "{{ dmf_promsd_eso_remote_ref_key }}"
+              property: "{{ dmf_promsd_eso_remote_ref_property }}"
+  no_log: true
+
+# ── Deployment ─────────────────────────────────────────────────────────
+- name: Deploy dmf-promsd
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ dmf_promsd_release_name }}"
+        namespace: "{{ dmf_promsd_namespace }}"
+        labels:
+          app: dmf-promsd
+      spec:
+        replicas: 1
+        selector:
+          matchLabels:
+            app: dmf-promsd
+        template:
+          metadata:
+            labels:
+              app: dmf-promsd
+          spec:
+            securityContext:
+              runAsUser: 1000
+              runAsGroup: 1000
+              runAsNonRoot: true
+            containers:
+              - name: dmf-promsd
+                image: "{{ dmf_promsd_image_repository }}:{{ dmf_promsd_image_tag }}"
+                imagePullPolicy: "{{ dmf_promsd_image_pull_policy }}"
+                ports:
+                  - containerPort: 8000
+                    protocol: TCP
+                env:
+                  - name: NETBOX_URL
+                    value: "{{ dmf_promsd_netbox_url }}"
+                  - name: NETBOX_TOKEN
+                    valueFrom:
+                      secretKeyRef:
+                        name: "{{ dmf_promsd_eso_secret_name }}"
+                        key: netboxToken
+                  - name: NETBOX_VALIDATE_CERTS
+                    value: "{{ dmf_promsd_netbox_validate_certs | string | lower }}"
+                  - name: CACHE_TTL_SECONDS
+                    value: "{{ dmf_promsd_cache_ttl_seconds | string }}"
+                livenessProbe:
+                  httpGet:
+                    path: "{{ dmf_promsd_liveness_path }}"
+                    port: 8000
+                  initialDelaySeconds: 5
+                  periodSeconds: 10
+                readinessProbe:
+                  httpGet:
+                    path: "{{ dmf_promsd_readiness_path }}"
+                    port: 8000
+                  initialDelaySeconds: 3
+                  periodSeconds: 5
+                resources:
+                  requests:
+                    cpu: "{{ dmf_promsd_resources.requests.cpu }}"
+                    memory: "{{ dmf_promsd_resources.requests.memory }}"
+                  limits:
+                    cpu: "{{ dmf_promsd_resources.limits.cpu }}"
+                    memory: "{{ dmf_promsd_resources.limits.memory }}"
+
+# ── Service ────────────────────────────────────────────────────────────
+- name: Expose dmf-promsd Service
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ dmf_promsd_release_name }}"
+        namespace: "{{ dmf_promsd_namespace }}"
+        labels:
+          app: dmf-promsd
+      spec:
+        type: ClusterIP
+        selector:
+          app: dmf-promsd
+        ports:
+          - port: 8000
+            targetPort: 8000
+            protocol: TCP
+
+# ── Wait for rollout ───────────────────────────────────────────────────
+- name: Wait for dmf-promsd rollout
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ dmf_promsd_namespace }}"
+      - rollout
+      - status
+      - deployment/{{ dmf_promsd_release_name }}
+      - --timeout=180s
+  changed_when: false

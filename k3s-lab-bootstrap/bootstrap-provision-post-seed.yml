@@ -1,0 +1,112 @@
+---
+# DMF bootstrap: Provision — Post-seed (EBU white paper §Provision stage).
+# Installs monitoring base and Layer 6 applications in vanilla form.
+# Must run after OpenBao has been seeded via dmf-env/bin/bootstrap-secrets.sh seed-bao.
+#
+# Apps installed here use the shared bootstrap admin identity
+# (vault_bootstrap_admin_*) for their local admin surface.
+
+# ── Seed boundary guard ──────────────────────────────────────────────────────
+- name: Assert OpenBao has required bootstrap seed paths
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  pre_tasks:
+    - name: Establish OpenBao operator session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+
+  tasks:
+    - name: Confirm required bootstrap seed path exists
+      # Uses `bao kv metadata get` rather than `bao kv get` so this guard
+      # does not require ops-admin to have read access to the secret data
+      # itself — only its existence/version metadata. The matching narrow
+      # capability is in roles/stack/operator/openbao/tasks/main.yml under
+      # the app-admin-writer policy.
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ openbao_session_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv metadata get -format=json {{ item }} >/dev/null'
+      loop:
+        - secret/platform/bootstrap_admin
+        - secret/platform/k3s/cluster
+      changed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+
+# ── Vertical: Identity base ──────────────────────────────────────────────────
+# Must come before any app that reads OIDC providers from Authentik.
+# The Authentik role applies blueprints/20-app-providers.yaml.j2 which
+# creates OAuth2Providers for Grafana, Forgejo, NetBox, AWX, etc., so
+# every consumer below depends on this play having completed.
+- import_playbook: playbooks/vertical-security/110-authentik.yml
+  tags: [vertical-security, identity, authentik]
+
+# ── Cluster readiness ────────────────────────────────────────────────────────
+- import_playbook: playbooks/vertical-monitoring/100-prometheus.yml
+  tags: [vertical-monitoring, prometheus]
+- import_playbook: playbooks/vertical-monitoring/150-blackbox.yml
+  tags: [vertical-monitoring, blackbox]
+- import_playbook: playbooks/vertical-monitoring/110-loki.yml
+  tags: [vertical-monitoring, loki]
+- import_playbook: playbooks/vertical-monitoring/120-grafana.yml
+  tags: [vertical-monitoring, grafana]
+- import_playbook: playbooks/vertical-monitoring/130-promtail.yml
+  tags: [vertical-monitoring, promtail]
+# LibreNMS excluded from initial rollout — still available as a module.
+# Run manually: ansible-playbook ... --tags librenms
+# - import_playbook: playbooks/vertical-monitoring/140-librenms.yml
+#   tags: [vertical-monitoring, librenms]
+- import_playbook: playbooks/vertical-monitoring/190-monitoring-verify.yml
+  tags: [vertical-monitoring, verify]
+
+# ── Audit log archival to S3-compatible Object Lock bucket ────────────────────
+# Runs after monitoring is up so any deploy-time failures surface alongside
+# the Loki / Prometheus health checks. Requires seed-bao to have populated
+# inventory-side AWS creds OR the operator to have set
+# audit_log_aws_access_key_id / audit_log_aws_secret_access_key in inventory
+# group_vars (kept out of git per ADR-0007).
+- import_playbook: playbooks/302-k3s-audit-archival.yml
+  tags: [layer3, container-platform, k3s, audit, archival]
+
+# ── Layer 6xx — Application & UI (vanilla installs) ──────────────────────────
+- import_playbook: playbooks/600-landing-page.yml
+  tags: [layer6, application-ui, landing]
+- import_playbook: playbooks/610-netbox.yml
+  tags: [layer6, application-ui, netbox]
+- import_playbook: playbooks/620-forgejo.yml
+  tags: [layer6, application-ui, forgejo]
+- import_playbook: playbooks/630-zot-seed-platform.yml
+  tags: [layer6, application-ui, zot-seed, platform-images]
+- import_playbook: playbooks/640-awx.yml
+  tags: [layer6, application-ui, awx]
+- import_playbook: playbooks/650-dmf-cms.yml
+  tags: [layer6, application-ui, dmf-console]
+
+# ── Vertical: Resilience (Phase 3 backup pipeline) ───────────────────────────
+# Provisions ESO ClusterSecretStores + ExternalSecrets for the
+# openbao_snapshots and app_backups buckets, then deploys the per-class
+# backup CronJobs and the Longhorn BackupTarget + RecurringJob.
+# MUST run AFTER the layer 6 app plays — postgres-backups CronJobs
+# reference each app's DB Secret + namespace; zot-mirror references the
+# zot namespace; the object-storage-credentials role creates
+# ExternalSecrets in awx/netbox/authentik/forgejo/zot namespaces.
+# Audit credentials flow via Phase 1 export-vars (no ESO consumer here).
+- import_playbook: playbooks/vertical-resilience/100-object-storage-credentials.yml
+  tags: [vertical-resilience, eso, credentials]
+- import_playbook: playbooks/vertical-resilience/110-longhorn-backup-target.yml
+  tags: [vertical-resilience, longhorn, backup-target]
+- import_playbook: playbooks/vertical-resilience/111-longhorn-recurring-jobs.yml
+  tags: [vertical-resilience, longhorn, recurring-jobs]
+- import_playbook: playbooks/vertical-resilience/120-openbao-raft-snapshot.yml
+  tags: [vertical-resilience, openbao, raft-snapshot]
+- import_playbook: playbooks/vertical-resilience/130-postgres-backups.yml
+  tags: [vertical-resilience, postgres, backups]
+- import_playbook: playbooks/vertical-resilience/140-zot-mirror.yml
+  tags: [vertical-resilience, zot, mirror]

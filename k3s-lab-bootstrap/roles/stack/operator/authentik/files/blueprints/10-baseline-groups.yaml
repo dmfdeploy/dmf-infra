@@ -1,0 +1,50 @@
+# yaml-language-server: $schema=https://goauthentik.io/blueprints/schema.json
+version: 1
+metadata:
+  name: dmf-authentik-baseline-groups
+  labels:
+    blueprints.goauthentik.io/description: DMF baseline Authentik groups
+entries:
+  - model: authentik_core.group
+    id: dmf-group-ops-admin
+    state: present
+    identifiers:
+      name: ops-admin
+    attrs:
+      name: ops-admin
+      is_superuser: true
+      attributes:
+        dmf_role: ops-admin
+
+  - model: authentik_core.group
+    id: dmf-group-ops-operator
+    state: present
+    identifiers:
+      name: ops-operator
+    attrs:
+      name: ops-operator
+      is_superuser: false
+      attributes:
+        dmf_role: ops-operator
+
+  - model: authentik_core.group
+    id: dmf-group-viewer
+    state: present
+    identifiers:
+      name: viewer
+    attrs:
+      name: viewer
+      is_superuser: false
+      attributes:
+        dmf_role: viewer
+
+  - model: authentik_core.group
+    id: dmf-group-break-glass
+    state: present
+    identifiers:
+      name: break-glass
+    attrs:
+      name: break-glass
+      is_superuser: false
+      attributes:
+        dmf_role: break-glass

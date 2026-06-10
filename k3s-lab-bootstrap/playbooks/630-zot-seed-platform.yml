@@ -1,0 +1,429 @@
+---
+# Stage 4b — seed cluster-internal Zot with DMF platform images from their
+# canonical public source (ghcr.io/dmfdeploy/*).
+#
+# Per ADR-0025 + the 2026-05-19 Cluster-Internal Ansible Execution and
+# Catalog Helm Pivot Plan §4 Stage 4b: GHCR is the canonical public source
+# of truth; cluster-internal Zot is the runtime registry. Each consumer
+# pod pulls from Zot; this play seeds Zot from GHCR.
+#
+# Artifacts seeded in this pass (defined in `zot_seed_images` and
+# `zot_seed_charts` below):
+#   - awx-ee — consumed by the in-cluster ansible runner pod
+#     (roles/stack/operator/ansible-runner) and by AWX-spawned catalog
+#     launcher pods (when Lane B's pod-placement wiring lands).
+#   - dmf-cms — consumed by the dmf-cms Helm release in 650.
+#   - nmos-cpp-registry + nmos-cpp-node — consumed by the NMOS Helm chart.
+#   - nmos-cpp chart — consumed by AWX-spawned media catalog launcher pods.
+#
+# Future seed entries (MXL images, other media-function OCI Helm charts)
+# get appended here when they become required at bootstrap time.
+#
+# Sequencing in the bootstrap (auto-invoked from
+# bootstrap-provision-post-seed.yml between 620-forgejo and 640-awx):
+#   ... Zot installed (Layer 4a) ...
+#   600-landing-page  → ingress is up
+#   610-netbox        → NetBox is up
+#   620-forgejo       → Forgejo is up
+#   ▼ 630-zot-seed-platform   ← THIS play (seeds Zot from GHCR)
+#   640-awx                    → AWX deploys; EE pods pull from Zot
+#   650-dmf-cms                → dmf-cms deploys; pulls from Zot
+#
+# Execution model: control-node-side via `skopeo copy`.
+#   - `hosts: k3s_control[0]`, `become: true` — same as every sibling
+#     stage play (600/610/620/640/650). The control node resolves and
+#     reaches its own ingress hosts (CoreDNS + the cluster's Traefik), so
+#     this works on every lane — including the single-node sandbox lane,
+#     which has no Tailscale and no workstation→cluster ingress path.
+#     (Earlier this play ran `hosts: localhost` and depended on the
+#     operator workstation having Tailscale up to reach a CGNAT Zot
+#     ingress address; that assumption silently breaks on the sandbox
+#     lane, where the seed fails with an unreachable-ingress error.)
+#   - Why the node and NOT the in-cluster ansible-runner/EE pod: this play
+#     is what *seeds the awx-ee image into Zot in the first place*, and it
+#     runs before 640-awx. The EE pod therefore does not (cannot) exist
+#     yet at bootstrap time — running the bootstrap seed inside it is a
+#     chicken-and-egg. The control node is the only host that already has
+#     a toolchain and no dependency on the images being seeded.
+#   - skopeo (daemon-free; pure registry-to-registry copy of manifest +
+#     layers) is apt-installed on the node below. No Docker daemon needed
+#     (k3s ships containerd only); skopeo pulls public GHCR images
+#     anonymously, so no registry login is needed on the source side.
+#   - Zot creds: per ADR-0033 this routine WRITE path authenticates as the
+#     scoped service account `zot-svc` (read,create,update — no delete), NOT
+#     break-glass `admin`. The bootstrap wrapper (bin/run-playbook.sh →
+#     bootstrap-secrets.sh) exports `vault_zot_service_password` into the
+#     play vars — the same value the zot role bakes into the htpasswd. No
+#     workstation breakglass file / SSH hop / get-admin-cred.sh needed.
+#   - ADR-0007 compliant: Zot creds materialised to a tempfile authfile
+#     (`--dest-authfile`), `no_log: true` on cred-handling tasks, and the
+#     authfile is cleaned up in an `always` block. Passwords never enter
+#     argv.
+#
+# Note: post-bootstrap re-seeds / image updates could later run from the
+# in-cluster ansible-runner (EE) pod once ADR-0025 Lane B pod-placement
+# lands (skopeo is in the EE image via bindep.txt). The *bootstrap-time*
+# seed stays on the node for the chicken-and-egg reason above.
+#
+# Idempotency: each artifact is HEAD-checked against Zot's manifest API
+# before copy. If the manifest already exists at the expected tag, the
+# copy is skipped (`changed_when: false`). Repeat bootstrap runs are
+# zero-cost when nothing has changed.
+#
+# Multi-arch: `--override-arch={{ dmf_seed_arch }} --override-os=linux`
+# selects only the env's architecture from GHCR's image manifest indices.
+# Chart artifacts are copied without arch selection.
+#
+# References:
+#   ADR-0025                                       — Catalog Helm + EE-as-runtime + Stage 4b
+#   ADR-0033                                       — zot-svc scoped machine-write account (this play uses it)
+#   ADR-0007                                       — secrets never in argv
+#   docs/plans/DMF Cluster-Internal Ansible...     — §4 Stage 4b, §8.1 mechanism decision
+#   docs/plans/DMF Public Container Registry...    — §6 Stage 4b mirror
+#   roles/stack/operator/ansible-runner/defaults   — awx-ee consumer
+#   roles/stack/operator/awx-integration/defaults  — awx-ee consumer (catalog JTs)
+#   roles/stack/operator/cms                       — dmf-cms consumer
+
+- name: Stage 4b — seed Zot with DMF platform images from GHCR
+  hosts: k3s_control[0]
+  gather_facts: false
+  become: true
+  vars:
+    # Canonical public source (ghcr.io/dmfdeploy/*). Override
+    # `ghcr_namespace` in inventory for pre-publish testing against a
+    # fork (e.g., ghcr.io/<your-handle>/...).
+    ghcr_namespace: dmfdeploy
+
+    # Cluster-internal Zot ingress host. Derived from the cluster's
+    # cert-manager domain.
+    zot_registry_host: "registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+
+    # skopeo dest TLS verification. On the local-CA lane (sandbox) the Zot
+    # ingress presents the DMF Local CA cert, which the node does not
+    # trust; skip dest verification (consistent with the validate_certs:false
+    # reachability/HEAD checks in this play). Source (GHCR) verification is
+    # unaffected. Cloud/lab keep verification on.
+    zot_dest_tls_verify: "{{ 'false' if (dmf_tls_mode | default('') == 'local-ca') else 'true' }}"
+
+    # Zot machine-write credentials (ADR-0033). This seed is a routine,
+    # repeated WRITE path (re-run on every new image/chart tag), so per
+    # ADR-0028 C3/C4 it authenticates as the scoped service account
+    # `zot-svc` — NOT the break-glass `admin`. zot-svc is scoped to
+    # read,create,update on `**` (push new manifests/blobs/tags); it has no
+    # delete and no adminPolicy. Mirrors roles/stack/operator/zot/defaults/main.yml
+    # — the canonical definition — so this play authenticates with the exact
+    # value the zot role baked into the htpasswd (matched by construction,
+    # not by a second OpenBao read that could drift).
+    #   - Username is the fixed constant `zot-svc` (<system>-svc convention).
+    #     Using `admin` here was the pre-ADR-0033 C3/C4 violation — a routine
+    #     operation on the break-glass account.
+    #   - Password is the INDEPENDENT random secret seeded to OpenBao at
+    #     secret/apps/zot/service; bin/run-playbook.sh → bootstrap-secrets.sh
+    #     exports it as vault_zot_service_password. `mandatory` so a missing
+    #     export fails loudly instead of silently 401-ing later.
+    zot_service_user: zot-svc
+    zot_service_password: "{{ vault_zot_service_password | mandatory }}"
+
+    # dmf-cms image tag. VERSION is the single source of truth (ADR-0005);
+    # read it directly from dmf-cms/VERSION via lookup so a standalone
+    # invocation of this play picks up the operator's local checkout
+    # without needing -e cms_image_tag. The cms role default reads the
+    # same file. Operator can override via -e or at the inventory level
+    # if a hotfix on a different tag is needed.
+    #
+    # `lookup('file', ...)` runs on the Ansible controller (the operator
+    # workstation), NOT the target node — so this reads the operator's local
+    # dmf-cms checkout even though the play now targets the control node.
+    #
+    # Path: this playbook lives at dmf-infra/k3s-lab-bootstrap/playbooks/;
+    # dmf-cms/VERSION is three dirs up + dmf-cms/VERSION.
+    dmf_cms_image_tag: "{{ cms_image_tag | default(lookup('file', playbook_dir ~ '/../../../dmf-cms/VERSION') | trim) }}"
+
+    # dmf-promsd image tag. VERSION is the single source of truth; read it
+    # from the dmf-promsd checkout at playbook runtime. Mirror the pattern
+    # used for dmf_cms_image_tag above.
+    dmf_promsd_image_tag: "{{ dmf_promsd_image_tag_override | default(lookup('file', playbook_dir ~ '/../../../dmf-promsd/VERSION') | trim) }}"
+
+    # awx-ee image tag. Sourced from awx-integration/defaults (this play does
+    # not load that role, so the fallback must track its current pin — keep in
+    # sync with roles/stack/operator/awx-integration/defaults awx_ee_catalog_tag
+    # and ansible-runner/defaults ansible_runner_image_tag).
+    awx_ee_image_tag: "{{ awx_ee_catalog_tag | default('0.1.1') }}"
+
+    # NMOS image/chart tags. These match awx-integration defaults; fallbacks
+    # keep this play standalone-runnable without loading role defaults.
+    nmos_cpp_registry_image_tag: "{{ nmos_cpp_registry_tag | default('0.1.0') }}"
+    nmos_cpp_node_image_tag: "{{ nmos_cpp_node_tag | default('0.1.0') }}"
+    nmos_cpp_seed_chart_name: "{{ nmos_cpp_chart_name | default('nmos-cpp') }}"
+    nmos_cpp_seed_chart_version: "{{ nmos_cpp_chart_version | default('0.1.1') }}"
+    nmos_cpp_seed_chart_digest: "{{ nmos_cpp_chart_digest | default('sha256:827bce1a0a769bd996033232d178ad1b057879f4619d8ef17ca1281903bd5ba0') }}"
+
+    mxl_hello_seed_chart_name: "{{ mxl_hello_chart_name | default('mxl-hello') }}"
+    mxl_hello_seed_chart_version: "{{ mxl_hello_chart_version | default('0.1.0') }}"
+    mxl_hello_seed_chart_digest: "{{ mxl_hello_chart_digest | default('sha256:ecfd201e5c21b68cabe8b32b002fe5915983c99bcc0e49ef3d3d4efa54ec0124') }}"
+
+    # Architecture to pull from GHCR's multi-arch manifest indices.
+    # Inventory's `dmf_architecture` is the source of truth (rendered by
+    # the wizard); fall back to amd64 if absent.
+    dmf_seed_arch: "{{ dmf_architecture | default('amd64') }}"
+
+    # Images to mirror from GHCR → Zot. Each entry has:
+    #   name:     short image name (used in GHCR + Zot paths)
+    #   tag:      version tag
+    #   zot_repo: full Zot repository path (the namespace under Zot may
+    #             differ from the GHCR namespace; awx-ee lives under
+    #             registry.../dmf/awx-ee while dmf-cms lives at
+    #             registry.../dmf-cms by historical convention).
+    zot_seed_images:
+      - name: awx-ee
+        tag: "{{ awx_ee_image_tag }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/awx-ee"
+      - name: dmf-cms
+        tag: "{{ dmf_cms_image_tag }}"
+        zot_repo: "{{ zot_registry_host }}/dmf-cms"
+      - name: nmos-cpp-registry
+        tag: "{{ nmos_cpp_registry_image_tag }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/nmos-cpp-registry"
+      - name: nmos-cpp-node
+        tag: "{{ nmos_cpp_node_image_tag }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/nmos-cpp-node"
+      - name: dmf-promsd
+        tag: "{{ dmf_promsd_image_tag }}"
+        zot_repo: "{{ zot_registry_host }}/dmf-promsd"
+
+    # OCI Helm charts to mirror from GHCR → Zot. Skopeo handles chart
+    # artifacts via the registry API just like images, but without arch flags.
+    zot_seed_charts:
+      - name: "{{ nmos_cpp_seed_chart_name }}"
+        version: "{{ nmos_cpp_seed_chart_version }}"
+        digest: "{{ nmos_cpp_seed_chart_digest }}"
+        source_repo: "ghcr.io/{{ ghcr_namespace }}/charts/{{ nmos_cpp_seed_chart_name }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/charts/{{ nmos_cpp_seed_chart_name }}"
+      - name: "{{ mxl_hello_seed_chart_name }}"
+        version: "{{ mxl_hello_seed_chart_version }}"
+        digest: "{{ mxl_hello_seed_chart_digest }}"
+        source_repo: "ghcr.io/{{ ghcr_namespace }}/charts/{{ mxl_hello_seed_chart_name }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/charts/{{ mxl_hello_seed_chart_name }}"
+
+  tasks:
+    # ── Prerequisite checks ──────────────────────────────────────────────
+    - name: Assert ADR-0033 zot-svc secret is available
+      ansible.builtin.assert:
+        that:
+          - vault_zot_service_password is defined
+          - vault_zot_service_password | length > 0
+        fail_msg: >-
+          vault_zot_service_password is missing/empty. This is the scoped
+          zot-svc machine-write account password (ADR-0033). Run:
+          dmf-env/bin/bootstrap-secrets.sh seed-bao <env> (then re-run this),
+          or use bin/upgrade-in-place.sh <env> which seeds first.
+          (ADR-0033 secret not yet backfilled to OpenBao.)
+
+    - name: Assert required vars are set
+      ansible.builtin.assert:
+        that:
+          - zot_registry_host is defined
+          - zot_seed_images is defined
+          - zot_seed_images | length > 0
+          - zot_seed_charts is defined
+          - zot_seed_charts | length > 0
+          - dmf_seed_arch in ['arm64', 'amd64']
+        fail_msg: >-
+          zot_registry_host + zot_seed_images + zot_seed_charts + a valid
+          dmf_architecture (arm64|amd64) must all be defined. See playbook
+          vars + the env's group_vars/all/main.yml.
+
+    - name: Ensure skopeo is installed on the control node
+      # skopeo is daemon-free (no Docker/containerd dependency) and is the
+      # mirror tool for this play. Debian ships it in the default repos.
+      ansible.builtin.apt:
+        name: skopeo
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Check Zot ingress is reachable (GET /v2/)
+      # Use GET (not HEAD) because Zot returns 405 on HEAD /v2/ even though
+      # the path is valid. Any 2xx/401/403/404 response confirms the
+      # server is reachable; we only care about catching network failures
+      # (timeout, DNS resolution, ingress down), not the auth state of
+      # the catalog endpoint.
+      ansible.builtin.uri:
+        url: "https://{{ zot_registry_host }}/v2/"
+        method: GET
+        status_code: [200, 401, 403, 404, 405]
+        validate_certs: false
+      register: _zot_ping
+      changed_when: false
+      failed_when: false
+
+    - name: Fail fast if Zot ingress is unreachable
+      ansible.builtin.fail:
+        msg: >-
+          Zot ingress at https://{{ zot_registry_host }}/v2/ is not
+          reachable from the control node
+          (status: {{ _zot_ping.status | default('no response') }}).
+          Check: (1) Zot is deployed and its ingress is up
+          (`kubectl -n zot get pods,ingressroute`); (2) the node resolves
+          {{ zot_registry_host }} (CoreDNS / the cluster's Traefik);
+          (3) the cluster is healthy. This play runs on the control node
+          by design — see the playbook header comment.
+      when: _zot_ping.status | default(0) not in [200, 401, 403, 404, 405]
+
+    # ── Zot credentials → tempfile authfile (ADR-0007) ───────────────────
+    - name: Resolve Zot machine-write credentials (zot-svc)
+      # From the play vars above (the scoped `zot-svc` service account +
+      # the wrapper-exported vault_zot_service_password), identical to the
+      # zot role's htpasswd inputs. No workstation breakglass / SSH hop /
+      # get-admin-cred.sh now that this play runs on the control node.
+      ansible.builtin.set_fact:
+        _zot_user: "{{ zot_service_user }}"
+        _zot_pass: "{{ zot_service_password }}"
+      no_log: true
+
+    - name: Create a tempfile for the Zot skopeo authfile
+      ansible.builtin.tempfile:
+        state: file
+        suffix: .json
+      register: _zot_authfile
+
+    - name: Materialise the Zot authfile (mode 0600)
+      ansible.builtin.copy:
+        dest: "{{ _zot_authfile.path }}"
+        mode: "0600"
+        content: |
+          {
+            "auths": {
+              "{{ zot_registry_host }}": {
+                "auth": "{{ (_zot_user ~ ':' ~ _zot_pass) | b64encode }}"
+              }
+            }
+          }
+      no_log: true
+
+    - name: Ensure authfile cleanup runs even on failure
+      block:
+        # ── Per-image: HEAD precheck → copy if absent ────────────────────
+        - name: Probe each image's current presence in Zot
+          ansible.builtin.uri:
+            url: "https://{{ zot_registry_host }}/v2/{{ item.zot_repo | regex_replace('^' ~ zot_registry_host ~ '/', '') }}/manifests/{{ item.tag }}"
+            method: HEAD
+            url_username: "{{ _zot_user }}"
+            url_password: "{{ _zot_pass }}"
+            force_basic_auth: true
+            status_code: [200, 404]
+            validate_certs: false
+          loop: "{{ zot_seed_images }}"
+          loop_control:
+            label: "{{ item.name }}:{{ item.tag }}"
+          register: _zot_manifest_checks
+          changed_when: false
+          no_log: true
+
+        - name: Compute which images need copying
+          ansible.builtin.set_fact:
+            _zot_images_to_seed: >-
+              {{ zot_seed_images
+                 | zip(_zot_manifest_checks.results)
+                 | selectattr('1.status', 'ne', 200)
+                 | map(attribute='0')
+                 | list }}
+
+        - name: Report seed plan
+          ansible.builtin.debug:
+            msg: >-
+              {{ _zot_images_to_seed | length }} image(s) need seeding
+              ({{ _zot_images_to_seed | map(attribute='name') | join(', ') | default('none') }});
+              {{ (zot_seed_images | length) - (_zot_images_to_seed | length) }} already present and skipped.
+
+        - name: Mirror image GHCR → Zot via skopeo (only for missing images)
+          # --retry-times=5: large awx-ee layers (100MB+) occasionally
+          # trip the private-Traefik idle timeout mid-chunk-upload and
+          # the upstream returns 504 Gateway Timeout. skopeo retries the
+          # failed blob with backoff rather than failing the whole copy.
+          # Five attempts is generous without hiding a persistent issue.
+          # --dest-compress=false: don't re-compress layers we're just
+          # mirroring; speeds the upload + avoids unnecessary CPU on
+          # the node.
+          ansible.builtin.command:
+            argv:
+              - skopeo
+              - copy
+              - "--dest-tls-verify={{ zot_dest_tls_verify }}"
+              - "--override-arch={{ dmf_seed_arch }}"
+              - "--override-os=linux"
+              - "--retry-times=5"
+              - "--dest-authfile={{ _zot_authfile.path }}"
+              - "docker://ghcr.io/{{ ghcr_namespace }}/{{ item.name }}:{{ item.tag }}"
+              - "docker://{{ item.zot_repo }}:{{ item.tag }}"
+          loop: "{{ _zot_images_to_seed }}"
+          loop_control:
+            label: "{{ item.name }}:{{ item.tag }} → {{ item.zot_repo }}"
+          register: _skopeo_copy
+          changed_when: true
+
+        # ── Per-chart: HEAD precheck → copy if absent ────────────────────
+        - name: Probe each chart's current presence in Zot
+          ansible.builtin.uri:
+            url: "https://{{ zot_registry_host }}/v2/{{ item.zot_repo | regex_replace('^' ~ zot_registry_host ~ '/', '') }}/manifests/{{ item.version }}"
+            method: HEAD
+            url_username: "{{ _zot_user }}"
+            url_password: "{{ _zot_pass }}"
+            force_basic_auth: true
+            status_code: [200, 404]
+            validate_certs: false
+          loop: "{{ zot_seed_charts }}"
+          loop_control:
+            label: "{{ item.name }}:{{ item.version }}"
+          register: _zot_chart_manifest_checks
+          changed_when: false
+          no_log: true
+
+        - name: Compute which charts need copying
+          ansible.builtin.set_fact:
+            _zot_charts_to_seed: >-
+              {{ zot_seed_charts
+                 | zip(_zot_chart_manifest_checks.results)
+                 | selectattr('1.status', 'ne', 200)
+                 | map(attribute='0')
+                 | list }}
+
+        - name: Report chart seed plan
+          ansible.builtin.debug:
+            msg: >-
+              {{ _zot_charts_to_seed | length }} chart(s) need seeding
+              ({{ _zot_charts_to_seed | map(attribute='name') | join(', ') | default('none') }});
+              {{ (zot_seed_charts | length) - (_zot_charts_to_seed | length) }} already present and skipped.
+
+        - name: Mirror chart GHCR → Zot via skopeo (only for missing charts)
+          ansible.builtin.command:
+            argv:
+              - skopeo
+              - copy
+              - "--dest-tls-verify={{ zot_dest_tls_verify }}"
+              - "--retry-times=5"
+              - "--dest-authfile={{ _zot_authfile.path }}"
+              - >-
+                docker://{{ item.source_repo }}{{ '@' ~ item.digest if (item.digest | default('')) | length > 0 else ':' ~ item.version }}
+              - "docker://{{ item.zot_repo }}:{{ item.version }}"
+          loop: "{{ _zot_charts_to_seed }}"
+          loop_control:
+            label: "{{ item.name }}:{{ item.version }} → {{ item.zot_repo }}"
+          register: _skopeo_chart_copy
+          changed_when: true
+
+        - name: Report result
+          ansible.builtin.debug:
+            msg: >-
+              Stage 4b complete. Mirrored {{ _zot_images_to_seed | length }} image(s) from
+              ghcr.io/{{ ghcr_namespace }} into {{ zot_registry_host }} for arch={{ dmf_seed_arch }}
+              and {{ _zot_charts_to_seed | length }} chart(s) into {{ zot_registry_host }}.
+              Downstream playbooks (640-awx, 650-dmf-cms, ...) can now pull
+              from cluster-internal Zot without external dependency.
+
+      always:
+        - name: Remove Zot authfile
+          ansible.builtin.file:
+            path: "{{ _zot_authfile.path }}"
+            state: absent
+          when: _zot_authfile.path is defined

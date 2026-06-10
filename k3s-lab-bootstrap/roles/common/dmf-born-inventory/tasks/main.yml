@@ -1,0 +1,1442 @@
+---
+- name: Validate born-inventory inputs
+  ansible.builtin.assert:
+    that:
+      - dmf_born_inventory_enabled | bool
+      - groups['k3s'] | default([]) | length > 0
+      - dmf_born_inventory_netbox_api_base | length > 0
+      - >-
+        (dmf_born_inventory_netbox_admin_token | default('') | length > 0)
+        or
+        (dmf_born_inventory_openbao_breakglass_file | default('') | length > 0)
+    fail_msg: >-
+      born-inventory needs k3s hosts and a NetBox API base. Provide either a
+      direct NetBox admin token or an OpenBao break-glass file with the
+      born-inventory AppRole credentials. Run the NetBox SoT bootstrap stage
+      first so it can seed the NetBox admin token into the in-cluster OpenBao
+      runtime secret.
+
+- name: Check OpenBao break-glass JSON exists on operator host
+  ansible.builtin.stat:
+    path: "{{ dmf_born_inventory_openbao_breakglass_file }}"
+  register: _dmf_born_inventory_breakglass_stat
+  delegate_to: localhost
+  become: false
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Assert OpenBao break-glass JSON exists for AppRole login
+  ansible.builtin.assert:
+    that:
+      - _dmf_born_inventory_breakglass_stat.stat.exists | default(false)
+    fail_msg: >-
+      Missing OpenBao break-glass JSON at
+      {{ dmf_born_inventory_openbao_breakglass_file }}. The born-inventory
+      AppRole credentials are stored there by the OpenBao bootstrap role.
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Load OpenBao break-glass JSON from operator host
+  ansible.builtin.set_fact:
+    _dmf_born_inventory_breakglass: "{{ lookup('file', dmf_born_inventory_openbao_breakglass_file) | from_json }}"
+  delegate_to: localhost
+  become: false
+  no_log: true
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Extract OpenBao AppRole credentials for born-inventory reads
+  ansible.builtin.set_fact:
+    _dmf_born_inventory_openbao_role_id: >-
+      {{
+        _dmf_born_inventory_breakglass[dmf_born_inventory_openbao_approle_role_id_key]
+        | default('')
+      }}
+    _dmf_born_inventory_openbao_secret_id: >-
+      {{
+        _dmf_born_inventory_breakglass[dmf_born_inventory_openbao_approle_secret_id_key]
+        | default('')
+      }}
+  no_log: true
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Assert OpenBao AppRole credentials are available for born-inventory
+  ansible.builtin.assert:
+    that:
+      - _dmf_born_inventory_openbao_role_id | length > 0
+      - _dmf_born_inventory_openbao_secret_id | length > 0
+    fail_msg: >-
+      No AppRole credentials found in {{ dmf_born_inventory_openbao_breakglass_file }}.
+      born-inventory now uses a dedicated OpenBao AppRole with a narrow
+      read-only policy on the NetBox runtime secret.
+  no_log: true
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Discover OpenBao pod for born-inventory reads
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ dmf_born_inventory_openbao_namespace }}"
+    label_selectors:
+      - "{{ dmf_born_inventory_openbao_pod_label_selector }}"
+  register: _dmf_born_inventory_openbao_pod_info
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Assert OpenBao pod exists for born-inventory
+  ansible.builtin.assert:
+    that:
+      - _dmf_born_inventory_openbao_pod_info.resources | length > 0
+    fail_msg: >-
+      Could not find an OpenBao pod in namespace
+      {{ dmf_born_inventory_openbao_namespace }} with selector
+      {{ dmf_born_inventory_openbao_pod_label_selector }}.
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Set OpenBao pod fact for born-inventory
+  ansible.builtin.set_fact:
+    _dmf_born_inventory_openbao_pod: "{{ _dmf_born_inventory_openbao_pod_info.resources[0].metadata.name }}"
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Log into OpenBao with born-inventory AppRole
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ dmf_born_inventory_openbao_namespace }}"
+      - exec
+      - "{{ _dmf_born_inventory_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - >-
+        bao write -format=json auth/approle/login
+        role_id=$OPENBAO_ROLE_ID
+        secret_id=$OPENBAO_SECRET_ID
+  register: _dmf_born_inventory_openbao_login_raw
+  changed_when: false
+  environment:
+    BAO_ADDR: https://127.0.0.1:8200
+    OPENBAO_ROLE_ID: "{{ _dmf_born_inventory_openbao_role_id }}"
+    OPENBAO_SECRET_ID: "{{ _dmf_born_inventory_openbao_secret_id }}"
+  no_log: true
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Extract OpenBao client token for born-inventory
+  ansible.builtin.set_fact:
+    _dmf_born_inventory_openbao_client_token: "{{ (_dmf_born_inventory_openbao_login_raw.stdout | from_json).auth.client_token }}"
+  no_log: true
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Read NetBox runtime secret from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ dmf_born_inventory_openbao_namespace }}
+      exec -i {{ _dmf_born_inventory_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json secret/data/apps/netbox/runtime'
+  register: _dmf_born_inventory_runtime_secret_raw
+  changed_when: false
+  failed_when: false
+  environment:
+    BAO_ADDR: https://127.0.0.1:8200
+    OPENBAO_TOKEN: "{{ _dmf_born_inventory_openbao_client_token }}"
+  no_log: true
+  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+
+- name: Log NetBox admin token read result
+  ansible.builtin.debug:
+    msg: "NetBox admin token read: rc={{ _dmf_born_inventory_runtime_secret_raw.rc }}, has_output={{ (_dmf_born_inventory_runtime_secret_raw.stdout | default('') | length) > 0 }}"
+  when: _dmf_born_inventory_runtime_secret_raw is defined
+
+- name: Parse NetBox admin token from OpenBao
+  ansible.builtin.set_fact:
+    _dmf_born_inventory_netbox_admin_token_from_openbao: >-
+      {{ (_dmf_born_inventory_runtime_secret_raw.stdout | default('{}') | from_json).data.data.netbox_admin_token | default('') | trim }}
+  when:
+    - dmf_born_inventory_netbox_admin_token | default('') | length == 0
+    - _dmf_born_inventory_runtime_secret_raw.rc == 0
+    - _dmf_born_inventory_runtime_secret_raw.stdout | default('') | length > 0
+  no_log: true
+
+- name: Default NetBox runtime secret for born-inventory
+  ansible.builtin.set_fact:
+    _dmf_born_inventory_netbox_admin_token_from_openbao: ""
+  when:
+    - dmf_born_inventory_netbox_admin_token | default('') | length == 0
+    - _dmf_born_inventory_netbox_admin_token_from_openbao is not defined
+  no_log: true
+
+- name: Collect Tailscale IPs from k3s nodes
+  ansible.builtin.command:
+    argv:
+      - tailscale
+      - ip
+      - -4
+  delegate_to: "{{ dmf_node_name }}"
+  loop: "{{ groups['k3s'] | default([]) }}"
+  loop_control:
+    loop_var: dmf_node_name
+  register: _dmf_born_inventory_tailscale_ip_results
+  changed_when: false
+  failed_when: false
+
+- name: Build Tailscale IP lookup map
+  ansible.builtin.set_fact:
+    dmf_born_inventory_tailscale_ips: >-
+      {{
+        dmf_born_inventory_tailscale_ips | default({})
+        | combine({ item.dmf_node_name: (item.stdout | default('') | trim) })
+      }}
+  loop: "{{ _dmf_born_inventory_tailscale_ip_results.results | default([]) }}"
+  loop_control:
+    label: "{{ item.dmf_node_name }}"
+  changed_when: false
+
+- name: Assert every node has a Tailscale IP when private lane is enabled
+  ansible.builtin.assert:
+    that:
+      - dmf_born_inventory_tailscale_ips | dict2items | map(attribute='value') | map('length') | min > 0
+    fail_msg: >-
+      Every k3s node should have a Tailscale IP. Check the base/tailscale role
+      and Headscale registration.
+  when: tailscale_headscale_url | default('') | length > 0
+  changed_when: false
+
+- name: Set effective NetBox admin token for born-inventory
+  ansible.builtin.set_fact:
+    dmf_born_inventory_netbox_admin_token_effective: >-
+      {{
+        dmf_born_inventory_netbox_admin_token
+        | default(_dmf_born_inventory_netbox_admin_token_from_openbao | default('', true), true)
+      }}
+  no_log: true
+
+- name: Check NetBox admin token availability
+  ansible.builtin.set_fact:
+    _dmf_born_inventory_netbox_token_available: "{{ dmf_born_inventory_netbox_admin_token_effective | default('') | length > 0 }}"
+  no_log: true
+
+- name: Warn if NetBox admin token is missing
+  ansible.builtin.debug:
+    msg: >-
+      NetBox admin token not found in OpenBao at
+      {{ dmf_born_inventory_netbox_runtime_secret_path }}.
+      Born-inventory registration will be skipped.
+      Run playbook 691-netbox-sot.yml first to seed the token.
+  when: not _dmf_born_inventory_netbox_token_available | bool
+
+- name: Skip born-inventory when NetBox token unavailable
+  ansible.builtin.meta: end_role
+  when: not _dmf_born_inventory_netbox_token_available | bool
+
+- name: Assert NetBox admin token is available in OpenBao
+  ansible.builtin.assert:
+    that:
+      - dmf_born_inventory_netbox_admin_token_effective | length > 0
+    fail_msg: >-
+      NetBox admin token is missing from the direct override and from
+      {{ dmf_born_inventory_netbox_runtime_secret_path }} in OpenBao.
+      Run the NetBox SoT bootstrap stage first so it can seed the token into
+      the shared runtime secret.
+  no_log: true
+
+- name: Set NetBox auth headers
+  ansible.builtin.set_fact:
+    dmf_born_inventory_netbox_headers:
+      Authorization: "Bearer {{ dmf_born_inventory_netbox_admin_token_effective }}"
+  no_log: true
+
+- name: Gather CPU core count from each node
+  ansible.builtin.command: nproc
+  delegate_to: "{{ dmf_node_name }}"
+  loop: "{{ groups['k3s'] | default([]) }}"
+  loop_control:
+    loop_var: dmf_node_name
+  register: _dmf_nproc_results
+  changed_when: false
+
+- name: Build CPU core count lookup map
+  ansible.builtin.set_fact:
+    dmf_born_inventory_cpu_cores: >-
+      {{
+        dmf_born_inventory_cpu_cores | default({})
+        | combine({ item.dmf_node_name: (item.stdout | default('0') | int) })
+      }}
+  loop: "{{ _dmf_nproc_results.results | default([]) }}"
+  loop_control:
+    label: "{{ item.dmf_node_name }}"
+  changed_when: false
+
+- name: Build live node survey records from gathered facts
+  ansible.builtin.set_fact:
+    dmf_born_inventory_nodes: "{{ dmf_born_inventory_nodes | default([]) + [ _dmf_node_record ] }}"
+  loop: "{{ groups['k3s'] | default([]) }}"
+  loop_control:
+    loop_var: dmf_node_name
+  vars:
+    dmf_node_host: "{{ hostvars[dmf_node_name] }}"
+    dmf_node_public_ip: >-
+      {{
+        dmf_node_host.ansible_default_ipv4.address
+        | default(dmf_node_host.ansible_host, true)
+      }}
+    dmf_node_public_iface: >-
+      {{
+        dmf_node_host.ansible_default_ipv4.interface
+        | default('eth0', true)
+      }}
+    dmf_node_cpu_cores: >-
+      {{
+        dmf_born_inventory_cpu_cores.get(dmf_node_name, 0)
+        | default(
+            dmf_node_host.ansible_processor_vcpus
+            | default(dmf_node_host.ansible_processor_count | default(1), true),
+            true
+          )
+      }}
+    dmf_node_memory_mb: "{{ dmf_node_host.ansible_memtotal_mb | default(0) }}"
+    dmf_node_root_mount: >-
+      {{
+        (
+          dmf_node_host.ansible_mounts | default([])
+          | selectattr('mount', 'equalto', '/')
+          | list
+          | first
+          | default({})
+        )
+      }}
+    dmf_node_boot_disk_bytes: "{{ dmf_node_root_mount.size_total | default(0) }}"
+    dmf_node_boot_disk_mb: >-
+      {{
+        (
+          dmf_node_boot_disk_bytes | float / 1024 / 1024
+        ) | round(0, 'floor') | int
+      }}
+    dmf_node_boot_disk_gb: >-
+      {{
+        (
+          dmf_node_boot_disk_bytes | float / 1024 / 1024 / 1024
+        ) | round(0, 'floor') | int
+      }}
+    _dmf_node_record:
+      name: "{{ dmf_node_name }}"
+      public_ip: "{{ dmf_node_public_ip }}"
+      public_iface: "{{ dmf_node_public_iface }}"
+      private_ip: "{{ dmf_node_host.k3s_node_ip | default('') }}"
+      private_iface: "{{ k3s_private_interface }}"
+      tailscale_ip: "{{ dmf_born_inventory_tailscale_ips[dmf_node_name] | default('') }}"
+      tailscale_iface: "{{ dmf_born_inventory_tailscale_interface_name }}"
+      os_release: >-
+        {{ dmf_node_host.ansible_distribution | default('Debian') }}
+        {{ dmf_node_host.ansible_distribution_version | default('12') }}
+      kernel: "{{ dmf_node_host.ansible_kernel | default('unknown') }}"
+      cpu_cores: "{{ dmf_node_cpu_cores }}"
+      memory_mb: "{{ dmf_node_memory_mb }}"
+      disk_mb: "{{ dmf_node_boot_disk_mb }}"
+      disk_gb: "{{ dmf_node_boot_disk_gb }}"
+      is_control_plane: "{{ dmf_node_name in (groups['k3s_control'] | default([])) }}"
+  changed_when: false
+
+- name: Normalize survey summary values
+  ansible.builtin.set_fact:
+    dmf_born_inventory_cluster_comments: >-
+      Day-0 DMF cluster {{ dmf_born_inventory_env_name }}.
+      Nodes: {{ dmf_born_inventory_nodes | map(attribute='name') | list | join(', ') }}.
+      Hostnames: {{ [authentik_host, forgejo_host, grafana_host, netbox_host, awx_host, librenms_host | default(''), registry_host, dmf_cms_host | default('')] | reject('equalto', '') | list | join(', ') }}.
+      Ingress: {{ cluster_ingress_mode | default('unknown') }}.
+      Tailscale: {{ tailscale_headscale_url | default('n/a') }}.
+      Load balancer: {{ dmf_born_inventory_load_balancer_name }}.
+    dmf_born_inventory_site_comments: >-
+      Day-0 operator platform for DMF.
+      Provider: {{ dmf_born_inventory_manufacturer_name }}.
+      Architecture: {{ dmf_born_inventory_architecture | default('unknown', true) }}.
+      Env id: {{ dmf_born_inventory_env_id }}.
+      Cluster domain: {{ cert_manager_cluster_domain | default('dmf.example.com') }}.
+      The detailed service footprint is retained in playbook output and NetBox
+      object comments; media environments must live in separate inventory planes.
+  changed_when: false
+
+- name: Assert every node has a private cluster IP
+  ansible.builtin.assert:
+    that:
+      - dmf_born_inventory_nodes | map(attribute='private_ip') | map('length') | min > 0
+    fail_msg: >-
+      Every k3s node needs a private cluster IP so NetBox can record the full
+      day-0 inventory. Check k3s_node_ip in the environment inventory.
+  changed_when: false
+
+- name: Check NetBox API availability
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    status_code: [200, 503]
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_netbox_api_check
+  until: dmf_born_inventory_netbox_api_check.status == 200
+  retries: 30
+  delay: 10
+
+- name: Look up DMF tag
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/extras/tags/?slug={{ dmf_born_inventory_tag_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_tag_lookup
+
+- name: Create DMF tag
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/extras/tags/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_tag_name }}"
+      slug: "{{ dmf_born_inventory_tag_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+      color: "4caf50"
+      description: "Day-0 DMF inventory marker"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_tag_lookup.json.count | int == 0
+  register: dmf_born_inventory_tag_created
+
+- name: Refresh DMF tag lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/extras/tags/?slug={{ dmf_born_inventory_tag_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_tag_lookup_after_create
+
+- name: Set DMF tag id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_tag_id: >-
+      {{
+        (
+          dmf_born_inventory_tag_lookup_after_create.json.results
+          | default(dmf_born_inventory_tag_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Look up DMF tenant
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/tenancy/tenants/?slug={{ dmf_born_inventory_tenant_slug | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_tenant_lookup
+
+- name: Create DMF tenant
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/tenancy/tenants/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_tenant_name }}"
+      slug: "{{ dmf_born_inventory_tenant_slug }}"
+      description: "DMF day-0 operator environment"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_tenant_lookup.json.count | int == 0
+  register: dmf_born_inventory_tenant_created
+
+- name: Refresh DMF tenant lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/tenancy/tenants/?slug={{ dmf_born_inventory_tenant_slug | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_tenant_lookup_after_create
+
+- name: Set DMF tenant id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_tenant_id: >-
+      {{
+        (
+          dmf_born_inventory_tenant_lookup_after_create.json.results
+          | default(dmf_born_inventory_tenant_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+# ---------------------------------------------------------------------------
+# DMF env-schema custom fields (init-wizard 2026-05-19 schema)
+# Four orthogonal fields on Site + Cluster:
+#   dmf_env_id        — opaque slug identifier            (type: text)
+#   dmf_env_label     — optional human-readable label     (type: text)
+#   dmf_provider      — hetzner | aliyun | aws            (type: select)
+#   dmf_architecture  — arm64   | amd64                   (type: select)
+# Provider + architecture use NetBox 4.x choice sets so filtering works
+# and values are enforced server-side. dmf_env_id / dmf_env_label stay as
+# free text. Legacy envs leave these empty; the PATCH below skips them.
+# Drift reconciliation (PATCH if existing field type differs) is NOT
+# implemented — operators can re-shape manually if a prior text version
+# was created. See follow-up note in the plan.
+# ---------------------------------------------------------------------------
+- name: Ensure DMF custom-field choice sets exist in NetBox
+  vars:
+    _dmf_choice_sets:
+      - name: dmf-provider
+        description: "DMF cloud provider"
+        extra_choices:
+          - [hetzner, Hetzner]
+          - [aliyun, Aliyun]
+          - [aws, AWS]
+          - [sandbox, Sandbox]
+      - name: dmf-architecture
+        description: "DMF CPU architecture"
+        extra_choices:
+          - [arm64, arm64]
+          - [amd64, amd64]
+  block:
+    - name: Look up DMF choice set {{ item.name }}
+      ansible.builtin.uri:
+        url: "{{ dmf_born_inventory_netbox_api_base }}/extras/custom-field-choice-sets/?name={{ item.name | urlencode }}"
+        method: GET
+        headers: "{{ dmf_born_inventory_netbox_headers }}"
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      register: _dmf_choice_set_lookup
+      loop: "{{ _dmf_choice_sets }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create missing DMF choice set {{ item.item.name }}
+      ansible.builtin.uri:
+        url: "{{ dmf_born_inventory_netbox_api_base }}/extras/custom-field-choice-sets/"
+        method: POST
+        headers: "{{ dmf_born_inventory_netbox_headers }}"
+        body_format: json
+        body:
+          name: "{{ item.item.name }}"
+          description: "{{ item.item.description }}"
+          extra_choices: "{{ item.item.extra_choices }}"
+        status_code: 201
+        validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      loop: "{{ _dmf_choice_set_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.json.count | int == 0
+
+    - name: Refresh DMF choice set lookups
+      ansible.builtin.uri:
+        url: "{{ dmf_born_inventory_netbox_api_base }}/extras/custom-field-choice-sets/?name={{ item.name | urlencode }}"
+        method: GET
+        headers: "{{ dmf_born_inventory_netbox_headers }}"
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      register: _dmf_choice_set_lookup_after_create
+      loop: "{{ _dmf_choice_sets }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Reconcile DMF choice set extra choices
+      ansible.builtin.uri:
+        url: "{{ dmf_born_inventory_netbox_api_base }}/extras/custom-field-choice-sets/{{ (item.json.results | first).id }}/"
+        method: PATCH
+        headers: "{{ dmf_born_inventory_netbox_headers }}"
+        body_format: json
+        body:
+          extra_choices: "{{ item.item.extra_choices }}"
+        status_code: 200
+        validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      loop: "{{ _dmf_choice_set_lookup_after_create.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when:
+        - item.json.count | int > 0
+        - (item.json.results | first).extra_choices | default([]) != item.item.extra_choices
+
+    - name: Build DMF choice set id map (name -> id)
+      ansible.builtin.set_fact:
+        dmf_born_inventory_choice_set_ids: >-
+          {{
+            _dmf_choice_set_lookup_after_create.results
+            | map(attribute='json.results')
+            | map('first')
+            | list
+            | items2dict(key_name='name', value_name='id')
+          }}
+
+- name: Ensure DMF env-schema custom fields exist in NetBox
+  vars:
+    _dmf_cf_defs:
+      - {name: dmf_env_id,       label: "DMF Env ID",       description: "Opaque per-env slug identifier (auto-generated).",  type: text,   choice_set: ""}
+      - {name: dmf_env_label,    label: "DMF Env Label",    description: "Optional human-readable label for this env.",      type: text,   choice_set: ""}
+      - {name: dmf_provider,     label: "DMF Provider",     description: "Cloud provider.",                                   type: select, choice_set: "dmf-provider"}
+      - {name: dmf_architecture, label: "DMF Architecture", description: "CPU architecture.",                                 type: select, choice_set: "dmf-architecture"}
+  block:
+    - name: Look up DMF custom field {{ item.name }}
+      ansible.builtin.uri:
+        url: "{{ dmf_born_inventory_netbox_api_base }}/extras/custom-fields/?name={{ item.name | urlencode }}"
+        method: GET
+        headers: "{{ dmf_born_inventory_netbox_headers }}"
+        return_content: true
+        status_code: 200
+        validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      register: _dmf_cf_lookup
+      loop: "{{ _dmf_cf_defs }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Create missing DMF custom field {{ item.item.name }}
+      ansible.builtin.uri:
+        url: "{{ dmf_born_inventory_netbox_api_base }}/extras/custom-fields/"
+        method: POST
+        headers: "{{ dmf_born_inventory_netbox_headers }}"
+        body_format: json
+        body: >-
+          {{
+            {
+              'name': item.item.name,
+              'label': item.item.label,
+              'description': item.item.description,
+              'type': item.item.type,
+              'object_types': ['dcim.site', 'virtualization.cluster'],
+              'required': false,
+            }
+            | combine(
+                {'choice_set': dmf_born_inventory_choice_set_ids[item.item.choice_set]}
+                if item.item.choice_set else {}
+              )
+          }}
+        status_code: 201
+        validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      loop: "{{ _dmf_cf_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when: item.json.count | int == 0
+
+    - name: Warn on DMF custom-field type drift
+      ansible.builtin.debug:
+        msg: >-
+          NetBox custom field {{ item.item.name }} exists with type
+          '{{ (item.json.results | first).type.value | default((item.json.results | first).type) }}'
+          but the role wants type '{{ item.item.type }}'. Re-shape manually
+          if you want choice-set enforcement; the PATCH at site/cluster
+          level still works either way.
+      loop: "{{ _dmf_cf_lookup.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+      when:
+        - item.json.count | int > 0
+        - (item.json.results | first).type.value | default((item.json.results | first).type) != item.item.type
+
+- name: Look up DMF site
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/sites/?slug={{ dmf_born_inventory_site_slug | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_site_lookup
+
+- name: Create DMF site
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/sites/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_site_name }}"
+      slug: "{{ dmf_born_inventory_site_slug }}"
+      status: active
+      tenant: "{{ dmf_born_inventory_tenant_id }}"
+      comments: "{{ dmf_born_inventory_site_comments }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_site_lookup.json.count | int == 0
+  register: dmf_born_inventory_site_created
+
+- name: Refresh DMF site lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/sites/?slug={{ dmf_born_inventory_site_slug | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_site_lookup_after_create
+
+- name: Set DMF site id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_site_id: >-
+      {{
+        (
+          dmf_born_inventory_site_lookup_after_create.json.results
+          | default(dmf_born_inventory_site_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+# Patch site with env-schema custom fields when the role has them. Skipped
+# for legacy envs (provider/architecture empty) so existing records stay
+# untouched.
+- name: Patch DMF site with env-schema custom fields
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/sites/{{ dmf_born_inventory_site_id }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      custom_fields:
+        dmf_env_id: "{{ dmf_born_inventory_env_id }}"
+        dmf_env_label: "{{ dmf_born_inventory_env_label }}"
+        dmf_provider: "{{ dmf_born_inventory_provider }}"
+        dmf_architecture: "{{ dmf_born_inventory_architecture }}"
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when:
+    - dmf_born_inventory_provider | length > 0
+    - dmf_born_inventory_architecture | length > 0
+
+- name: Look up k3s cluster type
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/cluster-types/?slug={{ dmf_born_inventory_cluster_type_name | lower | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_cluster_type_lookup
+
+- name: Create k3s cluster type
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/cluster-types/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_cluster_type_name }}"
+      slug: "{{ dmf_born_inventory_cluster_type_name | lower }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_cluster_type_lookup.json.count | int == 0
+  register: dmf_born_inventory_cluster_type_created
+
+- name: Refresh k3s cluster type lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/cluster-types/?slug={{ dmf_born_inventory_cluster_type_name | lower | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_cluster_type_lookup_after_create
+
+- name: Set cluster type id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_cluster_type_id: >-
+      {{
+        (
+          dmf_born_inventory_cluster_type_lookup_after_create.json.results
+          | default(dmf_born_inventory_cluster_type_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Look up k3s cluster
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/clusters/?name={{ dmf_born_inventory_cluster_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_cluster_lookup
+
+- name: Create k3s cluster
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/clusters/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_cluster_name }}"
+      type: "{{ dmf_born_inventory_cluster_type_id }}"
+      site: "{{ dmf_born_inventory_site_id }}"
+      comments: "{{ dmf_born_inventory_cluster_comments }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_cluster_lookup.json.count | int == 0
+  register: dmf_born_inventory_cluster_created
+
+- name: Refresh k3s cluster lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/clusters/?name={{ dmf_born_inventory_cluster_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_cluster_lookup_after_create
+
+- name: Set cluster id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_cluster_id: >-
+      {{
+        (
+          dmf_born_inventory_cluster_lookup_after_create.json.results
+          | default(dmf_born_inventory_cluster_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Patch DMF cluster with env-schema custom fields
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/virtualization/clusters/{{ dmf_born_inventory_cluster_id }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      custom_fields:
+        dmf_env_id: "{{ dmf_born_inventory_env_id }}"
+        dmf_env_label: "{{ dmf_born_inventory_env_label }}"
+        dmf_provider: "{{ dmf_born_inventory_provider }}"
+        dmf_architecture: "{{ dmf_born_inventory_architecture }}"
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when:
+    - dmf_born_inventory_provider | length > 0
+    - dmf_born_inventory_architecture | length > 0
+
+- name: Look up platform
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/platforms/?name={{ dmf_born_inventory_platform_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_platform_lookup
+
+- name: Create platform
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/platforms/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_platform_name }}"
+      slug: "{{ dmf_born_inventory_platform_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_platform_lookup.json.count | int == 0
+  register: dmf_born_inventory_platform_created
+
+- name: Refresh platform lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/platforms/?name={{ dmf_born_inventory_platform_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_platform_lookup_after_create
+
+- name: Set platform id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_platform_id: >-
+      {{
+        (
+          dmf_born_inventory_platform_lookup_after_create.json.results
+          | default(dmf_born_inventory_platform_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Look up control-plane device role
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/?slug={{ dmf_born_inventory_device_role_control_plane | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_control_role_lookup
+
+- name: Create control-plane device role
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_device_role_control_plane }}"
+      slug: "{{ dmf_born_inventory_device_role_control_plane | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+      color: "1f77b4"
+      vm_role: true
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_control_role_lookup.json.count | int == 0
+  register: dmf_born_inventory_control_role_created
+
+- name: Refresh control-plane role lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/?slug={{ dmf_born_inventory_device_role_control_plane | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_control_role_lookup_after_create
+
+- name: Set control-plane role id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_control_role_id: >-
+      {{
+        (
+          dmf_born_inventory_control_role_lookup_after_create.json.results
+          | default(dmf_born_inventory_control_role_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Look up worker device role
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/?slug={{ dmf_born_inventory_device_role_worker | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_worker_role_lookup
+
+- name: Create worker device role
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_device_role_worker }}"
+      slug: "{{ dmf_born_inventory_device_role_worker | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+      color: "2ca02c"
+      vm_role: true
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_worker_role_lookup.json.count | int == 0
+  register: dmf_born_inventory_worker_role_created
+
+- name: Refresh worker role lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/?slug={{ dmf_born_inventory_device_role_worker | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_worker_role_lookup_after_create
+
+- name: Set worker role id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_worker_role_id: >-
+      {{
+        (
+          dmf_born_inventory_worker_role_lookup_after_create.json.results
+          | default(dmf_born_inventory_worker_role_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Look up load balancer device role
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/?slug={{ dmf_born_inventory_device_role_load_balancer | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_role_lookup
+
+- name: Create load balancer device role
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_device_role_load_balancer }}"
+      slug: "{{ dmf_born_inventory_device_role_load_balancer | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+      color: "ff7f0e"
+      vm_role: false
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_load_balancer_role_lookup.json.count | int == 0
+  register: dmf_born_inventory_load_balancer_role_created
+
+- name: Refresh load balancer role lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-roles/?slug={{ dmf_born_inventory_device_role_load_balancer | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_role_lookup_after_create
+
+- name: Set load balancer role id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_load_balancer_role_id: >-
+      {{
+        (
+          dmf_born_inventory_load_balancer_role_lookup_after_create.json.results
+          | default(dmf_born_inventory_load_balancer_role_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Look up load balancer manufacturer
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/manufacturers/?slug={{ dmf_born_inventory_manufacturer_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_manufacturer_lookup
+
+- name: Create load balancer manufacturer
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/manufacturers/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_manufacturer_name }}"
+      slug: "{{ dmf_born_inventory_manufacturer_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_manufacturer_lookup.json.count | int == 0
+  register: dmf_born_inventory_manufacturer_created
+
+- name: Refresh load balancer manufacturer lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/manufacturers/?slug={{ dmf_born_inventory_manufacturer_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_manufacturer_lookup_after_create
+
+- name: Set load balancer manufacturer id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_load_balancer_manufacturer_id: >-
+      {{
+        (
+          dmf_born_inventory_manufacturer_lookup_after_create.json.results
+          | default(dmf_born_inventory_manufacturer_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Look up load balancer device type
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-types/?slug={{ dmf_born_inventory_load_balancer_device_type_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_device_type_lookup
+
+- name: Create load balancer device type
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-types/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      manufacturer: "{{ dmf_born_inventory_load_balancer_manufacturer_id }}"
+      model: "{{ dmf_born_inventory_load_balancer_device_type_name }}"
+      slug: "{{ dmf_born_inventory_load_balancer_device_type_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_load_balancer_device_type_lookup.json.count | int == 0
+  register: dmf_born_inventory_load_balancer_device_type_created
+
+- name: Refresh load balancer device type lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/device-types/?slug={{ dmf_born_inventory_load_balancer_device_type_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_device_type_lookup_after_create
+
+- name: Set load balancer device type id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_load_balancer_device_type_id: >-
+      {{
+        (
+          dmf_born_inventory_load_balancer_device_type_lookup_after_create.json.results
+          | default(dmf_born_inventory_load_balancer_device_type_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Read Traefik load balancer service status
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Service
+    name: "{{ dmf_born_inventory_traefik_service_name }}"
+    namespace: "{{ dmf_born_inventory_traefik_service_namespace }}"
+  register: dmf_born_inventory_traefik_service
+
+- name: Set Traefik load balancer address
+  ansible.builtin.set_fact:
+    dmf_born_inventory_load_balancer_ip: >-
+      {{
+        '' if dmf_born_inventory_provider == 'sandbox' else
+        (
+        (
+          dmf_born_inventory_traefik_service.resources[0].status.loadBalancer.ingress
+          | default([])
+          | first
+          | default({})
+        ).ip
+        | default(
+            (
+              dmf_born_inventory_traefik_service.resources[0].status.loadBalancer.ingress
+              | default([])
+              | first
+              | default({})
+            ).hostname | default('')
+          )
+        )
+      }}
+
+- name: Look up load balancer device
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/devices/?name={{ dmf_born_inventory_load_balancer_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_lookup
+
+- name: Create load balancer device
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/devices/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_born_inventory_load_balancer_name }}"
+      device_type: "{{ dmf_born_inventory_load_balancer_device_type_id }}"
+      role: "{{ dmf_born_inventory_load_balancer_role_id }}"
+      site: "{{ dmf_born_inventory_site_id }}"
+      status: active
+      tenant: "{{ dmf_born_inventory_tenant_id }}"
+      comments: >-
+        Hetzner cloud load balancer for {{ dmf_born_inventory_env_name }}.
+        Traefik service address: {{ dmf_born_inventory_load_balancer_ip | default('unknown') }}.
+      tags:
+        - "{{ dmf_born_inventory_tag_id }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_load_balancer_lookup.json.count | int == 0
+  register: dmf_born_inventory_load_balancer_created
+
+- name: Refresh load balancer lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/devices/?name={{ dmf_born_inventory_load_balancer_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_lookup_after_create
+
+- name: Set load balancer id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_load_balancer_id: >-
+      {{
+        (
+          dmf_born_inventory_load_balancer_lookup_after_create.json.results
+          | default(dmf_born_inventory_load_balancer_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Clear sandbox load balancer primary IP
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/devices/{{ dmf_born_inventory_load_balancer_id }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      primary_ip4: null
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_provider == 'sandbox'
+
+- name: Ensure load balancer interface exists
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/interfaces/?device_id={{ dmf_born_inventory_load_balancer_id }}&name={{ dmf_born_inventory_load_balancer_interface_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_iface_lookup
+
+- name: Create load balancer interface
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/interfaces/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      device: "{{ dmf_born_inventory_load_balancer_id }}"
+      name: "{{ dmf_born_inventory_load_balancer_interface_name }}"
+      type: virtual
+      enabled: true
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_load_balancer_iface_lookup.json.count | int == 0
+  register: dmf_born_inventory_load_balancer_iface_created
+
+- name: Refresh load balancer interface lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/interfaces/?device_id={{ dmf_born_inventory_load_balancer_id }}&name={{ dmf_born_inventory_load_balancer_interface_name | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_iface_lookup_after_create
+
+- name: Set load balancer interface id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_load_balancer_iface_id: >-
+      {{
+        (
+          dmf_born_inventory_load_balancer_iface_lookup_after_create.json.results
+          | default(dmf_born_inventory_load_balancer_iface_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+
+- name: Ensure load balancer public IP object exists
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/?address={{ (dmf_born_inventory_load_balancer_ip ~ '/32') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_ip_lookup
+  when: dmf_born_inventory_load_balancer_ip | length > 0
+
+- name: Create load balancer public IP object
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      address: "{{ dmf_born_inventory_load_balancer_ip }}/32"
+      status: active
+      tenant: "{{ dmf_born_inventory_tenant_id }}"
+      description: "Public load balancer VIP for {{ dmf_born_inventory_load_balancer_name }}"
+      assigned_object_type: dcim.interface
+      assigned_object_id: "{{ dmf_born_inventory_load_balancer_iface_id }}"
+      tags:
+        - "{{ dmf_born_inventory_tag_id }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when:
+    - dmf_born_inventory_load_balancer_ip | length > 0
+    - dmf_born_inventory_load_balancer_ip_lookup.json.count | int == 0
+  register: dmf_born_inventory_load_balancer_ip_created
+
+- name: Refresh load balancer IP lookup after create
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/ip-addresses/?address={{ (dmf_born_inventory_load_balancer_ip ~ '/32') | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_load_balancer_ip_lookup_after_create
+  when: dmf_born_inventory_load_balancer_ip | length > 0
+
+- name: Set load balancer IP id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_load_balancer_ip_id: >-
+      {{
+        (
+          dmf_born_inventory_load_balancer_ip_lookup_after_create.json.results
+          | default(dmf_born_inventory_load_balancer_ip_lookup.json.results)
+          | default([])
+          | first
+          | default({})
+        ).id
+      }}
+  when: dmf_born_inventory_load_balancer_ip | length > 0
+
+- name: Patch load balancer primary IP
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/dcim/devices/{{ dmf_born_inventory_load_balancer_id }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      primary_ip4: "{{ dmf_born_inventory_load_balancer_ip_id }}"
+      comments: >-
+        Hetzner cloud load balancer for {{ dmf_born_inventory_env_name }}.
+        Public address: {{ dmf_born_inventory_load_balancer_ip | default('unknown') }}.
+        Service: {{ dmf_born_inventory_traefik_service_name }}.
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_born_inventory_load_balancer_ip | length > 0
+
+- name: Upsert VM inventory for each k3s node
+  ansible.builtin.include_tasks: node.yml
+  loop: "{{ dmf_born_inventory_nodes }}"
+  loop_control:
+    loop_var: dmf_node_record
+  vars:
+    dmf_node_role_id: "{{ dmf_born_inventory_control_role_id if dmf_node_record.is_control_plane else dmf_born_inventory_worker_role_id }}"
+    dmf_node_vm_comments: >-
+      Day-0 DMF node {{ dmf_node_record.name }}.
+      Public IP: {{ dmf_node_record.public_ip }}.
+      Private IP: {{ dmf_node_record.private_ip }}.
+      Tailscale IP: {{ dmf_node_record.tailscale_ip | default('n/a') }}.
+      OS: {{ dmf_node_record.os_release }}.
+      Kernel: {{ dmf_node_record.kernel }}.
+      CPU: {{ dmf_node_record.cpu_cores }} vCPU.
+      RAM: {{ dmf_node_record.memory_mb }} MiB.
+      Disk: {{ dmf_node_record.disk_gb }} GiB.
+      Private iface: {{ dmf_node_record.private_iface }}.
+
+# ---------------------------------------------------------------------------
+# L6 app registration as ipam.Service objects
+# ---------------------------------------------------------------------------
+- name: Register L6 apps as ipam.Service
+  ansible.builtin.include_tasks: app-service.yml
+  loop: "{{ dmf_born_inventory_apps }}"
+  loop_control:
+    loop_var: dmf_app_entry
+  vars:
+    dmf_app_service_key: "{{ dmf_app_entry.key }}"
+    dmf_app_service_display: "{{ dmf_app_entry.display_name }}"
+    dmf_app_service_exposure: "{{ dmf_app_entry.exposure }}"
+    dmf_app_service_oidc_client: "{{ dmf_app_entry.oidc_client_id }}"
+    dmf_app_service_hostname: >-
+      {{
+        (vars[dmf_app_entry.key ~ '_host'] | default('', true))
+        or (dmf_app_entry.key ~ '.' ~ (cert_manager_cluster_domain | default('dmf.example.com')))
+      }}
+
+# ---------------------------------------------------------------------------
+# forgejo-svc NetBox service user (parallels awx-netbox, librenms-netbox)
+# ---------------------------------------------------------------------------
+- name: Lookup forgejo-svc user in NetBox
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/users/users/?username={{ 'forgejo-svc' | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_born_inventory_forgejo_svc_user_lookup
+
+- name: Create forgejo-svc user in NetBox
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/users/users/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      username: forgejo-svc
+      is_active: true
+      password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+    status_code: 201
+  when: dmf_born_inventory_forgejo_svc_user_lookup.json.count | int == 0
+  no_log: true
+  register: dmf_born_inventory_forgejo_svc_user_created
+
+- name: Set forgejo-svc user id
+  ansible.builtin.set_fact:
+    dmf_born_inventory_forgejo_svc_user_id: >-
+      {{
+        (dmf_born_inventory_forgejo_svc_user_lookup.json.results
+         | default([]) | first | default({})).id
+         | default(dmf_born_inventory_forgejo_svc_user_created.json.id)
+      }}
+
+# ---------------------------------------------------------------------------
+# Build born-inventory summary
+# ---------------------------------------------------------------------------
+- name: Build born-inventory summary
+  ansible.builtin.set_fact:
+    dmf_born_inventory_report:
+      environment: "{{ dmf_born_inventory_env_name }}"
+      site: "{{ dmf_born_inventory_site_name }}"
+      cluster: "{{ dmf_born_inventory_cluster_name }}"
+      nodes: "{{ dmf_born_inventory_nodes }}"
+      netbox_api_base: "{{ dmf_born_inventory_netbox_api_base }}"
+      tag: "{{ dmf_born_inventory_tag_name }}"
+      day0_boundary:
+        day0: true
+        media_environments_separate: true
+  changed_when: false
+
+- name: Write born-inventory report locally
+  ansible.builtin.copy:
+    dest: "{{ dmf_born_inventory_report_path }}"
+    content: "{{ dmf_born_inventory_report | to_nice_json }}"
+    mode: "0644"
+  delegate_to: localhost
+  become: false
+  run_once: true

@@ -1,0 +1,127 @@
+---
+# OpenBao Raft snapshot — daily CronJob role.
+# 1. Creates ServiceAccount + Kubernetes auth role binding in OpenBao.
+# 2. Creates the policy `openbao-raft-snapshot` with read-only on
+#    sys/storage/raft/snapshot (AMENDED per 2026-05-12 brief correction:
+#    `read` only, NOT `update`+`sudo` — snapshot save calls the read
+#    endpoint; update/sudo are for snapshot-auto config).
+# 3. Deploys a CronJob that:
+#    a. `bao login -method=kubernetes role=openbao-raft-snapshot`
+#    b. `bao operator raft snapshot save /tmp/snapshot.snap`
+#    c. Uploads to S3 using mounted Secret credentials (NOT env vars).
+#    d. Cleans up the temp file.
+
+# ---------------------------------------------------------------------------
+# Pre-flight: ensure namespace exists
+# ---------------------------------------------------------------------------
+
+- name: Ensure openbao-system namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ openbao_raft_snapshot_namespace }}"
+
+# ---------------------------------------------------------------------------
+# ServiceAccount for the CronJob
+# ---------------------------------------------------------------------------
+
+- name: Create ServiceAccount for openbao-raft-snapshot CronJob
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ openbao_raft_snapshot_service_account }}"
+        namespace: "{{ openbao_raft_snapshot_namespace }}"
+        labels: "{{ openbao_raft_snapshot_labels }}"
+
+# ---------------------------------------------------------------------------
+# OpenBao policy: openbao-raft-snapshot (read-only on raft snapshot endpoint)
+# ---------------------------------------------------------------------------
+
+- name: Write openbao-raft-snapshot policy HCL in pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - |
+        cat > /tmp/openbao-raft-snapshot-policy.hcl << 'HCL'
+        path "sys/storage/raft/snapshot" {
+          capabilities = ["read"]
+        }
+        HCL
+  no_log: true
+
+- name: Apply openbao-raft-snapshot policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write openbao-raft-snapshot /tmp/openbao-raft-snapshot-policy.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token | default(omit) }}"
+  no_log: true
+  failed_when: false  # idempotent — policy may already exist
+
+# ---------------------------------------------------------------------------
+# Kubernetes auth role binding — binds SA to the policy
+# ---------------------------------------------------------------------------
+
+- name: Bind Kubernetes SA to openbao-raft-snapshot policy via k8s auth role
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/{{ openbao_k8s_auth_mount }}/role/{{ openbao_raft_snapshot_k8s_auth_role }}
+      bound_service_account_names={{ openbao_raft_snapshot_service_account }}
+      bound_service_account_namespaces={{ openbao_raft_snapshot_namespace }}
+      policies=openbao-raft-snapshot
+      ttl=10m'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token | default(omit) }}"
+  no_log: true
+  failed_when: false  # idempotent — role may already exist
+
+# ---------------------------------------------------------------------------
+# Deploy the snapshot script ConfigMap
+# ---------------------------------------------------------------------------
+
+- name: Deploy openbao-raft-snapshot script ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'snapshot-script.yml.j2') | from_yaml }}"
+
+# ---------------------------------------------------------------------------
+# Deploy the CronJob from template
+# ---------------------------------------------------------------------------
+
+- name: Deploy openbao-raft-snapshot CronJob
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'openbao-raft-snapshot-cronjob.yml.j2') | from_yaml }}"

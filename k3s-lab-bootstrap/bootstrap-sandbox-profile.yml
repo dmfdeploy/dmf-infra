@@ -1,0 +1,82 @@
+---
+# DMF sandbox profile capability prelude.
+#
+# This playbook is imported by the sandbox wrappers before any atomic
+# playbooks. It keeps the release-profile choice in one place while preserving
+# the existing lab wrappers and their inventory-driven defaults.
+
+- name: Establish sandbox release-profile capability variables
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Set sandbox capability facts
+      ansible.builtin.set_fact:
+        dmf_release_profile: "{{ dmf_release_profile | default('sandbox-single-node') }}"
+        dmf_storage_backend: "{{ dmf_storage_backend | default('local-path') }}"
+        dmf_storage_class: "{{ dmf_storage_class | default('local-path') }}"
+        dmf_ingress_mode: "{{ dmf_ingress_mode | default('single-node-servicelb') }}"
+        dmf_tls_mode: "{{ dmf_tls_mode | default('local-ca') }}"
+        dmf_object_storage_enabled: "{{ dmf_object_storage_enabled | default(false) }}"
+        dmf_headscale_enabled: "{{ dmf_headscale_enabled | default(false) }}"
+        dmf_tailscale_enabled: "{{ dmf_tailscale_enabled | default(false) }}"
+        dmf_monitoring_profile: "{{ dmf_monitoring_profile | default('minimal') }}"
+        dmf_awx_profile: "{{ dmf_awx_profile | default('single-node-low-concurrency') }}"
+        dmf_sandbox_base_domain: "{{ dmf_sandbox_base_domain | default('dmf.test') }}"
+        cluster_ingress_mode: "{{ cluster_ingress_mode | default(dmf_ingress_mode | default('single-node-servicelb')) }}"
+        cluster_ingress_provider_tasks: "{{ cluster_ingress_provider_tasks | default('') }}"
+        cluster_ready_wait_for_longhorn: "{{ cluster_ready_wait_for_longhorn | default(false) }}"
+        cluster_ready_wait_for_storageclass: "{{ cluster_ready_wait_for_storageclass | default(false) }}"
+        cert_manager_cluster_domain: "{{ cert_manager_cluster_domain | default(dmf_sandbox_base_domain | default('dmf.test')) }}"
+        awx_projects_storage_access_mode: "{{ awx_projects_storage_access_mode | default('ReadWriteOnce') }}"
+        netbox_media_access_mode: "{{ netbox_media_access_mode | default('ReadWriteOnce') }}"
+        # Collapsed ingress: no traefik-private / Tailscale on a single node, so
+        # every host-based app routes through the bundled k3s Traefik
+        # (IngressClass 'traefik'). Role defaults stay 'traefik-private' for the
+        # cloud/lab lane; this prelude + the wizard inventory override for sandbox.
+        forgejo_ingress_class_name: "{{ forgejo_ingress_class_name | default('traefik') }}"
+        netbox_ingress_class: "{{ netbox_ingress_class | default('traefik') }}"
+        awx_ingress_class: "{{ awx_ingress_class | default('traefik') }}"
+        cms_ingress_class: "{{ cms_ingress_class | default('traefik') }}"
+        grafana_ingress_class: "{{ grafana_ingress_class | default('traefik') }}"
+      tags:
+        - always
+        - sandbox
+        - release-profile
+
+    # WP1S Phase 3 — AWX single-node fit. Gated on the AWX profile (not just
+    # "sandbox") so the gate is load-bearing: an env that overrides
+    # dmf_awx_profile away from single-node-low-concurrency gets lab sizing.
+    # Values are conservative FLOORS — Phase C adjusts them once from the
+    # observed footprint of the first real catalog-loop rollout (feeds WP5).
+    # Lab/cloud never import this prelude, so their AWX CR is untouched.
+    - name: Apply AWX single-node-low-concurrency fit overrides
+      ansible.builtin.set_fact:
+        # Global per-job fork ceiling (MAX_FORKS). Sandbox catalog jobs touch a
+        # tiny host count; 5 bounds fan-out hard on a 10 GiB node.
+        awx_max_forks: "{{ awx_max_forks | default(5) }}"
+        # Lower REQUESTS so AWX schedules alongside the rest of the stack on a
+        # single node; keep limits roomy enough to avoid boot/migration OOM.
+        awx_web_resource_requirements: "{{ awx_web_resource_requirements | default(_awx_fit_web) }}"
+        awx_task_resource_requirements: "{{ awx_task_resource_requirements | default(_awx_fit_task) }}"
+        awx_postgres_resource_requirements: "{{ awx_postgres_resource_requirements | default(_awx_fit_postgres) }}"
+      # Memory LIMITS are lab-parity (web 1536Mi, task 2Gi): tuned ONCE from the
+      # first imc1-cyh4 rollout, where a 1Gi web limit OOMKilled awx-web (exit
+      # 137) — AWX's web container runs 5 uWSGI workers + daphne and needs
+      # ~1.2-1.5Gi. Limits don't reserve memory, so the 10 GiB node still fits
+      # the stack; REQUESTS stay lean so scheduling isn't starved. MAX_FORKS=5
+      # remains the real concurrency guard. (WP1S §8 gate #8 resource-sanity.)
+      vars:
+        _awx_fit_web:
+          requests: {cpu: 100m, memory: 768Mi}
+          limits: {cpu: 1000m, memory: 1536Mi}
+        _awx_fit_task:
+          requests: {cpu: 150m, memory: 1Gi}
+          limits: {cpu: 1500m, memory: 2Gi}
+        _awx_fit_postgres:
+          requests: {cpu: 50m, memory: 256Mi}
+          limits: {cpu: 1000m, memory: 768Mi}
+      when: (dmf_awx_profile | default('single-node-low-concurrency')) == 'single-node-low-concurrency'
+      tags:
+        - always
+        - sandbox
+        - release-profile

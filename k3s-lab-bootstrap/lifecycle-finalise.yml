@@ -1,0 +1,13 @@
+---
+# DMF lifecycle: Finalise & Review stage (EBU white paper p.4).
+# Teardown sequence in reverse layer order. Persists logs, releases resources,
+# preserves long-lived assets (floating IPs, SSH keys).
+- import_playbook: playbooks/lifecycle/finalise-teardown.yml
+  tags: [lifecycle-finalise, teardown]
+
+# Headscale node-table cleanup. Runs after teardown so groups['k3s'] is
+# empty and the playbook auto-selects sweep mode (deletes every entry
+# matching the k3s-node-* pattern). Idempotent and dry-run-by-default
+# (set headscale_cleanup_apply=true via --extra-vars to actually delete).
+- import_playbook: playbooks/322-headscale-cleanup.yml
+  tags: [lifecycle-finalise, teardown, headscale]

@@ -1,0 +1,60 @@
+---
+prometheus_namespace: monitoring
+# 50Gi sized for 30-day retention. Recompute if scrape volume grows materially.
+# Rule of thumb: a small 3-node DMF lab produces ~1GB/day of TSDB blocks at the
+# default 1m scrape; 30 days ≈ 30GB, +5GB WAL/buffer ≈ 35GB, headroom to 50Gi.
+prometheus_storage_size: 50Gi
+prometheus_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+# Retention settings:
+# - retentionSize controls TSDB blocks only, NOT the WAL
+# - WAL can use ~300MB before compaction (2h default)
+# - 40GB blocks + 1GB WAL + 9GB headroom = 50GB
+# Operator-debug retention only; not a compliance audit trail (those go to
+# Loki + S3 per docs/processes/audit-log-retention-policy.md).
+prometheus_retention: 30d
+prometheus_retention_size: 40GB
+prometheus_path: /prometheus
+prometheus_helm_repo: https://prometheus-community.github.io/helm-charts
+prometheus_helm_chart_version: "25.8.0"
+
+# Resource requests/limits to steer scheduling and avoid overcommit
+prometheus_resources:
+  requests:
+    cpu: 200m
+    memory: 1024Mi
+  limits:
+    cpu: 500m
+    memory: 1536Mi
+
+# Alertmanager + minimum alert rules.
+# Set webhook URLs via inventory or -e. Leave empty to disable alerting entirely
+# (chart still installs Prometheus; Alertmanager component is not deployed).
+prometheus_alertmanager_enabled: true
+prometheus_alertmanager_storage_size: 512Mi
+prometheus_alertmanager_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+
+# ntfy topic URL for real alerts — full https URL including topic, e.g.
+# https://ntfy.dmf.example.com/homelab-alerts
+# Alertmanager POSTs its native JSON payload to this URL; ntfy publishes the
+# raw body as a notification. If you want prettier titles/priorities, deploy
+# a bridge (xenrox/ntfy-alertmanager) between AM and ntfy — the URL stays the
+# same at the ntfy end; only the bridge target changes on the AM side.
+prometheus_alertmanager_ntfy_url: ""
+
+# Raw Alertmanager webhook JSON is unreadable in ntfy. When enabled, deploy a
+# small in-cluster formatter bridge and point Alertmanager at that service.
+prometheus_ntfy_bridge_enabled: true
+prometheus_ntfy_bridge_name: ntfy-alertmanager-bridge
+prometheus_ntfy_bridge_image: python:3.13-alpine
+prometheus_ntfy_bridge_replicas: 1
+
+# healthchecks.io ping URL for the Watchdog dead-man's switch. The Watchdog rule
+# fires constantly; Alertmanager pings this URL on every group interval. If
+# Alertmanager (or Prometheus, or the cluster) dies, pings stop and
+# healthchecks.io raises an external alert.
+prometheus_alertmanager_watchdog_url: ""
+
+# Alert thresholds (override in inventory when lab characteristics differ).
+prometheus_alert_pv_full_threshold: 0.85
+prometheus_alert_crashloop_for: 10m
+prometheus_alert_node_down_for: 5m

@@ -1,0 +1,32 @@
+# vault.yml.example — structure reference only. No real values here.
+#
+# Copy to vault.yml in your private inventory repo and encrypt with:
+#   ansible-vault encrypt vault.yml
+#
+# Required variables (fill before first playbook run):
+---
+vault_k3s_token: "<random-secret-token-for-k3s-node-join>"
+
+# NetBox
+vault_netbox_superuser_email: "admin@example.com"
+vault_netbox_superuser_password: "<netbox-admin-password>"
+vault_netbox_api_token_pepper: "<64-char-random-string>"
+
+# AWX
+vault_awx_admin_password: "<awx-admin-password>"
+
+# Grafana
+vault_grafana_admin_password: "<grafana-admin-password>"
+
+# Forgejo bootstrap
+vault_forgejo_admin_password: "<forgejo-admin-password>"
+vault_forgejo_svc_password: "<forgejo-svc-user-password>"
+
+# Tokens — populated by playbooks 40-42; leave empty on first run
+vault_netbox_admin_token: ""
+vault_netbox_awx_token: ""
+vault_netbox_librenms_token: ""
+vault_forgejo_admin_token: ""
+vault_forgejo_svc_token: ""
+vault_awx_svc_password: ""
+vault_awx_svc_token: ""

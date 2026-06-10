@@ -1,0 +1,140 @@
+---
+# 322-headscale-cleanup.yml
+#
+# Reconcile or sweep stale node entries from the self-hosted headscale
+# control plane. Each cluster destroy + rebuild leaves the previous
+# k3s-node-{01,02,03} (and their suffixed re-registrations like
+# k3s-node-01-<random>) lingering in headscale's user table, slowly
+# eating tailnet IPs from the assigned pool.
+#
+# Two operating modes, same playbook, behaviour switches on inventory
+# state:
+#
+#   sweep mode    — invoked post-teardown (lifecycle-finalise) when
+#                   groups['k3s'] is empty / all nodes are gone. Deletes
+#                   every headscale entry matching the pattern.
+#   reconcile mode — invoked mid-life with a live cluster. Preserves entries
+#                   whose given_name matches a current k3s host; deletes
+#                   the rest.
+#
+# Dry-run by default. Set headscale_cleanup_apply=true to actually delete.
+#
+# Auth: SSH to headscale_ssh_target, exec into the headscale container.
+# Same pattern as the auth-key creation in 321-tailscale.yml. No bearer
+# token / no API access required.
+
+- name: Reconcile stale k3s nodes in headscale
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # Defaults; inventory does NOT override play vars in Ansible precedence,
+    # so the few values that need env-specific overrides — most notably
+    # headscale_ssh_target — are read from inventory directly via the
+    # task references below (no entry here, so inventory wins).
+    headscale_container: "headscale"
+    headscale_stale_pattern: "k3s-node-*"
+    # Hostnames currently in active service. Defaults to the inventory's
+    # k3s group so the playbook auto-detects mode:
+    #   - live cluster   → list populated → reconcile mode
+    #   - post-teardown  → empty list     → sweep mode
+    headscale_active_hostnames: "{{ groups['k3s'] | default([]) }}"
+    headscale_cleanup_apply: false
+
+  tasks:
+    - name: Refuse to run without an SSH target set in inventory
+      ansible.builtin.assert:
+        that:
+          - headscale_ssh_target is defined
+          - headscale_ssh_target | length > 0
+        fail_msg: >-
+          headscale_ssh_target is unset. Define it in the env inventory
+          (e.g., dmf-env/inventories/<env>/group_vars/all/main.yml):
+            headscale_ssh_target: "root@hs.example.com"
+        quiet: true
+
+    - name: Refuse trivial patterns that would match too much
+      ansible.builtin.assert:
+        that:
+          - headscale_stale_pattern | length >= 5
+          - headscale_stale_pattern != "*"
+          - headscale_stale_pattern != ".*"
+        fail_msg: >-
+          headscale_stale_pattern '{{ headscale_stale_pattern }}' is too
+          permissive. Refusing to act.
+        quiet: true
+
+    - name: Fetch current headscale node list
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - LogLevel=ERROR
+          - -o
+          - ConnectTimeout=8
+          - "{{ headscale_ssh_target }}"
+          - docker exec {{ headscale_container }} headscale nodes list -o json
+      register: _hs_list_raw
+      changed_when: false
+
+    - name: Parse headscale node list
+      ansible.builtin.set_fact:
+        _hs_nodes: "{{ _hs_list_raw.stdout | from_json }}"
+
+    - name: Compute stale entries (matches pattern AND not in active list)
+      ansible.builtin.set_fact:
+        _hs_to_delete: >-
+          {{
+            _hs_nodes
+            | selectattr('given_name', 'match',
+                '^' ~ (headscale_stale_pattern | regex_replace('\*', '.*')) ~ '$')
+            | rejectattr('given_name', 'in', headscale_active_hostnames)
+            | list
+          }}
+        _hs_to_keep_matching: >-
+          {{
+            _hs_nodes
+            | selectattr('given_name', 'match',
+                '^' ~ (headscale_stale_pattern | regex_replace('\*', '.*')) ~ '$')
+            | selectattr('given_name', 'in', headscale_active_hostnames)
+            | list
+          }}
+
+    - name: Report plan
+      ansible.builtin.debug:
+        msg: |-
+          headscale cleanup plan ({{ 'APPLY' if headscale_cleanup_apply else 'DRY-RUN' }}):
+            mode:                {{ 'sweep' if (headscale_active_hostnames | length == 0) else 'reconcile' }}
+            pattern:             {{ headscale_stale_pattern }}
+            active (preserved):  {{ headscale_active_hostnames | join(', ') or '(none)' }}
+            total nodes seen:    {{ _hs_nodes | length }}
+            matching pattern:    {{ (_hs_to_delete | length) + (_hs_to_keep_matching | length) }}
+            will keep (active):  {{ _hs_to_keep_matching | map(attribute='given_name') | list | join(', ') or '(none)' }}
+            will delete:         {{ _hs_to_delete | length }} entries
+            (delete details):    {{ _hs_to_delete | map(attribute='given_name') | list | join(', ') or '(none)' }}
+
+    - name: Delete stale headscale nodes
+      ansible.builtin.command:
+        argv:
+          - ssh
+          - -o
+          - LogLevel=ERROR
+          - -o
+          - ConnectTimeout=8
+          - "{{ headscale_ssh_target }}"
+          - docker exec {{ headscale_container }} headscale nodes delete -i {{ item.id }} --force
+      loop: "{{ _hs_to_delete }}"
+      loop_control:
+        label: "id={{ item.id }} name={{ item.given_name }} ip={{ (item.ip_addresses | default([]))[0] | default('?') }}"
+      register: _hs_delete_results
+      changed_when: _hs_delete_results.rc == 0
+      when: headscale_cleanup_apply | bool
+
+    - name: Summary (apply mode)
+      ansible.builtin.debug:
+        msg: "Deleted {{ _hs_to_delete | length }} stale headscale node entries."
+      when: headscale_cleanup_apply | bool
+
+    - name: Summary (dry-run)
+      ansible.builtin.debug:
+        msg: "Dry-run only. Re-invoke with --extra-vars headscale_cleanup_apply=true to apply."
+      when: not (headscale_cleanup_apply | bool)

@@ -1,0 +1,6 @@
+---
+- name: Verify cluster networking and ingress behavior after bootstrap
+  hosts: k3s_control[0]
+  become: true
+  roles:
+    - base/post-bootstrap-verify

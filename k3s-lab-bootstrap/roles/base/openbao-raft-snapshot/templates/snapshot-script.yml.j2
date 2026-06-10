@@ -1,0 +1,53 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: openbao-raft-snapshot-script
+  namespace: {{ openbao_raft_snapshot_namespace }}
+data:
+  snapshot.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # OpenBao Raft snapshot + S3 upload.
+    # Runs inside the CronJob pod.
+    #
+    # Authentication: Kubernetes auth method (NOT AppRole). The pod's
+    # projected SA token at /var/run/secrets/kubernetes.io/serviceaccount/token
+    # is auto-detected by `bao login -method=kubernetes`.
+    # Credentials: mounted Secret at /etc/s3-creds/ (NOT env vars per ADR-0007).
+    # Object key: timestamp-prefixed — never overwrites a fixed key.
+
+    MOUNT_DIR="{{ openbao_raft_snapshot_secret_mount }}"
+    SNAP_FILE="{{ openbao_raft_snapshot_tmp_file }}"
+    K8S_ROLE="{{ openbao_raft_snapshot_k8s_auth_role }}"
+    CLUSTER_PREFIX="${CLUSTER_PREFIX:-{{ openbao_raft_snapshot_key_prefix }}}"
+
+    # ---- 1. Login via Kubernetes auth -------------------------------------
+    # bao login auto-detects the SA token at the standard mount path.
+    # -token-only echoes just the token string (no JSON parsing needed).
+    BAO_TOKEN="$(bao login -method=kubernetes "role=${K8S_ROLE}" -token-only)"
+    export BAO_TOKEN
+
+    # ---- 2. Take Raft snapshot --------------------------------------------
+    bao operator raft snapshot save "${SNAP_FILE}"
+
+    # ---- 3. Upload to S3 --------------------------------------------------
+    TIMESTAMP="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+    OBJECT_KEY="${CLUSTER_PREFIX}/${TIMESTAMP}.snap"
+
+    BUCKET="$(cat "${MOUNT_DIR}/bucket")"
+    ENDPOINT="$(cat "${MOUNT_DIR}/endpoint")"
+    REGION="$(cat "${MOUNT_DIR}/region")"
+
+    # Per-command env scope — credentials live only for the aws invocation.
+    AWS_ACCESS_KEY_ID="$(cat "${MOUNT_DIR}/access_key_id")" \
+    AWS_SECRET_ACCESS_KEY="$(cat "${MOUNT_DIR}/secret_access_key")" \
+    AWS_DEFAULT_REGION="${REGION}" \
+      aws s3 cp "${SNAP_FILE}" "s3://${BUCKET}/${OBJECT_KEY}" \
+        --endpoint-url "${ENDPOINT}" \
+        --sse AES256
+
+    # ---- 4. Clean up ------------------------------------------------------
+    rm -f "${SNAP_FILE}"
+    echo "Snapshot uploaded: s3://${BUCKET}/${OBJECT_KEY}"

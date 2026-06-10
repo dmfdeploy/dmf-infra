@@ -1,0 +1,84 @@
+#!/bin/sh
+# Managed by Ansible — roles/base/audit-log-archival.
+# Daily k3s API audit log archival to an S3-compatible Object Lock bucket.
+# Server-side encryption (provider-managed key) + Object Lock
+# {{ audit_log_object_lock_mode if audit_log_object_lock_enabled else 'disabled' }} retention
+# per docs/processes/audit-log-retention-policy.md.
+#
+# Credentials come from /root/.aws/credentials profile
+# `{{ audit_log_aws_profile }}` via AWS SDK. They are NOT loaded into the
+# environment, so /proc/<pid>/environ does not leak them — ADR-0007
+# "secrets never in env" remains intact.
+set -eu
+umask 077
+
+ts="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+day="$(date -u +%Y-%m-%d)"
+workdir="{{ audit_log_work_dir }}"
+key="{{ audit_log_s3_prefix }}/${day}/k3s-audit-${ts}.tar.gz"
+
+# Stage the tarball in a root-owned 0700 working directory, NOT /tmp.
+# /tmp is mode 1777 and shared with every user on the host; audit-bearing
+# artefacts have no business there even transiently.
+if [ ! -d "${workdir}" ]; then
+    echo "audit-archive: ${workdir} missing — playbook should have created it" >&2
+    exit 1
+fi
+
+archive="$(mktemp "${workdir}/k3s-audit-${ts}.XXXXXX.tar.gz")"
+trap 'rm -f "${archive}"' EXIT
+
+# Capture audit.log AND all rotated siblings. k3s uses lumberjack semantics:
+# on rotation, the current audit.log is renamed to
+# audit-YYYY-MM-DDTHH-MM-SS.SSS.log and a fresh audit.log is created.
+# audit*.log matches both the current file and rotated siblings; the
+# in-loop existence filter copes with a no-match glob (which POSIX sh
+# leaves expanded as the literal pattern).
+audit_basename="$(basename "{{ audit_log_archive_local_path }}" .log)"
+(
+    cd "{{ audit_log_archive_local_dir }}"
+    set +e
+    # shellcheck disable=SC2086  # glob expansion is intentional
+    set -- ${audit_basename}*.log
+    set -e
+    files=""
+    for f in "$@"; do
+        [ -f "$f" ] && files="${files} $f"
+    done
+    if [ -z "${files}" ]; then
+        echo "audit-archive: no audit log files found in {{ audit_log_archive_local_dir }}" >&2
+        exit 1
+    fi
+    # shellcheck disable=SC2086
+    tar -czf "${archive}" ${files}
+)
+
+# Build optional argv pieces as shell variables so the put-object invocation
+# stays a single contiguous line — avoids the Jinja-leaves-blank-lines /
+# shell-line-continuation footgun.
+endpoint_arg=""
+{% if audit_log_s3_endpoint | length > 0 %}
+endpoint_arg="--endpoint-url={{ audit_log_s3_endpoint }}"
+{% endif %}
+
+{% if audit_log_sse_algorithm == 'aws:kms' and audit_log_kms_key_id | length > 0 %}
+sse_args="--server-side-encryption aws:kms --ssekms-key-id {{ audit_log_kms_key_id }}"
+{% else %}
+sse_args="--server-side-encryption {{ audit_log_sse_algorithm }}"
+{% endif %}
+
+lock_args=""
+{% if audit_log_object_lock_enabled %}
+retain_until="$(date -u -d '+{{ audit_log_object_lock_days }} days' +%Y-%m-%dT%H:%M:%SZ)"
+lock_args="--object-lock-mode {{ audit_log_object_lock_mode }} --object-lock-retain-until-date ${retain_until}"
+{% endif %}
+
+# shellcheck disable=SC2086  # word-splitting on the optional arg blocks is intentional
+aws --profile {{ audit_log_aws_profile }} s3api put-object \
+    ${endpoint_arg} \
+    --bucket {{ audit_log_s3_bucket }} \
+    --key "${key}" \
+    --body "${archive}" \
+    ${sse_args} \
+    ${lock_args} \
+    --metadata "source=k3s-audit,cluster={{ inventory_hostname_short | default('unknown') }},retention_class=audit-12mo"

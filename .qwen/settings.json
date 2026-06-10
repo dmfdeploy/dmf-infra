@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git rm *)",
+      "Bash(bin/run-playbook.sh *)",
+      "Bash(rm *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git push *)",
+      "Bash(python *)",
+      "Bash(python3 *)",
+      "Bash(pip3 show *)",
+      "Bash(cat *)",
+      "Bash(ls *)",
+      "Bash(find *)",
+      "Bash(.venv/bin/python *)",
+      "Bash(scripts/sync-version.sh *)",
+      "Bash(scripts/release.sh *)",
+      "Bash(scripts/verify-cluster.sh)"
+    ]
+  },
+  "$version": 3
+}

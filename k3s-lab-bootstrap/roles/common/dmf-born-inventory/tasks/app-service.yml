@@ -1,0 +1,192 @@
+---
+# Register a single app as an ipam.Service linked to the load-balancer device.
+# Called from the app-registration loop in main.yml.
+# Vars set by caller (per loop iteration):
+#   dmf_app_service_key         — app key (e.g. forgejo)
+#   dmf_app_service_display     — human name (e.g. Forgejo)
+#   dmf_app_service_exposure    — public | private
+#   dmf_app_service_oidc_client — OIDC client id, or '' when not applicable
+#   dmf_app_service_hostname    — FQDN, or '' when not applicable
+#
+# Each include_tasks iteration sets these vars fresh, so static register/
+# set_fact names are correct — no need (and no Ansible-supported way) to
+# name them per-app.
+
+# ── Monitoring + exposure tag lookups ──────────────────────────────────────
+- name: "Set effective monitoring tag for {{ dmf_app_service_key }}"
+  ansible.builtin.set_fact:
+    dmf_app_effective_monitoring_tag: >-
+      {{
+        dmf_born_inventory_app_monitoring_overrides[dmf_app_service_key].tag
+        | default(dmf_born_inventory_monitoring_tag)
+      }}
+
+- name: "Lookup monitoring tag for {{ dmf_app_service_key }}"
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/extras/tags/?name={{ dmf_app_effective_monitoring_tag | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_app_monitoring_tag_lookup
+
+- name: "Set monitoring tag id for {{ dmf_app_service_key }}"
+  ansible.builtin.set_fact:
+    dmf_app_monitoring_tag_id: >-
+      {{
+        (dmf_app_monitoring_tag_lookup.json.results
+         | default([]) | first | default({})).id | default(0)
+      }}
+
+- name: "Lookup exposure tag for {{ dmf_app_service_key }}"
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/extras/tags/?name=exposure%3A{{ dmf_app_service_exposure | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_app_exposure_tag_lookup
+
+- name: "Set exposure tag id for {{ dmf_app_service_key }}"
+  ansible.builtin.set_fact:
+    dmf_app_exposure_tag_id: >-
+      {{
+        (dmf_app_exposure_tag_lookup.json.results
+         | default([]) | first | default({})).id | default(0)
+      }}
+
+- name: "Set probe module for {{ dmf_app_service_key }}"
+  ansible.builtin.set_fact:
+    dmf_app_probe_module: >-
+      {{
+        dmf_born_inventory_app_monitoring_overrides[dmf_app_service_key].probe_module
+        | default(dmf_born_inventory_default_probe_module, true)
+        | default('')
+      }}
+
+# ── Core service lookup ────────────────────────────────────────────────────
+- name: "Lookup ipam.Service for {{ dmf_app_service_key }}"
+  ansible.builtin.uri:
+    # NetBox v4 changed Service from a direct device FK to a generic relation
+    # (parent_object_type + parent_object_id). The legacy `device_id=` filter
+    # may be ignored; filter by name only — app keys are unique within the
+    # cluster's services for our scope.
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/services/?name={{ dmf_app_service_key | urlencode }}"
+    method: GET
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    return_content: true
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_app_service_lookup
+
+- name: "Set service id for {{ dmf_app_service_key }}"
+  ansible.builtin.set_fact:
+    dmf_app_service_id: >-
+      {{
+        (dmf_app_service_lookup.json.results
+         | default([]) | first | default({})).id | default(0)
+      }}
+
+- name: "Create ipam.Service for {{ dmf_app_service_key }}"
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/services/"
+    method: POST
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      name: "{{ dmf_app_service_key }}"
+      protocol: tcp
+      ports: [443]
+      # NetBox v4: Service uses a generic relation, not a direct device FK.
+      parent_object_type: dcim.device
+      parent_object_id: "{{ dmf_born_inventory_load_balancer_id }}"
+      description: "{{ dmf_app_service_display }} on {{ dmf_born_inventory_env_name }}"
+      comments: >-
+        Hostname: {{ dmf_app_service_hostname | default('n/a') }}.
+        OIDC client: {{ dmf_app_service_oidc_client | default('n/a') }}.
+        Helm release: {{ dmf_app_service_key }}.
+        Exposure: {{ dmf_app_service_exposure }}.
+        Owner: svc/{{ dmf_app_service_key }}.
+      tags:
+        - "{{ dmf_born_inventory_tag_id }}"
+        - "{{ dmf_app_monitoring_tag_id }}"
+        - "{{ dmf_app_exposure_tag_id }}"
+    status_code: 201
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  register: dmf_app_service_create
+  when: dmf_app_service_id | int == 0
+
+- name: "Set service id from create response for {{ dmf_app_service_key }}"
+  ansible.builtin.set_fact:
+    dmf_app_service_id: "{{ dmf_app_service_create.json.id | default(0) }}"
+  when: dmf_app_service_id | int == 0
+
+- name: "Update ipam.Service for {{ dmf_app_service_key }}"
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/services/{{ dmf_app_service_id }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      description: "{{ dmf_app_service_display }} on {{ dmf_born_inventory_env_name }}"
+      comments: >-
+        Hostname: {{ dmf_app_service_hostname | default('n/a') }}.
+        OIDC client: {{ dmf_app_service_oidc_client | default('n/a') }}.
+        Helm release: {{ dmf_app_service_key }}.
+        Exposure: {{ dmf_app_service_exposure }}.
+        Owner: svc/{{ dmf_app_service_key }}.
+      tags:
+        - "{{ dmf_born_inventory_tag_id }}"
+        - "{{ dmf_app_monitoring_tag_id }}"
+        - "{{ dmf_app_exposure_tag_id }}"
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when: dmf_app_service_id | int > 0
+
+# ── Custom-field stamping (probe_module) ───────────────────────────────────
+# Stamp probe_module whenever the effective monitoring tag is monitoring:probe
+# (the default). Use per-app override probe_module if set, else the default
+# probe_module (http_2xx). Skipped for scrape-lane services.
+- name: "Stamp probe_module custom field on {{ dmf_app_service_key }}"
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/services/{{ dmf_app_service_id }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      custom_fields:
+        probe_module: "{{ dmf_app_probe_module }}"
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  when:
+    - dmf_app_service_id | int > 0
+    - dmf_app_effective_monitoring_tag == 'monitoring:probe'
+    - dmf_app_probe_module | length > 0
+
+# ── Custom-field stamping (cluster_service/namespace/port) ────────────────
+# Stamp ADR-0038 Amendment A cluster identity custom fields on every service
+# that has coordinates in dmf_born_inventory_app_cluster_coords. Enables the
+# dmf-promsd adapter to compose stable svc-DNS probe targets.
+- name: "Stamp cluster coords on {{ dmf_app_service_key }}"
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/services/{{ dmf_app_service_id }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      custom_fields:
+        cluster_service: "{{ dmf_app_cluster_svc.service }}"
+        cluster_namespace: "{{ dmf_app_cluster_svc.namespace }}"
+        cluster_port: "{{ dmf_app_cluster_svc.port }}"
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  vars:
+    dmf_app_cluster_svc: "{{ dmf_born_inventory_app_cluster_coords[dmf_app_service_key] }}"
+  when:
+    - dmf_app_service_id | int > 0
+    - dmf_app_cluster_svc is defined
+    - dmf_app_cluster_svc.service | default('') | length > 0
+    - dmf_app_cluster_svc.namespace | default('') | length > 0
+    - dmf_app_cluster_svc.port | default(0) | int > 0

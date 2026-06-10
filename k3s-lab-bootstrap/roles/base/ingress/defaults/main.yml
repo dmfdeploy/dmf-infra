@@ -1,0 +1,26 @@
+---
+cluster_ingress_mode: metallb-l2
+# Path to an env-supplied task file that installs the cloud provider's CCM or
+# LB integration. Only consulted when cluster_ingress_mode == 'cloud-native'.
+# Example: "{{ inventory_dir }}/../../tasks/hetzner/ccm.yml"
+cluster_ingress_provider_tasks: ""
+cluster_ingress_service_name: traefik
+cluster_ingress_service_namespace: kube-system
+# `single-node-servicelb` keeps k3s ServiceLB enabled and lets klipper-lb bind
+# normal 80/443 on a single node. It is the sandbox lane default.
+cluster_ingress_service_type: "{{ 'NodePort' if cluster_ingress_mode == 'nodeport-only' else 'LoadBalancer' }}"
+cluster_ingress_external_traffic_policy: Cluster
+cluster_ingress_service_annotations: {}
+cluster_ingress_load_balancer_class: ""
+
+# Entrypoint upload timeouts for the collapsed single Traefik
+# (single-node-servicelb / sandbox). There it also carries admin/registry
+# uploads (no traefik-private), and large image layers — e.g. awx-ee — exceed
+# Traefik's default 60s entrypoint readTimeout mid-chunk-upload, returning
+# HTTP 499. Mirror the traefik-private tuning (readTimeout/writeTimeout/
+# idleTimeout). Applied ONLY in single-node-servicelb mode; other modes route
+# those uploads through traefik-private and keep Traefik defaults here.
+ingress_upload_timeout_args:
+  - "--entrypoints.websecure.transport.respondingTimeouts.readTimeout=600s"
+  - "--entrypoints.websecure.transport.respondingTimeouts.writeTimeout=0s"
+  - "--entrypoints.websecure.transport.respondingTimeouts.idleTimeout=600s"

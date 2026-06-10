@@ -1,0 +1,150 @@
+---
+apiVersion: awx.ansible.com/v1beta1
+kind: AWX
+metadata:
+  name: {{ awx_instance_name }}
+  namespace: {{ awx_namespace }}
+spec:
+  # Admin configuration
+  admin_user: {{ awx_admin_user }}
+  admin_password_secret: {{ awx_instance_name }}-admin-password
+
+  # Service configuration
+  service_type: {{ awx_service_type }}
+
+  # PostgreSQL storage
+  postgres_storage_class: {{ awx_postgres_storage_class }}
+  postgres_storage_requirements:
+    requests:
+      storage: {{ awx_postgres_storage_size }}
+
+  # Fix Longhorn volume permissions for PostgreSQL (runs as UID 26)
+  postgres_data_volume_init: true
+
+  # Projects storage (for playbook storage)
+  projects_persistence: true
+  projects_storage_class: {{ awx_projects_storage_class }}
+  projects_storage_size: {{ awx_projects_storage_size }}
+  projects_storage_access_mode: {{ awx_projects_storage_access_mode }}
+
+  # Match AWX's own URL/cookie settings to the selected exposure model.
+  extra_settings:
+{% if awx_exposure | default('host') == 'host' %}
+    - setting: TOWER_URL_BASE
+      value: "'{{ awx_external_base_url }}'"
+    - setting: STATIC_URL
+      value: "'/static/'"
+    - setting: CSRF_COOKIE_PATH
+      value: "'/'"
+    - setting: SESSION_COOKIE_PATH
+      value: "'/'"
+{% else %}
+    - setting: TOWER_URL_BASE
+      value: "'{{ awx_path }}'"
+    - setting: STATIC_URL
+      value: "'{{ awx_path }}/static/'"
+    - setting: CSRF_COOKIE_PATH
+      value: "'{{ awx_path }}'"
+    - setting: SESSION_COOKIE_PATH
+      value: "'{{ awx_path }}'"
+{% endif %}
+{% if awx_max_forks is defined %}
+    # Global hard ceiling on forks per job (Settings → Jobs → "Maximum number
+    # of forks per job"). On the single-node sandbox profile this bounds the
+    # per-job fan-out so one playbook run can't oversubscribe a 10 GiB node.
+    # Lab/cloud leave awx_max_forks undefined → no global ceiling (the lane
+    # wants throughput). This is the ONLY job-resource knob reachable via
+    # extra_settings; see the InstanceGroup note at the bottom of this file.
+    - setting: MAX_FORKS
+      value: {{ awx_max_forks | int }}
+{% endif %}
+{% if awx_saml_enabled | default(false) | bool %}
+{% set _awx_saml_enabled_idps = {
+  awx_saml_idp_name: {
+    'entity_id': awx_saml_idp_entity_id,
+    'url': awx_saml_idp_sso_url,
+    'x509cert': awx_saml_idp_certificate_effective,
+    'attr_username': 'http://schemas.goauthentik.io/2021/02/saml/username',
+    'attr_user_permanent_id': 'http://schemas.goauthentik.io/2021/02/saml/uid',
+    'attr_email': 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress',
+    'attr_first_name': 'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name'
+  }
+} %}
+    - setting: AUTHENTICATION_BACKENDS
+      value: ["awx.sso.backends.TACACSPlusBackend", "awx.main.backends.AWXModelBackend", "social_core.backends.saml.SAMLAuth"]
+    - setting: SOCIAL_AUTH_SAML_SP_ENTITY_ID
+      value: "'{{ awx_saml_sp_entity_id }}'"
+    - setting: SOCIAL_AUTH_SAML_ORG_INFO
+      value: {{ awx_saml_org_info | to_json }}
+    - setting: SOCIAL_AUTH_SAML_TECHNICAL_CONTACT
+      value: {{ awx_saml_technical_contact | to_json }}
+    - setting: SOCIAL_AUTH_SAML_SUPPORT_CONTACT
+      value: {{ awx_saml_support_contact | to_json }}
+    - setting: SOCIAL_AUTH_SAML_ENABLED_IDPS
+      value: {{ _awx_saml_enabled_idps | to_json }}
+    - setting: SOCIAL_AUTH_SAML_USER_FLAGS_BY_ATTR
+      value: {{ awx_saml_user_flags_by_attr | to_json }}
+{% if awx_saml_explicit_pipeline | default(false) | bool %}
+    - setting: SOCIAL_AUTH_PIPELINE
+      value: {{ awx_saml_social_auth_pipeline | to_json }}
+{% endif %}
+{% if awx_saml_login_redirect_override | default('') | length > 0 %}
+    - setting: LOGIN_REDIRECT_OVERRIDE
+      value: "'{{ awx_saml_login_redirect_override }}'"
+{% endif %}
+{% endif %}
+
+  # Disable built-in ingress (we use Traefik IngressRoute)
+  ingress_type: none
+
+  # Scheduling and resources
+{% if awx_web_resource_requirements is defined %}
+  web_resource_requirements:
+{{ awx_web_resource_requirements | to_nice_yaml(indent=2) | indent(4, true) }}
+{% endif %}
+{% if awx_task_resource_requirements is defined %}
+  task_resource_requirements:
+{{ awx_task_resource_requirements | to_nice_yaml(indent=2) | indent(4, true) }}
+{% endif %}
+{% if awx_postgres_resource_requirements is defined %}
+  postgres_resource_requirements:
+{{ awx_postgres_resource_requirements | to_nice_yaml(indent=2) | indent(4, true) }}
+{% endif %}
+{% if awx_web_affinity is defined %}
+  web_affinity:
+{{ awx_web_affinity | to_nice_yaml(indent=2) | indent(4, true) }}
+{% endif %}
+{% if awx_task_affinity is defined %}
+  task_affinity:
+{{ awx_task_affinity | to_nice_yaml(indent=2) | indent(4, true) }}
+{% endif %}
+
+# DEFERRED (2026-05-06): the spec.ee_pod_spec_override field below is NOT a
+# valid AWX operator CRD field. The k8s apply succeeds (returns ok) but the
+# field is silently dropped — the AWX CR warns "unknown field
+# spec.ee_pod_spec_override". Setting EE pod spec must instead PATCH the
+# InstanceGroup pod_spec_override via the AWX REST API
+# (/api/v2/instance_groups/{id}/) — the AWX CR has no stable field for this.
+#
+# Media catalog launchers now use ADR-0025 Container Groups in
+# awx-integration. 693-class infrastructure plays continue to use ADR-0016
+# Path A for control-node SSH. See:
+#   docs/plans/Move 1 Gate 2 - Pivot to Path A for Catalog Launchers 2026-05-06.md
+#   docs/decisions/0012-configure-stage-distinct-from-provision.md (impl note)
+#
+# When/if this is revisited, write a new task in awx-integration that PATCHes
+# the InstanceGroup directly via the AWX API. Do NOT re-enable this fragment.
+#
+# SAME BLIND SPOT — job concurrency (WP1S Phase 3, single-node fit):
+# `max_concurrent_jobs` and `max_forks` are fields on the InstanceGroup /
+# ContainerGroup, NOT AWX Django settings — so they CANNOT be set via
+# extra_settings (SCHEDULE_MAX_JOBS / DEFAULT_EXECUTION_QUEUE_MAX_CONCURRENT_JOBS
+# are not real AWX settings; verified against AWX 24.6 docs 2026-05-29). The
+# per-job fork ceiling we CAN set globally is MAX_FORKS (a real Django setting,
+# wired above via awx_max_forks). A true concurrency cap would also need the
+# /api/v2/instance_groups/{id}/ PATCH in awx-integration. DEFERRED: the sandbox
+# catalog loop is sequential, so a concurrency cap rarely binds. Revisit only
+# if WP1S §8 gate #8 (resource sanity) actually bites during a rollout.
+#
+#   ee_pod_spec_override: |
+# {{ '{{ awx_ee_pod_spec_override | indent(4, true) }}' }}

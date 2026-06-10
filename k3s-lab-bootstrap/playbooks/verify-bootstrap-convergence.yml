@@ -1,0 +1,433 @@
+---
+# Assertion-only verifier for ADR-0028 D2.
+#
+# A bootstrap run is not complete until temporary bootstrap authority has
+# converged to one of three states:
+#   sealed   - the credential is in steady-state custody
+#   rotated  - the bootstrap copy is no longer valid
+#   retained - the credential remains trusted, with a reason and revisit gate
+#
+# This verifier checks live state where the current implementation has a
+# concrete source of truth, and records retained/documentation-only items where
+# the helper writer-side migration has not landed yet.
+#
+# Run:
+#   bin/run-playbook.sh <env> \
+#     ../dmf-infra/k3s-lab-bootstrap/playbooks/verify-bootstrap-convergence.yml
+#
+- name: Verify ADR-0028 bootstrap convergence
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  tags:
+    - vertical-security
+    - verify-bootstrap-convergence
+
+  vars:
+    verify_bootstrap_convergence_namespace: "{{ openbao_namespace | default('openbao') }}"
+    verify_bootstrap_convergence_pod_selector: "app.kubernetes.io/name=openbao"
+    verify_bootstrap_convergence_breakglass_file: >-
+      {{
+        eso_openbao_breakglass_file
+        | default((openbao_key_path | default('')) ~ '.json', true)
+      }}
+    verify_bootstrap_convergence_allowed_outcomes:
+      - sealed
+      - rotated
+      - retained
+
+    verify_bootstrap_convergence_core_items:
+      - id: openbao_root_token
+        outcome: rotated
+        check_kind: breakglass_key_absent
+        reason: >-
+          The root token is bootstrap-only authority; the openbao role revokes
+          it after first init and the break-glass JSON must not retain it.
+      - id: openbao_shamir_quorum
+        outcome: retained
+        check_kind: openbao_shamir_initialized
+        reason: >-
+          ADR-0009 deliberately retains Shamir recovery material for disaster
+          recovery; D2 records that retention instead of treating it as drift.
+        revisit_gate: >-
+          Revisit when the tiered unseal posture replaces the workstation
+          automation quorum with a narrower or hardware-backed mechanism.
+
+    verify_bootstrap_convergence_userpass_checks:
+      - id: openbao_ops_admin_userpass
+        outcome: retained
+        check_kind: openbao_userpass_login
+        mode: operator
+        reason: >-
+          ops-admin is steady-state operator authority for app secret reads and
+          writes, retained in the break-glass JSON by design.
+        revisit_gate: >-
+          Rotate through vertical-orchestration/120-ops-admin-rotation.yml or
+          replace with stronger operator-bound authentication.
+      - id: openbao_policy_reconciler_userpass
+        outcome: retained
+        check_kind: openbao_userpass_login
+        mode: policy-reconciler
+        reason: >-
+          policy-reconciler is retained as narrow policy-as-code authority so
+          policies can be reconciled after root token disposal.
+        revisit_gate: >-
+          Revisit if policy reconciliation moves fully in-cluster with short
+          lived, auditable workload identity.
+      - id: openbao_approle_reconciler_userpass
+        outcome: retained
+        check_kind: openbao_userpass_login
+        mode: approle-reconciler
+        reason: >-
+          approle-reconciler is retained as narrow AppRole reconciliation
+          authority after root token disposal.
+        revisit_gate: >-
+          Revisit if AppRole reconciliation moves fully in-cluster with short
+          lived, auditable workload identity.
+
+    verify_bootstrap_convergence_openbao_secret_checks:
+      - id: authentik_admin
+        outcome: sealed
+        check_kind: openbao_secret_present
+        path: secret/apps/authentik/admin
+        expected_username: akadmin
+        reason: >-
+          The Authentik bootstrap admin credential is materialized through
+          common/app-admin-facts and lives in OpenBao steady-state custody.
+      - id: authentik_breakglass
+        outcome: sealed
+        check_kind: openbao_secret_present
+        path: secret/apps/authentik/breakglass
+        expected_username: break-glass
+        reason: >-
+          The Authentik emergency account credential is materialized through
+          common/app-admin-facts and lives in OpenBao steady-state custody.
+      - id: zot_admin
+        outcome: sealed
+        check_kind: openbao_secret_present
+        path: secret/apps/zot/admin
+        expected_username: admin
+        reason: >-
+          The Zot htpasswd admin credential is promoted from bootstrap-only
+          registry auth into OpenBao by vertical-security/191-zot-oidc.yml.
+      - id: zot_service
+        outcome: sealed
+        check_kind: openbao_secret_present
+        path: secret/apps/zot/service
+        expected_username: zot-svc
+        reason: >-
+          The Zot zot-svc machine-write service credential (ADR-0033) is held in
+          OpenBao steady-state custody (C3); seed-bao writes it from the bundle,
+          and playbook 630 + zot-mirror authenticate as zot-svc rather than the
+          admin break-glass.
+
+    verify_bootstrap_convergence_documentation_records:
+      - id: awx_admin
+        outcome: retained
+        check_kind: documentation_only
+        reason: >-
+          AWX admin material is not yet a common/app-admin-facts materialized
+          OpenBao path; the current reader path uses app-specific resolution.
+        revisit_gate: >-
+          Unified app-admin helper plan v3 writer-side migration for AWX.
+      - id: netbox_admin
+        outcome: retained
+        check_kind: documentation_only
+        reason: >-
+          NetBox admin material is not yet a common/app-admin-facts materialized
+          OpenBao path; NetBox SOT consumers still resolve the chart identity.
+        revisit_gate: >-
+          Unified app-admin helper plan v3 writer-side migration for NetBox.
+      - id: forgejo_admin
+        outcome: retained
+        check_kind: documentation_only
+        reason: >-
+          Forgejo admin material is live-read only today; writing
+          secret/apps/forgejo/admin is still a helper-plan follow-on.
+        revisit_gate: >-
+          Unified app-admin helper plan v3 writer-side migration for Forgejo.
+      - id: pre_bao_bootstrap_bundle
+        outcome: retained
+        check_kind: documentation_only
+        reason: >-
+          The pre-Bao workstation bundle remains part of the experiment-phase
+          recovery surface until the custody split is fully tightened.
+        revisit_gate: >-
+          ADR-0028 D1 follow-on: remove workstation bundle as a credential
+          store after OpenBao plus the recovery kit are authoritative.
+
+    verify_bootstrap_convergence_items: >-
+      {{
+        verify_bootstrap_convergence_core_items
+        + verify_bootstrap_convergence_userpass_checks
+        + verify_bootstrap_convergence_openbao_secret_checks
+        + verify_bootstrap_convergence_documentation_records
+      }}
+    verify_bootstrap_convergence_required_breakglass_scalars:
+      - ops_admin_username
+      - ops_admin_password
+      - policy_reconciler_username
+      - policy_reconciler_password
+      - approle_reconciler_username
+      - approle_reconciler_password
+      - eso_role_id
+      - eso_secret_id
+      - born_inventory_role_id
+      - born_inventory_secret_id
+      - shamir_threshold
+      - shamir_shares
+
+  tasks:
+    # ------------------------------------------------------------------
+    # Step 1 - validate the convergence inventory itself
+    # ------------------------------------------------------------------
+    - name: Assert convergence inventory is complete
+      ansible.builtin.assert:
+        that:
+          - item.id | default('') | length > 0
+          - item.outcome in verify_bootstrap_convergence_allowed_outcomes
+          - item.check_kind | default('') | length > 0
+          - item.reason | default('') | length > 0
+          - >-
+            item.outcome != 'retained'
+            or (item.revisit_gate | default('') | length > 0)
+        fail_msg: >-
+          Invalid bootstrap convergence record: {{ item | to_nice_json }}.
+          Every record must have id, outcome, check_kind, reason, and retained
+          records must include a revisit_gate.
+      loop: "{{ verify_bootstrap_convergence_items }}"
+      loop_control:
+        label: "{{ item.id | default('missing-id') }}"
+
+    - name: Assert break-glass file path is configured
+      ansible.builtin.assert:
+        that:
+          - verify_bootstrap_convergence_breakglass_file | length > 0
+        fail_msg: >-
+          verify_bootstrap_convergence_breakglass_file is empty. Set
+          eso_openbao_breakglass_file or openbao_key_path before running this
+          verifier.
+
+    - name: Load OpenBao break-glass JSON from operator host
+      ansible.builtin.set_fact:
+        _bootstrap_convergence_breakglass: >-
+          {{ lookup('file', verify_bootstrap_convergence_breakglass_file) | from_json }}
+      delegate_to: localhost
+      become: false
+      no_log: true
+
+    # ------------------------------------------------------------------
+    # Step 2 - OpenBao live state and Shamir posture
+    # ------------------------------------------------------------------
+    - name: Discover OpenBao pod
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Pod
+        namespace: "{{ verify_bootstrap_convergence_namespace }}"
+        label_selectors:
+          - "{{ verify_bootstrap_convergence_pod_selector }}"
+      register: _bootstrap_convergence_pod_info
+
+    - name: Assert OpenBao pod exists
+      ansible.builtin.assert:
+        that:
+          - _bootstrap_convergence_pod_info.resources | length > 0
+        fail_msg: >-
+          Could not find an OpenBao pod in namespace
+          {{ verify_bootstrap_convergence_namespace }} with selector
+          {{ verify_bootstrap_convergence_pod_selector }}.
+
+    - name: Set OpenBao pod fact
+      ansible.builtin.set_fact:
+        _bootstrap_convergence_pod: "{{ _bootstrap_convergence_pod_info.resources[0].metadata.name }}"
+
+    - name: Read OpenBao Shamir status
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ verify_bootstrap_convergence_namespace }}"
+          - exec
+          - "{{ _bootstrap_convergence_pod }}"
+          - --
+          - sh
+          - -c
+          - >-
+            BAO_ADDR=https://127.0.0.1:8200
+            BAO_CACERT=/openbao/config/tls/tls.crt
+            bao status -format=json
+      register: _bootstrap_convergence_status_raw
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Parse OpenBao Shamir status
+      ansible.builtin.set_fact:
+        _bootstrap_convergence_status: "{{ _bootstrap_convergence_status_raw.stdout | from_json }}"
+      when: _bootstrap_convergence_status_raw.stdout | default('') | length > 0
+      no_log: true
+
+    - name: Assert OpenBao has converged to initialized and unsealed Shamir state
+      ansible.builtin.assert:
+        that:
+          - _bootstrap_convergence_status is defined
+          - _bootstrap_convergence_status.initialized | default(false) | bool
+          - not (_bootstrap_convergence_status.sealed | default(true) | bool)
+          - >-
+            _bootstrap_convergence_status.t | default(0) | int
+            == _bootstrap_convergence_breakglass.shamir_threshold | default(openbao_shamir_threshold | default(3)) | int
+          - >-
+            _bootstrap_convergence_status.n | default(0) | int
+            == _bootstrap_convergence_breakglass.shamir_shares | default(openbao_shamir_shares | default(5)) | int
+        fail_msg: >-
+          OpenBao has not converged to the expected initialized/unsealed
+          Shamir posture. Confirm OpenBao is unsealed and the break-glass JSON
+          matches the current cluster before continuing.
+
+    - name: Assert retained Shamir quorum material is recorded
+      ansible.builtin.assert:
+        that:
+          - _bootstrap_convergence_breakglass.unseal_keys_hex | default([]) | length
+            >= _bootstrap_convergence_breakglass.shamir_threshold | default(openbao_shamir_threshold | default(3)) | int
+        fail_msg: >-
+          Break-glass JSON does not contain enough Shamir shares for the
+          recorded threshold. Re-run OpenBao bootstrap or repair the recovery
+          material before marking bootstrap convergence complete.
+      no_log: true
+
+    # ------------------------------------------------------------------
+    # Step 3 - disposed/retained break-glass material checks
+    # ------------------------------------------------------------------
+    - name: Assert root token is not retained
+      ansible.builtin.assert:
+        that:
+          - openbao_dispose_root_token | default(true) | bool
+          - _bootstrap_convergence_breakglass.root_token is not defined
+          - _bootstrap_convergence_breakglass.initial_root_token is not defined
+          - _bootstrap_convergence_breakglass.openbao_root_token is not defined
+        fail_msg: >-
+          ADR-0028 D2 convergence failed: root token material is still retained
+          or root-token disposal is disabled. Revoke/remove bootstrap root
+          authority before completing bootstrap.
+      no_log: true
+
+    - name: Assert required retained break-glass scalar fields exist
+      ansible.builtin.assert:
+        that:
+          - _bootstrap_convergence_breakglass[item] is defined
+          - _bootstrap_convergence_breakglass[item] | string | length > 0
+        fail_msg: >-
+          Break-glass JSON is missing required retained field '{{ item }}'.
+          Re-run the OpenBao role to materialize the steady-state non-root
+          authorities before running the convergence gate.
+      loop: "{{ verify_bootstrap_convergence_required_breakglass_scalars }}"
+      loop_control:
+        label: "{{ item }}"
+      no_log: true
+
+    # ------------------------------------------------------------------
+    # Step 4 - retained non-root OpenBao identities still authenticate
+    # ------------------------------------------------------------------
+    - name: Establish OpenBao operator session for retained identity and app secret probes
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_mode: operator
+        openbao_session_namespace: "{{ verify_bootstrap_convergence_namespace }}"
+        openbao_session_breakglass_file: "{{ verify_bootstrap_convergence_breakglass_file }}"
+
+    - name: Capture OpenBao operator token for app secret probes
+      ansible.builtin.set_fact:
+        _bootstrap_convergence_operator_token: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    - name: Establish OpenBao session for retained non-operator userpass identity
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_mode: "{{ item.mode }}"
+        openbao_session_namespace: "{{ verify_bootstrap_convergence_namespace }}"
+        openbao_session_breakglass_file: "{{ verify_bootstrap_convergence_breakglass_file }}"
+      loop: >-
+        {{
+          verify_bootstrap_convergence_userpass_checks
+          | rejectattr('mode', 'equalto', 'operator')
+          | list
+        }}
+      loop_control:
+        label: "{{ item.id }}"
+
+    # ------------------------------------------------------------------
+    # Step 5 - app-admin credentials already sealed into OpenBao
+    # ------------------------------------------------------------------
+    - name: Read sealed app-admin secrets from OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ verify_bootstrap_convergence_namespace }}
+          exec -i {{ _bootstrap_convergence_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -format=json {{ item.path | quote }}'
+      environment:
+        OPENBAO_TOKEN: "{{ _bootstrap_convergence_operator_token }}"
+      register: _bootstrap_convergence_secret_results
+      changed_when: false
+      failed_when: false
+      no_log: true
+      loop: "{{ verify_bootstrap_convergence_openbao_secret_checks }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Assert sealed app-admin secrets are present and source-atomic
+      ansible.builtin.assert:
+        that:
+          - item.rc | default(1) == 0
+          - >-
+            item.rc | default(1) == 0
+            and (
+              (item.stdout | default('{}', true) | from_json).data.data.username
+              | default('')
+            ) == item.item.expected_username
+          - >-
+            item.rc | default(1) == 0
+            and (
+              (item.stdout | default('{}', true) | from_json).data.data.password
+              | default('')
+              | length
+            ) > 0
+        fail_msg: >-
+          ADR-0028 D2 convergence failed for {{ item.item.id }} at
+          {{ item.item.path }}. The expected app-admin credential is not
+          sealed in OpenBao yet.
+      loop: "{{ _bootstrap_convergence_secret_results.results }}"
+      loop_control:
+        label: "{{ item.item.id }}"
+      no_log: true
+
+    # ------------------------------------------------------------------
+    # Step 6 - retained/documentation-only records with revisit gates
+    # ------------------------------------------------------------------
+    - name: Report retained documentation-only convergence records
+      ansible.builtin.debug:
+        msg: >-
+          {{ item.id }}: retained. {{ item.reason }}
+          Revisit gate: {{ item.revisit_gate }}
+      loop: "{{ verify_bootstrap_convergence_documentation_records }}"
+      loop_control:
+        label: "{{ item.id }}"
+
+    - name: Report ADR-0028 D2 convergence summary
+      ansible.builtin.debug:
+        msg:
+          - "ADR-0028 D2 bootstrap convergence gate passed."
+          - >-
+            Outcomes:
+            sealed={{ verify_bootstrap_convergence_items | selectattr('outcome', 'equalto', 'sealed') | list | length }},
+            rotated={{ verify_bootstrap_convergence_items | selectattr('outcome', 'equalto', 'rotated') | list | length }},
+            retained={{ verify_bootstrap_convergence_items | selectattr('outcome', 'equalto', 'retained') | list | length }}.

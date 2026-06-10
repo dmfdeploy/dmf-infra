@@ -1,0 +1,53 @@
+---
+ingress_private_namespace: traefik-private
+ingress_private_release_name: traefik-private
+ingress_private_ingressclass: traefik-private
+ingress_private_nodeport: 30443
+# Pin to the last chart major that honors the top-level `service.type` key in
+# the values block below. Traefik chart 40.x restructured `service.*` and now
+# silently renders LoadBalancer regardless of `service.type: NodePort`, which
+# breaks this role's whole point (NodePort reachable via Tailscale). Bumping
+# this pin requires migrating the values block to the new schema — see the
+# render-time assertion in tasks/main.yml that fails fast if Service type
+# drifts from NodePort.
+ingress_private_chart_version: "39.0.9"
+ingress_private_chart_ref: traefik/traefik
+ingress_private_helm_repo: https://traefik.github.io/charts
+# The bundled k3s Traefik install owns the cluster-scoped Traefik CRDs. The
+# private release is a second controller instance and should not attempt to
+# install or upgrade CRDs, especially Gateway API CRDs from newer chart releases.
+ingress_private_skip_crds: true
+# Reruns after Tailscale is installed may not have working outbound DNS because
+# Aliyun metadata/DNS uses 100.100.0.0/16, which overlaps Tailscale's CGNAT
+# address space. Avoid network-backed Helm operations when the release already
+# exists and readiness checks can verify it locally.
+ingress_private_force_helm_upgrade: false
+
+# Traefik websecure entrypoint timeouts. The defaults below are generous on
+# purpose — the private Traefik fronts the cluster-internal Zot registry, and
+# operators routinely push large container images (awx-ee:0.1.0 ships ~535 MB,
+# largest single layer ~100 MB+) through a workstation → Tailscale → traefik-
+# private → Zot → Longhorn path. Traefik's chart default is `readTimeout: 60s`,
+# which is too tight for any chunk that takes more than a minute to upload OR
+# for Zot/Longhorn to ack a chunked write — both observed on g2r6-foa9
+# (2026-05-21, Stage 4b 630-zot-seed-platform.yml) returning 504 Gateway
+# Timeout then 499 Client Closed Request on the same large awx-ee layer.
+#
+# Values are passed to the Helm release as `--entrypoints.websecure.transport.respondingTimeouts.*`
+# additional arguments so we don't depend on the chart's `ports.<ep>.transport`
+# schema staying stable across chart majors.
+#
+#   readTimeout: how long the entrypoint waits for the client to finish sending
+#                a request body. Hit on slow upstream + big chunk uploads.
+#   writeTimeout: how long the entrypoint can spend writing a response.
+#                 0 = unlimited; safe for streaming registry GET of large blobs.
+#   idleTimeout: keep-alive interval on idle connections. 0 disables. 600s is
+#                a balance — keeps long-running registry sessions alive without
+#                wedging deadbeat clients.
+#
+# Production / hardening posture should re-evaluate these (especially
+# writeTimeout=0) once on-call rotation + observability are in place.
+ingress_private_responding_timeouts:
+  readTimeout: "600s"
+  writeTimeout: "0s"
+  idleTimeout: "600s"

@@ -1,0 +1,186 @@
+---
+netbox:
+  # NetBox v4.5.0 via netbox-community chart 7.3.0
+
+  superuser:
+    name: {{ netbox_superuser_username | quote }}
+    email: {{ netbox_superuser_email }}
+    password: {{ netbox_superuser_password }}
+    apiToken: {{ netbox_superuser_api_token_effective }}
+
+  # Base path for running behind reverse proxy (only used in path mode)
+{% if netbox_exposure | default('host') == 'path' %}
+  basePath: {{ netbox_path }}
+{% endif %}
+
+  # Extra config for API_TOKEN_PEPPERS (required for v2 API tokens in NetBox v4.x)
+  secretKey: {{ netbox_secret_key_effective }}
+  extraConfig:
+    - secret:
+        secretName: netbox-extra-config
+    - values:
+        SOCIAL_AUTH_OIDC_SCOPE:
+          - openid
+          - profile
+          - email
+          - {{ netbox_oidc_groups_scope_name }}
+        SOCIAL_AUTH_PIPELINE:
+          - social_core.pipeline.social_auth.social_details
+          - social_core.pipeline.social_auth.social_uid
+          - social_core.pipeline.social_auth.auth_allowed
+          - social_core.pipeline.social_auth.social_user
+          - social_core.pipeline.social_auth.associate_by_email
+          - social_core.pipeline.user.get_username
+          - social_core.pipeline.user.create_user
+          - social_core.pipeline.social_auth.associate_user
+          - social_core.pipeline.social_auth.load_extra_data
+          - social_core.pipeline.user.user_details
+          - netbox.sso_pipeline_roles.set_role
+
+  extraDeploy:
+    - |
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: {{ netbox_sso_pipeline_configmap_name }}
+        namespace: {{ netbox_namespace }}
+      data:
+        sso_pipeline_roles.py: |
+          def set_role(response, user, backend, *args, **kwargs):
+              groups = response.get("groups") or []
+              if isinstance(groups, str):
+                  groups = [groups]
+
+              is_admin = {{ netbox_oidc_admin_group | to_json }} in groups
+              user.is_superuser = is_admin
+              user.is_staff = is_admin
+              user.save()
+
+  extraVolumes:
+    - name: netbox-sso-pipeline-roles
+      configMap:
+        name: {{ netbox_sso_pipeline_configmap_name }}
+{% if netbox_local_ca_trust_enabled | bool %}
+    - name: dmf-local-ca
+      configMap:
+        name: {{ netbox_local_ca_configmap }}
+{% endif %}
+
+  extraVolumeMounts:
+    - name: netbox-sso-pipeline-roles
+      mountPath: {{ netbox_sso_pipeline_mount_path }}
+      subPath: sso_pipeline_roles.py
+      readOnly: true
+{% if netbox_local_ca_trust_enabled | bool %}
+    - name: dmf-local-ca
+      mountPath: {{ netbox_local_ca_mount_path }}
+      subPath: ca.crt
+      readOnly: true
+{% endif %}
+
+  # Disable probes - chart has bug constructing basePath in probe URLs
+  startupProbe:
+    enabled: false
+  readinessProbe:
+    enabled: false
+  livenessProbe:
+    enabled: false
+
+  # NGINX Unit worker config - increase idle_timeout to prevent cold starts
+  # Full config required (partial merge not supported)
+  overrideUnitConfig:
+    listeners:
+      "0.0.0.0:8080":
+        pass: routes/main
+        forwarded:
+          client_ip: X-Forwarded-For
+          protocol: X-Forwarded-Proto
+          source:
+            - "10.0.0.0/8"
+            - "172.16.0.0/12"
+            - "192.168.0.0/16"
+      "0.0.0.0:8081":
+        pass: routes/status
+        forwarded:
+          client_ip: X-Forwarded-For
+          protocol: X-Forwarded-Proto
+          source:
+            - "10.0.0.0/8"
+            - "172.16.0.0/12"
+            - "192.168.0.0/16"
+    routes:
+      main:
+        - match:
+            uri: "/static/*"
+          action:
+            share: "/opt/netbox/netbox${uri}"
+        - action:
+            pass: applications/netbox
+      status:
+        - match:
+            uri: "/status/*"
+          action:
+            proxy: "http://unix:/opt/unit/unit.sock"
+    applications:
+      netbox:
+        type: python 3
+        path: /opt/netbox/netbox/
+        module: netbox.wsgi
+        home: /opt/netbox/venv
+{% if netbox_local_ca_trust_enabled | bool %}
+        # Local-CA lane: NGINX Unit does NOT inherit the container environment,
+        # so the OIDC client (python-social-auth -> requests/urllib) only trusts
+        # the in-cluster CA if these are set in the Unit app environment. The CA
+        # file is mounted via extraVolumeMounts above. Without this, server-side
+        # OIDC discovery to the Authentik public host 500s (CERTIFICATE_VERIFY_FAILED).
+        environment:
+          REQUESTS_CA_BUNDLE: {{ netbox_local_ca_mount_path | to_json }}
+          SSL_CERT_FILE: {{ netbox_local_ca_mount_path | to_json }}
+{% endif %}
+        processes:
+          max: 4
+          spare: 2
+          idle_timeout: 3600
+    access_log: /dev/stdout
+    settings:
+      http:
+        max_body_size: 104857600
+
+  # Media persistence (shared between netbox and worker)
+  persistence:
+    enabled: true
+    storageClass: {{ netbox_storage_class }}
+    size: {{ netbox_storage_size }}
+    accessMode: {{ netbox_media_access_mode }}
+
+  # PostgreSQL subchart
+  postgresql:
+    enabled: true
+    auth:
+      username: netbox
+      database: netbox
+      password: {{ netbox_db_password_effective }}
+      postgresPassword: {{ netbox_db_password_effective }}
+    primary:
+      persistence:
+        enabled: true
+        storageClass: {{ netbox_storage_class }}
+        size: {{ netbox_storage_size }}
+
+  # Valkey (Redis fork) subchart
+  valkey:
+    enabled: true
+    image:
+      registry: docker.io
+      repository: bitnami/valkey
+      tag: latest
+    auth:
+      enabled: true
+      password: {{ netbox_valkey_password_effective }}
+    primary:
+      persistence:
+        enabled: true
+        storageClass: {{ netbox_storage_class }}
+        size: {{ netbox_storage_size }}
+    replica:
+      replicaCount: 0

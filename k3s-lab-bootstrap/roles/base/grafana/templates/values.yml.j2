@@ -1,0 +1,78 @@
+---
+adminPassword: {{ grafana_admin_password }}
+
+extraInitContainers: []
+{% if grafana_local_ca_trust_enabled | bool %}
+# Local-CA lane: publish + mount dmf-local-ca so Grafana's Go OAuth client
+# trusts the Authentik public-host cert during server-side token/userinfo
+# exchange. Mount the single ca.crt key via subPath so the existing
+# /etc/ssl/certs directory in the Alpine image is preserved. SSL_CERT_FILE is
+# the image-agnostic primary (Alpine's Go cert-dir scan is not guaranteed to
+# pick up an extra file vs Debian/Zot).
+extraConfigmapMounts:
+  - name: dmf-local-ca
+    mountPath: {{ grafana_local_ca_mount_path | to_json }}
+    subPath: ca.crt
+    configMap: {{ grafana_local_ca_configmap | to_json }}
+    readOnly: true
+env:
+  SSL_CERT_FILE: {{ grafana_local_ca_mount_path | to_json }}
+{% endif %}
+extraVolumes: []
+{% if grafana_oidc_enabled | bool %}
+envFromSecret: {{ grafana_oidc_secret_name | to_json }}
+{% endif %}
+
+deploymentStrategy:
+  type: Recreate
+
+persistence:
+  enabled: true
+  size: {{ grafana_storage_size }}
+  storageClassName: {{ grafana_storage_class }}
+
+{% if grafana_exposure | default('host') == 'path' %}
+grafana.ini:
+  server:
+    root_url: "%(protocol)s://%(domain)s{{ grafana_path }}"
+    serve_from_sub_path: true
+{% else %}
+grafana.ini:
+  server:
+    root_url: "https://{{ grafana_host }}/"
+    serve_from_sub_path: false
+{% endif %}
+
+datasources:
+  datasources.yaml:
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        url: http://prometheus-server.{{ grafana_namespace }}.svc.cluster.local/prometheus
+        access: proxy
+        isDefault: true
+      - name: Loki
+        type: loki
+        url: http://loki-gateway.{{ grafana_namespace }}.svc.cluster.local
+        access: proxy
+
+# Dashboard providers - only custom dashboards from ConfigMap
+dashboardProviders:
+  dashboardproviders.yaml:
+    apiVersion: 1
+    providers:
+      - name: custom
+        orgId: 1
+        folder: Kubernetes
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/custom
+
+dashboardsConfigMaps:
+  custom: grafana-custom-dashboards
+
+# Dashboards from https://github.com/dotdc/grafana-dashboards-kubernetes
+# Adapted for single-cluster k3s environment

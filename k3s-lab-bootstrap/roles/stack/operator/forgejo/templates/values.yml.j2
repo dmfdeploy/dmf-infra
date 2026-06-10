@@ -1,0 +1,86 @@
+fullnameOverride: forgejo
+
+image:
+  rootless: true
+
+service:
+  http:
+    type: ClusterIP
+    port: 3000
+  ssh:
+    type: ClusterIP
+    port: 22
+
+ingress:
+  enabled: true
+  className: {{ forgejo_ingress_class_name | to_json }}
+  annotations:
+{% for key, value in (forgejo_ingress_annotations | dictsort) %}
+    {{ key }}: {{ value | to_json }}
+{% endfor %}
+  hosts:
+    - host: {{ forgejo_external_host | to_json }}
+      paths:
+        - path: "/"
+          pathType: Prefix
+          port: http
+
+persistence:
+  enabled: true
+  create: true
+  claimName: {{ forgejo_pvc_name | to_json }}
+  size: {{ forgejo_storage_size | to_json }}
+  storageClass: {{ forgejo_storage_class | to_json }}
+
+gitea:
+  admin:
+    username: {{ forgejo_admin_username | to_json }}
+    password: {{ forgejo_admin_password | to_json }}
+    email: {{ forgejo_admin_email | to_json }}
+    passwordMode: keepUpdated
+  config:
+    server:
+      ROOT_URL: {{ forgejo_root_url | to_json }}
+      DOMAIN: {{ forgejo_external_host | to_json }}
+      SSH_DOMAIN: {{ forgejo_external_host | to_json }}
+      HTTP_PORT: 3000
+      PROTOCOL: http
+      OFFLINE_MODE: false
+    openid:
+      ENABLE_OPENID_SIGNIN: true
+      ENABLE_OPENID_SIGNUP: true
+    oauth2_client:
+      ENABLE_AUTO_REGISTRATION: {{ 'true' if forgejo_oauth_enable_auto_registration | bool else 'false' }}
+      ACCOUNT_LINKING: {{ forgejo_oauth_account_linking | to_json }}
+      USERNAME: {{ forgejo_oauth_username_source | to_json }}
+      UPDATE_AVATAR: {{ 'true' if forgejo_oauth_update_avatar | bool else 'false' }}
+      OPENID_CONNECT_SCOPES: {{ forgejo_oauth_openid_scopes | to_json }}
+  oauth:
+    - name: {{ forgejo_oauth_authentik_name | to_json }}
+      provider: openidConnect
+      existingSecret: {{ forgejo_oauth_secret_name | to_json }}
+      autoDiscoverUrl: {{ forgejo_oauth_auto_discover_url | to_json }}
+      groupClaimName: {{ forgejo_oauth_groups_claim_name | to_json }}
+      adminGroup: {{ forgejo_oauth_admin_group | to_json }}
+{% if forgejo_local_ca_trust_enabled | default(false) | bool %}
+
+# Local-CA lane: mount the DMF Local CA public cert into /etc/ssl/certs so the
+# Go cert loader (init + runtime) trusts it when fetching the Authentik OIDC
+# discovery document over HTTPS. Mounting a single file alongside the system
+# bundle (NOT SSL_CERT_FILE, which would shadow the public roots) keeps public
+# trust intact.
+extraVolumes:
+  - name: dmf-local-ca
+    configMap:
+      name: {{ forgejo_local_ca_configmap | to_json }}
+extraInitVolumeMounts:
+  - name: dmf-local-ca
+    mountPath: /etc/ssl/certs/dmf-local-ca.crt
+    subPath: ca.crt
+    readOnly: true
+extraContainerVolumeMounts:
+  - name: dmf-local-ca
+    mountPath: /etc/ssl/certs/dmf-local-ca.crt
+    subPath: ca.crt
+    readOnly: true
+{% endif %}

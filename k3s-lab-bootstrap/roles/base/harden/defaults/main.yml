@@ -1,0 +1,37 @@
+---
+# SSH access control — IPs allowed to reach port 22 on the public interface.
+# Applied to nftables on the OS, and optionally to a cloud firewall (see below).
+# Override in inventory group_vars.
+harden_ssh_allow_ipv4: []
+harden_ssh_allow_ipv6: []
+
+# Non-root admin user created on every node
+harden_admin_user: k3s-admin
+harden_admin_pubkey: ""   # set in inventory or pass via -e
+
+# Ports open to the world on the public interface (VIP traffic)
+harden_public_tcp_ports:
+  - 80
+  - 443
+
+# Private network CIDR — all traffic allowed (k3s cluster communication)
+harden_private_cidr: "10.0.0.0/28"
+
+# Unattended upgrades — reboot window (UTC)
+harden_reboot_time: "02:00"
+
+# Fail2ban SSH settings
+harden_fail2ban_maxretry: 3
+harden_fail2ban_bantime: "1h"
+harden_fail2ban_findtime: "10m"
+
+# Optional provider-specific cloud firewall task file.
+# Leave empty for providers with no cloud firewall integration.
+# Set from the env inventory to activate, e.g.
+#   harden_cloud_firewall_tasks: "{{ inventory_dir }}/../../tasks/<provider>_firewall.yml"
+harden_cloud_firewall_tasks: ""
+
+# Baseline refreshes the apt cache before hardening in the bootstrap wrapper.
+# Keep this off by default to avoid repeated cache updates during close
+# re-runs; set true when running the harden role standalone on a stale host.
+harden_update_apt_cache: false

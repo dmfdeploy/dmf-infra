@@ -1,0 +1,25 @@
+---
+# Top-level orchestrator for k3s-lab-bootstrap.
+# Aligned with the EBU DMF Reference Architecture V2.0 (2026-04-15) lifecycle
+# stages: Design → Plan → Provision → Configure → Operate → Finalise & Review.
+#
+# By default this entrypoint runs lifecycle-provision.yml, which is a
+# compatibility wrapper importing the split bootstrap sequence:
+#   bootstrap-provision-pre-seed.yml → bootstrap-provision-post-seed.yml →
+#   bootstrap-configure.yml → bootstrap-verify.yml
+#
+# For a fresh bootstrap, the canonical path runs through dmf-env:
+#   dmf-env/bin/bootstrap-secrets.sh seed-bao <env>
+#   dmf-env/bin/run-playbook.sh <env> bootstrap-provision-pre-seed.yml
+#   dmf-env/bin/run-playbook.sh <env> bootstrap-provision-post-seed.yml
+#   dmf-env/bin/run-playbook.sh <env> bootstrap-configure.yml
+#   dmf-env/bin/run-playbook.sh <env> bootstrap-verify.yml
+#
+# Operate (verify, drills) and Finalise (teardown) are invoked explicitly:
+#
+#   ansible-playbook -i <inv> lifecycle-operate.yml
+#   ansible-playbook -i <inv> lifecycle-finalise.yml
+#
+# See ../../../docs/architecture/DMF%20EBU%20Mapping%20(2026-04-25).md for the full
+# layer/vertical/lifecycle reference.
+- import_playbook: lifecycle-provision.yml

@@ -1,0 +1,24 @@
+# dmf-infra — CODEOWNERS
+# Activates on GitHub once branch protection requires reviews.
+
+# Default
+*                              @dmfdeploy/maintainers
+
+# Secrets architecture (OpenBao + ESO + AppRole flows)
+/k3s-lab-bootstrap/roles/stack/operator/openbao/         @dmfdeploy/maintainers
+/k3s-lab-bootstrap/roles/base/external-secrets/          @dmfdeploy/maintainers
+
+# Forgejo + AWX integration — drives where mirror pushes land
+/k3s-lab-bootstrap/roles/stack/operator/forgejo-bootstrap/   @dmfdeploy/maintainers
+/k3s-lab-bootstrap/roles/stack/operator/awx-integration/     @dmfdeploy/maintainers
+
+# Lifecycle wrappers + site.yml — orchestrate live infra
+/k3s-lab-bootstrap/lifecycle-*.yml   @dmfdeploy/maintainers
+/k3s-lab-bootstrap/site.yml          @dmfdeploy/maintainers
+
+# Hardening (firewall, ingress, exposure)
+/k3s-lab-bootstrap/playbooks/210-harden.yml   @dmfdeploy/maintainers
+/k3s-lab-bootstrap/roles/base/cluster-ready/  @dmfdeploy/maintainers
+
+# CI / GitHub workflows
+/.github/                       @dmfdeploy/maintainers

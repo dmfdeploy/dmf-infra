@@ -1,0 +1,33 @@
+---
+k3s_audit_policy_path: /etc/k3s/audit-policy.yaml
+k3s_audit_service_dropin_dir: /etc/systemd/system/k3s.service.d
+k3s_audit_service_dropin_path: /etc/systemd/system/k3s.service.d/10-audit-logging.conf
+k3s_audit_log_maxage: 30
+k3s_audit_log_maxbackup: 10
+k3s_audit_log_maxsize: 100
+
+# containerd hosts.d (per-registry transport overrides). Hot-reloaded by
+# containerd — no k3s restart required when files change.
+k3s_containerd_certs_d_dir: /var/lib/rancher/k3s/agent/etc/containerd/certs.d
+
+# Cluster-internal Zot service endpoint that catalog launchers and other
+# in-cluster pullers reach via service DNS. Plain HTTP on port 5000;
+# requires the hosts.toml entry above to override containerd's HTTPS default.
+k3s_containerd_zot_internal_host: zot.zot.svc.cluster.local:5000
+zot_cluster_ip: 10.43.165.105
+
+# Zot INGRESS host (Traefik, HTTPS). Some consumers pull via the ingress rather
+# than the internal service DNS — notably dmf-cms, deliberately, because
+# internal cluster DNS for image pulls is unreliable on multi-node clusters
+# (see roles/stack/operator/cms/defaults cms_image_repository). On the local-CA
+# lane the ingress cert is signed by the in-cluster DMF Local CA, which
+# containerd does not trust by default; add a certs.d entry that pins the local
+# CA so those pulls verify properly (the node already resolves this host via
+# 321-local-ca-trust's /etc/hosts and has the CA installed there). Empty on
+# cloud/lab (publicly-trusted ingress cert) -> task skipped.
+k3s_containerd_zot_ingress_host: "{{ ('registry.' ~ cert_manager_cluster_domain) if (dmf_tls_mode | default('') == 'local-ca' and (cert_manager_cluster_domain | default('') | length > 0)) else '' }}"
+# Local CA cert path on the node, as installed by 321-local-ca-trust. containerd
+# reads it lazily at pull time (after 321 has run), so pinning it here verifies
+# the local-CA ingress cert rather than skipping verification. Keep in sync with
+# the install path in playbooks/321-local-ca-trust.yml.
+k3s_containerd_zot_ingress_ca: /usr/local/share/ca-certificates/dmf-local-ca.crt

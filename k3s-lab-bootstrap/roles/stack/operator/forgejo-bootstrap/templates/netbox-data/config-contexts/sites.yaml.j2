@@ -1,0 +1,33 @@
+# Config context: site-level variables
+# Applied to devices by site match in NetBox.
+# https://docs.netbox.dev/en/stable/features/config-contexts/
+---
+- name: "{{ site_name | default('hq-datacenter') }}-context"
+  description: "Site-level NTP, DNS, and syslog configuration"
+  weight: 1000
+  is_active: true
+  site_names:
+    - "{{ site_name | default('hq-datacenter') }}"
+  data:
+    ntp:
+      servers:
+        - "{{ ntp_primary | default('ntp1.dmf.example.com') }}"
+        - "{{ ntp_secondary | default('ntp2.dmf.example.com') }}"
+      timezone: "{{ ntp_timezone | default('Europe/Berlin') }}"
+    dns:
+      servers:
+        - "{{ dns_primary | default('10.0.1.10') }}"
+        - "{{ dns_secondary | default('10.0.1.11') }}"
+      domain: "{{ dns_domain | default('dmf.example.com') }}"
+    syslog:
+      servers:
+        - address: "{{ syslog_primary | default('10.0.1.50') }}"
+          port: 514
+          protocol: udp
+          severity: informational
+    snmp:
+      version: "2c"
+      community: "{{ snmp_read_community | default('public') }}"
+      traps:
+        - destination: "{{ snmp_trap_dest | default('10.0.1.60') }}"
+          community: "{{ snmp_trap_community | default('snmp-trap') }}"

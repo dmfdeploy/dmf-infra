@@ -1,0 +1,75 @@
+---
+# Ensures a Forgejo pull-mirror repo exists with the correct upstream URL.
+#
+# Forgejo invariant (empirically verified 2026-05-22 on Forgejo
+# 14.0.3+gitea-1.22.0): mirror state can ONLY be set at repo creation via
+# /repos/migrate. PATCH on an existing non-mirror repo silently no-ops the
+# mirror flag (returns 200 but `mirror` stays false; POST /mirror-sync then
+# 400s with "Repository is not a mirror"). So this file:
+#   - repo doesn't exist        -> POST /repos/migrate (create fresh mirror)
+#   - repo exists, mirror=false -> DELETE then POST /repos/migrate
+#   - repo exists, mirror=true  -> no-op (idempotent)
+#
+# Loop var (set by includer): mirror_entry = { key: <repo name>, value: <upstream URL> }
+
+- name: "Check Forgejo repo state for mirror: {{ mirror_entry.key }}"
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/{{ mirror_entry.key }}"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: [200, 404]
+  register: _mirror_repo_state
+  no_log: true
+
+- name: "Look up forgejo-svc UID for /repos/migrate: {{ mirror_entry.key }}"
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/users/{{ forgejo_svc_user }}"
+    method: GET
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: 200
+  register: _forgejo_svc_user_info
+  when: >-
+    _mirror_repo_state.status == 404
+    or (_mirror_repo_state.status == 200
+        and not (_mirror_repo_state.json.mirror | default(false)))
+  no_log: true
+
+- name: "Delete non-mirror Forgejo repo before migrating: {{ mirror_entry.key }}"
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/{{ forgejo_svc_user }}/{{ mirror_entry.key }}"
+    method: DELETE
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    status_code: 204
+  when:
+    - _mirror_repo_state.status == 200
+    - not (_mirror_repo_state.json.mirror | default(false))
+  no_log: true
+
+- name: "Create Forgejo pull-mirror via /repos/migrate: {{ mirror_entry.key }}"
+  ansible.builtin.uri:
+    url: "{{ forgejo_api_base }}/repos/migrate"
+    method: POST
+    url_username: "{{ forgejo_svc_user }}"
+    url_password: "{{ forgejo_svc_password_effective }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      clone_addr: "{{ mirror_entry.value }}"
+      repo_name: "{{ mirror_entry.key }}"
+      uid: "{{ _forgejo_svc_user_info.json.id }}"
+      mirror: true
+      mirror_interval: "1h"
+      private: false
+      description: "Mirror of {{ mirror_entry.value }}"
+    status_code: [201, 409]
+  when: >-
+    _mirror_repo_state.status == 404
+    or (_mirror_repo_state.status == 200
+        and not (_mirror_repo_state.json.mirror | default(false)))
+  no_log: true

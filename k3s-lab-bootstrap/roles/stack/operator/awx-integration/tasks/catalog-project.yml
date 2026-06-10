@@ -1,0 +1,120 @@
+---
+# Parameterized catalog project creation/update (Move 1 + Catalog, ADR-0014)
+# Loop variable: catalog_project (name, description, scm_url, roles_path)
+# Updates: awx_catalog_project_ids fact map
+
+- name: "Lookup AWX project: {{ catalog_project.name }}"
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/?name={{ catalog_project.name | urlencode }}&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: _catalog_project_lookup
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Create AWX project: {{ catalog_project.name }}"
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ catalog_project.name }}"
+      description: "{{ catalog_project.description }}"
+      organization: "{{ awx_integration_org_id }}"
+      scm_type: "git"
+      scm_url: "{{ catalog_project.scm_url }}"
+      scm_branch: "main"
+      scm_update_on_launch: true
+      credential: "{{ awx_integration_scm_cred_id }}"
+    status_code: 201
+  when: _catalog_project_lookup.json.count | int == 0
+  register: _catalog_project_created
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Set catalog project ID: {{ catalog_project.name }}"
+  ansible.builtin.set_fact:
+    _catalog_project_id: >-
+      {{ (_catalog_project_lookup.json.results | default([]) | first | default({})).id
+         | default(_catalog_project_created.json.id) }}
+
+- name: "Update AWX project SCM: {{ catalog_project.name }}"
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ _catalog_project_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      scm_url: "{{ catalog_project.scm_url }}"
+      scm_branch: "main"
+      scm_update_on_launch: true
+      credential: "{{ awx_integration_scm_cred_id }}"
+      scm_delete_on_update: true
+      custom_virtualenv: ""
+    status_code: 200
+  when: _catalog_project_lookup.json.count | int > 0
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Set GIT_SSL_NO_VERIFY and ANSIBLE_ROLES_PATH for AWX project: {{ catalog_project.name }}"
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ _catalog_project_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      environment_vars:
+        GIT_SSL_NO_VERIFY: "true"
+        ANSIBLE_ROLES_PATH: "{{ catalog_project.roles_path }}"
+    status_code: [200, 400]
+  register: _catalog_project_env_set
+  failed_when: false
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Trigger AWX project sync: {{ catalog_project.name }}"
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ _catalog_project_id }}/update/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body: {}
+    status_code: [201, 202]
+  register: _catalog_project_update
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Wait for AWX project sync to complete: {{ catalog_project.name }}"
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/project_updates/{{ _catalog_project_update.json.id }}/"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  register: _catalog_project_update_status
+  until: _catalog_project_update_status.json.status in ["successful", "failed", "canceled"]
+  retries: 60
+  delay: 5
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Assert AWX project sync succeeded: {{ catalog_project.name }}"
+  ansible.builtin.assert:
+    that:
+      - _catalog_project_update_status.json.status == "successful"
+    fail_msg: >-
+      AWX project sync failed for {{ catalog_project.name }}
+      (status={{ _catalog_project_update_status.json.status | default('unknown') }}).
+      Without a fresh sync, AWX's JT serializer cannot resolve playbook references
+      and downstream job-template creation will fail with HTTP 400.
+
+- name: "Set catalog project ID fact: {{ catalog_project.name }}"
+  ansible.builtin.set_fact:
+    awx_catalog_project_ids: "{{ awx_catalog_project_ids | combine({ catalog_project.name: _catalog_project_id }) }}"

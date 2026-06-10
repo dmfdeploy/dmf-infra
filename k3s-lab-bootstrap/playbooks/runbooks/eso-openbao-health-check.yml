@@ -1,0 +1,161 @@
+---
+# ESO/OpenBao Health Check — Runbook for AWX.
+# Move 2 spike: read-only health check that exercises
+# AWX → NetBox inventory → playbook → result loop.
+- name: ESO/OpenBao Health Check
+  hosts: k3s_control
+  become: true
+  gather_facts: false
+
+  tasks:
+    - name: Check OpenBao pod readiness
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Pod
+        namespace: "{{ openbao_namespace | default('openbao') }}"
+        label_selectors:
+          - "app.kubernetes.io/name=openbao"
+      register: openbao_pods
+
+    - name: Assert OpenBao pod is running
+      ansible.builtin.assert:
+        that:
+          - openbao_pods.resources | length > 0
+          - openbao_pods.resources[0].status.phase == "Running"
+        fail_msg: "OpenBao pod not found or not running."
+
+    - name: Check External Secrets Operator deployment
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: apps/v1
+        kind: Deployment
+        name: external-secrets
+        namespace: "{{ eso_namespace | default('external-secrets') }}"
+      register: eso_deploy
+
+    - name: Assert ESO is ready
+      ansible.builtin.assert:
+        that:
+          - eso_deploy.resources | length > 0
+          - eso_deploy.resources[0].status.readyReplicas | default(0) | int >= 1
+        fail_msg: "External Secrets Operator deployment not ready."
+
+    - name: Read OpenBao health via API
+      ansible.builtin.command:
+        argv:
+          - k3s
+          - kubectl
+          - -n
+          - "{{ openbao_namespace | default('openbao') }}"
+          - exec
+          - "pod/{{ openbao_pods.resources[0].metadata.name }}"
+          - --
+          - sh
+          - -c
+          - "BAO_ADDR=https://127.0.0.1:8200 BAO_CACERT=/openbao/config/tls/tls.crt bao status -format=json"
+      register: openbao_health
+      changed_when: false
+      no_log: true
+
+    - name: Report health
+      ansible.builtin.debug:
+        msg: "OpenBao health: {{ openbao_health.stdout | from_json | to_nice_json }}"
+      no_log: true
+
+    - name: List ESO ClusterSecretStores
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: external-secrets.io/v1
+        kind: ClusterSecretStore
+      register: cluster_secret_stores
+
+    - name: Report ClusterSecretStore count
+      ansible.builtin.debug:
+        msg: "Found {{ cluster_secret_stores.resources | length }} ClusterSecretStore(s)"
+
+    # Policy reconciliation checks — verify ops-admin has correct capabilities
+    # after policy application. These checks catch policy drift/clobbering.
+
+    - name: Load break-glass credentials from localhost
+      ansible.builtin.slurp:
+        src: /tmp/openbao-keys.json
+      register: _breakglass_slurp
+      delegate_to: localhost
+      become: false
+      failed_when: false
+
+    - name: Extract ops-admin credentials
+      ansible.builtin.set_fact:
+        _ops_admin_username: "{{ (_breakglass_slurp.content | b64decode | from_json).ops_admin_username | default('') }}"
+        _ops_admin_password: "{{ (_breakglass_slurp.content | b64decode | from_json).ops_admin_password | default('') }}"
+      no_log: true
+      when:
+        - _breakglass_slurp.content is defined
+
+    - name: Skip ops-admin capability check if credentials not available
+      ansible.builtin.debug:
+        msg: >-
+          Break-glass credentials not found at /tmp/openbao-keys.json.
+          To verify policy state, run this on the control node with access to the keys.
+      when:
+        - _breakglass_slurp.content is not defined
+
+    - name: Log in as ops-admin for policy verification
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_PASSWORD" |
+          k3s kubectl -n {{ openbao_namespace | default('openbao') }}
+          exec -i pod/{{ openbao_pods.resources[0].metadata.name }}
+          -- sh -c '
+          IFS= read -r P;
+          BAO_ADDR=https://127.0.0.1:8200
+          BAO_CACERT=/openbao/config/tls/tls.crt
+          bao write -format=json auth/userpass/login/{{ _ops_admin_username }} password="$P"'
+      register: _ops_admin_login
+      changed_when: false
+      environment:
+        OPENBAO_PASSWORD: "{{ _ops_admin_password }}"
+      no_log: true
+      when:
+        - _ops_admin_username | default('') | length > 0
+        - _ops_admin_password | default('') | length > 0
+
+    - name: Extract ops-admin token
+      ansible.builtin.set_fact:
+        _ops_admin_token: "{{ (_ops_admin_login.stdout | from_json).auth.client_token }}"
+      no_log: true
+      when:
+        - _ops_admin_login is defined
+        - _ops_admin_login.stdout is defined
+
+    - name: Check ops-admin capabilities on Zot admin path
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          k3s kubectl -n {{ openbao_namespace | default('openbao') }}
+          exec -i pod/{{ openbao_pods.resources[0].metadata.name }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          BAO_ADDR=https://127.0.0.1:8200;
+          BAO_CACERT=/openbao/config/tls/tls.crt;
+          export BAO_ADDR BAO_CACERT;
+          bao token capabilities -format=json secret/data/apps/zot/admin'
+      register: _zot_admin_caps
+      changed_when: false
+      environment:
+        OPENBAO_TOKEN: "{{ _ops_admin_token }}"
+      no_log: true
+      when:
+        - _ops_admin_token is defined
+
+    - name: Report ops-admin capabilities
+      ansible.builtin.debug:
+        msg: |
+          {% set parsed = _zot_admin_caps.stdout | from_json %}
+          ops-admin capabilities on secret/data/apps/zot/admin:
+          {{ parsed.capabilities if parsed is mapping and parsed.capabilities is defined else parsed }}
+      when:
+        - _zot_admin_caps is defined
+        - _zot_admin_caps.stdout is defined

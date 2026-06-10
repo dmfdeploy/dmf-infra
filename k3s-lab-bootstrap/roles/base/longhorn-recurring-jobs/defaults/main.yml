@@ -1,0 +1,24 @@
+---
+# Longhorn RecurringJob role defaults.
+# Creates a longhorn.io/v1beta2 RecurringJob that backs up Longhorn
+# volumes daily to the default BackupTarget.
+#
+# Longhorn 1.10.1 reference:
+#   https://longhorn.io/docs/1.10.1/snapshots-and-backups/scheduling-backups-and-snapshots/
+#
+# IMPORTANT: Longhorn 1.10.1 RecurringJob has NO `backupTargetName` field.
+# It binds to the DEFAULT BackupTarget only. Multi-target binding is
+# upstream issue #11421 (open as of 2026-05-12). For Tier A this is fine
+# — we have exactly one BackupTarget (the app-backups bucket).
+
+longhorn_recurring_jobs_namespace: longhorn-system
+longhorn_recurring_jobs_name: dmf-daily-backup
+longhorn_recurring_jobs_cron: "0 1 * * *"        # daily 01:00 UTC (before snapshot cron 02:30, archival 02:00, pg 03:00)
+longhorn_recurring_jobs_task: backup              # `backup` (to BackupTarget) — alternative is `snapshot` (local only)
+longhorn_recurring_jobs_groups:
+  - default                                       # apply to all Longhorn volumes via the implicit "default" group
+longhorn_recurring_jobs_retain: 7                 # one week of dailies (well inside the 365d B2 lifecycle window)
+longhorn_recurring_jobs_concurrency: 2
+longhorn_recurring_jobs_labels:
+  dmftier: "A"
+  source: vertical-resilience

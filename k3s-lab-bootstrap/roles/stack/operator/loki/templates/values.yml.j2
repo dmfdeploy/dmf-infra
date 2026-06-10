@@ -1,0 +1,67 @@
+---
+deploymentMode: SingleBinary
+
+loki:
+  auth_enabled: false
+  commonConfig:
+    replication_factor: 1
+  schemaConfig:
+    configs:
+      - from: "2024-01-01"
+        store: tsdb
+        object_store: filesystem
+        schema: v13
+        index:
+          prefix: index_
+          period: 24h
+  storage:
+    type: filesystem
+  # Compactor must be enabled for retention to delete data. Without this,
+  # limits_config.retention_period below is policy-but-not-enforced.
+  compactor:
+    working_directory: /var/loki/compactor
+    retention_enabled: true
+    retention_delete_delay: {{ loki_compactor_retention_delete_delay }}
+    retention_delete_worker_count: {{ loki_compactor_retention_delete_worker_count }}
+    delete_request_store: filesystem
+  limits_config:
+    # Default retention floor; security streams override below.
+    retention_period: {{ loki_retention }}
+    # Per-stream retention overrides. Keep selectors aligned with the
+    # `job` label set in Promtail scrape configs and the per-app sidecars.
+    retention_stream:
+      - selector: '{job="k3s-audit"}'
+        priority: 1
+        period: {{ loki_security_retention }}
+      - selector: '{job="authentik-audit"}'
+        priority: 1
+        period: {{ loki_security_retention }}
+      - selector: '{job=~".+-security"}'
+        priority: 1
+        period: {{ loki_security_retention }}
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: {{ loki_storage_size }}
+    storageClass: {{ loki_storage_class }}
+
+backend:
+  replicas: 0
+
+read:
+  replicas: 0
+
+write:
+  replicas: 0
+
+gateway:
+  enabled: true
+  replicas: 1
+
+chunksCache:
+  enabled: false
+
+resultsCache:
+  enabled: false

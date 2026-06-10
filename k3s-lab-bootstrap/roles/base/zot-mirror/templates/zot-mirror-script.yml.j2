@@ -1,0 +1,71 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: zot-mirror-script
+  namespace: {{ zot_mirror_namespace }}
+data:
+  zot-mirror.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    # Zot (HTTP API) → S3 OCI-format mirror.
+    # Pipeline: skopeo sync --src docker --dest dir → aws s3 sync.
+    # Credentials all from mounted files; never on argv.
+    # Object keys timestamp-prefixed: zot/<timestamp>/<repo>:<tag>/...
+
+    S3_DIR="{{ zot_mirror_s3_creds_mount }}"
+    PULL_DIR="/etc/pull-creds"
+    SCRATCH="/scratch"
+    SOURCE_REGISTRY="{{ zot_mirror_source_registry }}"
+    PULL_USER="{{ zot_mirror_pull_creds_username }}"
+    TIMESTAMP="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
+
+    # ---- Build skopeo auth file (docker config.json shape) ------------------
+    # skopeo reads $REGISTRY_AUTH_FILE (or --authfile <path>). We write the
+    # auth file to scratch with the base64 of "user:password" — never echo
+    # the plaintext to stdout.
+
+    AUTHFILE="${SCRATCH}/auth.json"
+    PULL_PW="$(cat "${PULL_DIR}/password")"
+    AUTH_B64="$(printf '%s:%s' "${PULL_USER}" "${PULL_PW}" | base64 -w0)"
+    cat > "${AUTHFILE}" <<JSON
+    { "auths": { "${SOURCE_REGISTRY}": { "auth": "${AUTH_B64}" } } }
+    JSON
+    unset PULL_PW AUTH_B64
+    chmod 0600 "${AUTHFILE}"
+
+    # ---- Mirror Zot → local OCI directory -----------------------------------
+    OCI_DIR="${SCRATCH}/oci-mirror"
+    mkdir -p "${OCI_DIR}"
+
+    # skopeo sync iterates every repository:tag on the source registry
+    # (uses /v2/_catalog + /v2/<repo>/tags/list) and lays them out as an
+    # OCI directory layout under ${OCI_DIR}.
+    skopeo sync \
+      --authfile "${AUTHFILE}" \
+      --src-tls-verify={{ zot_mirror_source_tls_verify }} \
+      --src docker \
+      --dest dir \
+      "${SOURCE_REGISTRY}" \
+      "${OCI_DIR}"
+
+    rm -f "${AUTHFILE}"
+
+    # ---- Upload OCI dir to B2 via aws s3 sync -------------------------------
+    BUCKET="$(cat "${S3_DIR}/bucket")"
+    ENDPOINT="$(cat "${S3_DIR}/endpoint")"
+    REGION="$(cat "${S3_DIR}/region")"
+
+    # Per-command env scope — credentials live only for the aws invocation.
+    AWS_ACCESS_KEY_ID="$(cat "${S3_DIR}/access_key_id")" \
+    AWS_SECRET_ACCESS_KEY="$(cat "${S3_DIR}/secret_access_key")" \
+    AWS_DEFAULT_REGION="${REGION}" \
+      aws s3 sync "${OCI_DIR}/" \
+        "s3://${BUCKET}/{{ zot_mirror_bucket_prefix }}/${TIMESTAMP}/" \
+        --endpoint-url "${ENDPOINT}" \
+        --sse AES256
+
+    # ---- Cleanup ------------------------------------------------------------
+    rm -rf "${OCI_DIR}"
+    echo "Mirror complete: s3://${BUCKET}/{{ zot_mirror_bucket_prefix }}/${TIMESTAMP}/"

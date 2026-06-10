@@ -1,0 +1,58 @@
+---
+# Shared OpenBao-backed local-admin facts.
+#
+# Pre-condition: caller must have included common/openbao-session (with
+# openbao_session_mode: operator) earlier in the same play. This role reads
+# `_openbao_session_pod` and `_openbao_session_client_token` from the play
+# scope; it does not establish its own OpenBao session.
+#
+# Two modes:
+#   - materialize (default): if the OpenBao secret exists, reuse it;
+#     otherwise materialise from caller-supplied / role-default values
+#     (generating a password if necessary) and persist back to OpenBao.
+#   - live-read: read-only. Resolves the credential from OpenBao if the
+#     secret exists; otherwise falls back through (a) the paired
+#     `app_admin_fallback_candidates` list, then (b) the scalar
+#     `app_admin_fallback_username`/`_password` pair. Never writes, never
+#     generates, never defaults the email. Exposes `<prefix>_source` for
+#     diagnostic transparency (`openbao` | `fallback-candidates` |
+#     `fallback-scalar` | `no-fallback`).
+#
+# Live-read does not fail loud on missing credentials — empty resolution
+# is reported via `<prefix>_source: no-fallback` so consumers (e.g. the
+# audit playbook) can treat empty as a finding rather than a hard error.
+# Non-audit consumers should assert non-empty themselves before use.
+
+app_admin_app_name: ""
+app_admin_fact_prefix: app_admin
+app_admin_secret_path: "secret/apps/{{ app_admin_app_name }}/admin"
+
+# Mode: 'materialize' (read-or-generate-and-write) or 'live-read' (read-only).
+app_admin_mode: materialize
+
+# Namespace of the OpenBao pod the session was established against. Defaults
+# to the same namespace common/openbao-session used. Override only if the
+# caller deliberately wants app-admin-facts to target a different namespace
+# than the session itself (rare; usually wrong).
+app_admin_openbao_namespace: "{{ openbao_session_namespace | default('openbao') }}"
+
+# Materialize-mode defaults (ignored in live-read).
+app_admin_default_username: admin
+app_admin_default_email: admin@local.invalid
+
+# Materialize-mode caller-supplied inputs (ignored in live-read).
+app_admin_username_input: ""
+app_admin_password_input: ""
+app_admin_email_input: ""
+
+# Live-read-mode fallbacks. The paired-list form prevents username and
+# password being sourced from different layers (e.g. forgejo_admin_username
+# paired with vault_bootstrap_admin_password). The role picks the first
+# candidate where BOTH fields are non-empty. If the list is empty or no
+# candidate qualifies, falls through to the scalar fallback below.
+app_admin_fallback_candidates: []
+app_admin_fallback_username: ""
+app_admin_fallback_password: ""
+
+app_admin_expected_username: ""
+app_admin_password_bytes: 24

@@ -1,0 +1,47 @@
+---
+# External Secrets Operator role defaults
+# Parametric: same role works against in-cluster OpenBao (http, no TLS) or
+# any external OpenBao/Vault (https, CA bundle optional).
+
+# Namespace / Helm
+eso_namespace: external-secrets
+eso_helm_repo: https://charts.external-secrets.io
+eso_helm_chart: external-secrets
+eso_helm_version: "2.3.0"
+
+# Default CRD API group version (v1 is GA since chart 0.10+ / v2.x).
+# v1beta1 is present in the CRD spec for some versions but NOT served —
+# use v1. Flip only if upstream changes.
+eso_crd_api_version: external-secrets.io/v1
+
+# OpenBao target — default is the in-cluster service over TLS.
+eso_openbao_url: "https://openbao.openbao.svc.cluster.local:8200"
+eso_openbao_kv_mount: secret
+eso_openbao_kv_version: v2
+
+# Optional CA bundle (PEM). Non-empty adds caBundle to the ClusterSecretStore;
+# required for https targets unless the cert is already trusted by the cluster.
+eso_openbao_ca_bundle: ""
+
+# Auth — approle only for now (kubernetes auth TODO)
+eso_openbao_auth_method: approle
+eso_openbao_approle_mount: approle
+eso_openbao_role_id: ""     # injected by caller (pre_task or group_vars)
+eso_openbao_secret_id: ""   # injected by caller (never written to disk)
+
+# K8s objects
+eso_approle_secret_name: openbao-approle
+eso_cluster_secret_store_name: openbao
+
+# Smoke test
+# Smoke test — creates a test ExternalSecret after ClusterSecretStore is
+# configured. Useful for validating ESO on first deploy, but requires the
+# target secret to already exist in the secrets backend.
+eso_smoketest_enabled: false
+eso_smoketest_namespace: eso-smoketest
+eso_smoketest_external_secret_name: smoketest
+eso_smoketest_remote_key: "smoketest/ping"
+eso_smoketest_remote_property: message
+eso_smoketest_target_secret_name: smoketest-secret
+eso_smoketest_wait_retries: 12
+eso_smoketest_wait_delay: 5

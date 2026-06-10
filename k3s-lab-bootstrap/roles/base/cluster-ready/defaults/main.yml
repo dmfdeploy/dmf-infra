@@ -1,0 +1,5 @@
+---
+cluster_ready_retries: 30
+cluster_ready_delay: 10
+cluster_ready_wait_for_longhorn: true
+cluster_ready_wait_for_storageclass: true

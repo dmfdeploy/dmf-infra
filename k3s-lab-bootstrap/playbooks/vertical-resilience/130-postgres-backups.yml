@@ -1,0 +1,8 @@
+---
+- name: Deploy postgres backup CronJobs
+  hosts: k3s_control
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - base/postgres-backups

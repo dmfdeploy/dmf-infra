@@ -1,0 +1,372 @@
+---
+- name: Gather ready nodes
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Node
+  register: post_bootstrap_verify_nodes
+
+- name: Select verification nodes
+  ansible.builtin.set_fact:
+    post_bootstrap_verify_node_names: >-
+      {{
+        post_bootstrap_verify_nodes.resources
+        | json_query("[?status.conditions[?type=='Ready' && status=='True']].metadata.name")
+      }}
+
+- name: Require at least one ready node
+  ansible.builtin.assert:
+    that:
+      - post_bootstrap_verify_node_names | length >= 1
+    fail_msg: "No ready nodes found — cannot verify cluster networking"
+
+# Capability-aware node selection. A multi-node cluster proves cross-NODE
+# traffic (client on node[0], echo on node[1]). A single-node cluster (e.g. the
+# sandbox-single-node profile) still exercises CNI / CoreDNS / Service / ingress
+# on the one node, so we run the same workloads with client and echo colocated
+# and forgo only the genuinely cross-node guarantee. The >=2 path is unchanged.
+- name: Set client and server node names (capability-aware)
+  ansible.builtin.set_fact:
+    post_bootstrap_verify_single_node: "{{ post_bootstrap_verify_node_names | length < 2 }}"
+    post_bootstrap_verify_client_node: "{{ post_bootstrap_verify_node_names[0] }}"
+    post_bootstrap_verify_server_node: >-
+      {{ post_bootstrap_verify_node_names[1]
+         if (post_bootstrap_verify_node_names | length >= 2)
+         else post_bootstrap_verify_node_names[0] }}
+
+- name: Note single-node verification scope
+  ansible.builtin.debug:
+    msg: >-
+      Single-node cluster — verifying CNI/CoreDNS/Service/ingress on
+      {{ post_bootstrap_verify_server_node }}. The pod-to-pod and Service checks
+      run intra-node here (no second node to prove node-to-node traffic).
+  when: post_bootstrap_verify_single_node | bool
+
+- name: Create verification namespace
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - apply
+      - "-f"
+      - "-"
+    stdin: |
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: {{ post_bootstrap_verify_namespace }}
+  register: _post_bootstrap_verify_namespace_apply
+  changed_when: >-
+    'created' in _post_bootstrap_verify_namespace_apply.stdout or
+    'configured' in _post_bootstrap_verify_namespace_apply.stdout
+
+- name: Create default ServiceAccount in verification namespace
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - apply
+      - "-f"
+      - "-"
+    stdin: |
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: default
+        namespace: {{ post_bootstrap_verify_namespace }}
+  register: _post_bootstrap_verify_serviceaccount_apply
+  changed_when: >-
+    'created' in _post_bootstrap_verify_serviceaccount_apply.stdout or
+    'configured' in _post_bootstrap_verify_serviceaccount_apply.stdout
+
+- name: Deploy cross-node verification workloads
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - apply
+      - "-f"
+      - "-"
+    stdin: |
+      apiVersion: v1
+      kind: List
+      items:
+        - apiVersion: v1
+          kind: Pod
+          metadata:
+            name: verify-client
+            namespace: {{ post_bootstrap_verify_namespace }}
+            labels:
+              app: verify-client
+          spec:
+            restartPolicy: Always
+            nodeSelector:
+              kubernetes.io/hostname: {{ post_bootstrap_verify_client_node }}
+            tolerations:
+              - key: node.cloudprovider.kubernetes.io/uninitialized
+                operator: Exists
+                effect: NoSchedule
+            containers:
+              - name: client
+                image: {{ post_bootstrap_verify_image }}
+                command: ["sh", "-c", "sleep 3600"]
+        - apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: verify-echo
+            namespace: {{ post_bootstrap_verify_namespace }}
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: verify-echo
+            template:
+              metadata:
+                labels:
+                  app: verify-echo
+              spec:
+                nodeSelector:
+                  kubernetes.io/hostname: {{ post_bootstrap_verify_server_node }}
+                tolerations:
+                  - key: node.cloudprovider.kubernetes.io/uninitialized
+                    operator: Exists
+                    effect: NoSchedule
+                containers:
+                  - name: echo
+                    image: {{ post_bootstrap_verify_image }}
+                    env:
+                      - name: NODE_NAME
+                        valueFrom:
+                          fieldRef:
+                            fieldPath: spec.nodeName
+                    command:
+                      - sh
+                      - -c
+                      - |
+                        mkdir -p /www
+                        mkdir -p /www/verify
+                        printf '%s\n' "$NODE_NAME" > /www/index.html
+                        cp /www/index.html /www/verify/index.html
+                        exec httpd -f -p 8080 -h /www
+                    ports:
+                      - containerPort: 8080
+        - apiVersion: v1
+          kind: Service
+          metadata:
+            name: verify-echo
+            namespace: {{ post_bootstrap_verify_namespace }}
+          spec:
+            selector:
+              app: verify-echo
+            ports:
+              - port: 80
+                targetPort: 8080
+        - apiVersion: networking.k8s.io/v1
+          kind: Ingress
+          metadata:
+            name: verify-echo
+            namespace: {{ post_bootstrap_verify_namespace }}
+          spec:
+            ingressClassName: traefik
+            rules:
+              - http:
+                  paths:
+                    - path: /verify
+                      pathType: Prefix
+                      backend:
+                        service:
+                          name: verify-echo
+                          port:
+                            number: 80
+  register: _post_bootstrap_verify_workloads_apply
+  changed_when: >-
+    'created' in _post_bootstrap_verify_workloads_apply.stdout or
+    'configured' in _post_bootstrap_verify_workloads_apply.stdout
+
+- name: Wait for verify client pod
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Pod
+    name: verify-client
+    namespace: "{{ post_bootstrap_verify_namespace }}"
+  register: verify_client_pod
+  until: >
+    verify_client_pod.resources | length > 0 and
+    verify_client_pod.resources[0].status.phase == "Running"
+  retries: 30
+  delay: 10
+
+- name: Wait for verify echo deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: verify-echo
+    namespace: "{{ post_bootstrap_verify_namespace }}"
+  register: verify_echo_deployment
+  until: >
+    verify_echo_deployment.resources | length > 0 and
+    verify_echo_deployment.resources[0].status.readyReplicas | default(0) >= 1
+  retries: 30
+  delay: 10
+
+- name: Read verify echo pod
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Pod
+    namespace: "{{ post_bootstrap_verify_namespace }}"
+    label_selectors:
+      - app=verify-echo
+  register: verify_echo_pods
+
+- name: Capture verify echo pod IP
+  ansible.builtin.set_fact:
+    verify_echo_pod_ip: "{{ verify_echo_pods.resources[0].status.podIP }}"
+
+- name: Prove cross-node pod-to-pod traffic
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - exec
+      - -n
+      - "{{ post_bootstrap_verify_namespace }}"
+      - verify-client
+      - --
+      - wget
+      - -qO-
+      - "http://{{ verify_echo_pod_ip }}:8080"
+  register: verify_pod_to_pod
+  changed_when: false
+
+- name: Assert cross-node pod-to-pod response
+  ansible.builtin.assert:
+    that:
+      - verify_pod_to_pod.stdout | trim == post_bootstrap_verify_server_node
+    fail_msg: "Cross-node pod-to-pod check failed"
+
+- name: Wait for CoreDNS to resolve the verify Service
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - exec
+      - -n
+      - "{{ post_bootstrap_verify_namespace }}"
+      - verify-client
+      - --
+      - nslookup
+      - verify-echo.{{ post_bootstrap_verify_namespace }}.svc.cluster.local
+  register: _dns_check
+  until: _dns_check.rc == 0
+  retries: 15
+  delay: 5
+  changed_when: false
+  failed_when: false
+
+- name: Prove cross-node Service traffic
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - exec
+      - -n
+      - "{{ post_bootstrap_verify_namespace }}"
+      - verify-client
+      - --
+      - wget
+      - -qO-
+      - http://verify-echo.{{ post_bootstrap_verify_namespace }}.svc.cluster.local
+  register: verify_service_traffic
+  changed_when: false
+
+- name: Assert cross-node Service response
+  ansible.builtin.assert:
+    that:
+      - verify_service_traffic.stdout | trim == post_bootstrap_verify_server_node
+    fail_msg: "Cross-node Service check failed"
+
+- name: Prove cluster DNS reachability from pod
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - exec
+      - -n
+      - "{{ post_bootstrap_verify_namespace }}"
+      - verify-client
+      - --
+      - nslookup
+      - kubernetes.default.svc.cluster.local
+  register: verify_dns
+  changed_when: false
+
+- name: Assert DNS resolution succeeded
+  ansible.builtin.assert:
+    that:
+      - "'Name:' in verify_dns.stdout"
+    fail_msg: "Cluster DNS lookup failed"
+
+- name: Prove ingress path through Traefik service
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - exec
+      - -n
+      - "{{ post_bootstrap_verify_namespace }}"
+      - verify-client
+      - --
+      - wget
+      - -qO-
+      - http://traefik.kube-system.svc.cluster.local/verify
+  register: verify_ingress_path
+  changed_when: false
+  failed_when: false
+  retries: 60
+  delay: 5
+  until: verify_ingress_path.rc == 0
+
+- name: Assert ingress path response
+  ansible.builtin.assert:
+    that:
+      - verify_ingress_path.stdout | trim == post_bootstrap_verify_server_node
+    fail_msg: "Ingress path check failed"
+
+- name: Read Traefik service exposure state
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Service
+    name: traefik
+    namespace: kube-system
+  register: verify_traefik_service
+
+- name: Assert LoadBalancer readiness when applicable
+  ansible.builtin.assert:
+    that:
+      - verify_traefik_service.resources[0].status.loadBalancer.ingress | default([]) | length > 0
+    fail_msg: "Traefik LoadBalancer has no assigned ingress yet (CCM may not be deployed)"
+  when:
+    - cluster_ingress_mode != 'nodeport-only'
+    - verify_traefik_service.resources[0].spec.type | default('') == 'LoadBalancer'
+    - verify_traefik_service.resources[0].status.loadBalancer.ingress is defined
+  failed_when: false
+
+- name: Assert NodePort readiness when applicable
+  ansible.builtin.assert:
+    that:
+      - verify_traefik_service.resources[0].spec.ports | selectattr('nodePort', 'defined') | list | length > 0
+    fail_msg: "Traefik NodePort not assigned"
+  when: cluster_ingress_mode == 'nodeport-only'
+
+- name: Clean up verification namespace
+  ansible.builtin.command:
+    argv:
+      - k3s
+      - kubectl
+      - delete
+      - namespace
+      - "{{ post_bootstrap_verify_namespace }}"
+      - --ignore-not-found=true
+  when: post_bootstrap_verify_cleanup | bool
+  register: _post_bootstrap_verify_namespace_delete
+  changed_when: "'deleted' in _post_bootstrap_verify_namespace_delete.stdout"

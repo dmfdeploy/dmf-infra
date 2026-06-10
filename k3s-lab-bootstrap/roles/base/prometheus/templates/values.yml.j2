@@ -1,0 +1,160 @@
+---
+{% set _ntfy_receiver_url = ('http://' ~ prometheus_ntfy_bridge_name ~ '.' ~ prometheus_namespace ~ '.svc.cluster.local:8080/alertmanager') if (prometheus_ntfy_bridge_enabled | bool) else prometheus_alertmanager_ntfy_url %}
+alertmanager:
+  enabled: {{ prometheus_alertmanager_enabled | bool | lower }}
+{% if prometheus_alertmanager_enabled | bool %}
+  persistence:
+    enabled: true
+    size: {{ prometheus_alertmanager_storage_size }}
+    storageClass: {{ prometheus_alertmanager_storage_class }}
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      cpu: 100m
+      memory: 128Mi
+  # Umbrella chart prometheus-25.x delegates Alertmanager config to the
+  # alertmanager subchart under this key. The older `alertmanagerFiles.alertmanager.yml`
+  # top-level key is ignored on this chart version.
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: primary
+      group_by: ['alertname', 'namespace']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      routes:
+        - receiver: watchdog
+          matchers:
+            - alertname = "Watchdog"
+          group_wait: 0s
+          group_interval: 1m
+          repeat_interval: 1m
+    receivers:
+      - name: primary
+{% if prometheus_alertmanager_ntfy_url | length > 0 %}
+        webhook_configs:
+          - url: "{{ _ntfy_receiver_url }}"
+            send_resolved: true
+{% endif %}
+      - name: watchdog
+{% if prometheus_alertmanager_watchdog_url | length > 0 %}
+        webhook_configs:
+          - url: "{{ prometheus_alertmanager_watchdog_url }}"
+            send_resolved: false
+{% endif %}
+    inhibit_rules: []
+{% endif %}
+
+prometheus-pushgateway:
+  enabled: false
+
+kube-state-metrics:
+  enabled: true
+
+prometheus-node-exporter:
+  enabled: true
+
+server:
+  persistentVolume:
+    enabled: true
+    size: {{ prometheus_storage_size }}
+    storageClass: {{ prometheus_storage_class }}
+    annotations:
+      numberOfReplicas: "2"
+
+  retention: "{{ prometheus_retention }}"
+
+  # retentionSize must be set via extraArgs (not a native Helm value)
+  extraArgs:
+    storage.tsdb.retention.size: "{{ prometheus_retention_size }}"
+
+  resources:
+{{ prometheus_resources | to_nice_yaml(indent=2) | indent(4, true) }}
+
+  baseURL: "{{ prometheus_path }}"
+  prefixURL: "{{ prometheus_path }}"
+
+# ──────────────────────────────────────────────────────────────
+# serverFiles — prometheus.yml scrape_configs (always) + alert rules (conditional)
+#
+# scrape_configs is vendored from chart-default (prometheus-25.8.0) so we can
+# patch the `prometheus` self-scrape job's metrics_path to match
+# server.prefixURL (--web.route-prefix). Without this fix the self-scrape job
+# 404s on /metrics (because route-prefix moved it to {{ prometheus_path }}/metrics)
+# and shows perpetually down in the Targets page on every env. Helm replaces
+# lists wholesale (no partial merge for scrape_configs), so vendoring is the
+# cleanest way to fix just the one entry while keeping the other 9 chart-default
+# jobs intact. Refresh scrape_configs.yml.j2 when bumping the prometheus chart.
+# ──────────────────────────────────────────────────────────────
+serverFiles:
+  prometheus.yml:
+    scrape_configs:
+{% include 'scrape_configs.yml.j2' %}
+{% if prometheus_alertmanager_enabled | bool %}
+  # Alert rules — minimum viable set.
+  # Watchdog is a dead-man's switch: it fires constantly, and Alertmanager
+  # pings healthchecks.io on every group interval. If the ping stream stops,
+  # healthchecks.io raises an *external* alert — covering the case where
+  # Alertmanager or Prometheus itself is down and cannot alert internally.
+  alerting_rules.yml:
+    groups:
+      - name: cluster-health
+        rules:
+          - alert: Watchdog
+            expr: vector(1)
+            labels:
+              severity: none
+              category: watchdog
+            annotations:
+              summary: Alerting pipeline is alive
+              description: >-
+                This alert always fires. If Alertmanager stops pinging the
+                external dead-man's switch, investigate Prometheus or
+                Alertmanager health.
+
+          - alert: NodeDown
+            expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+            for: {{ prometheus_alert_node_down_for }}
+            labels:
+              severity: critical
+              category: node
+            annotations:
+              summary: Node {% raw %}{{ $labels.node }}{% endraw %} is NotReady
+              description: >-
+                Node {% raw %}{{ $labels.node }}{% endraw %} has been NotReady
+                for more than {{ prometheus_alert_node_down_for }}.
+
+          - alert: PodCrashLooping
+            expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
+            for: {{ prometheus_alert_crashloop_for }}
+            labels:
+              severity: warning
+              category: pod
+            annotations:
+              summary: Pod {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw %} crashlooping
+              description: >-
+                Container {% raw %}{{ $labels.container }}{% endraw %} in
+                {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw %}
+                has been CrashLoopBackOff for {{ prometheus_alert_crashloop_for }}.
+
+          - alert: PersistentVolumeNearFull
+            expr: >-
+              (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes)
+              > {{ prometheus_alert_pv_full_threshold }}
+            for: 10m
+            labels:
+              severity: warning
+              category: storage
+            annotations:
+              summary: PV {% raw %}{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}{% endraw %} >{{ (prometheus_alert_pv_full_threshold * 100) | int }}% full
+              description: >-
+                PVC {% raw %}{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}{% endraw %}
+                is above {{ (prometheus_alert_pv_full_threshold * 100) | int }}% used. Expand or
+                free space before the workload goes read-only.
+
+# Alertmanager routing + receivers now live under alertmanager.config (above).
+{% endif %}

@@ -1,0 +1,283 @@
+---
+# Assertion-only verification of the OpenBao bootstrap identity model
+# (ADR-0008 + ADR-0021 + ADR-0024). Confirms that:
+#
+#   1. ops-admin, policy-reconciler, and approle-reconciler can all log in
+#      (positive: the identities exist and the break-glass JSON is complete).
+#   2. The AC-5 separation matrix from the AppRole-Reconciler Implementation
+#      Brief §7.5 holds on the live cluster — ops-admin cannot write policy
+#      and cannot mint object-storage AppRole secret-ids; policy-reconciler
+#      cannot mint object-storage AppRole secret-ids; approle-reconciler
+#      cannot write policy and cannot read app secrets.
+#   3. The downstream ESO chain seeded by base/object-storage-credentials is
+#      reconciling — both ClusterSecretStores Ready, and ExternalSecrets in
+#      the six target namespaces (openbao-system, awx, netbox, authentik,
+#      forgejo, zot) report status.conditions[Ready] == True.
+#
+# Tokens never appear in argv or logs (ADR-0007). Capability probes pipe the
+# token via stdin into the OpenBao pod's shell; the probe output contains
+# only capability lists (read/write/deny etc.), no token material.
+#
+# Run:
+#   bin/run-playbook.sh <env> \
+#     ../dmf-infra/k3s-lab-bootstrap/playbooks/verify-openbao-identity-model.yml
+#
+- name: Verify OpenBao bootstrap identity model
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  tags:
+    - vertical-security
+    - verify-openbao-identity
+
+  vars:
+    verify_openbao_namespace: "{{ openbao_namespace | default('openbao') }}"
+    verify_openbao_pod_selector: "app.kubernetes.io/name=openbao"
+    # Probe matrix per Implementation Brief §7.5. Each entry asserts the
+    # identity's capability on the target path matches the expected outcome.
+    # `deny` means the only capability returned is `deny` (full deny);
+    # `denied_or_missing` accepts either explicit deny or no-capabilities.
+    verify_probes:
+      - identity: ops-admin
+        path: sys/policies/acl/test
+        expected: deny
+        reason: ops-admin must not write ACL policies (policy-reconciler's job)
+      - identity: ops-admin
+        path: auth/approle/role/object-storage-app-backups/secret-id
+        expected: deny
+        reason: ops-admin must not mint object-storage AppRole secret-ids (approle-reconciler's job)
+      - identity: policy-reconciler
+        path: auth/approle/role/object-storage-app-backups/secret-id
+        expected: deny
+        reason: policy-reconciler must not mint object-storage AppRole secret-ids
+      - identity: approle-reconciler
+        path: sys/policies/acl/test
+        expected: deny
+        reason: approle-reconciler must not write ACL policies (policy-reconciler's job)
+      - identity: approle-reconciler
+        path: secret/data/apps/forgejo/admin
+        expected: deny
+        reason: approle-reconciler must not read app secrets (ops-admin's job)
+    # ExternalSecrets that base/object-storage-credentials creates per
+    # default. Names match the role's object_storage_consumer_namespaces
+    # mapping: openbao_snapshots ships only to openbao-system; app_backups
+    # ships to the five app namespaces. Total = 6 ExternalSecrets, matching
+    # the role's `Create ExternalSecret` task iteration count.
+    verify_expected_external_secrets:
+      - { namespace: openbao-system, name: s3-creds-openbao-snapshots }
+      - { namespace: awx,            name: s3-creds-app-backups }
+      - { namespace: netbox,         name: s3-creds-app-backups }
+      - { namespace: authentik,      name: s3-creds-app-backups }
+      - { namespace: forgejo,        name: s3-creds-app-backups }
+      - { namespace: zot,            name: s3-creds-app-backups }
+
+  tasks:
+    # ────────────────────────────────────────────────────────────────
+    # Step 1 — establish three identity sessions, capture per-identity tokens
+    # ────────────────────────────────────────────────────────────────
+    - name: Establish ops-admin session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_mode: operator
+        openbao_session_namespace: "{{ verify_openbao_namespace }}"
+
+    - name: Capture ops-admin token
+      ansible.builtin.set_fact:
+        _verify_token_ops_admin: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    - name: Establish policy-reconciler session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_mode: policy-reconciler
+        openbao_session_namespace: "{{ verify_openbao_namespace }}"
+
+    - name: Capture policy-reconciler token
+      ansible.builtin.set_fact:
+        _verify_token_policy_reconciler: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    - name: Establish approle-reconciler session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_mode: approle-reconciler
+        openbao_session_namespace: "{{ verify_openbao_namespace }}"
+
+    - name: Capture approle-reconciler token
+      ansible.builtin.set_fact:
+        _verify_token_approle_reconciler: "{{ _openbao_session_client_token }}"
+      no_log: true
+
+    # ────────────────────────────────────────────────────────────────
+    # Step 2 — discover OpenBao pod for capability probes
+    # ────────────────────────────────────────────────────────────────
+    - name: Discover OpenBao pod for capability probes
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Pod
+        namespace: "{{ verify_openbao_namespace }}"
+        label_selectors:
+          - "{{ verify_openbao_pod_selector }}"
+      register: _verify_openbao_pod_info
+
+    - name: Assert OpenBao pod exists
+      ansible.builtin.assert:
+        that:
+          - _verify_openbao_pod_info.resources | length > 0
+        fail_msg: >-
+          Could not find an OpenBao pod in namespace
+          {{ verify_openbao_namespace }} with selector
+          {{ verify_openbao_pod_selector }}.
+
+    - name: Set OpenBao pod fact
+      ansible.builtin.set_fact:
+        _verify_openbao_pod: "{{ _verify_openbao_pod_info.resources[0].metadata.name }}"
+
+    # ────────────────────────────────────────────────────────────────
+    # Step 3 — AC-5 negative probes (Implementation Brief §7.5)
+    # ────────────────────────────────────────────────────────────────
+    - name: Probe capability matrix
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ verify_openbao_namespace }}
+          exec -i {{ _verify_openbao_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao token capabilities -format=json {{ item.path | quote }}'
+      environment:
+        OPENBAO_TOKEN: >-
+          {{
+            {
+              'ops-admin': _verify_token_ops_admin,
+              'policy-reconciler': _verify_token_policy_reconciler,
+              'approle-reconciler': _verify_token_approle_reconciler
+            }[item.identity]
+          }}
+      register: _verify_probe_results
+      changed_when: false
+      no_log: true
+      loop: "{{ verify_probes }}"
+      loop_control:
+        label: "{{ item.identity }} → {{ item.path }}"
+
+    - name: Build per-probe capability lists
+      ansible.builtin.set_fact:
+        _verify_probe_caps_list: >-
+          {{
+            _verify_probe_caps_list | default([])
+            + [
+                (item.stdout | from_json).capabilities
+                if (item.stdout | from_json) is mapping and (item.stdout | from_json).capabilities is defined
+                else (item.stdout | from_json)
+              ]
+          }}
+      loop: "{{ _verify_probe_results.results }}"
+      loop_control:
+        label: "{{ item.item.identity }} → {{ item.item.path }}"
+
+    - name: Assert each negative probe matches expected outcome
+      ansible.builtin.assert:
+        that:
+          - >-
+              (item.0.expected == 'deny' and item.1 == ['deny']) or
+              (item.0.expected == 'denied_or_missing' and (item.1 == ['deny'] or item.1 | length == 0))
+        fail_msg: >-
+          AC-5 separation violated: {{ item.0.identity }} → {{ item.0.path }}.
+          Expected '{{ item.0.expected }}'; got {{ item.1 }}.
+          Reason: {{ item.0.reason }}.
+          This indicates a policy drift or an identity gained an unintended
+          capability. Review ADR-0021 and the role policies before mutating
+          further state.
+      loop: "{{ verify_probes | zip(_verify_probe_caps_list) | list }}"
+      loop_control:
+        label: "{{ item.0.identity }} → {{ item.0.path }}"
+
+    # ────────────────────────────────────────────────────────────────
+    # Step 4 — ClusterSecretStore Ready (positive)
+    # ────────────────────────────────────────────────────────────────
+    - name: Look up ClusterSecretStores
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: external-secrets.io/v1
+        kind: ClusterSecretStore
+        name: "{{ item }}"
+      register: _verify_css_info
+      loop:
+        - openbao-openbao-snapshots
+        - openbao-app-backups
+      loop_control:
+        label: "{{ item }}"
+
+    - name: Assert each ClusterSecretStore is Ready
+      ansible.builtin.assert:
+        that:
+          - item.resources | length > 0
+          - >-
+              item.resources[0].status.conditions
+              | selectattr('type', 'equalto', 'Ready')
+              | selectattr('status', 'equalto', 'True')
+              | list | length > 0
+        fail_msg: >-
+          ClusterSecretStore '{{ item.item }}' is missing or not Ready.
+          Confirm base/object-storage-credentials ran cleanly and OpenBao
+          is unsealed.
+      loop: "{{ _verify_css_info.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # ────────────────────────────────────────────────────────────────
+    # Step 5 — ExternalSecret Ready in the six target namespaces (positive)
+    # ────────────────────────────────────────────────────────────────
+    - name: Look up ExternalSecrets in target namespaces
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: external-secrets.io/v1
+        kind: ExternalSecret
+        namespace: "{{ item.namespace }}"
+        name: "{{ item.name }}"
+      register: _verify_es_info
+      loop: "{{ verify_expected_external_secrets }}"
+      loop_control:
+        label: "{{ item.namespace }}/{{ item.name }}"
+
+    - name: Assert each ExternalSecret is Ready
+      ansible.builtin.assert:
+        that:
+          - item.resources | length > 0
+          - >-
+              item.resources[0].status.conditions | default([])
+              | selectattr('type', 'equalto', 'Ready')
+              | selectattr('status', 'equalto', 'True')
+              | list | length > 0
+        fail_msg: >-
+          ExternalSecret '{{ item.item.namespace }}/{{ item.item.name }}' is
+          missing or not Ready. Either base/object-storage-credentials hasn't
+          run against this namespace, ESO can't reach OpenBao, or the AppRole
+          secret_id has expired.
+      loop: "{{ _verify_es_info.results }}"
+      loop_control:
+        label: "{{ item.item.namespace }}/{{ item.item.name }}"
+
+    # ────────────────────────────────────────────────────────────────
+    # Summary
+    # ────────────────────────────────────────────────────────────────
+    - name: Summarise identity-model verification
+      ansible.builtin.debug:
+        msg: |-
+          OpenBao identity model verified on this cluster:
+            - 3 identities log in: ops-admin, policy-reconciler, approle-reconciler
+            - {{ verify_probes | length }} AC-5 negative probes all return 'deny':
+              {% for p in verify_probes %}
+              * {{ p.identity }} → {{ p.path }}: {{ p.expected }}
+              {% endfor %}
+            - 2 ClusterSecretStores Ready (openbao-openbao-snapshots, openbao-app-backups)
+            - {{ verify_expected_external_secrets | length }} ExternalSecrets Ready across
+              {{ verify_expected_external_secrets | map(attribute='namespace') | unique | list | length }}
+              namespaces

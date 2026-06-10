@@ -1,0 +1,8 @@
+---
+- name: Deploy dmf-promsd adapter
+  hosts: k3s_control
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - stack/operator/dmf-promsd

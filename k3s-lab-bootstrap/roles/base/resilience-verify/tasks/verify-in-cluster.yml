@@ -1,0 +1,52 @@
+---
+# Track A — in-cluster synthetic round-trip.
+# For each target in resilience_verify_in_cluster_targets: apply a Job
+# manifest, wait for completion, surface logs.
+
+- name: Apply resilience-verify Job for {{ _rv_target.logical }}
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'verify-roundtrip-job.yml.j2') | from_yaml }}"
+
+- name: Wait for Job resilience-verify-{{ _rv_target.logical | replace('_', '-') }} to complete
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: batch/v1
+    kind: Job
+    name: "resilience-verify-{{ _rv_target.logical | replace('_', '-') }}"
+    namespace: "{{ _rv_target.namespace }}"
+  register: _rv_job
+  until:
+    - _rv_job.resources | length > 0
+    - (_rv_job.resources[0].status.succeeded | default(0)) >= 1
+      or (_rv_job.resources[0].status.failed | default(0)) >= 1
+  retries: "{{ resilience_verify_wait_retries }}"
+  delay: "{{ resilience_verify_wait_delay }}"
+
+- name: Fetch Job logs for resilience-verify-{{ _rv_target.logical | replace('_', '-') }}
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ _rv_target.namespace }}"
+      - logs
+      - "job/resilience-verify-{{ _rv_target.logical | replace('_', '-') }}"
+  register: _rv_logs
+  changed_when: false
+
+- name: Surface resilience-verify result for {{ _rv_target.logical }}
+  ansible.builtin.debug:
+    msg: |
+      Bucket: {{ _rv_target.logical }}
+      Job phase: {{ 'succeeded' if (_rv_job.resources[0].status.succeeded | default(0)) >= 1 else 'failed' }}
+      Tail of logs:
+      {{ (_rv_logs.stdout | regex_findall('(?m).*$'))[-5:] | join('\n') }}
+
+- name: Fail role if in-cluster round-trip failed for {{ _rv_target.logical }}
+  ansible.builtin.fail:
+    msg: "Resilience-verify Job failed for {{ _rv_target.logical }}; see logs above."
+  when:
+    - (_rv_job.resources[0].status.failed | default(0)) >= 1

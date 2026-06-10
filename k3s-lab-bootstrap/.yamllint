@@ -1,0 +1,13 @@
+---
+# DMF public CI YAML gate. 'relaxed' preset = structural checks (syntax, key
+# duplicates, ...) without cosmetic style enforcement — appropriate for a large
+# existing Ansible tree + vendored Helm charts. Helm Go-templates are not YAML.
+extends: relaxed
+ignore: |
+  **/templates/**
+  **/charts/**/templates/**
+rules:
+  line-length: disable
+  comments: disable
+  comments-indentation: disable
+  document-start: disable

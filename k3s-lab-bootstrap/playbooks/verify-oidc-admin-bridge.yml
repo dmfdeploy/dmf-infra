@@ -1,0 +1,225 @@
+---
+# Assertion-only verification of the OIDC admin bridge (ADR-0024).
+#
+# Confirms that:
+#   1. The operator user (authentik_bootstrap_passkey_username) is a
+#      member of the ops-admin group in Authentik.
+#   2. Each DMF app declared in the 20-app-providers.yaml.j2 blueprint
+#      has its provider + application present in Authentik.
+#   3. Each OIDC provider exposes the DMF groups scope (so admin
+#      claims can flow to apps).
+#
+# Per-app role-mapping verification (group → admin/superadmin in each
+# app) is out of scope here — that requires per-app API auth or a real
+# login round-trip and belongs in a separate workstream.
+#
+# Auth: reads AUTHENTIK_BOOTSTRAP_TOKEN from the Authentik runtime
+# Secret via kubernetes.core.k8s_info (no secrets in argv per ADR-0007).
+#
+# Run:
+#   bin/run-playbook.sh <env> \
+#     ../dmf-infra/k3s-lab-bootstrap/playbooks/verify-oidc-admin-bridge.yml
+- name: Verify OIDC admin bridge wiring
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  tags:
+    - vertical-identity
+    - verify-oidc-bridge
+
+  vars:
+    verify_authentik_namespace: "{{ authentik_namespace | default('authentik') }}"
+    verify_authentik_runtime_secret: "{{ authentik_runtime_secret_name | default('authentik-env') }}"
+    verify_authentik_host: "{{ authentik_host | default('auth.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
+    verify_authentik_api_base: "https://{{ verify_authentik_host }}/api/v3"
+    verify_operator_username: "{{ authentik_bootstrap_passkey_username | mandatory }}"
+    verify_ops_admin_group: ops-admin
+    # Apps declared in the 20-app-providers.yaml.j2 blueprint. The (name, slug, kind)
+    # triple matches the blueprint's identifiers; kind selects which API surface to
+    # check the provider on. Update this list when the blueprint adds an app.
+    verify_apps:
+      - { name: "Forgejo",      slug: "forgejo",      kind: "oauth2" }
+      - { name: "AWX SAML",     slug: "awx",          kind: "saml" }
+      - { name: "NetBox",       slug: "netbox",       kind: "oauth2" }
+      - { name: "LibreNMS",     slug: "librenms",     kind: "oauth2" }
+      - { name: "Grafana",      slug: "grafana",      kind: "oauth2" }
+      - { name: "DMF Console",  slug: "dmf-console",  kind: "oauth2" }
+      - { name: "Zot",          slug: "zot",          kind: "oauth2" }
+
+  tasks:
+    - name: Read Authentik bootstrap token from runtime Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        namespace: "{{ verify_authentik_namespace }}"
+        name: "{{ verify_authentik_runtime_secret }}"
+      register: _verify_authentik_secret
+      no_log: true
+
+    - name: Assert Authentik runtime Secret present
+      ansible.builtin.assert:
+        that:
+          - _verify_authentik_secret.resources | length > 0
+          - _verify_authentik_secret.resources[0].data.AUTHENTIK_BOOTSTRAP_TOKEN is defined
+        fail_msg: >-
+          Secret '{{ verify_authentik_runtime_secret }}' in namespace
+          '{{ verify_authentik_namespace }}' is missing
+          AUTHENTIK_BOOTSTRAP_TOKEN. Run vertical-security/110-authentik.yml
+          first.
+
+    - name: Set Authentik token fact
+      ansible.builtin.set_fact:
+        _verify_authentik_token: "{{ _verify_authentik_secret.resources[0].data.AUTHENTIK_BOOTSTRAP_TOKEN | b64decode }}"
+      no_log: true
+
+    # ────────────────────────────────────────────────────────────────
+    # Check 1 — operator user exists and is a member of ops-admin
+    # ────────────────────────────────────────────────────────────────
+    - name: Look up operator user in Authentik
+      ansible.builtin.uri:
+        url: "{{ verify_authentik_api_base }}/core/users/?username={{ verify_operator_username | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _verify_authentik_token }}"
+        status_code: 200
+        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+      register: _verify_user_lookup
+      no_log: true
+
+    - name: Assert operator user exists and is in ops-admin
+      ansible.builtin.assert:
+        that:
+          - _verify_user_lookup.json.results | length > 0
+          - verify_ops_admin_group in
+              (_verify_user_lookup.json.results[0].groups_obj | default([]) | map(attribute='name') | list)
+        fail_msg: >-
+          Operator user '{{ verify_operator_username }}' is missing or is not
+          a member of group '{{ verify_ops_admin_group }}'. Confirm the
+          15-ops-user-webauthn blueprint applied successfully.
+
+    # ────────────────────────────────────────────────────────────────
+    # Check 2 — each app's provider + application is provisioned
+    # ────────────────────────────────────────────────────────────────
+    - name: Look up OIDC providers per app
+      ansible.builtin.uri:
+        url: "{{ verify_authentik_api_base }}/providers/oauth2/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _verify_authentik_token }}"
+        status_code: 200
+        validate_certs: false  # lab-only
+      register: _verify_oauth_providers
+      loop: "{{ verify_apps | selectattr('kind', 'equalto', 'oauth2') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+
+    - name: Look up SAML providers per app
+      ansible.builtin.uri:
+        url: "{{ verify_authentik_api_base }}/providers/saml/?name={{ item.name | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _verify_authentik_token }}"
+        status_code: 200
+        validate_certs: false  # lab-only
+      register: _verify_saml_providers
+      loop: "{{ verify_apps | selectattr('kind', 'equalto', 'saml') | list }}"
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+
+    - name: Look up applications per app
+      ansible.builtin.uri:
+        url: "{{ verify_authentik_api_base }}/core/applications/?slug={{ item.slug | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _verify_authentik_token }}"
+        status_code: 200
+        validate_certs: false  # lab-only
+      register: _verify_applications
+      loop: "{{ verify_apps }}"
+      loop_control:
+        label: "{{ item.slug }}"
+      no_log: true
+
+    - name: Assert every application is provisioned
+      ansible.builtin.assert:
+        that:
+          - item.json.results | length > 0
+        fail_msg: >-
+          Application with slug '{{ item.item.slug }}' is missing in Authentik.
+          Confirm the 20-app-providers blueprint applied successfully.
+      loop: "{{ _verify_applications.results }}"
+      loop_control:
+        label: "{{ item.item.slug }}"
+
+    - name: Assert every OIDC provider is provisioned
+      ansible.builtin.assert:
+        that:
+          - item.json.results | length > 0
+        fail_msg: >-
+          OAuth2 provider '{{ item.item.name }}' is missing in Authentik.
+      loop: "{{ _verify_oauth_providers.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    - name: Assert every SAML provider is provisioned
+      ansible.builtin.assert:
+        that:
+          - item.json.results | length > 0
+        fail_msg: >-
+          SAML provider '{{ item.item.name }}' is missing in Authentik.
+      loop: "{{ _verify_saml_providers.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # ────────────────────────────────────────────────────────────────
+    # Check 3 — every OIDC provider carries the DMF groups scope
+    # ────────────────────────────────────────────────────────────────
+    - name: Look up DMF groups scope mapping
+      ansible.builtin.uri:
+        url: "{{ verify_authentik_api_base }}/propertymappings/provider/scope/?name=DMF%20groups"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ _verify_authentik_token }}"
+        status_code: 200
+        validate_certs: false  # lab-only
+      register: _verify_dmf_groups_scope
+      no_log: true
+
+    - name: Assert DMF groups scope mapping exists
+      ansible.builtin.assert:
+        that:
+          - _verify_dmf_groups_scope.json.results | length > 0
+        fail_msg: >-
+          The 'DMF groups' scope mapping is missing in Authentik. OIDC
+          consumers cannot receive the groups claim without it.
+
+    - name: Set DMF groups scope pk fact
+      ansible.builtin.set_fact:
+        _verify_dmf_groups_scope_pk: "{{ _verify_dmf_groups_scope.json.results[0].pk }}"
+
+    - name: Assert each OIDC provider includes the DMF groups scope
+      ansible.builtin.assert:
+        that:
+          - _verify_dmf_groups_scope_pk in
+              (item.json.results[0].property_mappings | default([]))
+        fail_msg: >-
+          OAuth2 provider '{{ item.item.name }}' does not include the
+          'DMF groups' scope mapping. ops-admin claims will not reach the app.
+      loop: "{{ _verify_oauth_providers.results }}"
+      loop_control:
+        label: "{{ item.item.name }}"
+
+    # ────────────────────────────────────────────────────────────────
+    # Summary
+    # ────────────────────────────────────────────────────────────────
+    - name: Summarise OIDC bridge verification
+      ansible.builtin.debug:
+        msg: |-
+          OIDC admin bridge verified:
+            - operator '{{ verify_operator_username }}' is a member of '{{ verify_ops_admin_group }}'
+            - {{ verify_apps | length }} applications provisioned
+              ({{ verify_apps | selectattr('kind', 'equalto', 'oauth2') | list | length }} OAuth2, {{ verify_apps | selectattr('kind', 'equalto', 'saml') | list | length }} SAML)
+            - all OAuth2 providers expose the 'DMF groups' scope

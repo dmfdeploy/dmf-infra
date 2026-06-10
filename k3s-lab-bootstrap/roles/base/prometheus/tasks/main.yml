@@ -1,0 +1,197 @@
+---
+- name: Assert Alertmanager receiver URLs are present when alerting is enabled
+  ansible.builtin.assert:
+    that:
+      - prometheus_alertmanager_ntfy_url | default('') | length > 0
+      - prometheus_alertmanager_watchdog_url | default('') | length > 0
+    fail_msg: >-
+      prometheus_alertmanager_enabled is true but one or both receiver URLs are
+      empty. Set prometheus_alertmanager_ntfy_url (ntfy topic URL, e.g.
+      https://ntfy.example.com/homelab-alerts) and
+      prometheus_alertmanager_watchdog_url (healthchecks.io ping URL for the
+      dead-man's switch) in inventory or via -e. Set
+      prometheus_alertmanager_enabled=false to deploy Prometheus without alerting.
+    quiet: true
+  when:
+    - prometheus_alertmanager_enabled | default(true) | bool
+
+- name: Create monitoring namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ prometheus_namespace }}"
+
+- name: Create ntfy bridge secret
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ prometheus_ntfy_bridge_name }}"
+        namespace: "{{ prometheus_namespace }}"
+      type: Opaque
+      stringData:
+        NTFY_URL: "{{ prometheus_alertmanager_ntfy_url }}"
+  when:
+    - prometheus_alertmanager_enabled | default(true) | bool
+    - prometheus_ntfy_bridge_enabled | bool
+  no_log: true
+
+- name: Create ntfy bridge script ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ prometheus_ntfy_bridge_name }}"
+        namespace: "{{ prometheus_namespace }}"
+      data:
+        bridge.py: "{{ lookup('template', 'ntfy_bridge.py.j2') }}"
+  when:
+    - prometheus_alertmanager_enabled | default(true) | bool
+    - prometheus_ntfy_bridge_enabled | bool
+
+- name: Deploy ntfy bridge
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: "{{ prometheus_ntfy_bridge_name }}"
+        namespace: "{{ prometheus_namespace }}"
+        labels:
+          app.kubernetes.io/name: "{{ prometheus_ntfy_bridge_name }}"
+      spec:
+        replicas: "{{ prometheus_ntfy_bridge_replicas | int }}"
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ prometheus_ntfy_bridge_name }}"
+        template:
+          metadata:
+            labels:
+              app.kubernetes.io/name: "{{ prometheus_ntfy_bridge_name }}"
+          spec:
+            containers:
+              - name: bridge
+                image: "{{ prometheus_ntfy_bridge_image }}"
+                command:
+                  - python
+                  - /app/bridge.py
+                envFrom:
+                  - secretRef:
+                      name: "{{ prometheus_ntfy_bridge_name }}"
+                ports:
+                  - name: http
+                    containerPort: 8080
+                readinessProbe:
+                  httpGet:
+                    path: /health
+                    port: http
+                livenessProbe:
+                  httpGet:
+                    path: /health
+                    port: http
+                volumeMounts:
+                  - name: script
+                    mountPath: /app/bridge.py
+                    subPath: bridge.py
+                    readOnly: true
+            volumes:
+              - name: script
+                configMap:
+                  name: "{{ prometheus_ntfy_bridge_name }}"
+                  defaultMode: 0755
+  when:
+    - prometheus_alertmanager_enabled | default(true) | bool
+    - prometheus_ntfy_bridge_enabled | bool
+
+- name: Create ntfy bridge Service
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ prometheus_ntfy_bridge_name }}"
+        namespace: "{{ prometheus_namespace }}"
+      spec:
+        selector:
+          app.kubernetes.io/name: "{{ prometheus_ntfy_bridge_name }}"
+        ports:
+          - name: http
+            port: 8080
+            targetPort: http
+  when:
+    - prometheus_alertmanager_enabled | default(true) | bool
+    - prometheus_ntfy_bridge_enabled | bool
+
+- name: Wait for ntfy bridge rollout
+  ansible.builtin.command:
+    argv:
+      - sudo
+      - k3s
+      - kubectl
+      - -n
+      - "{{ prometheus_namespace }}"
+      - rollout
+      - status
+      - deployment/{{ prometheus_ntfy_bridge_name }}
+      - --timeout=180s
+  changed_when: false
+  when:
+    - prometheus_alertmanager_enabled | default(true) | bool
+    - prometheus_ntfy_bridge_enabled | bool
+
+- name: Add prometheus-community Helm repository
+  kubernetes.core.helm_repository:
+    name: prometheus-community
+    repo_url: "{{ prometheus_helm_repo }}"
+
+- name: Template Prometheus Helm values
+  ansible.builtin.template:
+    src: values.yml.j2
+    dest: /tmp/prometheus-values.yml
+    mode: "0644"
+
+- name: Deploy Prometheus via Helm
+  kubernetes.core.helm:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: prometheus
+    chart_ref: prometheus-community/prometheus
+    chart_version: "{{ prometheus_helm_chart_version }}"
+    release_namespace: "{{ prometheus_namespace }}"
+    create_namespace: true
+    values_files:
+      - /tmp/prometheus-values.yml
+    wait: true
+    wait_timeout: 300s
+
+# Prometheus is accessed via Grafana datasource proxy, not directly.
+# Keep the cleanup of any legacy IngressRoutes but don't create a new one.
+- name: Remove legacy Prometheus IngressRoutes
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: IngressRoute
+    name: "{{ item }}"
+    namespace: "{{ prometheus_namespace }}"
+  loop:
+    - prometheus
+    - prometheus-redirect
+
+- name: Cleanup temp values file
+  ansible.builtin.file:
+    path: /tmp/prometheus-values.yml
+    state: absent

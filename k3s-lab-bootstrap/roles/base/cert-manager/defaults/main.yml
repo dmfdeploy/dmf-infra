@@ -1,0 +1,73 @@
+---
+cert_manager_namespace: cert-manager
+cert_manager_helm_repo: https://charts.jetstack.io
+cert_manager_helm_version: "v1.20.2"
+cert_manager_cluster_issuer: letsencrypt-http
+cert_manager_force_helm_upgrade: false
+
+# DNS-01 provider for ACME challenges.
+# Set to 'cloudflare' for DNS-01 wildcard certificates (cloud lane default).
+# Leave unset or 'http01' for HTTP-01 challenges (path-based / airgapped lanes).
+cert_manager_dns_provider: ""
+
+# Let's Encrypt ACME issuer configuration.
+# Leave cluster_domain / acme_email empty to skip issuer creation
+# (cert-manager still installs, useful for OpenBao PKI-only setups).
+cert_manager_cluster_domain: ""
+cert_manager_acme_email: ""
+cert_manager_acme_server: https://acme-v02.api.letsencrypt.org/directory
+
+# Default Traefik certificate.
+# Keep cluster_domain as the human-facing apex, but drive the actual cert SAN set
+# from cert_manager_dns_names so host-based apps can share the same default cert.
+cert_manager_certificate_name: cluster-tls
+cert_manager_certificate_namespace: kube-system
+cert_manager_dns_names: []
+cert_manager_tls_secret_name: >-
+  {{
+    (
+      cert_manager_cluster_domain | length > 0
+    ) | ternary(cert_manager_cluster_domain | replace('.', '-') ~ '-tls', 'cluster-tls')
+  }}
+
+# Wait for Certificate to reach Ready=True before creating the TLSStore and
+# handing the cluster to downstream apps. Apps that share the default cert
+# will fail TLS handshakes if the secret is not yet populated.
+cert_manager_certificate_wait_retries: 60
+cert_manager_certificate_wait_delay: 10
+
+# OpenBao internal TLS certificate.
+cert_manager_openbao_enabled: true
+cert_manager_openbao_namespace: openbao
+cert_manager_openbao_issuer_name: openbao-selfsigned
+cert_manager_openbao_certificate_name: openbao
+cert_manager_openbao_tls_secret_name: openbao-tls
+cert_manager_openbao_common_name: openbao.openbao.svc.cluster.local
+cert_manager_openbao_dns_names:
+  - openbao
+  - openbao.openbao
+  - openbao.openbao.svc
+  - openbao.openbao.svc.cluster.local
+cert_manager_openbao_ip_addresses:
+  - 127.0.0.1
+cert_manager_openbao_wait_retries: 60
+cert_manager_openbao_wait_delay: 5
+
+# --- Local CA lane (dmf_tls_mode == 'local-ca'; sandbox-single-node / WP1S) ---
+# When there is no public DNS + ACME (offline / sandbox), build a self-signed
+# root CA in-cluster and issue the Traefik default cert from it. A single
+# apex + wildcard cert in the default TLSStore covers every host-based app on
+# the collapsed single Traefik — no per-app certs. The CA's public cert is then
+# distributed to in-cluster OIDC consumers (e.g. Forgejo) so back-channel HTTPS
+# to https://auth.<base-domain> verifies. No-op on the cloud/lab ACME path.
+cert_manager_local_ca_enabled: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
+cert_manager_local_ca_bootstrap_issuer: dmf-selfsigned-bootstrap
+cert_manager_local_ca_issuer: dmf-local-ca
+cert_manager_local_ca_secret: dmf-local-ca
+cert_manager_local_ca_common_name: "DMF Local CA ({{ cert_manager_cluster_domain | default('dmf.test') }})"
+cert_manager_local_ca_duration: 87600h        # 10y root
+cert_manager_local_ca_cert_duration: 8760h     # 1y default leaf
+# SAN set for the collapsed default cert: apex + wildcard under the base domain.
+cert_manager_local_ca_dns_names:
+  - "{{ cert_manager_cluster_domain | default('dmf.test') }}"
+  - "*.{{ cert_manager_cluster_domain | default('dmf.test') }}"

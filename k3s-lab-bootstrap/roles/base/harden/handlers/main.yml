@@ -1,0 +1,27 @@
+---
+- name: Restart sshd
+  ansible.builtin.systemd:
+    # Debian/RHEL historically expose `sshd`; Ubuntu 24.04's unit is `ssh`.
+    # Default preserves existing behaviour; override per-env (harden_sshd_service).
+    name: "{{ harden_sshd_service | default('sshd') }}"
+    state: restarted
+
+- name: Remove existing DMF nftables table before reload
+  ansible.builtin.command: /usr/sbin/nft delete table inet filter
+  register: harden_nft_handler_delete_table
+  changed_when: harden_nft_handler_delete_table.rc == 0
+  failed_when:
+    - harden_nft_handler_delete_table.rc != 0
+    - "'No such file or directory' not in harden_nft_handler_delete_table.stderr"
+  listen: Apply nftables ruleset
+
+- name: Reload nftables
+  ansible.builtin.systemd:
+    name: nftables
+    state: reloaded
+  listen: Apply nftables ruleset
+
+- name: Restart fail2ban
+  ansible.builtin.systemd:
+    name: fail2ban
+    state: restarted

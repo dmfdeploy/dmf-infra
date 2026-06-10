@@ -1,0 +1,62 @@
+---
+# Zot mirror — weekly CronJob role.
+# Mirrors the in-cluster Zot registry's OCI manifests + blobs to the
+# app-backups S3 bucket via the registry HTTP API (NOT PVC mount —
+# Longhorn RWO would block concurrent attach).
+#
+# Direction: backup (Zot HTTP → S3), NOT hydration.
+#
+# Pipeline: skopeo sync --src docker --dst dir → aws s3 sync.
+#
+# --remove is NOT used (mc-side) nor implied (aws s3 sync doesn't take it
+# by default). An accidental deletion in Zot must NOT propagate to B2.
+# B2 lifecycle rules handle expiry at 365d.
+#
+# Object keys: zot/<timestamp>/... — timestamp-prefixed so each mirror
+# run creates a new snapshot tree.
+
+- name: Ensure zot namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ zot_mirror_namespace }}"
+
+- name: Create ExternalSecret zot-mirror-creds in {{ zot_mirror_namespace }}
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: external-secrets.io/v1
+      kind: ExternalSecret
+      metadata:
+        name: "{{ zot_mirror_pull_creds_secret }}"
+        namespace: "{{ zot_mirror_namespace }}"
+      spec:
+        refreshInterval: 1h
+        secretStoreRef:
+          name: "{{ zot_mirror_eso_cluster_secret_store }}"
+          kind: ClusterSecretStore
+        target:
+          name: "{{ zot_mirror_pull_creds_secret }}"
+          creationPolicy: Owner
+        data:
+          - secretKey: password
+            remoteRef:
+              key: "{{ zot_mirror_pull_creds_openbao_path }}"
+              property: password
+
+- name: Deploy zot-mirror script ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'zot-mirror-script.yml.j2') | from_yaml }}"
+
+- name: Deploy zot-mirror CronJob
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'zot-mirror-cronjob.yml.j2') | from_yaml }}"

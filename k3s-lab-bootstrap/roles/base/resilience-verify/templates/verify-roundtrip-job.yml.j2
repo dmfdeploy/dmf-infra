@@ -1,0 +1,82 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "resilience-verify-{{ _rv_target.logical | replace('_', '-') }}"
+  namespace: "{{ _rv_target.namespace }}"
+  labels:
+    app: resilience-verify
+    dmftier: "A"
+spec:
+  activeDeadlineSeconds: {{ resilience_verify_job_active_deadline }}
+  backoffLimit: 0
+  ttlSecondsAfterFinished: 600
+  template:
+    metadata:
+      labels:
+        app: resilience-verify
+    spec:
+      restartPolicy: Never
+      volumes:
+        - name: s3-creds
+          secret:
+            secretName: "{{ _rv_target.secret_name }}"
+      containers:
+        - name: verify
+          image: {{ resilience_verify_awscli_image }}
+          command:
+            - /bin/sh
+            - -euo
+            - pipefail
+            - -c
+            - |
+              set -x
+              MOUNT=/etc/s3-creds
+              BUCKET="$(cat $MOUNT/bucket)"
+              ENDPOINT="$(cat $MOUNT/endpoint)"
+              REGION="$(cat $MOUNT/region)"
+              KEY="resilience-verify/$(date -u +%Y-%m-%dT%H-%M-%SZ).probe"
+
+              export AWS_ACCESS_KEY_ID="$(cat $MOUNT/access_key_id)"
+              export AWS_SECRET_ACCESS_KEY="$(cat $MOUNT/secret_access_key)"
+              export AWS_DEFAULT_REGION="$REGION"
+
+              # PUT
+              echo "resilience-verify probe $(date -u)" > /tmp/probe.txt
+              aws s3 cp /tmp/probe.txt "s3://$BUCKET/$KEY" \
+                --endpoint-url "$ENDPOINT" --sse AES256
+
+              # HEAD — assert SSE header is present (BackBlaze returns the
+              # x-amz-server-side-encryption header for SSE-B2-encrypted objects;
+              # the value is "AES256" regardless of SSE-B2 vs SSE-S3).
+              HEAD_JSON="$(aws s3api head-object \
+                --bucket "$BUCKET" --key "$KEY" \
+                --endpoint-url "$ENDPOINT" \
+                --output json)"
+              echo "$HEAD_JSON"
+              SSE_ALG="$(echo "$HEAD_JSON" | grep -oE '"ServerSideEncryption":\s*"[^"]*"' | head -1)"
+              if [ -z "$SSE_ALG" ]; then
+                echo "FAIL: ServerSideEncryption header absent on HEAD response"
+                exit 1
+              fi
+
+              # GET
+              aws s3 cp "s3://$BUCKET/$KEY" /tmp/probe.out \
+                --endpoint-url "$ENDPOINT"
+              # Compare with shell builtins — `diff` is not in the
+              # amazon/aws-cli container image. Equivalent intent.
+              if [ "$(cat /tmp/probe.txt)" != "$(cat /tmp/probe.out)" ]; then
+                echo "FAIL: round-trip content mismatch"
+                echo "expected: $(cat /tmp/probe.txt)"
+                echo "got:      $(cat /tmp/probe.out)"
+                exit 1
+              fi
+
+              # DELETE
+              aws s3 rm "s3://$BUCKET/$KEY" --endpoint-url "$ENDPOINT"
+
+              echo "PASS: synthetic round-trip OK for {{ _rv_target.logical }}; SSE=$SSE_ALG"
+          volumeMounts:
+            - name: s3-creds
+              mountPath: /etc/s3-creds
+              readOnly: true

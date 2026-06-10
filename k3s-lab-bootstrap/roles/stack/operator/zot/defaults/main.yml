@@ -1,0 +1,92 @@
+---
+zot_namespace: zot
+zot_image: ghcr.io/project-zot/zot-linux-arm64:v2.1.2
+zot_image_pull_policy: IfNotPresent
+zot_cluster_ip: 10.43.165.105
+
+# Storage
+zot_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+zot_storage_size: 20Gi
+
+# Resources (small; bump if the registry becomes heavily used)
+zot_resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+# Networking — subdomain for the registry.
+# Docker/podman/containerd clients expect a real host; path-based registries
+# are brittle. cert-manager issues a TLS cert for this hostname via HTTP-01,
+# so the FQDN must resolve to the cluster LB.
+zot_ingress_host: "{{ registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
+zot_ingress_entrypoint: websecure
+zot_ingress_cert_issuer: "{{ cert_manager_cluster_issuer | default('letsencrypt-http') }}"
+
+# Authentication
+# v1: htpasswd basic auth with a single bootstrap user + anonymous read.
+# OIDC wiring against Authentik is a follow-up playbook.
+#
+# Username is hardcoded `admin` (matches the convention enforced by
+# vertical-security/191-zot-oidc.yml and consumed by every Zot client —
+# cms, awx, etc. — that reads `secret/apps/zot/admin` from OpenBao).
+# Using vault_bootstrap_admin_username here was a historical bug: the
+# operator's bundle name (e.g. an operator username from the private
+# inventory) ended up in Zot's htpasswd while
+# OpenBao + downstream consumers used `admin`, causing every push to
+# 401. See umbrella plan §26 for the full audit.
+zot_admin_user: admin
+zot_admin_password: "{{ vault_zot_admin_password | default(vault_bootstrap_admin_password | mandatory) }}"
+
+# Machine-write service account (ADR-0033). Every authenticated WRITE path —
+# playbook 630 (GHCR→Zot image/chart seeding) and zot-mirror (backup cron) —
+# authenticates as `zot-svc`, NOT the break-glass `admin` above. zot-svc is
+# scoped to read,create,update on `**` (no delete, no adminPolicy) via the
+# accessControl block in config.json.j2; `admin` is the sole adminPolicy user
+# and is left dormant for break-glass only. This closes the ADR-0028 C3
+# (machines use scoped service accounts) + C4 (no routine op needs break-glass)
+# gap — the same fix ADR-0032 made for NetBox.
+#
+# The password is an INDEPENDENT random secret, seeded to OpenBao at
+# secret/apps/zot/service and exported by the bootstrap wrapper as
+# vault_zot_service_password (NOT a copy of the admin/bootstrap password).
+# `mandatory` so a misconfigured export fails loudly rather than silently
+# omitting the service user from the htpasswd.
+zot_service_user: zot-svc
+zot_service_password: "{{ vault_zot_service_password | mandatory }}"
+
+zot_anonymous_read: true
+zot_oidc_enabled: false
+zot_oidc_external_url: "https://{{ zot_ingress_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
+zot_oidc_authentik_application_slug: zot
+zot_oidc_issuer_url: >-
+  https://{{ authentik_host | default('auth.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/application/o/{{ zot_oidc_authentik_application_slug }}/
+zot_oidc_issuer: "{{ zot_oidc_issuer_url }}"
+zot_oidc_provider_key: oidc
+zot_oidc_authentik_provider_key: "{{ zot_oidc_provider_key }}"
+zot_oidc_authentik_provider_name: Zot
+zot_oidc_scopes:
+  - openid
+  - email
+  - profile
+  - groups
+zot_oidc_admin_group: ops-admin
+
+# Local-CA trust (local-ca lane / sandbox). With OIDC enabled, Zot fetches the
+# Authentik discovery document over HTTPS at startup and panics if it cannot
+# verify the cert. On the local-ca lane that endpoint presents the in-cluster
+# DMF Local CA cert, which the Zot image doesn't trust by default. Publish the
+# CA's PUBLIC cert into the Zot namespace and mount it into /etc/ssl/certs
+# (read by Go's cert loader). No key material is mounted. No-op on cloud/lab.
+zot_local_ca_trust_enabled: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
+zot_local_ca_configmap: dmf-local-ca
+zot_local_ca_secret: dmf-local-ca
+zot_local_ca_namespace: cert-manager
+
+# Metrics
+zot_metrics_enabled: true
+
+# Log level: "debug" | "info" | "warn" | "error"
+zot_log_level: info

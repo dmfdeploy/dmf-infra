@@ -1,0 +1,38 @@
+---
+- name: Deploy Authentik
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  pre_tasks:
+    - name: Establish OpenBao operator session
+      ansible.builtin.include_role:
+        name: common/openbao-session
+      vars:
+        openbao_session_mode: operator
+
+    - name: Gather Authentik bootstrap admin facts
+      ansible.builtin.include_role:
+        name: common/app-admin-facts
+      vars:
+        app_admin_app_name: authentik
+        app_admin_fact_prefix: authentik_admin
+        app_admin_secret_path: secret/apps/authentik/admin
+        app_admin_default_username: akadmin
+        app_admin_default_email: "akadmin@{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+        app_admin_expected_username: akadmin
+
+    - name: Gather Authentik break-glass user facts
+      ansible.builtin.include_role:
+        name: common/app-admin-facts
+      vars:
+        app_admin_app_name: authentik
+        app_admin_fact_prefix: authentik_breakglass
+        app_admin_secret_path: secret/apps/authentik/breakglass
+        app_admin_default_username: break-glass
+        app_admin_default_email: "break-glass@{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+        app_admin_expected_username: break-glass
+
+  roles:
+    - base/cluster-ready
+    - stack/operator/authentik

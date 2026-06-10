@@ -1,0 +1,8 @@
+---
+- name: Deploy Loki
+  hosts: k3s_control
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+    - stack/operator/loki

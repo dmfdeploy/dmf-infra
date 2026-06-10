@@ -1,0 +1,36 @@
+---
+librenms:
+  image:
+    tag: "{{ librenms_image_tag }}"
+  configuration: |
+    $config['distributed_poller_group']          = '0';
+    $config['distributed_poller']                = true;
+    $config['base_url']                          = '{{ librenms_base_url }}';
+  extraEnvs:
+    - name: LIBRENMS_BASE_URL
+      value: "{{ librenms_base_url }}"
+  rrdcached:
+    persistence:
+      rrdcached:
+        size: "{{ librenms_rrd_size }}"
+        storageClassName: "{{ librenms_storage_class }}"
+      journal:
+        size: "{{ librenms_rrd_journal_size }}"
+        storageClassName: "{{ librenms_storage_class }}"
+
+ingress:
+  enabled: false
+
+mysql:
+  primary:
+    persistence:
+      enabled: true
+      size: "{{ librenms_mysql_storage_size }}"
+      storageClass: "{{ librenms_storage_class }}"
+
+redis:
+  master:
+    persistence:
+      enabled: true
+      size: "{{ librenms_redis_storage_size }}"
+      storageClass: "{{ librenms_storage_class }}"

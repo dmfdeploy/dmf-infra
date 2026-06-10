@@ -1,0 +1,28 @@
+---
+# chrony is installed + enabled in 200-baseline.yml (also a Longhorn
+# prerequisite). This role only manages configuration and restarts.
+
+- name: Ensure /var/log/chrony exists (for measurement/tracking logs)
+  ansible.builtin.file:
+    path: /var/log/chrony
+    state: directory
+    owner: _chrony
+    group: _chrony
+    mode: "0755"
+
+- name: Deploy chrony configuration
+  ansible.builtin.template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  notify: Restart chrony
+
+- name: Ensure chrony is enabled and running
+  ansible.builtin.service:
+    name: chrony
+    enabled: true
+    state: started
+  when: not ansible_check_mode

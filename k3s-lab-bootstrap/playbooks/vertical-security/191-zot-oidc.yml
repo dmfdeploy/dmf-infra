@@ -1,0 +1,106 @@
+---
+# Layer-on Authentik OIDC for Zot.
+#
+# Zot is deployed at Layer 3 (331-registry-zot.yml) with htpasswd-only auth so
+# the registry is usable before the security vertical is up. This playbook
+# runs after Authentik (vertical-security/110-authentik.yml) and reads the
+# OAuth2 client_id/client_secret from the Authentik worker, then re-renders
+# the Zot config Secret and rolls the StatefulSet so the registry trusts
+# Authentik for human/UI logins.
+#
+# This playbook is also where the htpasswd local admin gets promoted from the
+# bootstrap-only ephemeral password (generated in 331-registry-zot.yml before
+# OpenBao existed) to a persistent `secret/apps/zot/admin` entry that follows
+# the same convention as forgejo/awx/authentik. On first run after OpenBao is
+# live, app-admin-facts reads the OpenBao secret, generates a password if the
+# secret is empty, writes it back, and exposes it as `zot_admin_password` for
+# the zot role to bcrypt into the htpasswd Secret. The htpasswd local admin
+# stays enabled for break-glass and CLI clients (docker/podman/containerd).
+- name: Wire Zot OIDC against Authentik
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+
+  vars:
+    zot_oidc_enabled: true
+
+  roles:
+    - base/cluster-ready
+    - role: common/openbao-session
+      vars:
+        openbao_session_mode: operator
+    - role: common/app-admin-facts
+      vars:
+        app_admin_app_name: zot
+        app_admin_fact_prefix: zot_admin
+        app_admin_secret_path: secret/apps/zot/admin
+        app_admin_default_username: admin
+        app_admin_expected_username: admin
+    - stack/operator/zot
+
+  post_tasks:
+    - name: Validate Zot admin secret was persisted to OpenBao
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s\n' "$OPENBAO_TOKEN" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ openbao_session_namespace | default('openbao') }}
+          exec -i {{ _openbao_session_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao kv get -field=password secret/apps/zot/admin'
+      environment:
+        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      register: _zot_admin_secret_verify
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Assert Zot admin secret is readable
+      ansible.builtin.assert:
+        that:
+          - _zot_admin_secret_verify.rc | default(1) == 0
+          - _zot_admin_secret_verify.stdout | default('') | length > 0
+        fail_msg: >-
+          Zot admin secret was not persisted or is not readable from OpenBao.
+          This usually means app-admin-writer policy is stale or unreconciled.
+          Check OpenBao policy state and rerun this playbook after reconciliation.
+
+    - name: Roll Zot StatefulSet to pick up the new config Secret
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - k3s
+          - kubectl
+          - -n
+          - "{{ zot_namespace | default('zot') }}"
+          - rollout
+          - restart
+          - statefulset/zot
+      changed_when: true
+
+    - name: Wait for Zot StatefulSet to be ready after restart
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: apps/v1
+        kind: StatefulSet
+        name: zot
+        namespace: "{{ zot_namespace | default('zot') }}"
+      register: zot_sts_ready
+      until:
+        - zot_sts_ready.resources | length > 0
+        - zot_sts_ready.resources[0].status.readyReplicas | default(0) | int >= 1
+      retries: 60
+      delay: 5
+
+    - name: Verify Zot OIDC discovery endpoint is reachable
+      ansible.builtin.uri:
+        url: "{{ zot_oidc_external_url }}/zot/auth/callback/{{ zot_oidc_provider_key }}"
+        method: GET
+        status_code: [302, 303, 400, 401]
+        validate_certs: true
+      register: zot_oidc_callback_check
+      retries: 30
+      delay: 5
+      until: zot_oidc_callback_check.status in [302, 303, 400, 401]

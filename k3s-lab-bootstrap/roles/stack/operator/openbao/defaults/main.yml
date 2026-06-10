@@ -1,0 +1,138 @@
+---
+# OpenBao namespace
+openbao_namespace: openbao
+
+# Image (latest stable; bump as needed)
+openbao_image: "openbao/openbao:2.5.2"
+
+# Storage
+openbao_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+openbao_storage_size: 5Gi
+
+# Raft storage config
+openbao_raft_node_id: "1"
+
+# Resources
+openbao_resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 1Gi
+
+# Networking — cluster-internal only for now
+openbao_service_port: 8200
+openbao_service_name: openbao
+
+# TLS — cert-manager-issued self-signed cert for internal service DNS and
+# loopback access. The secret is created in the openbao namespace and mounted
+# into the OpenBao pod.
+openbao_tls_secret_name: openbao-tls
+
+# Shamir init
+# Number of key shares and threshold. Default: 5 shares, threshold 3.
+openbao_shamir_shares: 5
+openbao_shamir_threshold: 3
+openbao_key_path: /tmp/openbao-keys  # where init keys are written locally
+openbao_breakglass_dir: "{{ openbao_key_path | dirname }}"
+
+# Distribute Shamir shares to operator-side break-glass custody (JuiceFS
+# shares 1+2, macOS Keychain share 3, USB OPENBAO_A shares 4+5) and assert
+# those mounts on a fresh init. True preserves the lab/cloud break-glass model.
+# Sandbox / Tier-3 self-recovering profiles (ADR-0031 O4) set this false: no
+# JuiceFS/Keychain/USB dependency, shares=1/threshold=1, and the fresh-init
+# automation file ({{ openbao_key_path }}.json) is the only key custody —
+# written locally (e.g. under ~/.secure).
+openbao_breakglass_distribution_enabled: true
+
+# macOS Keychain service that holds share 3 of the 5-share Shamir set.
+# Per-environment so multi-env operators don't silently overwrite each
+# other's share 3 on init. Default preserves the historical hetzner-arm name.
+openbao_keychain_share3_service: openbao-breakglass-share-3
+
+# Directory on the OPENBAO_A USB stick where shares 4 and 5 are written.
+# Per-environment so multi-env operators don't silently overwrite each
+# other's USB shares 4+5 on init. Default preserves the historical flat
+# hetzner-arm layout (USB root). New envs should override to a subdirectory
+# (e.g. /Volumes/OPENBAO_A/<env>) and the role will create it before writing.
+openbao_usb_dir: /Volumes/OPENBAO_A
+
+# Mount point of the JuiceFS share that holds Shamir shares 1+2 on the
+# operator workstation. The role asserts this path is mounted before
+# writing share material. Per-environment because each environment has
+# its own operator workstation layout. Must be overridden in the private
+# inventory (the placeholder default deliberately won't exist).
+openbao_juicefs_mount_path: /mnt/secure
+
+# Engines to enable after init
+openbao_engines:
+  - approle
+  - kubernetes
+  - userpass
+  - pki
+  - kv-v2
+
+# ESO AppRole — the role ESO will use to authenticate
+openbao_eso_role_name: external-secrets
+
+# ESO AppRole secret_id TTL. 720h = 30 days. Each 40-openbao.yml run
+# mints a fresh secret_id; the TTL governs how long stale secret_ids
+# remain valid if a run is missed. 0 means never-expire (unsafe).
+openbao_eso_approle_secret_id_ttl: "720h"
+
+# born-inventory AppRole — narrow read-only access to the NetBox runtime
+# secret. This replaces direct root-token reads in the born-inventory role.
+openbao_born_inventory_role_name: born-inventory-netbox-reader
+openbao_born_inventory_policy_name: born-inventory-netbox-runtime-reader
+openbao_born_inventory_approle_secret_id_ttl: "720h"
+openbao_born_inventory_token_ttl: "1h"
+openbao_born_inventory_token_max_ttl: "4h"
+
+# PKI config
+openbao_pki_path: pki
+openbao_pki_max_lease_ttl: "87600h"  # 10 years for root CA
+
+# OpenBao URL for API calls (cluster-internal service DNS)
+openbao_internal_url: "https://{{ openbao_service_name }}.{{ openbao_namespace }}.svc.cluster.local:{{ openbao_service_port }}"
+
+# Self-signed cert is trusted via the mounted CA bundle, so do not skip verify.
+openbao_skip_tls_verify: false
+
+# Root token — will be disposed after bootstrap
+# Root token disposal — set true after bootstrap is complete and app-admin
+# secrets have been written. Once set to true, the root token cannot be used
+# again for app-admin-facts writes.
+openbao_dispose_root_token: true
+
+# Operator userpass retrieval path (Phase 5)
+# Human identity for pulling per-app admin credentials and writing the
+# app runtime secrets that this repo manages. Password is generated once and
+# persisted to {{ openbao_key_path }}.json alongside the Shamir material.
+openbao_operator_username: ops-admin
+openbao_operator_policy_name: app-admin-writer
+openbao_operator_reader_policy_name: app-admin-reader
+openbao_operator_runtime_policy_name: app-runtime-writer
+openbao_eso_policy_name: eso-reader
+openbao_operator_password_length: 32
+
+# Policy reconciliation identity (Phase 5b)
+# Separate identity with narrow sys/policies/acl/* permissions for reapplying
+# policy-as-code on reruns without the root token.
+openbao_policy_reconciler_username: policy-reconciler
+openbao_policy_writer_policy_name: policy-writer
+openbao_policy_reconciler_password_length: 32
+
+# AppRole reconciliation identity (ADR-0021)
+# Dedicated bootstrap-only identity for object-storage AppRole and ESO binding
+# reconciliation. Must not write ACL policies or read app secret data.
+openbao_approle_reconciler_username: approle-reconciler
+openbao_approle_reconciler_policy_name: approle-reconciler-writer
+openbao_approle_reconciler_password_length: 32
+
+# Object-storage logicals scoped to approle-reconciler. Keep this intentionally
+# local to the OpenBao role — if new logicals are added later, update this list
+# and object-storage-credentials together, or promote the list to inventory.
+openbao_approle_reconciler_object_storage_logicals:
+  - openbao_snapshots
+  - app_backups

@@ -1,0 +1,14 @@
+# Export template: Cable List CSV
+# Use: /api/dcim/cables/?format=csv or render via NetBox UI
+# This file documents the expected column layout for cable exports.
+# NetBox built-in export: Admin → Export Templates → dcim.cable
+---
+template_name: "Cable List (DMF)"
+content_type: "dcim.cable"
+mime_type: "text/csv"
+file_extension: "csv"
+template_code: |
+  Cable ID,Side A Device,Side A Port,Side B Device,Side B Port,Type,Status
+  {% for cable in cables %}
+  {{ cable.id }},"{{ cable.a_terminating_device.name }}","{{ cable.a_terminating_object.name }}","{{ cable.b_terminating_device.name }}","{{ cable.b_terminating_object.name }}","{{ cable.type | default('unknown') }}","{{ cable.status }}"
+  {% endfor %}
