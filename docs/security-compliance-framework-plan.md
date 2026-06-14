@@ -385,12 +385,12 @@ closer to mandatory.
 ## Open Questions
 
 - ~~Is the intended target a lab, reference implementation, customer-hosted product,
-  or managed service?~~ **Proposed answer 2026-05-11 by [ADR-0020](../../docs/decisions/0020-deployment-scope-and-regulatory-posture.md)
+  or managed service?~~ **Proposed answer 2026-05-11 by [ADR-0020](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0020-deployment-scope-and-regulatory-posture.md)
   — pending promotion from Proposed to Accepted. DMF ships in three
   explicitly-named modes (OSS self-host, managed `dmfdeploy.io`,
   flypack), each with its own regulatory posture and binding
   architectural constraints. This plan's framework applies to all three
-  modes; the [Pre-Release Compliance Readiness Plan](../../docs/plans/DMF%20Pre-Release%20Compliance%20Readiness%20Plan%202026-05-11.md)
+  modes; the [Pre-Release Compliance Readiness Plan](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/plans/DMF%20Pre-Release%20Compliance%20Readiness%20Plan%202026-05-11.md)
   enumerates per-mode gates.**
 - Will customer or production personal data be stored, or only lab identities and logs?
   Mode-dependent: Mode A (OSS) — operator's own choice; Mode B (managed) —
@@ -425,7 +425,7 @@ implement and *which frameworks* they map to. It does not describe *when
 each mode is allowed to go live*.
 
 The companion document
-[`docs/plans/DMF Pre-Release Compliance Readiness Plan 2026-05-11.md`](../../docs/plans/DMF%20Pre-Release%20Compliance%20Readiness%20Plan%202026-05-11.md)
+[`docs/plans/DMF Pre-Release Compliance Readiness Plan 2026-05-11.md`](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/plans/DMF%20Pre-Release%20Compliance%20Readiness%20Plan%202026-05-11.md)
 defines three tiered gates corresponding to the three deployment modes
 proposed in ADR-0020:
 
@@ -434,7 +434,7 @@ proposed in ADR-0020:
 - **Tier C** — before the first flypack ships (Mode C go-live)
 
 The operational checklist is at
-[`docs/processes/pre-release-compliance-checklist.md`](../../docs/processes/pre-release-compliance-checklist.md).
+[`docs/processes/pre-release-compliance-checklist.md`](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/processes/pre-release-compliance-checklist.md).
 
 This framework plan's Phase 4 ("external assurance" — ISO 27001
 certification, SOC 2 Type II) follows Tier B exit by 6+ months of
