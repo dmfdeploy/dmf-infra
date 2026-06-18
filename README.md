@@ -4,6 +4,8 @@ A fully automated k3s (lightweight Kubernetes) lab infrastructure using Ansible.
 provisions a 3-node high-availability cluster on Debian 12 nodes with environment-selected
 ingress, Longhorn distributed storage, and a complete monitoring and automation stack.
 
+> **New to the project vocabulary?** See the [DMF Glossary](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/GLOSSARY.md) for project-coined terms (umbrella, component repo, provider, …).
+
 > **Note: Lab Environment Resource Limits**
 >
 > This is a lightweight lab environment with minimal resource allocation:
