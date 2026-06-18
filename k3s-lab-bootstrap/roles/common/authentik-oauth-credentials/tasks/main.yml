@@ -1,0 +1,70 @@
+---
+- name: Assert authentik_oauth_provider_name is given
+  ansible.builtin.assert:
+    that:
+      - authentik_oauth_provider_name is defined
+      - authentik_oauth_provider_name | length > 0
+    fail_msg: >-
+      common/authentik-oauth-credentials requires the caller to pass
+      authentik_oauth_provider_name (the Authentik OAuth2Provider name
+      to look up). It was undefined or empty.
+
+- name: Wait for Authentik worker Deployment to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ authentik_release_name }}-worker"
+    namespace: "{{ authentik_namespace }}"
+  register: _ak_oauth_worker
+  until:
+    - _ak_oauth_worker.resources | length > 0
+    - _ak_oauth_worker.resources[0].status.readyReplicas | default(0) | int >= authentik_worker_replicas | int
+  retries: "{{ authentik_oauth_ready_retries }}"
+  delay: "{{ authentik_oauth_ready_delay }}"
+
+- name: Read OAuth2Provider credentials from Authentik (retried)
+  block:
+    - name: Read OAuth2Provider credentials via ak shell
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - k3s
+          - kubectl
+          - -n
+          - "{{ authentik_namespace }}"
+          - exec
+          - deploy/{{ authentik_release_name }}-worker
+          - --
+          - ak
+          - shell
+          - -c
+          - >-
+            import json;
+            from authentik.providers.oauth2.models import OAuth2Provider;
+            provider = OAuth2Provider.objects.get(name={{ authentik_oauth_provider_name | to_json }});
+            print("__AK_JSON__" + json.dumps({"client_id": provider.client_id, "client_secret": provider.client_secret}) + "__AK_JSON__")
+      register: _ak_oauth_exec
+      changed_when: false
+      no_log: true
+      until:
+        - _ak_oauth_exec.rc == 0
+        - (_ak_oauth_exec.stdout | default('')) is search('__AK_JSON__')
+      retries: "{{ authentik_oauth_exec_retries }}"
+      delay: "{{ authentik_oauth_exec_delay }}"
+  rescue:
+    - name: Surface non-secret diagnostic for ak shell failure
+      ansible.builtin.fail:
+        msg: >-
+          Reading OAuth2Provider '{{ authentik_oauth_provider_name }}' via ak shell
+          failed after {{ authentik_oauth_exec_retries }} retries
+          (rc={{ _ak_oauth_exec.rc | default('n/a') }}). Last stderr line:
+          {{ _ak_oauth_exec.stderr_lines | default([]) | last | default('(none)') }}
+
+- name: Parse OAuth2Provider credentials (sentinel-delimited)
+  ansible.builtin.set_fact:
+    "{{ authentik_oauth_result_var }}": >-
+      {{ (_ak_oauth_exec.stdout
+          | regex_search('__AK_JSON__(.*?)__AK_JSON__', '\1') | first)
+         | from_json }}
+  no_log: true

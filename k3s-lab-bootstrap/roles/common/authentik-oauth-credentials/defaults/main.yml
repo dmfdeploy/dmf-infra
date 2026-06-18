@@ -1,0 +1,10 @@
+---
+authentik_namespace: authentik
+authentik_release_name: authentik
+authentik_worker_replicas: 1
+authentik_oauth_result_var: authentik_oauth_credentials
+authentik_oauth_ready_retries: 60
+authentik_oauth_ready_delay: 10
+authentik_oauth_exec_retries: 30
+authentik_oauth_exec_delay: 5
+# authentik_oauth_provider_name has NO default — caller MUST pass it.
