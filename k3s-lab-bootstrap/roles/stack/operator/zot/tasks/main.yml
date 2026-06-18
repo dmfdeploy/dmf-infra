@@ -25,12 +25,14 @@
   when: zot_oidc_enabled | bool
 
 - name: Render Zot config
+  no_log: true
   ansible.builtin.template:
     src: config.json.j2
     dest: /tmp/zot-config.json
-    mode: "0644"
+    mode: "0600"
 
 - name: Load rendered Zot config
+  no_log: true
   ansible.builtin.slurp:
     src: /tmp/zot-config.json
   register: zot_config_slurped
@@ -45,6 +47,7 @@
     namespace: "{{ zot_namespace }}"
 
 - name: Create Zot config Secret
+  no_log: true
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
@@ -57,6 +60,11 @@
       type: Opaque
       stringData:
         config.json: "{{ zot_config_slurped.content | b64decode }}"
+
+- name: Remove rendered Zot config from disk (contained the OIDC secret)
+  ansible.builtin.file:
+    path: /tmp/zot-config.json
+    state: absent
 
 - name: Read existing Zot StatefulSet
   kubernetes.core.k8s_info:
@@ -142,6 +150,7 @@
   no_log: true
 
 - name: Create Zot htpasswd secret
+  no_log: true
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present

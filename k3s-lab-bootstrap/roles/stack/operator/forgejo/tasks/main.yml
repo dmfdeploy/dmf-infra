@@ -97,10 +97,11 @@
     directory_mode: "0755"
 
 - name: Template Forgejo Helm values
+  no_log: true
   ansible.builtin.template:
     src: values.yml.j2
     dest: /tmp/forgejo-values.yml
-    mode: "0644"
+    mode: "0600"
 
 - name: Deploy Forgejo via Helm
   kubernetes.core.helm:
@@ -112,6 +113,11 @@
     values_files:
       - /tmp/forgejo-values.yml
     wait: false
+
+- name: Remove rendered Forgejo Helm values from disk
+  ansible.builtin.file:
+    path: /tmp/forgejo-values.yml
+    state: absent
 
 - name: Restart Forgejo after OAuth secret refresh
   ansible.builtin.command:

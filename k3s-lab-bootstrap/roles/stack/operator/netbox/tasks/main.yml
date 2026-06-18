@@ -336,11 +336,9 @@
         that:
           - _netbox_openbao_verify.stdout | trim == netbox_db_password_effective
         fail_msg: >-
-          NetBox DB password failed to persist to OpenBao.
-          Expected: {{ netbox_db_password_effective }}
-          Got: {{ _netbox_openbao_verify.stdout | trim }}
-          This indicates OpenBao write succeeded but value is not consistent.
-          Check OpenBao policies and mount permissions.
+          NetBox DB password failed to persist to OpenBao: the read-back value did not match
+          what was written (values redacted). The OpenBao write succeeded but the stored value
+          is inconsistent — check OpenBao policies and mount permissions.
 
   when: _netbox_openbao_write_result is changed
 
@@ -353,6 +351,7 @@
   when: netbox_oidc_enabled | bool
 
 - name: Create NetBox extra config secret for API_TOKEN_PEPPERS
+  no_log: true
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
@@ -428,10 +427,11 @@
     directory_mode: "0755"
 
 - name: Template NetBox Helm values
+  no_log: true
   ansible.builtin.template:
     src: values.yml.j2
     dest: /tmp/netbox-values.yml
-    mode: "0644"
+    mode: "0600"
 
 - name: Deploy NetBox via Helm (local wrapper chart)
   kubernetes.core.helm:
@@ -443,6 +443,11 @@
     values_files:
       - /tmp/netbox-values.yml
     wait: false
+
+- name: Remove rendered NetBox Helm values from disk
+  ansible.builtin.file:
+    path: /tmp/netbox-values.yml
+    state: absent
 
 - name: Wait for NetBox media PVC to be bound
   kubernetes.core.k8s_info:
