@@ -77,6 +77,18 @@ awx_saml_idp_entity_id: "{{ awx_saml_sp_metadata_url }}"
 awx_saml_idp_certificate: ""
 awx_saml_certificate_discovery_retries: 18
 awx_saml_certificate_discovery_delay: 10
+
+# AWX DB migration can take ~25 min on a constrained single node. The *-web
+# Deployment reports Ready before migration completes, so gate the admin-password
+# sync on *-task readiness instead (its init-database init container blocks on
+# migrations). The budget is deliberately generous so it is correct on ANY hardware:
+# fast nodes pass in one loop and never consume it; slow nodes wait out the migration.
+# Overridable by the sandbox profile prelude if an even slower node needs more.
+awx_migration_wait_retries: 120   # ~30 min at delay 15
+awx_migration_wait_delay: 15
+# The migration gate above means the sync itself should succeed promptly, so keep its
+# retry budget small (was a hard-coded 30 = 5 min).
+awx_admin_password_sync_retries: 10
 awx_saml_login_redirect_override: "/sso/login/saml/?idp={{ awx_saml_idp_name }}"
 awx_saml_org_info:
   en-US:
