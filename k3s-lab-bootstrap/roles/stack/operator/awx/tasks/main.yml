@@ -36,6 +36,28 @@
   retries: 30
   delay: 10
 
+- name: Cap AWX operator CPU on the constrained profile
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: awx-operator-controller-manager
+        namespace: "{{ awx_namespace }}"
+      spec:
+        template:
+          spec:
+            containers:
+              - name: awx-manager
+                resources:
+                  requests:
+                    cpu: "{{ awx_operator_cpu_request | default('50m') }}"
+                  limits:
+                    cpu: "{{ awx_operator_cpu_limit }}"
+  when: awx_operator_cpu_limit is defined
+
 - name: Create AWX admin password secret
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml

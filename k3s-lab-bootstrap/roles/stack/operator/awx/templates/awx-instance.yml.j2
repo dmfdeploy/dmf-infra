@@ -118,6 +118,13 @@ spec:
   task_affinity:
 {{ awx_task_affinity | to_nice_yaml(indent=2) | indent(4, true) }}
 {% endif %}
+{% if awx_web_uwsgi_processes is defined %}
+  # Number of uwsgi processes per web container (awx-operator 2.19.1 CRD field).
+  # Default AWX behaviour is ~5 workers; the sandbox prelude caps to 2 on
+  # constrained nodes (proven on 8 GB Pi 4, issue #93). Lab/cloud leave this
+  # undefined → no override, AWX uses its built-in default.
+  uwsgi_processes: {{ awx_web_uwsgi_processes | int }}
+{% endif %}
 
 # DEFERRED (2026-05-06): the spec.ee_pod_spec_override field below is NOT a
 # valid AWX operator CRD field. The k8s apply succeeds (returns ok) but the

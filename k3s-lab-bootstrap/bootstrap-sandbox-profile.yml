@@ -59,6 +59,9 @@
         awx_web_resource_requirements: "{{ awx_web_resource_requirements | default(_awx_fit_web) }}"
         awx_task_resource_requirements: "{{ awx_task_resource_requirements | default(_awx_fit_task) }}"
         awx_postgres_resource_requirements: "{{ awx_postgres_resource_requirements | default(_awx_fit_postgres) }}"
+        # uwsgi processes per web container (AWX CR spec.uwsgi_processes,
+        # awx-operator 2.19.1). AWX default ~5; proven 2 on 8 GB Pi 4 (#93).
+        awx_web_uwsgi_processes: "{{ awx_web_uwsgi_processes | default(2) }}"
       # Memory LIMITS are lab-parity (web 1536Mi, task 2Gi): tuned ONCE from the
       # first imc1-cyh4 rollout, where a 1Gi web limit OOMKilled awx-web (exit
       # 137) — AWX's web container runs 5 uWSGI workers + daphne and needs
@@ -76,6 +79,32 @@
           requests: {cpu: 50m, memory: 256Mi}
           limits: {cpu: 1000m, memory: 768Mi}
       when: (dmf_awx_profile | default('single-node-low-concurrency')) == 'single-node-low-concurrency'
+      tags:
+        - always
+        - sandbox
+        - release-profile
+
+    # Issue #93 — constrained-node worker-pool right-sizing. Proven on an 8 GB
+    # Pi 4 (env oq9y-mnj8): node free RAM ~0 → 2.3 GiB, all bootstrap phases
+    # green. These knobs cap NGINX Unit, Authentik web/worker, and the AWX
+    # operator reconcile loop — the four biggest RAM sinks that auto-size to
+    # CPU count. Gated on dmf_release_profile (not just dmf_awx_profile) because
+    # NetBox and Authentik are not AWX-specific; any sandbox-single-node env
+    # benefits. Lab/cloud never import this prelude → unchanged.
+    # Values are conservative FLOORS — adjust from observed footprint.
+    - name: "Apply constrained-node worker right-sizing (proven on 8 GB Pi 4, issue 93)"
+      ansible.builtin.set_fact:
+        netbox_unit_processes_max: "{{ netbox_unit_processes_max | default(1) }}"
+        netbox_unit_processes_spare: "{{ netbox_unit_processes_spare | default(1) }}"
+        authentik_web_workers: "{{ authentik_web_workers | default(2) }}"
+        authentik_worker_resources: "{{ authentik_worker_resources | default(_authentik_worker_fit) }}"
+        awx_operator_cpu_limit: "{{ awx_operator_cpu_limit | default('500m') }}"
+      vars:
+        _authentik_worker_fit:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+      when: (dmf_release_profile | default('sandbox-single-node')) == 'sandbox-single-node'
       tags:
         - always
         - sandbox

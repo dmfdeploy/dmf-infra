@@ -138,8 +138,8 @@ netbox:
           SSL_CERT_FILE: {{ netbox_local_ca_mount_path | to_json }}
 {% endif %}
         processes:
-          max: 4
-          spare: 2
+          max: {{ netbox_unit_processes_max | default(4) }}
+          spare: {{ netbox_unit_processes_spare | default(2) }}
           idle_timeout: 3600
     access_log: /dev/stdout
     settings:

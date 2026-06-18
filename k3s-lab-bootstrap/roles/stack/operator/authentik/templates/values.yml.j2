@@ -2,6 +2,11 @@ global:
   envFrom:
     - secretRef:
         name: {{ authentik_runtime_secret_name }}
+{% if authentik_web_workers is defined %}
+  env:
+    - name: AUTHENTIK_WEB__WORKERS
+      value: "{{ authentik_web_workers }}"
+{% endif %}
   volumes:
     - name: authentik-secrets
       secret:
@@ -34,6 +39,10 @@ server:
 
 worker:
   replicas: {{ authentik_worker_replicas }}
+{% if authentik_worker_resources is defined %}
+  resources:
+{{ authentik_worker_resources | to_nice_yaml(indent=2) | indent(4, true) }}
+{% endif %}
 
 postgresql:
   enabled: true

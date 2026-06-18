@@ -73,3 +73,9 @@ netbox_ingress_class: traefik-private
 # Media persistence access mode - ReadWriteMany for multi-pod cloud
 # deployments; set to ReadWriteOnce for single-node / local-path profiles.
 netbox_media_access_mode: ReadWriteMany
+
+# NGINX Unit worker pool sizing. Defaults match upstream (4 max / 2 spare)
+# for lab/cloud; the sandbox profile prelude overrides these for constrained
+# nodes (e.g. 8 GB Pi 4) where CPU-count-based pools exhaust RAM (#93).
+netbox_unit_processes_max: 4
+netbox_unit_processes_spare: 2
