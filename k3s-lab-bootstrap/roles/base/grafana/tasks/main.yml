@@ -95,10 +95,11 @@
     template: configmap-dashboards.yml.j2
 
 - name: Template Grafana Helm values
+  no_log: true
   ansible.builtin.template:
     src: values.yml.j2
     dest: /tmp/grafana-values.yml
-    mode: "0644"
+    mode: "0600"
 
 - name: Deploy Grafana via Helm
   kubernetes.core.helm:
@@ -112,6 +113,11 @@
       - /tmp/grafana-values.yml
     wait: true
     wait_timeout: 300s
+
+- name: Remove rendered Grafana Helm values from disk
+  ansible.builtin.file:
+    path: /tmp/grafana-values.yml
+    state: absent
 
 - name: Restart Grafana after OAuth secret refresh
   ansible.builtin.command:

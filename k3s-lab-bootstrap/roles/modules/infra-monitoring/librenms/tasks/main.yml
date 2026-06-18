@@ -15,10 +15,11 @@
     repo_url: "{{ librenms_helm_repo }}"
 
 - name: Template LibreNMS Helm values
+  no_log: true
   ansible.builtin.template:
     src: values.yml.j2
     dest: /tmp/librenms-values.yml
-    mode: "0644"
+    mode: "0600"
 
 - name: Deploy LibreNMS via Helm
   kubernetes.core.helm:
@@ -293,6 +294,7 @@
   no_log: true
 
 - name: Generate LibreNMS admin password when unset
+  no_log: true
   ansible.builtin.command: openssl rand -base64 24
   register: librenms_admin_password_generated
   changed_when: false
@@ -319,8 +321,8 @@
 - name: Show LibreNMS admin credentials
   ansible.builtin.debug:
     msg: >-
-      LibreNMS admin user created: {{ librenms_admin_username }} /
-      {{ librenms_admin_password_effective }}
+      LibreNMS admin user '{{ librenms_admin_username }}' created. Retrieve the password
+      from the encrypted backup / OpenBao (not shown here).
   when: librenms_user_count.stdout | trim == "0"
 
 - name: Cleanup temp values file
