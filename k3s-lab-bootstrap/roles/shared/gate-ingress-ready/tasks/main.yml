@@ -8,7 +8,8 @@
 # Usage (include at role top, before any app-API uri calls):
 #
 #   - name: Ingress readiness gate
-#     ansible.builtin.include_tasks: roles/shared/gate-ingress-ready/tasks/main.yml
+#     ansible.builtin.include_role:
+#       name: shared/gate-ingress-ready
 #     vars:
 #       gate_ingress_probe_url: "{{ my_app_api_base }}/ping/"
 #       gate_app_ready_url: "{{ my_app_api_base }}/"

@@ -370,7 +370,8 @@
   changed_when: false
 
 - name: Ingress readiness gate — Traefik + NetBox
-  ansible.builtin.include_tasks: roles/shared/gate-ingress-ready/tasks/main.yml
+  ansible.builtin.include_role:
+    name: shared/gate-ingress-ready
   vars:
     gate_ingress_probe_url: "{{ dmf_born_inventory_netbox_api_base }}/"
     gate_app_ready_url: "{{ dmf_born_inventory_netbox_api_base }}/"
