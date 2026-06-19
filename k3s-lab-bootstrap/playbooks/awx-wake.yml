@@ -1,0 +1,22 @@
+---
+# Restore AWX replicas to desired (awake) for the AWX consumer phase.
+#
+# Opt-in: only runs when dmf_awx_autoscale_enabled is true. Off by default so
+# existing sandbox behaviour and cloud/lab lanes are unchanged.
+#
+# Lifecycle position: AFTER the non-AWX configure plays, BEFORE AWX consumers
+# (693-awx-integration, 697-cms-awx-token, 699-cms-smoke-test). Gates on web
+# + task Deployment readyReplicas >= 1 and API 200 before declaring ready.
+#
+# Thin wrapper — delegates to the awx-presence role.
+- name: "Scale AWX to desired (awake)"
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - role: base/cluster-ready
+      when: dmf_awx_autoscale_enabled | default(false) | bool
+    - role: stack/operator/awx-presence
+      vars:
+        awx_presence_state: awake
+      when: dmf_awx_autoscale_enabled | default(false) | bool

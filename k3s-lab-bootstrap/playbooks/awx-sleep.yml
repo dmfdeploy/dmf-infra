@@ -1,0 +1,23 @@
+---
+# Gate AWX replicas to 0 (asleep) for the non-AWX configure phase.
+#
+# Opt-in: only runs when dmf_awx_autoscale_enabled is true. Off by default so
+# existing sandbox behaviour and cloud/lab lanes are unchanged.
+#
+# Lifecycle position: AFTER 640 installs AWX awake (install waits + admin-sync
+# stay in that window — Phase-0 constraint #1), BEFORE the non-AWX configure
+# plays that were starving on a constrained node while AWX held ~2 GB.
+#
+# Thin wrapper — delegates to the awx-presence role. No templates, no full
+# role apply, no readyReplicas waits. Replica fields only.
+- name: "Scale AWX to zero (asleep)"
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - role: base/cluster-ready
+      when: dmf_awx_autoscale_enabled | default(false) | bool
+    - role: stack/operator/awx-presence
+      vars:
+        awx_presence_state: asleep
+      when: dmf_awx_autoscale_enabled | default(false) | bool
