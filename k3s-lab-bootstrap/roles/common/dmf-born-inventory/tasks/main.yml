@@ -369,6 +369,14 @@
       day-0 inventory. Check k3s_node_ip in the environment inventory.
   changed_when: false
 
+- name: Ingress readiness gate — Traefik + NetBox
+  ansible.builtin.include_tasks: roles/shared/gate-ingress-ready/tasks/main.yml
+  vars:
+    gate_ingress_probe_url: "{{ dmf_born_inventory_netbox_api_base }}/"
+    gate_app_ready_url: "{{ dmf_born_inventory_netbox_api_base }}/"
+    gate_app_ready_headers: "{{ dmf_born_inventory_netbox_headers }}"
+    gate_app_ready_validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+
 - name: Check NetBox API availability
   ansible.builtin.uri:
     url: "{{ dmf_born_inventory_netbox_api_base }}/"
@@ -389,6 +397,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_tag_lookup is success
+    or (dmf_born_inventory_tag_lookup.status | default(0) >= 400 and dmf_born_inventory_tag_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_tag_lookup
 
 - name: Create DMF tag
@@ -404,6 +417,11 @@
       description: "Day-0 DMF inventory marker"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_tag_created is success
+    or (dmf_born_inventory_tag_created.status | default(0) >= 400 and dmf_born_inventory_tag_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_tag_lookup.json.count | int == 0
   register: dmf_born_inventory_tag_created
 
@@ -415,6 +433,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_tag_lookup_after_create is success
+    or (dmf_born_inventory_tag_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_tag_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_tag_lookup_after_create
 
 - name: Set DMF tag id
@@ -438,6 +461,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_tenant_lookup is success
+    or (dmf_born_inventory_tenant_lookup.status | default(0) >= 400 and dmf_born_inventory_tenant_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_tenant_lookup
 
 - name: Create DMF tenant
@@ -452,6 +480,11 @@
       description: "DMF day-0 operator environment"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_tenant_created is success
+    or (dmf_born_inventory_tenant_created.status | default(0) >= 400 and dmf_born_inventory_tenant_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_tenant_lookup.json.count | int == 0
   register: dmf_born_inventory_tenant_created
 
@@ -463,6 +496,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_tenant_lookup_after_create is success
+    or (dmf_born_inventory_tenant_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_tenant_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_tenant_lookup_after_create
 
 - name: Set DMF tenant id
@@ -516,6 +554,11 @@
         return_content: true
         status_code: 200
         validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      until: >-
+        _dmf_choice_set_lookup is success
+        or (_dmf_choice_set_lookup.status | default(0) >= 400 and _dmf_choice_set_lookup.status | default(0) < 500)
+      retries: "{{ _gate_uri_retry | default(6) }}"
+      delay: "{{ _gate_uri_delay | default(5) }}"
       register: _dmf_choice_set_lookup
       loop: "{{ _dmf_choice_sets }}"
       loop_control:
@@ -533,6 +576,12 @@
           extra_choices: "{{ item.item.extra_choices }}"
         status_code: 201
         validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      until: >-
+        _gate_uri_result_1 is success
+        or (_gate_uri_result_1.status | default(0) >= 400 and _gate_uri_result_1.status | default(0) < 500)
+      retries: "{{ _gate_uri_retry | default(6) }}"
+      delay: "{{ _gate_uri_delay | default(5) }}"
+      register: _gate_uri_result_1
       loop: "{{ _dmf_choice_set_lookup.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -546,6 +595,11 @@
         return_content: true
         status_code: 200
         validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      until: >-
+        _dmf_choice_set_lookup_after_create is success
+        or (_dmf_choice_set_lookup_after_create.status | default(0) >= 400 and _dmf_choice_set_lookup_after_create.status | default(0) < 500)
+      retries: "{{ _gate_uri_retry | default(6) }}"
+      delay: "{{ _gate_uri_delay | default(5) }}"
       register: _dmf_choice_set_lookup_after_create
       loop: "{{ _dmf_choice_sets }}"
       loop_control:
@@ -561,6 +615,12 @@
           extra_choices: "{{ item.item.extra_choices }}"
         status_code: 200
         validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      until: >-
+        _gate_uri_result_2 is success
+        or (_gate_uri_result_2.status | default(0) >= 400 and _gate_uri_result_2.status | default(0) < 500)
+      retries: "{{ _gate_uri_retry | default(6) }}"
+      delay: "{{ _gate_uri_delay | default(5) }}"
+      register: _gate_uri_result_2
       loop: "{{ _dmf_choice_set_lookup_after_create.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -595,6 +655,11 @@
         return_content: true
         status_code: 200
         validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      until: >-
+        _dmf_cf_lookup is success
+        or (_dmf_cf_lookup.status | default(0) >= 400 and _dmf_cf_lookup.status | default(0) < 500)
+      retries: "{{ _gate_uri_retry | default(6) }}"
+      delay: "{{ _gate_uri_delay | default(5) }}"
       register: _dmf_cf_lookup
       loop: "{{ _dmf_cf_defs }}"
       loop_control:
@@ -623,6 +688,12 @@
           }}
         status_code: 201
         validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+      until: >-
+        _gate_uri_result_3 is success
+        or (_gate_uri_result_3.status | default(0) >= 400 and _gate_uri_result_3.status | default(0) < 500)
+      retries: "{{ _gate_uri_retry | default(6) }}"
+      delay: "{{ _gate_uri_delay | default(5) }}"
+      register: _gate_uri_result_3
       loop: "{{ _dmf_cf_lookup.results }}"
       loop_control:
         label: "{{ item.item.name }}"
@@ -651,6 +722,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_site_lookup is success
+    or (dmf_born_inventory_site_lookup.status | default(0) >= 400 and dmf_born_inventory_site_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_site_lookup
 
 - name: Create DMF site
@@ -667,6 +743,11 @@
       comments: "{{ dmf_born_inventory_site_comments }}"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_site_created is success
+    or (dmf_born_inventory_site_created.status | default(0) >= 400 and dmf_born_inventory_site_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_site_lookup.json.count | int == 0
   register: dmf_born_inventory_site_created
 
@@ -678,6 +759,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_site_lookup_after_create is success
+    or (dmf_born_inventory_site_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_site_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_site_lookup_after_create
 
 - name: Set DMF site id
@@ -710,6 +796,12 @@
         dmf_architecture: "{{ dmf_born_inventory_architecture }}"
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    _gate_uri_result_4 is success
+    or (_gate_uri_result_4.status | default(0) >= 400 and _gate_uri_result_4.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_4
   when:
     - dmf_born_inventory_provider | length > 0
     - dmf_born_inventory_architecture | length > 0
@@ -722,6 +814,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_cluster_type_lookup is success
+    or (dmf_born_inventory_cluster_type_lookup.status | default(0) >= 400 and dmf_born_inventory_cluster_type_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_cluster_type_lookup
 
 - name: Create k3s cluster type
@@ -735,6 +832,11 @@
       slug: "{{ dmf_born_inventory_cluster_type_name | lower }}"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_cluster_type_created is success
+    or (dmf_born_inventory_cluster_type_created.status | default(0) >= 400 and dmf_born_inventory_cluster_type_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_cluster_type_lookup.json.count | int == 0
   register: dmf_born_inventory_cluster_type_created
 
@@ -746,6 +848,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_cluster_type_lookup_after_create is success
+    or (dmf_born_inventory_cluster_type_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_cluster_type_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_cluster_type_lookup_after_create
 
 - name: Set cluster type id
@@ -769,6 +876,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_cluster_lookup is success
+    or (dmf_born_inventory_cluster_lookup.status | default(0) >= 400 and dmf_born_inventory_cluster_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_cluster_lookup
 
 - name: Create k3s cluster
@@ -784,6 +896,11 @@
       comments: "{{ dmf_born_inventory_cluster_comments }}"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_cluster_created is success
+    or (dmf_born_inventory_cluster_created.status | default(0) >= 400 and dmf_born_inventory_cluster_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_cluster_lookup.json.count | int == 0
   register: dmf_born_inventory_cluster_created
 
@@ -795,6 +912,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_cluster_lookup_after_create is success
+    or (dmf_born_inventory_cluster_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_cluster_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_cluster_lookup_after_create
 
 - name: Set cluster id
@@ -824,6 +946,12 @@
         dmf_architecture: "{{ dmf_born_inventory_architecture }}"
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    _gate_uri_result_5 is success
+    or (_gate_uri_result_5.status | default(0) >= 400 and _gate_uri_result_5.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_5
   when:
     - dmf_born_inventory_provider | length > 0
     - dmf_born_inventory_architecture | length > 0
@@ -836,6 +964,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_platform_lookup is success
+    or (dmf_born_inventory_platform_lookup.status | default(0) >= 400 and dmf_born_inventory_platform_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_platform_lookup
 
 - name: Create platform
@@ -849,6 +982,11 @@
       slug: "{{ dmf_born_inventory_platform_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_platform_created is success
+    or (dmf_born_inventory_platform_created.status | default(0) >= 400 and dmf_born_inventory_platform_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_platform_lookup.json.count | int == 0
   register: dmf_born_inventory_platform_created
 
@@ -860,6 +998,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_platform_lookup_after_create is success
+    or (dmf_born_inventory_platform_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_platform_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_platform_lookup_after_create
 
 - name: Set platform id
@@ -883,6 +1026,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_control_role_lookup is success
+    or (dmf_born_inventory_control_role_lookup.status | default(0) >= 400 and dmf_born_inventory_control_role_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_control_role_lookup
 
 - name: Create control-plane device role
@@ -898,6 +1046,11 @@
       vm_role: true
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_control_role_created is success
+    or (dmf_born_inventory_control_role_created.status | default(0) >= 400 and dmf_born_inventory_control_role_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_control_role_lookup.json.count | int == 0
   register: dmf_born_inventory_control_role_created
 
@@ -909,6 +1062,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_control_role_lookup_after_create is success
+    or (dmf_born_inventory_control_role_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_control_role_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_control_role_lookup_after_create
 
 - name: Set control-plane role id
@@ -932,6 +1090,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_worker_role_lookup is success
+    or (dmf_born_inventory_worker_role_lookup.status | default(0) >= 400 and dmf_born_inventory_worker_role_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_worker_role_lookup
 
 - name: Create worker device role
@@ -947,6 +1110,11 @@
       vm_role: true
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_worker_role_created is success
+    or (dmf_born_inventory_worker_role_created.status | default(0) >= 400 and dmf_born_inventory_worker_role_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_worker_role_lookup.json.count | int == 0
   register: dmf_born_inventory_worker_role_created
 
@@ -958,6 +1126,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_worker_role_lookup_after_create is success
+    or (dmf_born_inventory_worker_role_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_worker_role_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_worker_role_lookup_after_create
 
 - name: Set worker role id
@@ -981,6 +1154,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_role_lookup is success
+    or (dmf_born_inventory_load_balancer_role_lookup.status | default(0) >= 400 and dmf_born_inventory_load_balancer_role_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_role_lookup
 
 - name: Create load balancer device role
@@ -996,6 +1174,11 @@
       vm_role: false
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_role_created is success
+    or (dmf_born_inventory_load_balancer_role_created.status | default(0) >= 400 and dmf_born_inventory_load_balancer_role_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_load_balancer_role_lookup.json.count | int == 0
   register: dmf_born_inventory_load_balancer_role_created
 
@@ -1007,6 +1190,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_role_lookup_after_create is success
+    or (dmf_born_inventory_load_balancer_role_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_load_balancer_role_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_role_lookup_after_create
 
 - name: Set load balancer role id
@@ -1030,6 +1218,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_manufacturer_lookup is success
+    or (dmf_born_inventory_manufacturer_lookup.status | default(0) >= 400 and dmf_born_inventory_manufacturer_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_manufacturer_lookup
 
 - name: Create load balancer manufacturer
@@ -1043,6 +1236,11 @@
       slug: "{{ dmf_born_inventory_manufacturer_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_manufacturer_created is success
+    or (dmf_born_inventory_manufacturer_created.status | default(0) >= 400 and dmf_born_inventory_manufacturer_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_manufacturer_lookup.json.count | int == 0
   register: dmf_born_inventory_manufacturer_created
 
@@ -1054,6 +1252,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_manufacturer_lookup_after_create is success
+    or (dmf_born_inventory_manufacturer_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_manufacturer_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_manufacturer_lookup_after_create
 
 - name: Set load balancer manufacturer id
@@ -1077,6 +1280,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_device_type_lookup is success
+    or (dmf_born_inventory_load_balancer_device_type_lookup.status | default(0) >= 400 and dmf_born_inventory_load_balancer_device_type_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_device_type_lookup
 
 - name: Create load balancer device type
@@ -1091,6 +1299,11 @@
       slug: "{{ dmf_born_inventory_load_balancer_device_type_name | lower | regex_replace('[^a-z0-9]+', '-') | regex_replace('^-+|-+$', '') }}"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_device_type_created is success
+    or (dmf_born_inventory_load_balancer_device_type_created.status | default(0) >= 400 and dmf_born_inventory_load_balancer_device_type_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_load_balancer_device_type_lookup.json.count | int == 0
   register: dmf_born_inventory_load_balancer_device_type_created
 
@@ -1102,6 +1315,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_device_type_lookup_after_create is success
+    or (dmf_born_inventory_load_balancer_device_type_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_load_balancer_device_type_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_device_type_lookup_after_create
 
 - name: Set load balancer device type id
@@ -1157,6 +1375,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_lookup is success
+    or (dmf_born_inventory_load_balancer_lookup.status | default(0) >= 400 and dmf_born_inventory_load_balancer_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_lookup
 
 - name: Create load balancer device
@@ -1179,6 +1402,11 @@
         - "{{ dmf_born_inventory_tag_id }}"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_created is success
+    or (dmf_born_inventory_load_balancer_created.status | default(0) >= 400 and dmf_born_inventory_load_balancer_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_load_balancer_lookup.json.count | int == 0
   register: dmf_born_inventory_load_balancer_created
 
@@ -1190,6 +1418,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_lookup_after_create is success
+    or (dmf_born_inventory_load_balancer_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_load_balancer_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_lookup_after_create
 
 - name: Set load balancer id
@@ -1215,6 +1448,12 @@
       primary_ip4: null
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    _gate_uri_result_6 is success
+    or (_gate_uri_result_6.status | default(0) >= 400 and _gate_uri_result_6.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_6
   when: dmf_born_inventory_provider == 'sandbox'
 
 - name: Ensure load balancer interface exists
@@ -1225,6 +1464,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_iface_lookup is success
+    or (dmf_born_inventory_load_balancer_iface_lookup.status | default(0) >= 400 and dmf_born_inventory_load_balancer_iface_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_iface_lookup
 
 - name: Create load balancer interface
@@ -1240,6 +1484,11 @@
       enabled: true
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_iface_created is success
+    or (dmf_born_inventory_load_balancer_iface_created.status | default(0) >= 400 and dmf_born_inventory_load_balancer_iface_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_load_balancer_iface_lookup.json.count | int == 0
   register: dmf_born_inventory_load_balancer_iface_created
 
@@ -1251,6 +1500,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_iface_lookup_after_create is success
+    or (dmf_born_inventory_load_balancer_iface_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_load_balancer_iface_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_iface_lookup_after_create
 
 - name: Set load balancer interface id
@@ -1274,6 +1528,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_ip_lookup is success
+    or (dmf_born_inventory_load_balancer_ip_lookup.status | default(0) >= 400 and dmf_born_inventory_load_balancer_ip_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_ip_lookup
   when: dmf_born_inventory_load_balancer_ip | length > 0
 
@@ -1294,6 +1553,11 @@
         - "{{ dmf_born_inventory_tag_id }}"
     status_code: 201
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_ip_created is success
+    or (dmf_born_inventory_load_balancer_ip_created.status | default(0) >= 400 and dmf_born_inventory_load_balancer_ip_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when:
     - dmf_born_inventory_load_balancer_ip | length > 0
     - dmf_born_inventory_load_balancer_ip_lookup.json.count | int == 0
@@ -1307,6 +1571,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_load_balancer_ip_lookup_after_create is success
+    or (dmf_born_inventory_load_balancer_ip_lookup_after_create.status | default(0) >= 400 and dmf_born_inventory_load_balancer_ip_lookup_after_create.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_load_balancer_ip_lookup_after_create
   when: dmf_born_inventory_load_balancer_ip | length > 0
 
@@ -1338,6 +1607,12 @@
         Service: {{ dmf_born_inventory_traefik_service_name }}.
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    _gate_uri_result_7 is success
+    or (_gate_uri_result_7.status | default(0) >= 400 and _gate_uri_result_7.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_7
   when: dmf_born_inventory_load_balancer_ip | length > 0
 
 - name: Upsert VM inventory for each k3s node
@@ -1389,6 +1664,11 @@
     return_content: true
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  until: >-
+    dmf_born_inventory_forgejo_svc_user_lookup is success
+    or (dmf_born_inventory_forgejo_svc_user_lookup.status | default(0) >= 400 and dmf_born_inventory_forgejo_svc_user_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: dmf_born_inventory_forgejo_svc_user_lookup
 
 - name: Create forgejo-svc user in NetBox
@@ -1402,6 +1682,11 @@
       is_active: true
       password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
     status_code: 201
+  until: >-
+    dmf_born_inventory_forgejo_svc_user_created is success
+    or (dmf_born_inventory_forgejo_svc_user_created.status | default(0) >= 400 and dmf_born_inventory_forgejo_svc_user_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: dmf_born_inventory_forgejo_svc_user_lookup.json.count | int == 0
   no_log: true
   register: dmf_born_inventory_forgejo_svc_user_created

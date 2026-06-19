@@ -480,6 +480,16 @@
           name: awx
           namespace: awx
 
+- name: Ingress readiness gate — Traefik + AWX
+  ansible.builtin.include_tasks: roles/shared/gate-ingress-ready/tasks/main.yml
+  vars:
+    gate_ingress_probe_url: "{{ awx_integration_api_base }}/ping/"
+    gate_app_ready_url: "{{ awx_integration_api_base }}/me/"
+    gate_app_ready_url_username: "{{ awx_integration_admin_user }}"
+    gate_app_ready_url_password: "{{ awx_integration_admin_password }}"
+    gate_app_ready_force_basic_auth: true
+    gate_app_ready_validate_certs: "{{ awx_integration_validate_certs | bool }}"
+
 - name: Check AWX API availability
   ansible.builtin.uri:
     url: "{{ awx_integration_api_base }}/ping/"
@@ -540,6 +550,11 @@
     headers:
       Authorization: "token {{ awx_integration_forgejo_token }}"
     status_code: 200
+  until: >-
+    awx_integration_forgejo_user_check is success
+    or (awx_integration_forgejo_user_check.status | default(0) >= 400 and awx_integration_forgejo_user_check.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_forgejo_user_check
   no_log: "{{ not awx_integration_debug | bool }}"
 
@@ -550,6 +565,11 @@
     headers:
       Authorization: "token {{ awx_integration_forgejo_token }}"
     status_code: 200
+  until: >-
+    awx_integration_forgejo_repo is success
+    or (awx_integration_forgejo_repo.status | default(0) >= 400 and awx_integration_forgejo_repo.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_forgejo_repo
   no_log: "{{ not awx_integration_debug | bool }}"
 
@@ -566,6 +586,11 @@
     headers:
       Authorization: "token {{ awx_integration_forgejo_token }}"
     status_code: [200, 404]
+  until: >-
+    awx_integration_forgejo_inventory_lookup is success
+    or (awx_integration_forgejo_inventory_lookup.status | default(0) >= 400 and awx_integration_forgejo_inventory_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_forgejo_inventory_lookup
   no_log: true
 
@@ -576,6 +601,11 @@
     headers:
       Authorization: "token {{ awx_integration_forgejo_token }}"
     status_code: [200, 404]
+  until: >-
+    awx_integration_forgejo_collections_lookup is success
+    or (awx_integration_forgejo_collections_lookup.status | default(0) >= 400 and awx_integration_forgejo_collections_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_forgejo_collections_lookup
   no_log: true
 
@@ -591,6 +621,12 @@
       content: "{{ awx_integration_netbox_inventory_content | b64encode }}"
       branch: "{{ awx_integration_repo_branch }}"
     status_code: 201
+  until: >-
+    _gate_uri_result_8 is success
+    or (_gate_uri_result_8.status | default(0) >= 400 and _gate_uri_result_8.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_8
   when: awx_integration_forgejo_inventory_lookup.status == 404
   no_log: true
 
@@ -607,6 +643,12 @@
       sha: "{{ awx_integration_forgejo_inventory_lookup.json.sha }}"
       branch: "{{ awx_integration_repo_branch }}"
     status_code: 200
+  until: >-
+    _gate_uri_result_9 is success
+    or (_gate_uri_result_9.status | default(0) >= 400 and _gate_uri_result_9.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_9
   when: awx_integration_forgejo_inventory_lookup.status == 200
   no_log: true
 
@@ -622,6 +664,12 @@
       content: "{{ awx_integration_collections_content | b64encode }}"
       branch: "{{ awx_integration_repo_branch }}"
     status_code: 201
+  until: >-
+    _gate_uri_result_10 is success
+    or (_gate_uri_result_10.status | default(0) >= 400 and _gate_uri_result_10.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_10
   when: awx_integration_forgejo_collections_lookup.status == 404
   no_log: true
 
@@ -638,6 +686,12 @@
       sha: "{{ awx_integration_forgejo_collections_lookup.json.sha }}"
       branch: "{{ awx_integration_repo_branch }}"
     status_code: 200
+  until: >-
+    _gate_uri_result_11 is success
+    or (_gate_uri_result_11.status | default(0) >= 400 and _gate_uri_result_11.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_11
   when: awx_integration_forgejo_collections_lookup.status == 200
   no_log: true
 
@@ -649,6 +703,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_integration_org_lookup is success
+    or (awx_integration_org_lookup.status | default(0) >= 400 and awx_integration_org_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_org_lookup
 
 - name: Set AWX organization id
@@ -669,6 +728,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_integration_svc_user_lookup is success
+    or (awx_integration_svc_user_lookup.status | default(0) >= 400 and awx_integration_svc_user_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_svc_user_lookup
 
 - name: Create AWX service user
@@ -685,6 +749,11 @@
       is_superuser: false
       is_system_auditor: false
     status_code: 201
+  until: >-
+    awx_integration_svc_user_created is success
+    or (awx_integration_svc_user_created.status | default(0) >= 400 and awx_integration_svc_user_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: awx_integration_svc_user_lookup.json.count | int == 0
   no_log: true
   register: awx_integration_svc_user_created
@@ -711,6 +780,12 @@
     body:
       password: "{{ awx_integration_svc_password_effective }}"
     status_code: 200
+  until: >-
+    _gate_uri_result_12 is success
+    or (_gate_uri_result_12.status | default(0) >= 400 and _gate_uri_result_12.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_12
   no_log: true
 
 # Force re-mint if the persisted token is not owned by awx-svc (e.g. a legacy
@@ -723,8 +798,13 @@
     headers:
       Authorization: "Bearer {{ awx_integration_svc_token_effective }}"
     status_code: [200, 401, 403]
-  register: _awx_integration_svc_token_me
   failed_when: false
+  until: >-
+    _awx_integration_svc_token_me is success
+    or (_awx_integration_svc_token_me.status | default(0) >= 400 and _awx_integration_svc_token_me.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _awx_integration_svc_token_me
   no_log: true
   when: awx_integration_svc_token_effective | length > 0
 
@@ -750,6 +830,11 @@
       description: "awx-svc-token"
       scope: "write"
     status_code: 201
+  until: >-
+    awx_integration_svc_token_created is success
+    or (awx_integration_svc_token_created.status | default(0) >= 400 and awx_integration_svc_token_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_svc_token_created
   when: awx_integration_svc_token_effective | length == 0
   no_log: true
@@ -768,6 +853,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_integration_scm_cred_type_lookup is success
+    or (awx_integration_scm_cred_type_lookup.status | default(0) >= 400 and awx_integration_scm_cred_type_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_scm_cred_type_lookup
 
 - name: Set SCM credential type id
@@ -794,6 +884,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_integration_scm_cred_lookup is success
+    or (awx_integration_scm_cred_lookup.status | default(0) >= 400 and awx_integration_scm_cred_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_scm_cred_lookup
 
 - name: Create Forgejo SCM credential
@@ -812,6 +907,11 @@
         username: "{{ awx_integration_forgejo_user }}"
         password: "{{ awx_integration_forgejo_token }}"
     status_code: 201
+  until: >-
+    awx_integration_scm_cred_created is success
+    or (awx_integration_scm_cred_created.status | default(0) >= 400 and awx_integration_scm_cred_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: awx_integration_scm_cred_lookup.json.count | int == 0
   no_log: true
   register: awx_integration_scm_cred_created
@@ -835,6 +935,12 @@
         username: "{{ awx_integration_forgejo_user }}"
         password: "{{ awx_integration_forgejo_token }}"
     status_code: 200
+  until: >-
+    _gate_uri_result_13 is success
+    or (_gate_uri_result_13.status | default(0) >= 400 and _gate_uri_result_13.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_13
   no_log: true
 
 
@@ -846,6 +952,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_integration_project_lookup is success
+    or (awx_integration_project_lookup.status | default(0) >= 400 and awx_integration_project_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_project_lookup
 
 - name: Create AWX project
@@ -865,6 +976,11 @@
       scm_update_on_launch: true
       credential: "{{ awx_integration_scm_cred_id }}"
     status_code: 201
+  until: >-
+    awx_integration_project_created is success
+    or (awx_integration_project_created.status | default(0) >= 400 and awx_integration_project_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: awx_integration_project_lookup.json.count | int == 0
   register: awx_integration_project_created
 
@@ -890,6 +1006,12 @@
       scm_delete_on_update: true
       custom_virtualenv: ""
     status_code: 200
+  until: >-
+    _gate_uri_result_14 is success
+    or (_gate_uri_result_14.status | default(0) >= 400 and _gate_uri_result_14.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_14
   when: awx_integration_project_lookup.json.count | int > 0
 
 - name: Set GIT_SSL_NO_VERIFY for AWX project to trust lab-signed Forgejo cert
@@ -904,9 +1026,13 @@
       environment_vars:
         GIT_SSL_NO_VERIFY: "true"
     status_code: [200, 400]
+  until: >-
+    awx_integration_project_env_set is success
+    or (awx_integration_project_env_set.status | default(0) >= 400 and awx_integration_project_env_set.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: awx_integration_project_lookup.json.count | int > 0
   register: awx_integration_project_env_set
-  failed_when: false
 
 # ---------------------------------------------------------------------------
 # Move 1 + Catalog: Multi-project AWX layout (ADR-0014)
@@ -933,6 +1059,12 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 202
+  until: >-
+    _gate_uri_result_15 is success
+    or (_gate_uri_result_15.status | default(0) >= 400 and _gate_uri_result_15.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_15
   when: awx_integration_sync_project | bool
 
 - name: Lookup AWX inventory
@@ -943,6 +1075,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_integration_inventory_lookup is success
+    or (awx_integration_inventory_lookup.status | default(0) >= 400 and awx_integration_inventory_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_inventory_lookup
 
 - name: Create AWX inventory
@@ -957,6 +1094,11 @@
       name: "{{ awx_integration_inventory_name }}"
       organization: "{{ awx_integration_org_id }}"
     status_code: 201
+  until: >-
+    awx_integration_inventory_created is success
+    or (awx_integration_inventory_created.status | default(0) >= 400 and awx_integration_inventory_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: awx_integration_inventory_lookup.json.count | int == 0
   register: awx_integration_inventory_created
 
@@ -974,6 +1116,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_integration_inventory_source_lookup is success
+    or (awx_integration_inventory_source_lookup.status | default(0) >= 400 and awx_integration_inventory_source_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_inventory_source_lookup
 
 - name: Create AWX inventory source
@@ -994,6 +1141,11 @@
       overwrite: "{{ awx_integration_overwrite }}"
       overwrite_vars: "{{ awx_integration_overwrite_vars }}"
     status_code: 201
+  until: >-
+    awx_integration_inventory_source_created is success
+    or (awx_integration_inventory_source_created.status | default(0) >= 400 and awx_integration_inventory_source_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: awx_integration_inventory_source_lookup.json.count | int == 0
   register: awx_integration_inventory_source_created
 
@@ -1019,6 +1171,12 @@
       overwrite: "{{ awx_integration_overwrite }}"
       overwrite_vars: "{{ awx_integration_overwrite_vars }}"
     status_code: 200
+  until: >-
+    _gate_uri_result_16 is success
+    or (_gate_uri_result_16.status | default(0) >= 400 and _gate_uri_result_16.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_16
   when: awx_integration_inventory_source_lookup.json.count | int > 0
 
 - name: Sync AWX inventory source
@@ -1029,6 +1187,12 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 202
+  until: >-
+    _gate_uri_result_17 is success
+    or (_gate_uri_result_17.status | default(0) >= 400 and _gate_uri_result_17.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_17
   when: awx_integration_sync_inventory | bool
 
 - name: Create temp file for AWX vault edits
@@ -1172,6 +1336,11 @@
       Authorization: "token {{ awx_integration_forgejo_token }}"
     status_code: [200, 404]
     validate_certs: "{{ awx_integration_validate_certs | bool }}"
+  until: >-
+    awx_integration_runbook_exists is success
+    or (awx_integration_runbook_exists.status | default(0) >= 400 and awx_integration_runbook_exists.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_runbook_exists
 
 - name: Push eso-openbao-health-check runbook to Forgejo awx-automation repo
@@ -1187,6 +1356,12 @@
       Authorization: "token {{ awx_integration_forgejo_token }}"
     status_code: [200, 201]
     validate_certs: "{{ awx_integration_validate_certs | bool }}"
+  until: >-
+    _gate_uri_result_18 is success
+    or (_gate_uri_result_18.status | default(0) >= 400 and _gate_uri_result_18.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_18
   when: awx_integration_runbook_exists.status == 404
 
 - name: Sync AWX project to pick up the new runbook
@@ -1199,6 +1374,11 @@
     body_format: json
     body: {}
     status_code: [201, 202]
+  until: >-
+    awx_integration_project_update is success
+    or (awx_integration_project_update.status | default(0) >= 400 and awx_integration_project_update.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_project_update
 
 - name: Wait for AWX project sync to complete
@@ -1228,6 +1408,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_integration_jt_lookup is success
+    or (awx_integration_jt_lookup.status | default(0) >= 400 and awx_integration_jt_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_jt_lookup
 
 - name: Create AWX job template for eso-openbao-health-check
@@ -1247,6 +1432,11 @@
       playbook: "playbooks/runbooks/eso-openbao-health-check.yml"
       ask_variables_on_launch: false
     status_code: 201
+  until: >-
+    awx_integration_jt_created is success
+    or (awx_integration_jt_created.status | default(0) >= 400 and awx_integration_jt_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: awx_integration_jt_lookup.json.count | int == 0
   register: awx_integration_jt_created
 
@@ -1264,6 +1454,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_dmf_ee_lookup is success
+    or (awx_dmf_ee_lookup.status | default(0) >= 400 and awx_dmf_ee_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_dmf_ee_lookup
   run_once: true
 
@@ -1280,6 +1475,11 @@
       image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
       pull: missing
     status_code: 201
+  until: >-
+    awx_dmf_ee_created is success
+    or (awx_dmf_ee_created.status | default(0) >= 400 and awx_dmf_ee_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_dmf_ee_created
   run_once: true
   when: awx_dmf_ee_lookup.json.count | int == 0
@@ -1296,6 +1496,11 @@
       image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
       pull: missing
     status_code: 200
+  until: >-
+    awx_dmf_ee_updated is success
+    or (awx_dmf_ee_updated.status | default(0) >= 400 and awx_dmf_ee_updated.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_dmf_ee_updated
   run_once: true
   when: awx_dmf_ee_lookup.json.count | int > 0
@@ -1324,6 +1529,12 @@
     body:
       execution_environment: "{{ awx_dmf_ee_id }}"
     status_code: 200
+  until: >-
+    _gate_uri_result_19 is success
+    or (_gate_uri_result_19.status | default(0) >= 400 and _gate_uri_result_19.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_19
   run_once: true
   when: awx_integration_inventory_source_id is defined
 
@@ -1351,6 +1562,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_dmf_catalog_cg_lookup is success
+    or (awx_dmf_catalog_cg_lookup.status | default(0) >= 400 and awx_dmf_catalog_cg_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_dmf_catalog_cg_lookup
   run_once: true
 
@@ -1367,6 +1583,11 @@
       is_container_group: true
       pod_spec_override: "{{ awx_dmf_catalog_pod_spec_override }}"
     status_code: 201
+  until: >-
+    awx_dmf_catalog_cg_created is success
+    or (awx_dmf_catalog_cg_created.status | default(0) >= 400 and awx_dmf_catalog_cg_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_dmf_catalog_cg_created
   run_once: true
   when: awx_dmf_catalog_cg_lookup.json.count | int == 0
@@ -1383,6 +1604,11 @@
       is_container_group: true
       pod_spec_override: "{{ awx_dmf_catalog_pod_spec_override }}"
     status_code: 200
+  until: >-
+    awx_dmf_catalog_cg_updated is success
+    or (awx_dmf_catalog_cg_updated.status | default(0) >= 400 and awx_dmf_catalog_cg_updated.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_dmf_catalog_cg_updated
   run_once: true
   when: awx_dmf_catalog_cg_lookup.json.count | int > 0
@@ -1403,6 +1629,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_catalog_jt_lookup_ids is success
+    or (awx_catalog_jt_lookup_ids.status | default(0) >= 400 and awx_catalog_jt_lookup_ids.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   loop: "{{ awx_catalog_job_templates }}"
   loop_control:
     loop_var: jt_item
@@ -1432,6 +1663,12 @@
       ask_variables_on_launch: false
       extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
     status_code: 201
+  failed_when: false
+  until: >-
+    awx_catalog_jt_created is success
+    or (awx_catalog_jt_created.status | default(0) >= 400 and awx_catalog_jt_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   loop: "{{ awx_catalog_job_templates }}"
   loop_control:
     loop_var: jt_item
@@ -1447,7 +1684,6 @@
   # per-JT failure details. failed_when: false lets the loop complete
   # so we see EVERY failing entry, not just the first.
   no_log: true
-  failed_when: false
 
 - name: Surface AWX catalog JT create failures (per-entry response body)
   ansible.builtin.debug:
@@ -1495,6 +1731,12 @@
         - "{{ awx_dmf_catalog_cg_id }}"
       extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
     status_code: 200
+  until: >-
+    _gate_uri_result_20 is success
+    or (_gate_uri_result_20.status | default(0) >= 400 and _gate_uri_result_20.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_20
   loop: "{{ awx_catalog_job_templates }}"
   loop_control:
     loop_var: jt_item
@@ -1562,6 +1804,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_machine_cred_type_lookup is success
+    or (awx_machine_cred_type_lookup.status | default(0) >= 400 and awx_machine_cred_type_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_machine_cred_type_lookup
   run_once: true
 
@@ -1579,6 +1826,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_control_node_ssh_cred_lookup is success
+    or (awx_control_node_ssh_cred_lookup.status | default(0) >= 400 and awx_control_node_ssh_cred_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_control_node_ssh_cred_lookup
   run_once: true
 
@@ -1631,6 +1883,11 @@
         username: "k3s-admin"
         ssh_key_data: "{{ _awx_control_node_ssh_key }}"
     status_code: 201
+  until: >-
+    awx_control_node_ssh_cred_created is success
+    or (awx_control_node_ssh_cred_created.status | default(0) >= 400 and awx_control_node_ssh_cred_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_control_node_ssh_cred_created
   run_once: true
   no_log: true
@@ -1651,6 +1908,11 @@
         username: "k3s-admin"
         ssh_key_data: "{{ _awx_control_node_ssh_key }}"
     status_code: 200
+  until: >-
+    awx_control_node_ssh_cred_updated is success
+    or (awx_control_node_ssh_cred_updated.status | default(0) >= 400 and awx_control_node_ssh_cred_updated.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_control_node_ssh_cred_updated
   run_once: true
   no_log: true
@@ -1673,6 +1935,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    awx_catalog_jt_lookup is success
+    or (awx_catalog_jt_lookup.status | default(0) >= 400 and awx_catalog_jt_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   loop: "{{ awx_catalog_job_templates }}"
   loop_control:
     loop_var: jt_item
@@ -1691,6 +1958,12 @@
     body:
       extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
     status_code: 200
+  until: >-
+    _gate_uri_result_21 is success
+    or (_gate_uri_result_21.status | default(0) >= 400 and _gate_uri_result_21.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_21
   vars:
     jt_id: "{{ (awx_catalog_jt_lookup.results[loop_index0].json.results[0].id) }}"
   loop: "{{ awx_catalog_job_templates }}"
@@ -1715,6 +1988,12 @@
     body:
       id: "{{ awx_dmf_catalog_cg_id }}"
     status_code: [201, 204, 400]
+  until: >-
+    _gate_uri_result_22 is success
+    or (_gate_uri_result_22.status | default(0) >= 400 and _gate_uri_result_22.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_22
   vars:
     jt_id: "{{ (awx_catalog_jt_lookup.results[loop_index0].json.results[0].id) }}"
   loop: "{{ awx_catalog_job_templates }}"
@@ -1739,6 +2018,12 @@
     body:
       id: "{{ awx_control_node_ssh_cred_id }}"
     status_code: [201, 204, 400]
+  until: >-
+    _gate_uri_result_23 is success
+    or (_gate_uri_result_23.status | default(0) >= 400 and _gate_uri_result_23.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_23
   vars:
     jt_id: "{{ (awx_catalog_jt_lookup.results[loop_index0].json.results[0].id) }}"
   loop: "{{ awx_catalog_job_templates }}"
