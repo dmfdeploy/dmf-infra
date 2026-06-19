@@ -1,0 +1,94 @@
+---
+# awx-autoscale: on-demand scale-to-zero helper for AWX.
+#
+# Deploys a stdlib-only Python helper (ConfigMap-mounted) that exposes
+# POST /ensure-awake for dmf-cms to wake AWX before launching jobs, plus
+# a background idle-reaper that sleeps AWX when no work is active and the
+# grace period has elapsed.
+#
+# Opt-in: only deploys when dmf_awx_autoscale_enabled is true.
+# Cloud/lab lanes leave this false and keep replicas at 1.
+#
+# Design authority: docs/plans/DMF AWX On-Demand Scale-to-Zero Plan 2026-06-18.md §B.
+
+# ── Opt-in gate ──────────────────────────────────────────────────────────
+dmf_awx_autoscale_enabled: false
+
+# ── Namespace / naming ───────────────────────────────────────────────────
+awx_autoscale_namespace: "{{ awx_namespace | default('awx') }}"
+awx_autoscale_instance_name: "{{ awx_instance_name | default('awx') }}"
+awx_autoscale_release_name: awx-autoscale
+awx_autoscale_service_account: awx-autoscale
+
+# ── Image ────────────────────────────────────────────────────────────────
+# python:3-slim DIGEST-PINNED arm64. MUST be seeded into local Zot
+# (630-zot-seed) for the offline lane — tracked as a follow-up; gates
+# live-deploy, not this commit.
+awx_autoscale_image: >-
+  docker.io/library/python:3.12-slim@sha256:9bde4953fa9a7abb6db6669bb1b3f10aac83cf38d69a7bfc4941313ccd4c9686
+awx_autoscale_image_pull_policy: IfNotPresent
+
+# ── Helper tuning ────────────────────────────────────────────────────────
+# Grace period (seconds) after last active work before sleeping AWX.
+# Lives HERE, not in dmf-cms (spec §B).
+awx_autoscale_grace_period: 300
+
+# Max time (seconds) /ensure-awake will wait for AWX to become ready.
+# Must cover the measured ~15 min Pi reconcile latency (Phase-0).
+awx_autoscale_max_startup_wait: 1200
+
+# Poll interval (seconds) for Deployment readyReplicas + API ping during wake.
+awx_autoscale_wake_poll_interval: 10
+
+# Poll interval (seconds) for the idle-reaper loop.
+awx_autoscale_reaper_poll_interval: 60
+
+# ── Desired replica counts (awake state) ─────────────────────────────────
+# Mirror awx-presence defaults; override in env inventory.
+awx_autoscale_web_replicas: "{{ awx_web_replicas | default(1) }}"
+awx_autoscale_task_replicas: "{{ awx_task_replicas | default(1) }}"
+
+# ── HTTP server ──────────────────────────────────────────────────────────
+# The k8s port fields are fixed at 8080 (internal helper port). Literal ints
+# in tasks/main.yml for YAML-valid k8s manifests; the env var for the
+# helper process reads from this var. If ever changed, update the literals
+# in tasks/main.yml + the helper LISTEN_PORT env together.
+awx_autoscale_listen_port: 8080
+
+# ── Lease ────────────────────────────────────────────────────────────────
+awx_autoscale_lease_name: awx-autoscale-wake
+
+# ── AWX API ──────────────────────────────────────────────────────────────
+# In-cluster AWX API URL (svc DNS, plain HTTP per ADR-0023).
+# Service name is {{instance}}-service (awx role's IngressRoute target).
+awx_autoscale_awx_api_url: "http://{{ awx_autoscale_instance_name }}-service.{{ awx_autoscale_namespace }}.svc.cluster.local:80"
+
+# ── Secrets ──────────────────────────────────────────────────────────────
+# Secret name for the AWX API token + internal bearer token.
+awx_autoscale_secret_name: awx-autoscale-tokens
+
+# ESO ExternalSecret — reuses the awx-svc token from OpenBao.
+awx_autoscale_eso_api_version: "{{ eso_crd_api_version | default('external-secrets.io/v1') }}"
+awx_autoscale_eso_cluster_store: "{{ eso_cluster_secret_store_name | default('openbao') }}"
+awx_autoscale_eso_refresh_interval: 1h
+awx_autoscale_eso_awx_token_remote_key: "secret/apps/awx/runtime"
+awx_autoscale_eso_awx_token_remote_property: awx_svc_token
+awx_autoscale_eso_bearer_token_remote_key: "secret/apps/awx-autoscale/runtime"
+awx_autoscale_eso_bearer_token_remote_property: bearer_token
+
+# ── NetworkPolicy ────────────────────────────────────────────────────────
+# Restrict ingress to the dmf-cms namespace only.
+awx_autoscale_allowed_namespace: "{{ cms_namespace | default('dmf-cms') }}"
+
+# ── Resources ────────────────────────────────────────────────────────────
+# Lightweight stdlib Python server — smaller than dmf-promsd.
+awx_autoscale_resources:
+  requests:
+    cpu: 30m
+    memory: 48Mi
+  limits:
+    cpu: 100m
+    memory: 96Mi
+
+# ── Kubernetes API ───────────────────────────────────────────────────────
+awx_autoscale_kubeconfig: /etc/rancher/k3s/k3s.yaml

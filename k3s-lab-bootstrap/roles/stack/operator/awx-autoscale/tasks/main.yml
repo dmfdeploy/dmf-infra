@@ -1,0 +1,360 @@
+---
+# awx-autoscale: deploy the on-demand scale-to-zero helper.
+#
+# Opt-in via dmf_awx_autoscale_enabled. When false (default), this role is a
+# no-op — cloud/lab lanes keep AWX replicas at 1 with no helper deployed.
+#
+# Deploys: ServiceAccount + Role/RoleBinding + ESO ExternalSecret +
+#          ConfigMap (helper script) + Deployment + Service + NetworkPolicy.
+#
+# PREREQUISITE: the bearer token for /ensure-awake must be minted in OpenBao
+# at {{ awx_autoscale_eso_bearer_token_remote_key }} BEFORE this role runs.
+# Minting is owned by bootstrap-secrets seed-bao (not 693-awx-integration).
+#
+# Design authority: umbrella docs/plans/DMF AWX On-Demand Scale-to-Zero Plan 2026-06-18.md §B.
+
+# ── Opt-in gate ──────────────────────────────────────────────────────────
+
+- name: Skip awx-autoscale when not enabled
+  ansible.builtin.debug:
+    msg: >-
+      awx-autoscale is disabled (dmf_awx_autoscale_enabled=false).
+      Cloud/lab lane — AWX stays at replicas={{ awx_autoscale_web_replicas }}.
+  when: not dmf_awx_autoscale_enabled | bool
+
+- name: Deploy awx-autoscale resources
+  when: dmf_awx_autoscale_enabled | bool
+  block:
+    # ── ServiceAccount ─────────────────────────────────────────────────
+    - name: Create awx-autoscale ServiceAccount
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: "{{ awx_autoscale_service_account }}"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+
+    # ── RBAC: namespaced Role (awx namespace ONLY) ────────────────────
+    - name: Create awx-autoscale Role
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: "{{ awx_autoscale_release_name }}"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+          rules:
+            - apiGroups: ["awx.ansible.com"]
+              resources: ["awxs"]
+              verbs: ["get", "patch"]
+            - apiGroups: ["apps"]
+              resources: ["deployments"]
+              verbs: ["get"]
+            - apiGroups: ["coordination.k8s.io"]
+              resources: ["leases"]
+              verbs: ["get", "create", "update"]
+
+    - name: Create awx-autoscale RoleBinding
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: "{{ awx_autoscale_release_name }}"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: "{{ awx_autoscale_release_name }}"
+          subjects:
+            - kind: ServiceAccount
+              name: "{{ awx_autoscale_service_account }}"
+              namespace: "{{ awx_autoscale_namespace }}"
+
+    # ── ESO ExternalSecret: AWX API token + internal bearer token ─────
+    - name: Create awx-autoscale ExternalSecret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: "{{ awx_autoscale_eso_api_version }}"
+          kind: ExternalSecret
+          metadata:
+            name: "{{ awx_autoscale_secret_name }}"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+          spec:
+            refreshInterval: "{{ awx_autoscale_eso_refresh_interval }}"
+            secretStoreRef:
+              name: "{{ awx_autoscale_eso_cluster_store }}"
+              kind: ClusterSecretStore
+            target:
+              name: "{{ awx_autoscale_secret_name }}"
+              creationPolicy: Owner
+            data:
+              - secretKey: awx-svc-token
+                remoteRef:
+                  key: "{{ awx_autoscale_eso_awx_token_remote_key }}"
+                  property: "{{ awx_autoscale_eso_awx_token_remote_property }}"
+              - secretKey: bearerToken
+                remoteRef:
+                  key: "{{ awx_autoscale_eso_bearer_token_remote_key }}"
+                  property: "{{ awx_autoscale_eso_bearer_token_remote_property }}"
+      no_log: true
+
+    # ── ConfigMap: helper script ──────────────────────────────────────
+    - name: Create awx-autoscale helper ConfigMap
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: "{{ awx_autoscale_release_name }}-helper"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+          data:
+            awx_autoscale_helper.py: "{{ lookup('file', role_path ~ '/files/awx_autoscale_helper.py') }}"
+
+    # ── Assert ESO target Secret exists before Deployment ────────────
+    # If OpenBao is unreachable or the bearer token hasn't been seeded
+    # yet, the ExternalSecret won't materialize and the Deployment will
+    # hang on a missing volume mount. Fail fast with a clear message.
+    - name: Wait for awx-autoscale ESO target Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        kind: Secret
+        name: "{{ awx_autoscale_secret_name }}"
+        namespace: "{{ awx_autoscale_namespace }}"
+      register: _awx_autoscale_secret
+      until:
+        - _awx_autoscale_secret.resources | length > 0
+        - _awx_autoscale_secret.resources[0].data is defined
+        - "'awx-svc-token' in _awx_autoscale_secret.resources[0].data"
+        - "'bearerToken' in _awx_autoscale_secret.resources[0].data"
+      retries: 12
+      delay: 10
+      no_log: true
+
+    # ── Deployment ────────────────────────────────────────────────────
+    - name: Deploy awx-autoscale helper
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: "{{ awx_autoscale_release_name }}"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: awx-autoscale
+            template:
+              metadata:
+                labels:
+                  app: awx-autoscale
+                  dmf.function: awx-autoscale
+              spec:
+                serviceAccountName: "{{ awx_autoscale_service_account }}"
+                securityContext:
+                  runAsUser: 1000
+                  runAsGroup: 1000
+                  runAsNonRoot: true
+                  seccompProfile:
+                    type: RuntimeDefault
+                containers:
+                  - name: helper
+                    image: "{{ awx_autoscale_image }}"
+                    imagePullPolicy: "{{ awx_autoscale_image_pull_policy }}"
+                    securityContext:
+                      allowPrivilegeEscalation: false
+                      capabilities:
+                        drop:
+                          - ALL
+                      readOnlyRootFilesystem: true
+                    command:
+                      - python3
+                      - /opt/awx-autoscale/awx_autoscale_helper.py
+                    ports:
+                      - containerPort: 8080
+                        name: http
+                        protocol: TCP
+                    env:
+                      - name: PYTHONDONTWRITEBYTECODE
+                        value: "1"
+                      - name: AWX_AUTOSCALE_NAMESPACE
+                        value: "{{ awx_autoscale_namespace }}"
+                      - name: AWX_AUTOSCALE_CR_NAME
+                        value: "{{ awx_autoscale_instance_name }}"
+                      - name: AWX_AUTOSCALE_AWX_API_URL
+                        value: "{{ awx_autoscale_awx_api_url }}"
+                      - name: AWX_AUTOSCALE_LISTEN_PORT
+                        value: "{{ awx_autoscale_listen_port | string }}"
+                      - name: AWX_AUTOSCALE_GRACE_PERIOD
+                        value: "{{ awx_autoscale_grace_period | string }}"
+                      - name: AWX_AUTOSCALE_MAX_STARTUP_WAIT
+                        value: "{{ awx_autoscale_max_startup_wait | string }}"
+                      - name: AWX_AUTOSCALE_WAKE_POLL_INTERVAL
+                        value: "{{ awx_autoscale_wake_poll_interval | string }}"
+                      - name: AWX_AUTOSCALE_REAPER_POLL_INTERVAL
+                        value: "{{ awx_autoscale_reaper_poll_interval | string }}"
+                      - name: AWX_AUTOSCALE_WEB_REPLICAS
+                        value: "{{ awx_autoscale_web_replicas | string }}"
+                      - name: AWX_AUTOSCALE_TASK_REPLICAS
+                        value: "{{ awx_autoscale_task_replicas | string }}"
+                      - name: AWX_AUTOSCALE_LEASE_NAME
+                        value: "{{ awx_autoscale_lease_name }}"
+                    volumeMounts:
+                      - name: helper-script
+                        mountPath: /opt/awx-autoscale
+                        readOnly: true
+                      - name: tokens
+                        mountPath: /etc/awx-autoscale/secrets
+                        readOnly: true
+                      - name: tmp
+                        mountPath: /tmp
+                    livenessProbe:
+                      httpGet:
+                        path: /healthz
+                        port: http
+                      initialDelaySeconds: 5
+                      periodSeconds: 10
+                    readinessProbe:
+                      httpGet:
+                        path: /readyz
+                        port: http
+                      initialDelaySeconds: 10
+                      periodSeconds: 5
+                    resources:
+                      requests:
+                        cpu: "{{ awx_autoscale_resources.requests.cpu }}"
+                        memory: "{{ awx_autoscale_resources.requests.memory }}"
+                      limits:
+                        cpu: "{{ awx_autoscale_resources.limits.cpu }}"
+                        memory: "{{ awx_autoscale_resources.limits.memory }}"
+                volumes:
+                  - name: helper-script
+                    configMap:
+                      name: "{{ awx_autoscale_release_name }}-helper"
+                  - name: tokens
+                    secret:
+                      secretName: "{{ awx_autoscale_secret_name }}"
+                  - name: tmp
+                    emptyDir: {}
+
+    # ── Service ───────────────────────────────────────────────────────
+    - name: Expose awx-autoscale Service
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: "{{ awx_autoscale_release_name }}"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+          spec:
+            type: ClusterIP
+            selector:
+              app: awx-autoscale
+            ports:
+              - port: 8080
+                targetPort: http
+                protocol: TCP
+
+    # ── NetworkPolicy ─────────────────────────────────────────────────
+    - name: Create awx-autoscale default-deny ingress NetworkPolicy
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: "{{ awx_autoscale_release_name }}-default-deny"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+          spec:
+            podSelector:
+              matchLabels:
+                app: awx-autoscale
+            policyTypes:
+              - Ingress
+
+    - name: Create awx-autoscale allow-from-cms NetworkPolicy
+      kubernetes.core.k8s:
+        kubeconfig: "{{ awx_autoscale_kubeconfig }}"
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: "{{ awx_autoscale_release_name }}-allow-cms"
+            namespace: "{{ awx_autoscale_namespace }}"
+            labels:
+              app: awx-autoscale
+              dmf.function: awx-autoscale
+          spec:
+            podSelector:
+              matchLabels:
+                app: awx-autoscale
+            policyTypes:
+              - Ingress
+            ingress:
+              - from:
+                  - namespaceSelector:
+                      matchLabels:
+                        kubernetes.io/metadata.name: "{{ awx_autoscale_allowed_namespace }}"
+                    podSelector:
+                      matchLabels:
+                        app.kubernetes.io/name: dmf-cms
+                ports:
+                  - protocol: TCP
+                    port: 8080
+
+    # ── Wait for rollout ──────────────────────────────────────────────
+    - name: Wait for awx-autoscale rollout
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - k3s
+          - kubectl
+          - -n
+          - "{{ awx_autoscale_namespace }}"
+          - rollout
+          - status
+          - deployment/{{ awx_autoscale_release_name }}
+          - --timeout=120s
+      changed_when: false
