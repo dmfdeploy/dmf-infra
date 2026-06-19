@@ -481,7 +481,8 @@
           namespace: awx
 
 - name: Ingress readiness gate — Traefik + AWX
-  ansible.builtin.include_tasks: roles/shared/gate-ingress-ready/tasks/main.yml
+  ansible.builtin.include_role:
+    name: shared/gate-ingress-ready
   vars:
     gate_ingress_probe_url: "{{ awx_integration_api_base }}/ping/"
     gate_app_ready_url: "{{ awx_integration_api_base }}/me/"
