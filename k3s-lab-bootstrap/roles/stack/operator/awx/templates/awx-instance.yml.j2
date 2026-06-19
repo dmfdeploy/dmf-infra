@@ -12,6 +12,14 @@ spec:
   # Service configuration
   service_type: {{ awx_service_type }}
 
+  # Replica counts — explicit scalars (NOT to_nice_yaml dicts).
+  # awx-operator owns Deployment spec.replicas when *_manage_replicas is true;
+  # awx-presence asleep merge-patches these to 0, awake restores them.
+  web_replicas: {{ awx_web_replicas | int }}
+  task_replicas: {{ awx_task_replicas | int }}
+  web_manage_replicas: {{ awx_web_manage_replicas | bool | lower }}
+  task_manage_replicas: {{ awx_task_manage_replicas | bool | lower }}
+
   # PostgreSQL storage
   postgres_storage_class: {{ awx_postgres_storage_class }}
   postgres_storage_requirements:

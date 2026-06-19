@@ -173,7 +173,8 @@
   # it does (its init-database init container blocks on migrations). Gating here means
   # `awx-manage update_password` only runs against a migrated DB. Avoids the
   # operator-version-specific migration-Job label; sound for the pinned
-  # awx-operator (2.19.1) — re-verify on operator upgrades. Refs dmfdeploy/dmfdeploy#92.
+  # Helm chart 3.2.1 / operator appVersion 2.19.1 / AWX 24.6.1 — re-verify on
+  # operator upgrades. Refs dmfdeploy/dmfdeploy#92.
   kubernetes.core.k8s_info:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     kind: Deployment

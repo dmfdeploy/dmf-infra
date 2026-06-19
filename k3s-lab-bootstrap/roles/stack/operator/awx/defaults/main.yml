@@ -1,6 +1,12 @@
 ---
 awx_namespace: awx
 awx_helm_repo: https://ansible-community.github.io/awx-operator-helm/
+# This is the Helm CHART version (passed to helm as chart_version), NOT the
+# operator appVersion. Helm chart 3.2.1 -> operator appVersion 2.19.1 -> AWX
+# 24.6.1 (the tuple validated by the scale-to-zero Phase-0 spike, refs
+# dmfdeploy/dmfdeploy#97). Charts 3.0.0..3.2.1 all ship appVersion 2.19.1.
+# Do NOT "pin to 2.19.1" expecting the validated operator — chart 2.19.1 is a
+# different, older artifact.
 awx_operator_version: "3.2.1"
 
 # AWX instance configuration
@@ -141,6 +147,17 @@ awx_saml_social_auth_pipeline:
   - awx.sso.pipeline.update_user_flags
   - awx.sso.pipeline.update_user_orgs_by_saml_attr
   - awx.sso.pipeline.update_user_teams_by_saml_attr
+
+# Replica counts — explicit scalars rendered into the AWX CR spec.
+# awx-operator 2.19.1+ honours these as the reconcile-owned source of truth
+# for Deployment spec.replicas when the matching *_manage_replicas is true.
+# awx-presence asleep patches these to 0 (merge patch); awake restores them.
+awx_web_replicas: 1
+awx_task_replicas: 1
+# When true the operator owns the replica count — manual `kubectl scale` is
+# reverted on next reconcile (proven in Phase-0 spike, evidence (a-neg)).
+awx_web_manage_replicas: true
+awx_task_manage_replicas: true
 
 # Scheduling and resources (tune for lab sizing)
 awx_web_resource_requirements:
