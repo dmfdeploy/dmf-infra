@@ -1,0 +1,35 @@
+---
+# awx-presence: operator-controlled AWX scale-to-zero state machine.
+#
+# Invoked at bootstrap phase boundaries — NOT as a per-task gate.
+#   state: asleep  → merge-patch replica fields to 0 (operator holds at zero)
+#   state: awake   → merge-patch replica fields to desired, wait for ready + API 200
+#
+# Non-negotiable (Phase-0 constraint #1): asleep patches REPLICA FIELDS ONLY.
+# It does NOT run a full role apply, does NOT touch templates, does NOT run
+# readyReplicas waits or the admin-sync kubectl exec. Those all require an
+# awake CR and stay inside the 640 install path (awx role tasks/main.yml).
+#
+# Usage:
+#   - role: awx-presence
+#     vars:
+#       awx_presence_state: asleep   # or awake
+
+# Required — must be set by the caller (playbook or -e).
+# awx_presence_state: ""
+
+awx_presence_instance_name: "{{ awx_instance_name | default('awx') }}"
+awx_presence_namespace: "{{ awx_namespace | default('awx') }}"
+
+# Desired replica counts used by state=awake. Mirror the awx role defaults;
+# override in env inventory if the lab/cloud lane runs >1.
+awx_presence_web_replicas: "{{ awx_web_replicas | default(1) }}"
+awx_presence_task_replicas: "{{ awx_task_replicas | default(1) }}"
+
+# Phase-0 measured reconcile latency is 6–10 min before the operator picks up
+# a CR change, then ~70 s for pod/API wake. Budget covers Pi-class hardware.
+awx_presence_awake_retries: 120   # ~20 min at delay 10
+awx_presence_awake_delay: 10
+# API 200 gate — tighter budget, runs AFTER readyReplicas passes.
+awx_presence_api_retries: 30
+awx_presence_api_delay: 10

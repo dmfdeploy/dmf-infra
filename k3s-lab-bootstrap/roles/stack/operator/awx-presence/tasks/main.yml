@@ -1,0 +1,150 @@
+---
+# awx-presence state machine — replica-fields-only asleep, awake with readiness gate.
+# See defaults/main.yml header for design rationale and constraints.
+
+- name: Validate awx_presence_state
+  ansible.builtin.assert:
+    that:
+      - awx_presence_state is defined
+      - awx_presence_state in ['awake', 'asleep']
+    fail_msg: >-
+      awx_presence_state must be set to 'awake' or 'asleep'.
+      Got: {{ awx_presence_state | default('<undefined>') }}
+
+# ---------------------------------------------------------------------------
+# ASLEEP — merge-patch replica fields to 0. No template apply, no waits,
+# no admin-sync exec. The operator reconcile loop picks up the CR change
+# (measured 6–10 min latency on Pi-class) and scales both Deployments to 0.
+# ---------------------------------------------------------------------------
+
+- name: Patch AWX CR replicas to 0 (asleep)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ awx_presence_namespace }}"
+      - patch
+      - awx
+      - "{{ awx_presence_instance_name }}"
+      - --type
+      - merge
+      - -p
+      - >-
+        {"spec":{
+        "web_replicas":0,
+        "task_replicas":0,
+        "web_manage_replicas":true,
+        "task_manage_replicas":true
+        }}
+  register: _awx_sleep_patch
+  changed_when: _awx_sleep_patch.rc == 0
+  when: awx_presence_state == 'asleep'
+
+- name: Note AWX is now asleep (replicas patched to 0)
+  ansible.builtin.debug:
+    msg: >-
+      AWX CR {{ awx_presence_instance_name }} patched to replicas=0.
+      Operator will reconcile Deployments to 0 within ~6–10 min.
+  when: awx_presence_state == 'asleep'
+
+# ---------------------------------------------------------------------------
+# AWAKE — merge-patch replicas to desired, then gate on Deployment readiness
+# AND API 200. observedGeneration is ABSENT on this CR (Phase-0 confirmed),
+# so health is keyed on Deployment readyReplicas + API ping only.
+# ---------------------------------------------------------------------------
+
+- name: Patch AWX CR replicas to desired (awake)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ awx_presence_namespace }}"
+      - patch
+      - awx
+      - "{{ awx_presence_instance_name }}"
+      - --type
+      - merge
+      - -p
+      - >-
+        {"spec":{
+        "web_replicas":{{ awx_presence_web_replicas | int }},
+        "task_replicas":{{ awx_presence_task_replicas | int }},
+        "web_manage_replicas":true,
+        "task_manage_replicas":true
+        }}
+  register: _awx_wake_patch
+  changed_when: _awx_wake_patch.rc == 0
+  when: awx_presence_state == 'awake'
+
+- name: Wait for AWX web Deployment readyReplicas >= 1 (awake)
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: "{{ awx_presence_instance_name }}-web"
+    namespace: "{{ awx_presence_namespace }}"
+  register: _awx_wake_web_deploy
+  until:
+    - _awx_wake_web_deploy.resources | length > 0
+    - _awx_wake_web_deploy.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: "{{ awx_presence_awake_retries }}"
+  delay: "{{ awx_presence_awake_delay }}"
+  when: awx_presence_state == 'awake'
+
+- name: Wait for AWX task Deployment readyReplicas >= 1 (awake)
+  # Task pod is the job dispatcher — it goes Ready ~70s after web (Phase-0
+  # measured). Consumers and job launches are broken in that gap, so gate
+  # on task readiness too, mirroring the install path in awx/tasks/main.yml.
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Deployment
+    name: "{{ awx_presence_instance_name }}-task"
+    namespace: "{{ awx_presence_namespace }}"
+  register: _awx_wake_task_deploy
+  until:
+    - _awx_wake_task_deploy.resources | length > 0
+    - _awx_wake_task_deploy.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: "{{ awx_presence_awake_retries }}"
+  delay: "{{ awx_presence_awake_delay }}"
+  when: awx_presence_state == 'awake'
+
+- name: Wait for AWX API to return 200 (awake)
+  # /api/v2/ping/ is unauthenticated and returns 200 when AWX is serving.
+  # Running inside the web pod avoids needing an external route/Ingress to be
+  # healthy first — the pod-local uwsgi port is always reachable. Uses python3
+  # urllib (python3 is guaranteed in the Django-based AWX image; curl is not).
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ awx_presence_namespace }}"
+      - exec
+      - "deploy/{{ awx_presence_instance_name }}-web"
+      - --
+      - python3
+      - -c
+      - >-
+        import sys, urllib.request;
+        r = urllib.request.urlopen("http://127.0.0.1:8052/api/v2/ping/", timeout=5);
+        sys.exit(0 if r.status == 200 else 1)
+  register: _awx_wake_api
+  changed_when: false
+  until:
+    - _awx_wake_api.rc == 0
+  retries: "{{ awx_presence_api_retries }}"
+  delay: "{{ awx_presence_api_delay }}"
+  when: awx_presence_state == 'awake'
+
+- name: Note AWX is now awake and serving
+  ansible.builtin.debug:
+    msg: >-
+      AWX CR {{ awx_presence_instance_name }} awake:
+      web readyReplicas={{ _awx_wake_web_deploy.resources[0].status.readyReplicas }},
+      task readyReplicas={{ _awx_wake_task_deploy.resources[0].status.readyReplicas }},
+      API ping rc={{ _awx_wake_api.rc }}.
+  when: awx_presence_state == 'awake'

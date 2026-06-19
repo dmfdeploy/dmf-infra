@@ -60,7 +60,8 @@
         awx_task_resource_requirements: "{{ awx_task_resource_requirements | default(_awx_fit_task) }}"
         awx_postgres_resource_requirements: "{{ awx_postgres_resource_requirements | default(_awx_fit_postgres) }}"
         # uwsgi processes per web container (AWX CR spec.uwsgi_processes,
-        # awx-operator 2.19.1). AWX default ~5; proven 2 on 8 GB Pi 4 (#93).
+        # Helm chart 3.2.1 / operator appVersion 2.19.1). AWX default ~5;
+        # proven 2 on 8 GB Pi 4 (#93).
         awx_web_uwsgi_processes: "{{ awx_web_uwsgi_processes | default(2) }}"
       # Memory LIMITS are lab-parity (web 1536Mi, task 2Gi): tuned ONCE from the
       # first imc1-cyh4 rollout, where a 1Gi web limit OOMKilled awx-web (exit
