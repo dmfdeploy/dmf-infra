@@ -11,6 +11,11 @@
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
     status_code: 200
+  until: >-
+    _catalog_project_lookup is success
+    or (_catalog_project_lookup.status | default(0) >= 400 and _catalog_project_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: _catalog_project_lookup
   no_log: "{{ not awx_integration_debug | bool }}"
 
@@ -32,6 +37,11 @@
       scm_update_on_launch: true
       credential: "{{ awx_integration_scm_cred_id }}"
     status_code: 201
+  until: >-
+    _catalog_project_created is success
+    or (_catalog_project_created.status | default(0) >= 400 and _catalog_project_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   when: _catalog_project_lookup.json.count | int == 0
   register: _catalog_project_created
   no_log: "{{ not awx_integration_debug | bool }}"
@@ -58,6 +68,12 @@
       scm_delete_on_update: true
       custom_virtualenv: ""
     status_code: 200
+  until: >-
+    _gate_uri_result_24 is success
+    or (_gate_uri_result_24.status | default(0) >= 400 and _gate_uri_result_24.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_24
   when: _catalog_project_lookup.json.count | int > 0
   no_log: "{{ not awx_integration_debug | bool }}"
 
@@ -74,8 +90,12 @@
         GIT_SSL_NO_VERIFY: "true"
         ANSIBLE_ROLES_PATH: "{{ catalog_project.roles_path }}"
     status_code: [200, 400]
+  until: >-
+    _catalog_project_env_set is success
+    or (_catalog_project_env_set.status | default(0) >= 400 and _catalog_project_env_set.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: _catalog_project_env_set
-  failed_when: false
   no_log: "{{ not awx_integration_debug | bool }}"
 
 - name: "Trigger AWX project sync: {{ catalog_project.name }}"
@@ -88,6 +108,11 @@
     body_format: json
     body: {}
     status_code: [201, 202]
+  until: >-
+    _catalog_project_update is success
+    or (_catalog_project_update.status | default(0) >= 400 and _catalog_project_update.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
   register: _catalog_project_update
   no_log: "{{ not awx_integration_debug | bool }}"
 

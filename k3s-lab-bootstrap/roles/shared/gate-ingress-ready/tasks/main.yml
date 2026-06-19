@@ -1,0 +1,99 @@
+---
+# Shared ingress readiness gate (WS3, dmfdeploy/dmfdeploy#97).
+#
+# Stops mid-bootstrap Errno-111 / Traefik-flap failures by asserting
+# the ingress route is live AND the target app API endpoint is ready
+# before proceeding with downstream uri calls.
+#
+# Usage (include at role top, before any app-API uri calls):
+#
+#   - name: Ingress readiness gate
+#     ansible.builtin.include_tasks: roles/shared/gate-ingress-ready/tasks/main.yml
+#     vars:
+#       gate_ingress_probe_url: "{{ my_app_api_base }}/ping/"
+#       gate_app_ready_url: "{{ my_app_api_base }}/"
+#       gate_app_ready_headers:
+#         Authorization: "token {{ my_token }}"
+#       gate_app_ready_validate_certs: false
+#
+# IMPORTANT: this gate is a point-in-time check.  Traefik can flap
+# AFTER the gate passes.  Individual uri calls MUST also add
+# discriminating retry — drop failed_when:false and use:
+#
+#   until: >-
+#     <reg> is success
+#     or (<reg>.status | default(0) >= 400 and <reg>.status | default(0) < 500)
+#
+# Ansible retries WHILE until is false.  is success stops on
+# status_code match; 4xx (400-499, NOT in status_code) also stops
+# immediately (hard-fail via uri's natural status_code assertion).
+# Transient failures (-1 connection refused, timeout, 5xx) keep
+# retrying until exhaustion, then fail naturally.
+
+- name: "Gate: assert Traefik ingress route is live"
+  ansible.builtin.uri:
+    url: "{{ gate_ingress_probe_url }}"
+    method: "{{ gate_ingress_probe_method | default('HEAD') }}"
+    validate_certs: "{{ gate_ingress_validate_certs | default(false) | bool }}"
+    timeout: 10
+    # Accept ANY HTTP response — even 4xx proves Traefik is routing.
+    status_code: [200, 301, 302, 401, 403, 404, 503]
+  register: _gate_traefik_probe
+  failed_when: false
+  until: >-
+    _gate_traefik_probe.status | default(0) > 0
+  retries: "{{ gate_traefik_retries | default(12) }}"
+  delay: "{{ gate_traefik_delay | default(5) }}"
+
+- name: "Gate: FAIL — Traefik ingress is unreachable"
+  ansible.builtin.fail:
+    msg: >-
+      Traefik ingress route at {{ gate_ingress_probe_url }} did not respond
+      after {{ gate_traefik_retries | default(12) }} attempts.
+      Last msg={{ _gate_traefik_probe.msg | default('no response') }}.
+      Traefik may be down or the ingress IP unreachable.
+  when: _gate_traefik_probe.status | default(0) <= 0
+
+- name: "Gate: normalize accepted app-ready status codes"
+  ansible.builtin.set_fact:
+    _gate_app_accept_codes: >-
+      {{
+        (
+          gate_app_ready_status
+          if (gate_app_ready_status is defined
+              and gate_app_ready_status is iterable
+              and gate_app_ready_status is not string)
+          else [gate_app_ready_status | default(200)]
+        ) | map("int") | list
+      }}
+
+- name: "Gate: assert target app API is ready"
+  ansible.builtin.uri:
+    url: "{{ gate_app_ready_url }}"
+    method: "{{ gate_app_ready_method | default('GET') }}"
+    headers: "{{ gate_app_ready_headers | default(omit) }}"
+    url_username: "{{ gate_app_ready_url_username | default(omit) }}"
+    url_password: "{{ gate_app_ready_url_password | default(omit) }}"
+    force_basic_auth: "{{ gate_app_ready_force_basic_auth | default(omit) }}"
+    status_code: "{{ _gate_app_accept_codes }}"
+    validate_certs: "{{ gate_app_ready_validate_certs | default(false) | bool }}"
+    timeout: 10
+  register: _gate_app_ready
+  failed_when: false
+  until: >-
+    _gate_app_ready.status | default(0) in _gate_app_accept_codes
+    or (_gate_app_ready.status | default(0) >= 400
+        and _gate_app_ready.status | default(0) < 500
+        and _gate_app_ready.status | default(0) not in _gate_app_accept_codes)
+  retries: "{{ gate_app_retries | default(24) }}"
+  delay: "{{ gate_app_delay | default(10) }}"
+
+- name: "Gate: FAIL — target app API is not ready"
+  ansible.builtin.fail:
+    msg: >-
+      Target app API at {{ gate_app_ready_url }} returned unexpected response
+      after {{ gate_app_retries | default(24) }} attempts.
+      Last status={{ _gate_app_ready.status | default('none') }},
+      msg={{ _gate_app_ready.msg | default('none') }}.
+      The app may be misconfigured or crashed — this is NOT a transient flap.
+  when: _gate_app_ready.status | default(0) not in _gate_app_accept_codes
