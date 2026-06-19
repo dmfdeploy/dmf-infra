@@ -3,32 +3,78 @@
 #
 # Wires cross-app relationships for the single-node sandbox after the sandbox
 # post-seed provision wrapper has installed the application set.
+#
+# AWX scale-to-zero lifecycle (when dmf_awx_autoscale_enabled=true):
+#   640 installs AWX awake (provision phase — unchanged) →
+#   SLEEP → non-AWX configure → WAKE → AWX consumers → SLEEP (steady state).
+# When the flag is off (default), sleep/wake wrappers are no-ops, but two
+# observable (and functionally safe) reorders remain because play order is
+# fixed regardless of the flag:
+#   - 694 (born-inventory) runs before 693 (AWX integration) so NetBox
+#     inventory content exists before AWX consumes it.
+#   - 698 (cms netbox/forgejo tokens) runs before 697 (cms-awx-token) because
+#     698 moves into the non-AWX window. Safe: 697/698 each patch only their
+#     own dmf-cms Secret keys (state=present/stringData), so neither wipes the
+#     other's tokens; 699 still runs after both.
+#
+# IMPORTANT: flag stays OFF until the on-demand wake helper (plan §B / WS1)
+# lands — otherwise Phase E sleeps AWX at end of bootstrap and a dmf-cms
+# catalog-job launch hits an asleep AWX with nothing to wake it.
 
 - import_playbook: bootstrap-sandbox-profile.yml
   tags: [always, sandbox, release-profile]
+
+# ── Phase A: sleep AWX (opt-in) ─────────────────────────────────────────────
+# AWX was installed awake by 640 in the provision phase (install waits +
+# admin-sync ran in that window). Patch replicas to 0 here so the non-AWX
+# configure plays below don't compete for ~2 GB of RAM on a constrained node.
+# No-op when dmf_awx_autoscale_enabled is false (default).
+- import_playbook: playbooks/awx-sleep.yml
+  vars:
+    awx_presence_state: asleep
+  tags: [awx, autoscale]
 
 # ── Identity overlays ────────────────────────────────────────────────────────
 - import_playbook: playbooks/vertical-security/191-zot-oidc.yml
   tags: [vertical-security, identity, registry, authentik, oidc]
 
-# ── Source of Truth and automation wiring ────────────────────────────────────
+# ── Source of truth, automation, and CMS wiring (non-AWX consumers) ─────────
+# 694 (born-inventory) runs before 693 (awx-integration) so NetBox inventory
+# content exists before AWX integration consumes it.
 - import_playbook: playbooks/692-forgejo-bootstrap.yml
   tags: [layer6, application-ui, forgejo, bootstrap]
 - import_playbook: playbooks/691-netbox-sot.yml
   tags: [layer6, application-ui, netbox, sot]
-- import_playbook: playbooks/693-awx-integration.yml
-  tags: [layer6, application-ui, awx, integration]
 - import_playbook: playbooks/694-born-inventory.yml
   tags: [layer6, application-ui, inventory, netbox, reconcile]
 - import_playbook: playbooks/vertical-monitoring/160-promsd.yml
   tags: [vertical-monitoring, promsd]
-
-# ── CMS integration wiring ───────────────────────────────────────────────────
 - import_playbook: playbooks/696-cms-authentik-api.yml
   tags: [layer6, application-ui, dmf-console, identity, authentik, api]
-- import_playbook: playbooks/697-cms-awx-token.yml
-  tags: [layer6, application-ui, dmf-console, identity, awx, api]
 - import_playbook: playbooks/698-cms-netbox-forgejo-tokens.yml
   tags: [layer6, application-ui, dmf-console, netbox, forgejo, api]
+
+# ── Phase C: wake AWX (opt-in) ──────────────────────────────────────────────
+# Restore AWX replicas and wait for web + task readyReplicas + API 200.
+# Consumers below (693, 697, 699) need a live AWX API.
+# No-op when dmf_awx_autoscale_enabled is false (default).
+- import_playbook: playbooks/awx-wake.yml
+  vars:
+    awx_presence_state: awake
+  tags: [awx, autoscale]
+
+# ── AWX consumers (awake window) ────────────────────────────────────────────
+- import_playbook: playbooks/693-awx-integration.yml
+  tags: [layer6, application-ui, awx, integration]
+- import_playbook: playbooks/697-cms-awx-token.yml
+  tags: [layer6, application-ui, dmf-console, identity, awx, api]
 - import_playbook: playbooks/699-cms-smoke-test.yml
   tags: [layer6, application-ui, dmf-console, verify, smoke-test]
+
+# ── Phase E: sleep AWX at end of bootstrap (opt-in) ─────────────────────────
+# Steady-state: AWX sleeps after bootstrap until the first catalog job needs
+# it. No-op when dmf_awx_autoscale_enabled is false (default).
+- import_playbook: playbooks/awx-sleep.yml
+  vars:
+    awx_presence_state: asleep
+  tags: [awx, autoscale]
