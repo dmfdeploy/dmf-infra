@@ -190,6 +190,14 @@
       - name: dmf-promsd
         tag: "{{ dmf_promsd_image_tag }}"
         zot_repo: "{{ zot_registry_host }}/dmf-promsd"
+      - name: python
+        # python:3.12-slim, arm64 single-manifest, DIGEST-PINNED. Base image for the
+        # awx-autoscale helper (roles/stack/operator/awx-autoscale). docker.io source,
+        # mirrored here so the offline lane never reaches Docker Hub (ADR-0036).
+        tag: "3.12-slim"
+        source_repo: "docker.io/library/python"
+        source_digest: "sha256:9bde4953fa9a7abb6db6669bb1b3f10aac83cf38d69a7bfc4941313ccd4c9686"
+        zot_repo: "{{ zot_registry_host }}/dmf/library/python"
 
     # OCI Helm charts to mirror from GHCR → Zot. Skopeo handles chart
     # artifacts via the registry API just like images, but without arch flags.
@@ -354,7 +362,7 @@
               - "--override-os=linux"
               - "--retry-times=5"
               - "--dest-authfile={{ _zot_authfile.path }}"
-              - "docker://ghcr.io/{{ ghcr_namespace }}/{{ item.name }}:{{ item.tag }}"
+              - "docker://{{ item.source_repo | default('ghcr.io/' ~ ghcr_namespace ~ '/' ~ item.name) }}{{ ('@' ~ item.source_digest) if (item.source_digest is defined) else (':' ~ item.tag) }}"
               - "docker://{{ item.zot_repo }}:{{ item.tag }}"
           loop: "{{ _zot_images_to_seed }}"
           loop_control:

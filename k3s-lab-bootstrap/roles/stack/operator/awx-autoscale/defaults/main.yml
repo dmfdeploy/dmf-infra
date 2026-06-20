@@ -21,11 +21,11 @@ awx_autoscale_release_name: awx-autoscale
 awx_autoscale_service_account: awx-autoscale
 
 # ── Image ────────────────────────────────────────────────────────────────
-# python:3-slim DIGEST-PINNED arm64. MUST be seeded into local Zot
-# (630-zot-seed) for the offline lane — tracked as a follow-up; gates
-# live-deploy, not this commit.
+# python:3.12-slim DIGEST-PINNED arm64. Seeded into cluster-internal Zot
+# by 630-zot-seed-platform (the `python` entry in zot_seed_images mirrors
+# docker.io/library/python → Zot per ADR-0025 + ADR-0036).
 awx_autoscale_image: >-
-  docker.io/library/python:3.12-slim@sha256:9bde4953fa9a7abb6db6669bb1b3f10aac83cf38d69a7bfc4941313ccd4c9686
+  registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}/dmf/library/python@sha256:9bde4953fa9a7abb6db6669bb1b3f10aac83cf38d69a7bfc4941313ccd4c9686
 awx_autoscale_image_pull_policy: IfNotPresent
 
 # ── Helper tuning ────────────────────────────────────────────────────────
