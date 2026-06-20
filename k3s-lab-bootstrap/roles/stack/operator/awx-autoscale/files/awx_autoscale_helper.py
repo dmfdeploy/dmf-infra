@@ -411,15 +411,27 @@ def _check_awx_api_ping() -> bool:
 # AWX active-work query (idle-reaper)
 # ---------------------------------------------------------------------------
 
-def has_active_work() -> bool:
-    """Query AWX unified_jobs for active work using the proven DMF pattern.
+# Tri-state results for the reaper's AWX work query. The reaper MUST treat
+# "AWX unreachable" (typically asleep) differently from "active work": an
+# unreachable AWX must NOT cause the reaper to claim the wake Lease, or it
+# starves /ensure-awake and AWX can never wake (issue #103).
+WORK_ACTIVE = "active"            # AWX reachable, active jobs present
+WORK_IDLE = "idle"               # AWX reachable, no active jobs
+WORK_UNREACHABLE = "unreachable"  # AWX API not reachable (e.g. AWX asleep)
+
+
+def query_awx_work() -> str:
+    """Tri-state AWX active-work query for the idle reaper.
+
+    Returns WORK_ACTIVE / WORK_IDLE / WORK_UNREACHABLE.
 
     status__in=new,pending,waiting,running (NOT status=running,pending,waiting).
     Covers jobs, workflow jobs, project updates, inventory updates via
     /api/v2/unified_jobs/.
 
-    Returns True if any active work exists. If the AWX API is unreachable,
-    returns True (fail-open: do NOT sleep when unsure).
+    On an unreachable API this returns WORK_UNREACHABLE (NOT WORK_ACTIVE): the
+    reaper still fail-opens by NOT sleeping, but it must also NOT claim the wake
+    Lease for an unreachable (asleep) AWX — see idle_reaper_loop and issue #103.
     """
     token = _read_secret(AWX_TOKEN_PATH)
     # status__in=new,pending,waiting,running — the proven DMF pattern.
@@ -437,11 +449,24 @@ def has_active_work() -> bool:
             count = data.get("count", 0)
             if count > 0:
                 audit("active_work_found", count=count)
-            return count > 0
+                return WORK_ACTIVE
+            return WORK_IDLE
     except (HTTPError, URLError, OSError) as e:
-        # API unreachable — fail-open, report active to prevent sleep.
-        audit("awx_api_unreachable", error=str(e), action="fail_open")
-        return True
+        # API unreachable — typically AWX asleep. Fail-open for the SLEEP
+        # decision (the reaper won't sleep), but it must NOT extend the wake
+        # Lease for this state (issue #103).
+        audit("awx_api_unreachable", error=str(e), action="reaper_noop")
+        return WORK_UNREACHABLE
+
+
+def has_active_work() -> bool:
+    """Back-compat bool wrapper around query_awx_work().
+
+    Preserves the original fail-open contract (True unless AWX is
+    reachable-and-idle): WORK_UNREACHABLE -> True. The reaper uses
+    query_awx_work() directly because it must act differently on UNREACHABLE.
+    """
+    return query_awx_work() != WORK_IDLE
 
 
 # ---------------------------------------------------------------------------
@@ -612,16 +637,25 @@ def idle_reaper_loop() -> None:
                 idle_since = None
                 continue
 
-            # Query active work.
-            if has_active_work():
-                # Active work — extend the lease and reset idle timer.
+            # Query active work (tri-state — UNREACHABLE is NOT ACTIVE).
+            state = query_awx_work()
+            if state == WORK_UNREACHABLE:
+                # AWX API unreachable — typically asleep. Fail-open: do NOT
+                # sleep. CRUCIALLY do NOT extend the wake Lease — claiming it as
+                # the reaper would starve an incoming /ensure-awake so AWX could
+                # never wake (issue #103). Leave the Lease free for the wake.
+                idle_since = None
+                continue
+
+            if state == WORK_ACTIVE:
+                # Confirmed active work — extend the lease and reset idle timer.
                 new_min_awake = now + GRACE_PERIOD
                 _lease.create_or_update(
                     new_min_awake, f"reaper-{os.getpid()}")
                 idle_since = None
                 continue
 
-            # No active work and past the lease window.
+            # WORK_IDLE: AWX reachable, no active work, past the lease window.
             if idle_since is None:
                 idle_since = now
                 audit("reaper_idle_start", idle_since=now)
