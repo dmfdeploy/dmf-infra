@@ -1407,8 +1407,14 @@
 - name: Assert AWX project sync succeeded
   ansible.builtin.assert:
     that:
+      - awx_integration_project_update_status.json is defined
+      - awx_integration_project_update_status.json.status is defined
       - awx_integration_project_update_status.json.status == "successful"
-    fail_msg: "AWX project update failed: {{ awx_integration_project_update_status.json }}"
+    fail_msg: >-
+      AWX project update did not complete successfully:
+      http_status={{ awx_integration_project_update_status.status | default('none') }},
+      awx_status={{ awx_integration_project_update_status.json.status | default('none') if awx_integration_project_update_status.json is defined else 'none' }},
+      msg={{ awx_integration_project_update_status.msg | default('none') }}
 
 - name: Lookup AWX job templates for eso-openbao-health-check
   ansible.builtin.uri:
