@@ -1,0 +1,27 @@
+---
+# Deploy the awx-autoscale steady-state wake helper: an in-cluster
+# Deployment + ServiceAccount/RBAC + ESO ExternalSecret + Service +
+# NetworkPolicy. dmf-cms calls its POST /ensure-awake to wake AWX on demand
+# before launching catalog jobs (scale-to-zero, #97).
+#
+# Opt-in: only deploys when dmf_awx_autoscale_enabled is true. Off by default
+# (cloud/lab lanes keep AWX at replicas=1); the sandbox profile defaults it on.
+#
+# Lifecycle position: imported by bootstrap-sandbox-configure.yml AFTER the AWX
+# consumers (693 writes secret/apps/awx/runtime:awx_svc_token, the helper's ESO
+# key) and 630 (mirrors the helper's python base image into Zot), and BEFORE the
+# final steady-state sleep — so the helper is live and manages AWX from there.
+#
+# Prereqs (all satisfied by this point in the bootstrap):
+#   - secret/apps/awx-autoscale/runtime:bearer_token in OpenBao (seed-bao)
+#   - secret/apps/awx/runtime:awx_svc_token in OpenBao (693-awx-integration)
+#   - the digest-pinned python base image mirrored into Zot (630-zot-seed)
+#
+# Thin wrapper — delegates to the awx-autoscale role (self-gates internally too).
+- name: "Deploy the awx-autoscale on-demand wake helper"
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - role: stack/operator/awx-autoscale
+      when: dmf_awx_autoscale_enabled | default(false) | bool
