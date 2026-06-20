@@ -68,7 +68,7 @@ awx:
 awxAutoscale:
   # On-demand scale-to-zero wake (#97). Enabled on the sandbox lane only;
   # cloud/lab leave AWX at replicas=1 and this off (no behaviour change).
-  enabled: {{ cms_awx_autoscale_enabled | default(false) | to_json }}
+  enabled: {{ cms_awx_autoscale_enabled | default(false) | bool | to_json }}
   helperUrl: {{ cms_awx_autoscale_helper_url | to_json }}
   maxStartupWait: {{ cms_awx_autoscale_max_startup_wait | default('1260') | string | to_json }}
   bearerToken:
