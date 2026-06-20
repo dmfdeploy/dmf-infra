@@ -63,6 +63,12 @@
         # Helm chart 3.2.1 / operator appVersion 2.19.1). AWX default ~5;
         # proven 2 on 8 GB Pi 4 (#93).
         awx_web_uwsgi_processes: "{{ awx_web_uwsgi_processes | default(2) }}"
+        # On-demand scale-to-zero (#97): AWX sleeps to 0 between catalog jobs
+        # and the awx-autoscale helper wakes it on demand, reclaiming AWX's
+        # ~2 GB idle on the constrained node. Enables the sleep/wake lifecycle
+        # in configure + the helper deploy (awx-autoscale-deploy.yml). An env
+        # can still pin it off by setting dmf_awx_autoscale_enabled: false.
+        dmf_awx_autoscale_enabled: "{{ dmf_awx_autoscale_enabled | default(true) }}"
       # Memory LIMITS are lab-parity (web 1536Mi, task 2Gi): tuned ONCE from the
       # first imc1-cyh4 rollout, where a 1Gi web limit OOMKilled awx-web (exit
       # 137) — AWX's web container runs 5 uWSGI workers + daphne and needs

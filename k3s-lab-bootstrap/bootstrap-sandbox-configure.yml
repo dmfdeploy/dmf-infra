@@ -71,6 +71,14 @@
 - import_playbook: playbooks/699-cms-smoke-test.yml
   tags: [layer6, application-ui, dmf-console, verify, smoke-test]
 
+# ── Deploy the steady-state scale-to-zero wake helper (opt-in) ──────────────
+# Deploys the awx-autoscale in-cluster helper dmf-cms calls to wake AWX on
+# demand. Runs here because its ESO keys (awx_svc_token from 693) and its
+# python base image in Zot (630) are now in place, and before the final sleep.
+# No-op when dmf_awx_autoscale_enabled is false (default).
+- import_playbook: playbooks/awx-autoscale-deploy.yml
+  tags: [awx, autoscale, layer6]
+
 # ── Phase E: sleep AWX at end of bootstrap (opt-in) ─────────────────────────
 # Steady-state: AWX sleeps after bootstrap until the first catalog job needs
 # it. No-op when dmf_awx_autoscale_enabled is false (default).
