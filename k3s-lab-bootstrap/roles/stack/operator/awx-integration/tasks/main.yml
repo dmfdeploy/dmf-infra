@@ -1389,9 +1389,18 @@
     url_username: "{{ awx_integration_admin_user }}"
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
-    status_code: 200
+    # A freshly-woken AWX (scale-to-zero wake) answers /ping 200 before the
+    # project_updates endpoint is fully warm — it can briefly 404 or drop the
+    # connection. Tolerate those as transient and let `until` keep polling.
+    status_code: [200, 404]
   register: awx_integration_project_update_status
-  until: awx_integration_project_update_status.json.status in ["successful", "failed", "canceled"]
+  failed_when: false
+  # Guard `.json is defined`: a connection error / non-JSON result registers a
+  # dict without `.json`, and a bare `...json.status` conditional then crashes
+  # ("object of type 'dict' has no attribute 'json'") instead of retrying.
+  until: >-
+    awx_integration_project_update_status.json is defined
+    and awx_integration_project_update_status.json.status in ["successful", "failed", "canceled"]
   retries: 60
   delay: 5
 
