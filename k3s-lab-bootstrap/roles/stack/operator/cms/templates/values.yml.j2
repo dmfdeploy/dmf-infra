@@ -65,6 +65,16 @@ awx:
     key: {{ cms_runtime_secret_awx_token_key | to_json }}
   sslVerify: {{ cms_awx_ssl_verify | default(false) | to_json }}
 
+awxAutoscale:
+  # On-demand scale-to-zero wake (#97). Enabled on the sandbox lane only;
+  # cloud/lab leave AWX at replicas=1 and this off (no behaviour change).
+  enabled: {{ cms_awx_autoscale_enabled | default(false) | to_json }}
+  helperUrl: {{ cms_awx_autoscale_helper_url | to_json }}
+  maxStartupWait: {{ cms_awx_autoscale_max_startup_wait | default('1260') | string | to_json }}
+  bearerToken:
+    existingSecretName: {{ cms_runtime_secret_name | to_json }}
+    key: {{ cms_runtime_secret_awx_autoscale_bearer_key | to_json }}
+
 netbox:
   apiUrl: {{ ("http://netbox." ~ (netbox_namespace | default('netbox')) ~ ".svc.cluster.local") | to_json }}
   apiToken:
