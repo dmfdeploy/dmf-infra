@@ -66,6 +66,18 @@ cms_authentik_invitation_ttl_hours: 24
 cms_runtime_secret_awx_token_key: awxApiToken
 cms_awx_ssl_verify: false
 
+# AWX on-demand scale-to-zero wake (#97). When dmf_awx_autoscale_enabled is set
+# (sandbox lane), the Console wakes AWX via the awx-autoscale helper before
+# launching catalog/workflow jobs. Cloud/lab lanes leave this off (AWX always
+# up) — zero behaviour change. The bearer is delivered into the runtime Secret
+# (key awxAutoscaleBearerToken) by awx-autoscale-secrets.yml.
+cms_awx_autoscale_enabled: "{{ dmf_awx_autoscale_enabled | default(false) }}"
+cms_awx_autoscale_helper_url: "http://awx-autoscale.{{ awx_namespace | default('awx') }}.svc.cluster.local:8080"
+# Must be >= the helper's AWX_AUTOSCALE_MAX_STARTUP_WAIT (1200s) plus margin;
+# Pi cold wake measured ~15 min (Phase-0).
+cms_awx_autoscale_max_startup_wait: "1260"
+cms_runtime_secret_awx_autoscale_bearer_key: awxAutoscaleBearerToken
+
 # NetBox API — in-cluster DNS. Token stored in runtime secret.
 cms_runtime_secret_netbox_token_key: netboxApiToken
 cms_netbox_ssl_verify: false
