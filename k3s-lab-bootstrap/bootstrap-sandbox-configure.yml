@@ -71,10 +71,20 @@
 - import_playbook: playbooks/699-cms-smoke-test.yml
   tags: [layer6, application-ui, dmf-console, verify, smoke-test]
 
+# ── Mint + wire the awx-autoscale wake bearer (opt-in) ──────────────────────
+# Mints secret/apps/awx-autoscale/runtime:bearer_token in OpenBao (if absent)
+# and patches it into dmf-cms-runtime (key awxAutoscaleBearerToken). Runs after
+# 697 (dmf-cms-runtime exists) and BEFORE the helper deploy below (whose ESO
+# ExternalSecret needs the OpenBao value present, or its rollout hangs).
+# No-op when dmf_awx_autoscale_enabled is false (default).
+- import_playbook: playbooks/awx-autoscale-secrets.yml
+  tags: [awx, autoscale, secrets, layer6]
+
 # ── Deploy the steady-state scale-to-zero wake helper (opt-in) ──────────────
 # Deploys the awx-autoscale in-cluster helper dmf-cms calls to wake AWX on
-# demand. Runs here because its ESO keys (awx_svc_token from 693) and its
-# python base image in Zot (630) are now in place, and before the final sleep.
+# demand. Runs here because its ESO keys (awx_svc_token from 693, bearer_token
+# from awx-autoscale-secrets above) and its python base image in Zot (630) are
+# now in place, and before the final sleep.
 # No-op when dmf_awx_autoscale_enabled is false (default).
 - import_playbook: playbooks/awx-autoscale-deploy.yml
   tags: [awx, autoscale, layer6]
