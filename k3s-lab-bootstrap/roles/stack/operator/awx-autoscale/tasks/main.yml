@@ -25,6 +25,25 @@
 - name: Deploy awx-autoscale resources
   when: dmf_awx_autoscale_enabled | bool
   block:
+    # ── Port-coupling guard ────────────────────────────────────────────
+    # The k8s port fields (containerPort, Service port/targetPort, the
+    # NetworkPolicy ingress port and the named probe ports) are fixed
+    # literals at 8080. awx_autoscale_listen_port only drives the helper
+    # process's AWX_AUTOSCALE_LISTEN_PORT env var; an override would bind the
+    # server to a port the container/Service/probes don't expect → silently
+    # broken. Fail fast on divergence rather than ship a dead helper.
+    - name: Assert awx_autoscale_listen_port matches the fixed k8s port literals
+      ansible.builtin.assert:
+        that:
+          - awx_autoscale_listen_port | int == 8080
+        fail_msg: >-
+          awx_autoscale_listen_port is {{ awx_autoscale_listen_port }}, but the
+          awx-autoscale container, Service, NetworkPolicy and probe ports are
+          fixed literals at 8080. Overriding the listen port would bind the
+          helper where nothing reaches it. Keep awx_autoscale_listen_port at
+          8080 (or change the k8s literals in this role's tasks/main.yml in the
+          same edit).
+
     # ── ServiceAccount ─────────────────────────────────────────────────
     - name: Create awx-autoscale ServiceAccount
       kubernetes.core.k8s:
