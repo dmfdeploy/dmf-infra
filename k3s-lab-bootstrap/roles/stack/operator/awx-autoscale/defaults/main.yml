@@ -51,8 +51,9 @@ awx_autoscale_task_replicas: "{{ awx_task_replicas | default(1) }}"
 # ── HTTP server ──────────────────────────────────────────────────────────
 # The k8s port fields are fixed at 8080 (internal helper port). Literal ints
 # in tasks/main.yml for YAML-valid k8s manifests; the env var for the
-# helper process reads from this var. If ever changed, update the literals
-# in tasks/main.yml + the helper LISTEN_PORT env together.
+# helper process reads from this var. tasks/main.yml asserts this stays 8080
+# so an override can't diverge from the literals. If ever changed, update the
+# literals in tasks/main.yml + the helper LISTEN_PORT env + the assert together.
 awx_autoscale_listen_port: 8080
 
 # ── Lease ────────────────────────────────────────────────────────────────
