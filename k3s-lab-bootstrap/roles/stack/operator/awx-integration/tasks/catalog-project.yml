@@ -123,9 +123,20 @@
     url_username: "{{ awx_integration_admin_user }}"
     url_password: "{{ awx_integration_admin_password }}"
     force_basic_auth: true
-    status_code: 200
+    # A freshly-woken AWX (scale-to-zero wake) answers /ping 200 before the
+    # project_updates endpoint is fully warm — it can briefly 404 or drop the
+    # connection. Tolerate those as transient and let `until` keep polling.
+    # (Same fix as the project-sync poll in tasks/main.yml, b96bf23 — this is
+    # the catalog-project duplicate that was missed.)
+    status_code: [200, 404]
   register: _catalog_project_update_status
-  until: _catalog_project_update_status.json.status in ["successful", "failed", "canceled"]
+  failed_when: false
+  # Guard `.json is defined`: a connection error / non-JSON result registers a
+  # dict without `.json`, and a bare `...json.status` conditional then crashes
+  # ("object of type 'dict' has no attribute 'json'") instead of retrying.
+  until: >-
+    _catalog_project_update_status.json is defined
+    and _catalog_project_update_status.json.status in ["successful", "failed", "canceled"]
   retries: 60
   delay: 5
   no_log: "{{ not awx_integration_debug | bool }}"
@@ -133,10 +144,14 @@
 - name: "Assert AWX project sync succeeded: {{ catalog_project.name }}"
   ansible.builtin.assert:
     that:
+      - _catalog_project_update_status.json is defined
+      - _catalog_project_update_status.json.status is defined
       - _catalog_project_update_status.json.status == "successful"
     fail_msg: >-
-      AWX project sync failed for {{ catalog_project.name }}
-      (status={{ _catalog_project_update_status.json.status | default('unknown') }}).
+      AWX project sync did not complete for {{ catalog_project.name }}
+      (http_status={{ _catalog_project_update_status.status | default('none') }},
+      status={{ _catalog_project_update_status.json.status | default('unknown')
+      if _catalog_project_update_status.json is defined else 'no-json' }}).
       Without a fresh sync, AWX's JT serializer cannot resolve playbook references
       and downstream job-template creation will fail with HTTP 400.
 
