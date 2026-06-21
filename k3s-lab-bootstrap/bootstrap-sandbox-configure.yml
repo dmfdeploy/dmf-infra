@@ -34,6 +34,17 @@
     awx_presence_state: asleep
   tags: [awx, autoscale]
 
+# ── Phase A-gate: block until AWX has ACTUALLY scaled to 0 ───────────────────
+# The asleep patch above is fire-and-forget (Phase-0 constraint #1). On a
+# constrained node the operator reconcile is async (~6-10 min); starting the
+# non-AWX plays while AWX is still resident (~4-5 GB) thrashes the 8 GB node
+# (kswapd, k3s cycling) and the operator can no longer reconcile the sleep —
+# a deadlock that fails configure mid-flight (observed 2026-06-21). Gate the
+# non-AWX phase on observed termination so the RAM is actually reclaimed first.
+# No-op when dmf_awx_autoscale_enabled is false (default).
+- import_playbook: playbooks/awx-await-asleep.yml
+  tags: [awx, autoscale]
+
 # ── Identity overlays ────────────────────────────────────────────────────────
 - import_playbook: playbooks/vertical-security/191-zot-oidc.yml
   tags: [vertical-security, identity, registry, authentik, oidc]
