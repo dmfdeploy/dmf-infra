@@ -1,0 +1,61 @@
+---
+# Wait for AWX to actually be asleep (Deployments scaled to 0) before the
+# non-AWX configure phase proceeds.
+#
+# Why this is a SEPARATE play from awx-sleep.yml: the awx-presence 'asleep'
+# primitive is fire-and-forget by Phase-0 constraint #1 (replica fields only,
+# NO readyReplicas waits) — and that property must stay, because Phase E sleeps
+# AWX at end of bootstrap where blocking is pointless. But on a constrained
+# node the operator's reconcile is async (~6-10 min); if the non-AWX plays
+# start while AWX is still resident (~4-5 GB), the 8 GB node thrashes (kswapd
+# pegged, 0% idle), k3s cycles under starvation, and the operator can no longer
+# reconcile the sleep — a deadlock that fails configure mid-flight (observed
+# 2026-06-21: CR replicas=0 while Deployments still 1/1, Forgejo API refused).
+# Gating the non-AWX phase on OBSERVED termination breaks that loop without
+# touching the asleep primitive's contract.
+#
+# Lifecycle position: AFTER awx-sleep.yml (Phase A), BEFORE the non-AWX
+# configure plays. NOT applied after Phase E (steady-state sleep, no consumer
+# waiting on the RAM).
+#
+# Opt-in: only runs when dmf_awx_autoscale_enabled is true — a no-op otherwise,
+# mirroring awx-sleep.yml / awx-wake.yml so the default lane is unchanged.
+- name: "Wait for AWX to be asleep (Deployments scaled to 0)"
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    # managed-by=awx-operator + part-of=<instance> selects exactly the web and
+    # task Deployments (the Helm-managed operator Deployment is excluded;
+    # postgres is a StatefulSet, not a Deployment).
+    _awx_asleep_selectors:
+      - "app.kubernetes.io/managed-by=awx-operator"
+      - "app.kubernetes.io/part-of={{ awx_instance_name | default('awx') }}"
+  tasks:
+    # One poll over BOTH Deployments → a single wall-clock budget (not two
+    # sequential ones). status.replicas is the RAM-reclaimed signal
+    # (readyReplicas hits 0 while pods are still Terminating); spec.replicas
+    # confirms the desired state landed. failed_when:false so a transient API
+    # refusal during a k3s blip consumes retry budget instead of aborting.
+    - name: Wait for AWX web+task Deployments to reach 0 replicas (asleep settled)
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        kind: Deployment
+        namespace: "{{ awx_namespace | default('awx') }}"
+        label_selectors: "{{ _awx_asleep_selectors }}"
+      register: _awx_asleep
+      failed_when: false
+      until:
+        - (_awx_asleep.resources | default([]) | length) == 2
+        - (((_awx_asleep.resources | default([]) | map(attribute='spec.replicas') | map('default', 1) | map('int') | list) + [0]) | max) == 0
+        - (((_awx_asleep.resources | default([]) | map(attribute='status.replicas') | map('default', 0) | map('int') | list) + [0]) | max) == 0
+      retries: "{{ awx_presence_asleep_retries | default(90) }}"
+      delay: "{{ awx_presence_asleep_delay | default(10) }}"
+      when: dmf_awx_autoscale_enabled | default(false) | bool
+
+    - name: Note AWX is now fully asleep (RAM reclaimed before non-AWX phase)
+      ansible.builtin.debug:
+        msg: >-
+          AWX web+task Deployments observed at 0 replicas — operator reconcile
+          complete, ~4-5 GB reclaimed. Safe to run the non-AWX configure phase.
+      when: dmf_awx_autoscale_enabled | default(false) | bool
