@@ -162,6 +162,10 @@ awx_catalog_job_templates:
       # ADR-0032: the launcher writes NetBox via this scoped catalog-writer
       # token (ipam.service + extras.tag), NOT the superuser admin token.
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
+      # Pin the chart version the launcher pulls from Zot (overrides the
+      # launcher's hardcoded default, which lags behind chart bumps without a
+      # Forgejo republish). 0.1.2 adds the registry query-ws :81 Service port.
+      nmos_cpp_chart_version: "{{ nmos_cpp_chart_version }}"
   - name: media-finalise-nmos-cpp
     description: "Teardown NMOS workloads (finalise stage)"
     playbook: "playbooks/teardown-nmos-cpp.yml"
@@ -183,6 +187,14 @@ awx_catalog_job_templates:
       # Crosspoint admin password (OpenBao-sourced). The launcher hashes it to
       # SHA256 for users.json; the plaintext never reaches the chart or git.
       vault_nmos_crosspoint_admin_password: "{{ vault_nmos_crosspoint_admin_password | default('', true) }}"
+      # Env-specific IngressRoute host (websecure/Traefik, same lane as the
+      # console). Stamped from the env base domain; the launcher default is the
+      # example-domain placeholder. See dmfdeploy/dmfdeploy#108 follow-up.
+      crosspoint_ingress_host: "crosspoint.{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+      # Pin the chart version the launcher pulls from Zot (overrides the
+      # launcher's hardcoded default, which lags chart bumps without a Forgejo
+      # republish). 0.1.1 carries the wss mixed-content fix (image + chart).
+      crosspoint_chart_version: "{{ nmos_crosspoint_chart_version }}"
   - name: media-finalise-nmos-crosspoint
     description: "Teardown NMOS Crosspoint (finalise stage)"
     playbook: "playbooks/teardown-nmos-crosspoint.yml"
@@ -266,16 +278,16 @@ nmos_cpp_node_image: "zot.zot.svc.cluster.local:5000/dmf/nmos-cpp-node"
 nmos_cpp_node_tag: "0.1.0"
 nmos_cpp_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
 nmos_cpp_chart_name: "nmos-cpp"
-nmos_cpp_chart_version: "0.1.1"
-nmos_cpp_chart_digest: "sha256:827bce1a0a769bd996033232d178ad1b057879f4619d8ef17ca1281903bd5ba0"
+nmos_cpp_chart_version: "0.1.2"
+nmos_cpp_chart_digest: "sha256:fb52f88ab3bf140a361e8b9cba27a0220405e10cf769d5acf7ac171418fee03e"
 
 # ── NMOS Crosspoint catalog artifacts (ADR-0025, Lane B) ──────────────────
 # Source of truth is GHCR; playbooks/630-zot-seed-platform.yml mirrors these
 # into cluster-internal Zot before AWX catalog jobs can launch crosspoint.
-# chart_digest is a PLACEHOLDER until the first GHCR chart push (issue #108).
+# Published (issue #108): image by tag, chart digest-pinned below.
 nmos_crosspoint_image: "zot.zot.svc.cluster.local:5000/dmf/nmos-crosspoint"
-nmos_crosspoint_tag: "0.1.0"
+nmos_crosspoint_tag: "0.1.1"
 nmos_crosspoint_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
 nmos_crosspoint_chart_name: "nmos-crosspoint"
-nmos_crosspoint_chart_version: "0.1.0"
-nmos_crosspoint_chart_digest: "sha256:8352be3dbb21efb70b15f6a4e17a21e88af9083e13251beacaea05f1aa9e676f"
+nmos_crosspoint_chart_version: "0.1.1"
+nmos_crosspoint_chart_digest: "sha256:c4bad3fb15f3015e0ab742de3b68719ff13c590ea28b465ca08ffac13fc55f62"

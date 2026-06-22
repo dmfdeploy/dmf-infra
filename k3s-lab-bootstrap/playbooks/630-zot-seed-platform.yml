@@ -155,16 +155,17 @@
     nmos_cpp_registry_image_tag: "{{ nmos_cpp_registry_tag | default('0.1.0') }}"
     nmos_cpp_node_image_tag: "{{ nmos_cpp_node_tag | default('0.1.0') }}"
     nmos_cpp_seed_chart_name: "{{ nmos_cpp_chart_name | default('nmos-cpp') }}"
-    nmos_cpp_seed_chart_version: "{{ nmos_cpp_chart_version | default('0.1.1') }}"
-    nmos_cpp_seed_chart_digest: "{{ nmos_cpp_chart_digest | default('sha256:827bce1a0a769bd996033232d178ad1b057879f4619d8ef17ca1281903bd5ba0') }}"
+    nmos_cpp_seed_chart_version: "{{ nmos_cpp_chart_version | default('0.1.2') }}"
+    nmos_cpp_seed_chart_digest: "{{ nmos_cpp_chart_digest | default('sha256:fb52f88ab3bf140a361e8b9cba27a0220405e10cf769d5acf7ac171418fee03e') }}"
 
-    # nmos-crosspoint image/chart. Digest is a PLACEHOLDER until the image +
-    # chart are first published to GHCR (deferred live phase, issue #108) — fill
-    # nmos_crosspoint_chart_digest then before running this play against a live env.
-    nmos_crosspoint_image_tag: "{{ nmos_crosspoint_tag | default('0.1.0') }}"
+    # nmos-crosspoint image/chart (published to GHCR, issue #108). The IMAGE is
+    # mirrored by tag (by design — matches nmos-cpp; the catalog image digest is
+    # informational/verification metadata, NOT an enforcement input here). The
+    # CHART is digest-pinned below.
+    nmos_crosspoint_image_tag: "{{ nmos_crosspoint_tag | default('0.1.1') }}"
     nmos_crosspoint_seed_chart_name: "{{ nmos_crosspoint_chart_name | default('nmos-crosspoint') }}"
-    nmos_crosspoint_seed_chart_version: "{{ nmos_crosspoint_chart_version | default('0.1.0') }}"
-    nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('sha256:8352be3dbb21efb70b15f6a4e17a21e88af9083e13251beacaea05f1aa9e676f') }}"
+    nmos_crosspoint_seed_chart_version: "{{ nmos_crosspoint_chart_version | default('0.1.1') }}"
+    nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('sha256:c4bad3fb15f3015e0ab742de3b68719ff13c590ea28b465ca08ffac13fc55f62') }}"
 
     mxl_hello_seed_chart_name: "{{ mxl_hello_chart_name | default('mxl-hello') }}"
     mxl_hello_seed_chart_version: "{{ mxl_hello_chart_version | default('0.1.0') }}"

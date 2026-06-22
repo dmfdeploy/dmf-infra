@@ -31,6 +31,8 @@
     cms_awx_catalog_job_templates:
       - media-launch-nmos-cpp
       - media-finalise-nmos-cpp
+      - media-launch-nmos-crosspoint
+      - media-finalise-nmos-crosspoint
       - media-launch-mxl-hello
       - media-finalise-mxl-hello
       - media-launch-mxl-videotestsrc
