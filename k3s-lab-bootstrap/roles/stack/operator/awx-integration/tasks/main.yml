@@ -407,6 +407,14 @@
             - deployments
             - statefulsets
           verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
+        # nmos-crosspoint installs a Traefik IngressRoute for its private-lane
+        # web UI; nmos-cpp (ClusterIP only) never needed this. Without it the
+        # launcher SA gets "ingressroutes.traefik.io ... is forbidden" on helm
+        # install. See dmfdeploy/dmfdeploy#108 follow-up.
+        - apiGroups: ["traefik.io"]
+          resources:
+            - ingressroutes
+          verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
 
 - name: Ensure NMOS AWX launcher RoleBinding exists
   kubernetes.core.k8s:
