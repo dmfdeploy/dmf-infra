@@ -70,3 +70,11 @@
     - k3s_constrained_node | default(false) | bool
     - (_k3s_ssh_weights.stdout_lines | default([]) | map('trim') | list)
       != [k3s_constrained_cpu_weight | string, k3s_constrained_io_weight | string]
+
+# ── Constrained-node Tier 1b (#114): containerd image-pull throttle ──────────
+# This role entry is invoked against k3s_control (audit logging); the
+# constrained profile is single-node, so the control node IS the only node.
+# The throttle shares the Restart k3s handler with the audit drop-in, so one
+# restart applies both. Gated + self-validating inside the task file.
+- name: Apply constrained-node containerd image-pull throttle (Tier 1b)
+  ansible.builtin.import_tasks: containerd-throttle.yml

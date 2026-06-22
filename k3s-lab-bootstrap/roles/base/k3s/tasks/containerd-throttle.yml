@@ -1,0 +1,120 @@
+---
+# Constrained-node Tier 1b (issue #114): throttle concurrent image-layer
+# downloads via a containerd config-v3.toml.d fragment. See defaults/main.yml
+# for the full mechanism rationale + the live verification (k3s v1.33.12 /
+# containerd v2.2.3-k3s1.33, config v3, use_local_image_pull=true).
+#
+# Scope: applies ONLY to the single-node constrained profile (the only node IS
+# the control node). If sandbox-single-node ever grows to multiple nodes, this
+# must move to a per-node play (like containerd-registries) with its own restart
+# orchestration — today it rides the control-plane audit play's Restart k3s.
+#
+# Safety (a WRONG containerd key makes containerd fail to start = node down):
+# the fragment is validated against the bundled containerd binary via a
+# non-destructive `config dump` BEFORE any restart, and the value is checked
+# SCOPED TO the io.containerd.cri.v1.images table (not a whole-file substring,
+# which could false-match the identically-named transfer-service key). The
+# Restart k3s handler is notified only AFTER validation passes, so a failed
+# validation can never leave a queued restart — even under --force-handlers.
+# On failure the fragment is removed and the play fails with k3s untouched.
+
+- name: "Tier 1b: throttle containerd image-pull concurrency (constrained node)"
+  when: k3s_constrained_node | default(false) | bool
+  block:
+    - name: Ensure containerd config-v3.toml.d drop-in directory exists
+      ansible.builtin.file:
+        path: "{{ k3s_containerd_config_d_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Write the constrained-node image-pull throttle fragment
+      ansible.builtin.copy:
+        dest: "{{ k3s_containerd_throttle_fragment }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # DMF-managed (k3s role, issue #114 Tier 1b). Merged into containerd's
+          # config.toml via its `imports` glob. Constrained-node profile only.
+          version = 3
+
+          [plugins.'{{ k3s_containerd_image_plugin }}']
+            max_concurrent_downloads = {{ k3s_constrained_max_concurrent_downloads | int }}
+      register: _k3s_throttle_fragment
+      # Deliberately NO notify here — Restart k3s is notified after validation.
+
+    - name: Resolve the bundled containerd binary (prefer the stable 'current' symlink)
+      ansible.builtin.shell: |
+        set -o pipefail
+        if [ -x /var/lib/rancher/k3s/data/current/bin/containerd ]; then
+          echo /var/lib/rancher/k3s/data/current/bin/containerd
+        else
+          ls -1t /var/lib/rancher/k3s/data/*/bin/containerd 2>/dev/null | head -n1
+        fi
+      args:
+        executable: /bin/bash
+      register: _k3s_containerd_bin
+      changed_when: false
+      check_mode: false
+
+    - name: "Pre-restart gate: read max_concurrent_downloads scoped to the CRI images plugin"
+      # Non-destructive: dumps the merged config (config.toml imports the fragment)
+      # and extracts the value from WITHIN the io.containerd.cri.v1.images table
+      # only. `.` matches the TOML single-quote so the awk regex needs no embedded
+      # quotes. set -o pipefail surfaces a containerd parse failure as a non-zero rc.
+      ansible.builtin.shell: |
+        set -o pipefail
+        "{{ _k3s_containerd_bin.stdout | trim }}" --config "{{ k3s_containerd_config_toml }}" config dump \
+          | awk '
+              /^[[:space:]]*\[plugins\..io\.containerd\.cri\.v1\.images.\][[:space:]]*$/ {s=1; next}
+              /^[[:space:]]*\[/ {s=0}
+              s && /max_concurrent_downloads[[:space:]]*=/ {gsub(/[^0-9]/, "", $0); print; exit}
+            '
+      args:
+        executable: /bin/bash
+      register: _k3s_images_mcd
+      changed_when: false
+      check_mode: false
+      when:
+        - not ansible_check_mode
+        - (_k3s_containerd_bin.stdout | trim) | length > 0
+
+    - name: "Pre-restart gate: assert the CRI images throttle merged cleanly before any k3s restart"
+      ansible.builtin.assert:
+        that:
+          - (_k3s_containerd_bin.stdout | trim) | length > 0
+          - _k3s_images_mcd.rc == 0
+          - (_k3s_images_mcd.stdout | trim) == (k3s_constrained_max_concurrent_downloads | int | string)
+        fail_msg: >-
+          containerd rejected or did not merge the Tier 1b throttle fragment
+          ({{ k3s_containerd_throttle_fragment }}) under
+          {{ k3s_containerd_image_plugin }}. Refusing to restart k3s with a config
+          that would fail the next containerd start.
+        success_msg: >-
+          containerd merges cleanly: {{ k3s_containerd_image_plugin }}
+          max_concurrent_downloads={{ k3s_constrained_max_concurrent_downloads | int }}.
+      when: not ansible_check_mode
+
+    - name: "Queue k3s restart now that the throttle is validated (only if it changed)"
+      # Delayed notify: the restart is requested AFTER the validation assert above,
+      # so a validation failure can never leave a queued restart. changed_when ties
+      # the notify to an actual fragment change, and the shared handler dedupes with
+      # the audit drop-in so a single restart applies both.
+      ansible.builtin.debug:
+        msg: "Tier 1b throttle validated; queuing k3s restart to apply it."
+      changed_when: _k3s_throttle_fragment.changed | default(false)
+      notify: Restart k3s
+      when: not ansible_check_mode
+  rescue:
+    - name: "Tier 1b rollback: remove the bad throttle fragment so the node stays bootable"
+      ansible.builtin.file:
+        path: "{{ k3s_containerd_throttle_fragment }}"
+        state: absent
+
+    - name: "Tier 1b rollback: fail loudly (k3s NOT restarted)"
+      ansible.builtin.fail:
+        msg: >-
+          Tier 1b image-pull throttle validation failed; fragment removed and k3s
+          left running on its existing config. See the preceding task error.
