@@ -73,3 +73,28 @@ k3s_constrained_cpu_weight: 1000
 k3s_constrained_io_weight: 1000
 k3s_ssh_unit_name: ssh.service
 k3s_ssh_weight_dropin_path: /etc/systemd/system/ssh.service.d/10-dmf-constrained-weight.conf
+
+# ── Constrained-node Tier 1b (issue #114) — image-pull throttle ──────────────
+# Throttle concurrent image-layer downloads on the constrained node. Tier 1a
+# raises the k3s/containerd subtree's CPUWeight, but k3s *bundles* containerd in
+# one cgroup, so that weight favours image pull/decompression over pods just as
+# much as it favours apiserver/etcd. Capping concurrent downloads is the direct
+# lever that stops a fresh post-seed pull storm (11 apps back-to-back) from
+# saturating CPU/IO and feeding the kswapd thrash chain (#106). Default upstream
+# is 3; we drop to 2 on the constrained profile only.
+#
+# Mechanism (verified live on k3s v1.33.12 / containerd v2.2.3-k3s1.33, config
+# version 3): k3s renders /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+# with `imports = [".../config-v3.toml.d/*.toml"]`, so a fragment dropped in that
+# dir is merged in. `max_concurrent_downloads` is an honoured field of the CRI
+# *image* plugin `io.containerd.cri.v1.images` (config v3 split it out of the v2
+# `io.containerd.grpc.v1.cri`). The live config sets `use_local_image_pull = true`,
+# so CRI pulls use that plugin's puller — NOT the transfer service — making this
+# the effective knob. Unlike certs.d, config-v3.toml.d is read at containerd
+# START, so a change requires a k3s restart (handled via the Restart k3s handler).
+k3s_containerd_config_toml: /var/lib/rancher/k3s/agent/etc/containerd/config.toml
+k3s_containerd_config_d_dir: /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
+k3s_containerd_throttle_fragment: "{{ k3s_containerd_config_d_dir }}/10-dmf-download-throttle.toml"
+# Kept as a var so a future containerd plugin-id reorg is a one-line change.
+k3s_containerd_image_plugin: "io.containerd.cri.v1.images"
+k3s_constrained_max_concurrent_downloads: 2
