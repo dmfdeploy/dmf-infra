@@ -12,9 +12,10 @@
       Got: {{ awx_presence_state | default('<undefined>') }}
 
 # ---------------------------------------------------------------------------
-# ASLEEP — merge-patch replica fields to 0. No template apply, no waits,
-# no admin-sync exec. The operator reconcile loop picks up the CR change
-# (measured 6–10 min latency on Pi-class) and scales both Deployments to 0.
+# ASLEEP — merge-patch the CR replica fields to 0, THEN scale the Deployments
+# directly to 0 (#110) so RAM is freed in seconds instead of waiting on the
+# operator's ~6-10 min reconcile (which then just confirms the same state). No
+# template apply, no readyReplicas waits, no admin-sync exec (Phase-0 #1).
 # ---------------------------------------------------------------------------
 
 - name: Patch AWX CR replicas to 0 (asleep)
@@ -42,11 +43,41 @@
   changed_when: _awx_sleep_patch.rc == 0
   when: awx_presence_state == 'asleep'
 
-- name: Note AWX is now asleep (replicas patched to 0)
+# #110: scale the Deployments directly too. The CR patch (manage_replicas=true)
+# stays authoritative, but the operator reconcile is ~6-10 min on Pi-class — a
+# direct scale frees the RAM in seconds, so the await-asleep gate (#106) passes
+# almost immediately instead of waiting on the operator. Best-effort: the CR
+# patch above is the source of truth; a transient failure here is non-fatal.
+- name: Scale AWX web+task Deployments to 0 directly (fast sleep, #110)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ awx_presence_namespace }}"
+      - scale
+      - "deployment/{{ awx_presence_instance_name }}-web"
+      - "deployment/{{ awx_presence_instance_name }}-task"
+      - --replicas=0
+  register: _awx_sleep_scale
+  changed_when: _awx_sleep_scale.rc == 0
+  failed_when: false
+  when: awx_presence_state == 'asleep'
+
+- name: Note AWX asleep state (direct-scale result honest)
   ansible.builtin.debug:
     msg: >-
-      AWX CR {{ awx_presence_instance_name }} patched to replicas=0.
-      Operator will reconcile Deployments to 0 within ~6–10 min.
+      {{
+        ('AWX CR ' ~ awx_presence_instance_name ~ ' patched to replicas=0 and '
+         ~ 'Deployments scaled to 0 directly (#110) — RAM reclaimed in seconds; '
+         ~ 'the operator reconcile (~6-10 min) just confirms the same state.')
+        if (_awx_sleep_scale.rc | default(1)) == 0
+        else ('AWX CR ' ~ awx_presence_instance_name ~ ' patched to replicas=0, '
+              ~ 'but the direct Deployment scale FAILED (rc='
+              ~ (_awx_sleep_scale.rc | default('?')) ~ ') — degraded to '
+              ~ 'operator-only reconcile (~6-10 min). Inspect awx-web/awx-task.')
+      }}
   when: awx_presence_state == 'asleep'
 
 # ---------------------------------------------------------------------------
@@ -78,6 +109,32 @@
         }}
   register: _awx_wake_patch
   changed_when: _awx_wake_patch.rc == 0
+  when: awx_presence_state == 'awake'
+
+# #110: scale the Deployments directly to desired right after the CR patch, so
+# the pods start in seconds rather than after the operator's ~6-10 min reconcile.
+# The readyReplicas + API waits below then converge on pod-startup time (~70s),
+# not reconcile time. Best-effort (CR patch is authoritative). web/task scaled to
+# their own counts (they may differ).
+- name: Scale AWX Deployments to desired directly (fast wake, #110)
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ awx_presence_namespace }}"
+      - scale
+      - "deployment/{{ item.name }}"
+      - "--replicas={{ item.replicas }}"
+  loop:
+    - {name: "{{ awx_presence_instance_name }}-web", replicas: "{{ awx_presence_web_replicas | int }}"}
+    - {name: "{{ awx_presence_instance_name }}-task", replicas: "{{ awx_presence_task_replicas | int }}"}
+  loop_control:
+    label: "{{ item.name }}={{ item.replicas }}"
+  register: _awx_wake_scale
+  changed_when: _awx_wake_scale.rc == 0
+  failed_when: false
   when: awx_presence_state == 'awake'
 
 - name: Wait for AWX web Deployment readyReplicas >= 1 (awake)

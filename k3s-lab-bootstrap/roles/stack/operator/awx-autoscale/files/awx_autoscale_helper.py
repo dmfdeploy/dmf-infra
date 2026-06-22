@@ -312,8 +312,36 @@ _lease = LeaseManager()
 # AWX CR patch + readiness wait
 # ---------------------------------------------------------------------------
 
+def _scale_awx_deployments(web_replicas: int, task_replicas: int) -> None:
+    """Directly patch awx-web + awx-task Deployment replicas (#110).
+
+    The AWX CR patch (with manage_replicas=true) is authoritative, but the AWX
+    operator's reconcile is async and slow on Pi-class nodes (~6-10 min) — so a
+    CR-only change leaves AWX in the old state for minutes. Scaling the
+    Deployments directly takes effect in seconds; because the CR is patched to
+    the SAME target alongside this, the operator's next reconcile is a no-op
+    (no fight). Best-effort: a failure here is non-fatal — the operator still
+    converges the Deployments to the CR value eventually.
+    """
+    for name, replicas in (
+        (f"{AWX_CR_NAME}-web", web_replicas),
+        (f"{AWX_CR_NAME}-task", task_replicas),
+    ):
+        try:
+            _k8s_request(
+                "PATCH",
+                f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}",
+                body={"spec": {"replicas": replicas}},
+            )
+        except (HTTPError, URLError) as e:
+            audit("awx_deploy_scale_failed", deployment=name,
+                  replicas=replicas, error=str(e))
+
+
 def patch_awx_awake() -> None:
-    """Merge-patch the AWX CR to awake replica counts + manage_replicas."""
+    """Merge-patch the AWX CR to awake replica counts + manage_replicas, then
+    scale the Deployments directly so the wake is seconds, not an operator
+    reconcile cycle (#110)."""
     body = {
         "spec": {
             "web_replicas": WEB_REPLICAS,
@@ -327,12 +355,15 @@ def patch_awx_awake() -> None:
         f"/apis/awx.ansible.com/v1beta1/namespaces/{NAMESPACE}/awxs/{AWX_CR_NAME}",
         body=body,
     )
+    _scale_awx_deployments(WEB_REPLICAS, TASK_REPLICAS)
     audit("awx_cr_patched", state="awake",
           web_replicas=WEB_REPLICAS, task_replicas=TASK_REPLICAS)
 
 
 def patch_awx_asleep() -> None:
-    """Merge-patch the AWX CR to zero replicas + manage_replicas."""
+    """Merge-patch the AWX CR to zero replicas + manage_replicas, then scale the
+    Deployments directly to 0 so the sleep is immediate, not an operator
+    reconcile cycle (#110)."""
     body = {
         "spec": {
             "web_replicas": 0,
@@ -346,6 +377,7 @@ def patch_awx_asleep() -> None:
         f"/apis/awx.ansible.com/v1beta1/namespaces/{NAMESPACE}/awxs/{AWX_CR_NAME}",
         body=body,
     )
+    _scale_awx_deployments(0, 0)
     _lease.record_sleep()
     audit("awx_cr_patched", state="asleep")
 
