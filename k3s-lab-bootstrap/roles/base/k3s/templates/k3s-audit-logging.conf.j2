@@ -1,3 +1,13 @@
 [Service]
+{% if k3s_constrained_node | default(false) | bool %}
+# Constrained-node Tier 1 (#114): raise the k3s/containerd subtree's CPU+IO weight
+# among system.slice services so the control plane isn't starved by sibling
+# services under contention. Additive [Service] props on the audit drop-in (the
+# ExecStart owner) — kept here so a restart never drops them. cgroup v2. (Note:
+# k3s.service bundles containerd, so this does not isolate apiserver/etcd from
+# image-pull work — Tier 1b throttles that. Pod backpressure = the reservations.)
+CPUWeight={{ k3s_constrained_cpu_weight }}
+IOWeight={{ k3s_constrained_io_weight }}
+{% endif %}
 ExecStart=
 ExecStart=/usr/local/bin/k3s server {{ k3s_server_args }} --kube-apiserver-arg=audit-policy-file={{ k3s_audit_policy_path }} --kube-apiserver-arg=audit-log-path=/var/log/kubernetes/audit.log --kube-apiserver-arg=audit-log-maxage={{ k3s_audit_log_maxage }} --kube-apiserver-arg=audit-log-maxbackup={{ k3s_audit_log_maxbackup }} --kube-apiserver-arg=audit-log-maxsize={{ k3s_audit_log_maxsize }}
