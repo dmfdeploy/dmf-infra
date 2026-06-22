@@ -158,6 +158,14 @@
     nmos_cpp_seed_chart_version: "{{ nmos_cpp_chart_version | default('0.1.1') }}"
     nmos_cpp_seed_chart_digest: "{{ nmos_cpp_chart_digest | default('sha256:827bce1a0a769bd996033232d178ad1b057879f4619d8ef17ca1281903bd5ba0') }}"
 
+    # nmos-crosspoint image/chart. Digest is a PLACEHOLDER until the image +
+    # chart are first published to GHCR (deferred live phase, issue #108) — fill
+    # nmos_crosspoint_chart_digest then before running this play against a live env.
+    nmos_crosspoint_image_tag: "{{ nmos_crosspoint_tag | default('0.1.0') }}"
+    nmos_crosspoint_seed_chart_name: "{{ nmos_crosspoint_chart_name | default('nmos-crosspoint') }}"
+    nmos_crosspoint_seed_chart_version: "{{ nmos_crosspoint_chart_version | default('0.1.0') }}"
+    nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('sha256:8352be3dbb21efb70b15f6a4e17a21e88af9083e13251beacaea05f1aa9e676f') }}"
+
     mxl_hello_seed_chart_name: "{{ mxl_hello_chart_name | default('mxl-hello') }}"
     mxl_hello_seed_chart_version: "{{ mxl_hello_chart_version | default('0.1.0') }}"
     mxl_hello_seed_chart_digest: "{{ mxl_hello_chart_digest | default('sha256:ecfd201e5c21b68cabe8b32b002fe5915983c99bcc0e49ef3d3d4efa54ec0124') }}"
@@ -187,6 +195,9 @@
       - name: nmos-cpp-node
         tag: "{{ nmos_cpp_node_image_tag }}"
         zot_repo: "{{ zot_registry_host }}/dmf/nmos-cpp-node"
+      - name: nmos-crosspoint
+        tag: "{{ nmos_crosspoint_image_tag }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/nmos-crosspoint"
       - name: dmf-promsd
         tag: "{{ dmf_promsd_image_tag }}"
         zot_repo: "{{ zot_registry_host }}/dmf-promsd"
@@ -207,6 +218,11 @@
         digest: "{{ nmos_cpp_seed_chart_digest }}"
         source_repo: "ghcr.io/{{ ghcr_namespace }}/charts/{{ nmos_cpp_seed_chart_name }}"
         zot_repo: "{{ zot_registry_host }}/dmf/charts/{{ nmos_cpp_seed_chart_name }}"
+      - name: "{{ nmos_crosspoint_seed_chart_name }}"
+        version: "{{ nmos_crosspoint_seed_chart_version }}"
+        digest: "{{ nmos_crosspoint_seed_chart_digest }}"
+        source_repo: "ghcr.io/{{ ghcr_namespace }}/charts/{{ nmos_crosspoint_seed_chart_name }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/charts/{{ nmos_crosspoint_seed_chart_name }}"
       - name: "{{ mxl_hello_seed_chart_name }}"
         version: "{{ mxl_hello_seed_chart_version }}"
         digest: "{{ mxl_hello_seed_chart_digest }}"
