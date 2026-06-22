@@ -74,6 +74,7 @@
         + ( ['provider-id=' ~ hostvars[inventory_hostname]._k3s_provider_id_resolved]
             if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
             else [] )
+        + (k3s_constrained_kubelet_args | default([]))
       }}
     k3s_disable_server_args: >-
       {{
@@ -170,6 +171,7 @@
         + ( ['provider-id=' ~ hostvars[inventory_hostname]._k3s_provider_id_resolved]
             if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
             else [] )
+        + (k3s_constrained_kubelet_args | default([]))
       }}
     k3s_server_url: "https://{{ hostvars[k3s_control_node].k3s_node_ip }}:6443"
     k3s_disable_server_args: >-
@@ -284,6 +286,7 @@
         + ( ['provider-id=' ~ hostvars[inventory_hostname]._k3s_provider_id_resolved]
             if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
             else [] )
+        + (k3s_constrained_kubelet_args | default([]))
       }}
     # k3s_base_server_args here MUST include --node-name and --cluster-init
     # because the audit-logging.conf.j2 drop-in REPLACES the install-time

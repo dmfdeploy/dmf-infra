@@ -41,3 +41,32 @@
   notify:
     - Reload systemd
     - Restart k3s
+
+# ── Constrained-node Tier 1 (#114): protect sshd (system.slice sibling) ──────
+# Raising only k3s.service's weight would starve sshd, its system.slice sibling
+# (the SSH-refusal symptom from #106). Apply via `systemctl set-property`, which
+# writes to the running cgroup immediately AND persists — with NO ssh restart
+# (a restart would drop this very ansible connection). Idempotent: only set when
+# the current CPUWeight differs.
+- name: "Read current sshd CPUWeight + IOWeight (constrained node)"
+  ansible.builtin.command:
+    argv: ["systemctl", "show", "{{ k3s_ssh_unit_name }}", "--property=CPUWeight", "--property=IOWeight", "--value"]
+  register: _k3s_ssh_weights
+  changed_when: false
+  failed_when: false
+  when: k3s_constrained_node | default(false) | bool
+
+- name: "Give sshd CPU/IO priority via set-property (no restart)"
+  ansible.builtin.command:
+    argv:
+      - "systemctl"
+      - "set-property"
+      - "{{ k3s_ssh_unit_name }}"
+      - "CPUWeight={{ k3s_constrained_cpu_weight }}"
+      - "IOWeight={{ k3s_constrained_io_weight }}"
+  changed_when: true
+  # --value prints CPUWeight then IOWeight on two lines; set only when EITHER drifts.
+  when:
+    - k3s_constrained_node | default(false) | bool
+    - (_k3s_ssh_weights.stdout_lines | default([]) | map('trim') | list)
+      != [k3s_constrained_cpu_weight | string, k3s_constrained_io_weight | string]

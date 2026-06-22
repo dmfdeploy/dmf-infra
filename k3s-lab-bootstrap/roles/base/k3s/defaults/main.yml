@@ -31,3 +31,45 @@ k3s_containerd_zot_ingress_host: "{{ ('registry.' ~ cert_manager_cluster_domain)
 # the local-CA ingress cert rather than skipping verification. Keep in sync with
 # the install path in playbooks/321-local-ca-trust.yml.
 k3s_containerd_zot_ingress_ca: /usr/local/share/ca-certificates/dmf-local-ca.crt
+
+# ── Constrained-node Tier 1 (issue #114) — resource protection ──────────────
+# Applied ONLY when dmf_release_profile == 'sandbox-single-node' (an env
+# group_var, available at all stages incl. seed). Caps kubepods.slice so the
+# system.slice (k3s control plane + sshd) keeps CPU/RAM headroom on a 4-core/
+# 8GB node. Lab/cloud lanes (other profiles) are unchanged — the lists resolve
+# to [] and the audit drop-in omits the weights. Tunable floors.
+k3s_kube_reserved_cpu: "500m"
+k3s_kube_reserved_memory: "512Mi"
+k3s_system_reserved_cpu: "500m"
+k3s_system_reserved_memory: "512Mi"
+# Reservations render as --kubelet-arg=... via k3s_kubelet_args_resolved (300-k3s),
+# so they flow through the audit ExecStart owner. The load-bearing lever: they
+# REDUCE allocatable, so the scheduler stops over-packing kubepods.slice and
+# leaves CPU/RAM headroom for system.slice (k3s + sshd). Values are shell-safe
+# (= and , only) so the fresh-install `shell:` path in 300-k3s is unaffected.
+#
+# NOTE: a custom `eviction-hard` (e.g. memory.available<250Mi) is deliberately
+# NOT set here — it would (a) break the fresh-install shell path (`<` = redirect)
+# and (b) REPLACE the whole default kubelet hard-eviction map, silently dropping
+# the nodefs/imagefs/inode thresholds. The kubelet default (memory.available<100Mi
+# + disk/inode) still applies. Tuning eviction-hard is a follow-up that must ship
+# the full map and move the install task to command/argv (codex P1, #114).
+k3s_constrained_kubelet_args: >-
+  {{
+    ['kube-reserved=cpu=' ~ k3s_kube_reserved_cpu ~ ',memory=' ~ k3s_kube_reserved_memory,
+     'system-reserved=cpu=' ~ k3s_system_reserved_cpu ~ ',memory=' ~ k3s_system_reserved_memory]
+    if (dmf_release_profile | default('')) == 'sandbox-single-node'
+    else []
+  }}
+# systemd CPU/IO weight (cgroup v2). The control plane (k3s.service) and the
+# management plane (ssh.service) are siblings under system.slice; both default to
+# weight 100. Raising sshd to match k3s ensures sshd is NOT starved relative to
+# the heavy k3s process under contention — the direct fix for the SSH-refusal
+# symptom in #106. (Pod-vs-system backpressure is the reservations' job above;
+# making kubepods.slice yield to system.slice would need slice-level weighting,
+# a separate enhancement.) Secondary to the reservations.
+k3s_constrained_node: "{{ (dmf_release_profile | default('')) == 'sandbox-single-node' }}"
+k3s_constrained_cpu_weight: 1000
+k3s_constrained_io_weight: 1000
+k3s_ssh_unit_name: ssh.service
+k3s_ssh_weight_dropin_path: /etc/systemd/system/ssh.service.d/10-dmf-constrained-weight.conf
