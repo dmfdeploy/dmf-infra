@@ -5,8 +5,9 @@
 #   state: asleep  → merge-patch replica fields to 0 (operator holds at zero)
 #   state: awake   → merge-patch replica fields to desired, wait for ready + API 200
 #
-# Non-negotiable (Phase-0 constraint #1): asleep patches REPLICA FIELDS ONLY.
-# It does NOT run a full role apply, does NOT touch templates, does NOT run
+# Non-negotiable (Phase-0 constraint #1): asleep mutates REPLICA FIELDS ONLY —
+# the CR replica fields plus a direct Deployment spec.replicas patch (#110). It
+# does NOT run a full role apply, does NOT touch templates, does NOT run
 # readyReplicas waits or the admin-sync kubectl exec. Those all require an
 # awake CR and stay inside the 640 install path (awx role tasks/main.yml).
 #
