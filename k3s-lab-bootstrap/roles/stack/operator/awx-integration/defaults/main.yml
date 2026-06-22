@@ -171,6 +171,27 @@ awx_catalog_job_templates:
       vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
+  - name: media-launch-nmos-crosspoint
+    description: "Launch NMOS Crosspoint routing UI (configure stage)"
+    playbook: "playbooks/launch-nmos-crosspoint.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
+      # Crosspoint admin password (OpenBao-sourced). The launcher hashes it to
+      # SHA256 for users.json; the plaintext never reaches the chart or git.
+      vault_nmos_crosspoint_admin_password: "{{ vault_nmos_crosspoint_admin_password | default('', true) }}"
+  - name: media-finalise-nmos-crosspoint
+    description: "Teardown NMOS Crosspoint (finalise stage)"
+    playbook: "playbooks/teardown-nmos-crosspoint.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-launch-mxl-videotestsrc
     description: "Launch MXL test-pattern source (configure stage)"
     playbook: "playbooks/launch-mxl-fabrics-demo.yml"
@@ -247,3 +268,14 @@ nmos_cpp_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
 nmos_cpp_chart_name: "nmos-cpp"
 nmos_cpp_chart_version: "0.1.1"
 nmos_cpp_chart_digest: "sha256:827bce1a0a769bd996033232d178ad1b057879f4619d8ef17ca1281903bd5ba0"
+
+# ── NMOS Crosspoint catalog artifacts (ADR-0025, Lane B) ──────────────────
+# Source of truth is GHCR; playbooks/630-zot-seed-platform.yml mirrors these
+# into cluster-internal Zot before AWX catalog jobs can launch crosspoint.
+# chart_digest is a PLACEHOLDER until the first GHCR chart push (issue #108).
+nmos_crosspoint_image: "zot.zot.svc.cluster.local:5000/dmf/nmos-crosspoint"
+nmos_crosspoint_tag: "0.1.0"
+nmos_crosspoint_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
+nmos_crosspoint_chart_name: "nmos-crosspoint"
+nmos_crosspoint_chart_version: "0.1.0"
+nmos_crosspoint_chart_digest: "sha256:8352be3dbb21efb70b15f6a4e17a21e88af9083e13251beacaea05f1aa9e676f"
