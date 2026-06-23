@@ -50,10 +50,16 @@ cms_secret_key: "{{ vault_cms_secret_key | default('') }}"
 # load-balanced ingress (internal cluster DNS resolution for image pulls is
 # unreliable on multi-node clusters). Build/push to this repository first.
 cms_image_repository: "registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}/dmf-cms"
-# Image tag: read from the dmf-cms checkout's VERSION file at playbook runtime.
-# This is the single source of truth — never hardcode a tag here.
-# Override with cms_image_tag_override in inventory only for hotfix testing.
-cms_image_tag: "{{ cms_image_tag_override | default(lookup('file', cms_chart_source_path ~ '/../../VERSION') | trim) }}"
+# Image tag: read from the dmf-cms checkout's VERSION at `origin/main`, NOT the
+# operator's working tree (#119). The deployed console image is published to
+# GHCR only for released versions on main; reading the local working file meant
+# a clone parked on a feature/release branch silently deployed a stale (or
+# never-published) tag. `git show origin/main:VERSION` is deterministic and
+# independent of the checked-out branch (offline-safe: reads the last-fetched
+# ref). This is the single source of truth — never hardcode a tag here.
+# Override with cms_image_tag_override in inventory only for hotfix testing
+# (the one override var, shared with 630-zot-seed-platform.yml).
+cms_image_tag: "{{ cms_image_tag_override | default(lookup('pipe', 'git -C ' ~ cms_chart_source_path ~ '/../.. show origin/main:VERSION') | trim) }}"
 cms_image_pull_policy: IfNotPresent
 
 # Authentik API for passkey enrollment (self-service device enrollment).
