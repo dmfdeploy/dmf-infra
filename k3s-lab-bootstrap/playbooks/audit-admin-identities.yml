@@ -54,6 +54,54 @@
 
   tasks:
     # ────────────────────────────────────────────────────────────────
+    # AWX scale-to-zero detection (#124). On the sandbox lane AWX runs
+    # under on-demand scale-to-zero: awx-web is scaled to 0 replicas
+    # between catalog jobs, so `kubectl exec deploy/awx-web` cannot run and
+    # the superuser query returns rc!=0 / empty — a FALSE drift, not a real
+    # one. An asleep AWX serves no API, so its user table cannot drift
+    # while down; the check is therefore safely skipped (with a loud
+    # notice) when the autoscale helper is deployed AND AWX is DELIBERATELY
+    # scaled to zero.
+    #
+    # "Deliberately asleep" is keyed on DESIRED replicas (spec.replicas==0),
+    # NOT readyReplicas: a crashlooping AWX has spec.replicas>0 but
+    # readyReplicas==0, and that is a real outage we must NOT skip (it would
+    # let the audit go green while AWX is broken). spec.replicas==0 is set
+    # only by the autoscale helper's sleep path, so it is the unambiguous
+    # asleep-by-design signal.
+    #
+    # Keyed on live cluster state, NOT dmf_awx_autoscale_enabled, because
+    # that flag is set play-scoped in the profile prelude and is not
+    # reliably visible here. A genuinely-down AWX with NO autoscale helper,
+    # or with desired replicas > 0, still falls through to the query +
+    # assert below and fails loudly.
+    - name: Detect AWX autoscale helper presence
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n awx get deploy awx-autoscale
+          -o name 2>/dev/null | wc -l
+      register: _audit_awx_autoscale
+      changed_when: false
+      failed_when: false
+
+    - name: Detect AWX web desired (spec) replicas
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n awx get deploy awx-web
+          -o jsonpath='{.spec.replicas}'
+      register: _audit_awx_web_desired
+      changed_when: false
+      failed_when: false
+
+    - name: Set AWX scale-to-zero skip fact
+      ansible.builtin.set_fact:
+        _audit_awx_asleep: >-
+          {{ (_audit_awx_autoscale.stdout | default('0') | trim | int) > 0
+             and (_audit_awx_web_desired.stdout | default('') | trim | int(-1)) == 0 }}
+
+    # ────────────────────────────────────────────────────────────────
     # Per-app queries (read-only). Each pre-filters output to one
     # username per line so downstream parsing is just stdout_lines.
     # ────────────────────────────────────────────────────────────────
@@ -69,6 +117,7 @@
       register: _audit_awx_users
       changed_when: false
       failed_when: false
+      when: not _audit_awx_asleep | bool
 
     - name: Query Forgejo live admin users
       ansible.builtin.shell:
@@ -126,6 +175,16 @@
     # Per-app debug + assert. Each block prints the comparison and
     # asserts no-drift (expected username appears in live list).
     # ────────────────────────────────────────────────────────────────
+    - name: Audit AWX (scaled-to-zero — superuser drift NOT checked this run)
+      ansible.builtin.debug:
+        msg: >-
+          AWX is scaled to zero (awx-autoscale helper present, awx-web at 0
+          replicas) — superuser drift cannot be checked while the API is
+          asleep, and an asleep AWX cannot mutate its user table. SKIPPING
+          the AWX drift assertion. To audit AWX, wake it first
+          (playbooks/awx-wake.yml) and re-run this audit.
+      when: _audit_awx_asleep | bool
+
     - name: Audit AWX
       ansible.builtin.debug:
         msg: |-
@@ -133,6 +192,7 @@
             expected: {{ audit_expected_awx }}
             live:     {{ _audit_awx_users.stdout_lines | default([]) }}
             rc:       {{ _audit_awx_users.rc | default(-1) }}
+      when: not _audit_awx_asleep | bool
 
     - name: Assert AWX no drift
       ansible.builtin.assert:
@@ -142,6 +202,7 @@
         fail_msg: >-
           AWX drift: expected superuser '{{ audit_expected_awx }}' not in
           live list {{ _audit_awx_users.stdout_lines | default([]) }}.
+      when: not _audit_awx_asleep | bool
 
     - name: Audit Forgejo
       ansible.builtin.debug:
@@ -218,5 +279,6 @@
       ansible.builtin.debug:
         msg: |-
           App-admin identity audit on this env: all assertions passed.
-            apps audited: 5 (awx, forgejo, netbox, zot, authentik)
+            apps audited:  {{ '4 (forgejo, netbox, zot, authentik)' if _audit_awx_asleep | bool else '5 (awx, forgejo, netbox, zot, authentik)' }}
+            {{ 'AWX:          skipped — scaled to zero (run awx-wake.yml then re-audit for AWX coverage)' if _audit_awx_asleep | bool else 'AWX:          audited' }}
             LibreNMS:     intentionally skipped (not deployed on lab clusters)
