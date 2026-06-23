@@ -124,20 +124,25 @@
     zot_service_user: zot-svc
     zot_service_password: "{{ vault_zot_service_password | mandatory }}"
 
-    # dmf-cms image tag. VERSION is the single source of truth (ADR-0005);
-    # read it directly from dmf-cms/VERSION via lookup so a standalone
-    # invocation of this play picks up the operator's local checkout
-    # without needing -e cms_image_tag. The cms role default reads the
-    # same file. Operator can override via -e or at the inventory level
-    # if a hotfix on a different tag is needed.
+    # dmf-cms image tag. VERSION is the single source of truth (ADR-0005), read
+    # from `origin/main`, NOT the operator's working tree (#119). The image is
+    # published to GHCR only for released versions on main; reading the local
+    # working file meant a clone parked on a feature/release branch silently
+    # seeded (and 650 deployed) a stale or never-published tag. `git show
+    # origin/main:VERSION` is deterministic regardless of the checked-out
+    # branch. The cms role default resolves the same way. Override with
+    # cms_image_tag_override (the one override var, unified with the cms role —
+    # the old split used `cms_image_tag` here vs `cms_image_tag_override` in the
+    # role) via -e or inventory for hotfix testing on a different tag.
     #
-    # `lookup('file', ...)` runs on the Ansible controller (the operator
-    # workstation), NOT the target node — so this reads the operator's local
-    # dmf-cms checkout even though the play now targets the control node.
+    # `lookup('pipe', 'git ...')` runs on the Ansible controller (the operator
+    # workstation), NOT the target node — so it reads the operator's local
+    # dmf-cms checkout's origin/main ref even though the play targets the
+    # control node. Offline-safe: uses the last-fetched ref, no network.
     #
     # Path: this playbook lives at dmf-infra/k3s-lab-bootstrap/playbooks/;
-    # dmf-cms/VERSION is three dirs up + dmf-cms/VERSION.
-    dmf_cms_image_tag: "{{ cms_image_tag | default(lookup('file', playbook_dir ~ '/../../../dmf-cms/VERSION') | trim) }}"
+    # the dmf-cms checkout is three dirs up.
+    dmf_cms_image_tag: "{{ cms_image_tag_override | default(lookup('pipe', 'git -C ' ~ playbook_dir ~ '/../../../dmf-cms show origin/main:VERSION') | trim) }}"
 
     # dmf-promsd image tag. VERSION is the single source of truth; read it
     # from the dmf-promsd checkout at playbook runtime. Mirror the pattern
