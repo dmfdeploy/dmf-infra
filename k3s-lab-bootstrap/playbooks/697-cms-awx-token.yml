@@ -26,19 +26,15 @@
     cms_awx_svc_token_name: dmf-cms-svc-token
     cms_awx_target_job_template: eso-openbao-health-check
     # Catalog launchers the Console drives — dmf-cms-svc needs JobTemplate
-    # Execute on these (least-priv; no system admin). Granted additively
-    # alongside the health-check JT below.
-    cms_awx_catalog_job_templates:
-      - media-launch-nmos-cpp
-      - media-finalise-nmos-cpp
-      - media-launch-nmos-crosspoint
-      - media-finalise-nmos-crosspoint
-      - media-launch-mxl-hello
-      - media-finalise-mxl-hello
-      - media-launch-mxl-videotestsrc
-      - media-finalise-mxl-videotestsrc
-      - media-launch-mxl-videotest-view
-      - media-finalise-mxl-videotest-view
+    # Execute (least-priv; no system admin) on each. Matched by naming
+    # convention (media-launch-* / media-finalise-*) at reconcile time rather
+    # than a hardcoded list: the old second list (a) drifted from the canonical
+    # awx_catalog_job_templates in the awx-integration role and (b) was granted
+    # only under the first-provisioning gate, so catalog functions added later
+    # (the GitOps "marketplace" model) never received the grant. See the
+    # "Reconcile catalog launcher Execute grants" block and
+    # dmfdeploy/dmfdeploy#122.
+    cms_awx_catalog_jt_name_regex: '^media-(launch|finalise)-'
     cms_awx_inventory_label: "NetBox"
 
   roles:
@@ -551,50 +547,6 @@
       when: not _cms_awx_token_already_provisioned
       no_log: true
 
-    # ── Additionally grant Execute on the catalog launcher JTs ───────────
-    # Least-priv: dmf-cms-svc gets JobTemplate Execute on exactly the catalog
-    # launchers the Console drives. Resilient — any not-yet-present JT is
-    # simply skipped (empty id list → no-op).
-    - name: List job templates for catalog grants
-      ansible.builtin.uri:
-        url: "{{ _cms_awx_api_base }}/job_templates/?page_size=200"
-        method: GET
-        url_username: "{{ _cms_awx_admin_user }}"
-        url_password: "{{ _cms_awx_admin_password }}"
-        force_basic_auth: true
-        status_code: 200
-      register: _cms_awx_all_jts
-      when: not _cms_awx_token_already_provisioned
-      no_log: true
-
-    - name: Resolve catalog launcher JT ids
-      ansible.builtin.set_fact:
-        _cms_awx_catalog_jt_ids: >-
-          {{
-            _cms_awx_all_jts.json.results
-            | selectattr('name', 'in', cms_awx_catalog_job_templates)
-            | map(attribute='id') | list
-          }}
-      when: not _cms_awx_token_already_provisioned
-      no_log: true
-
-    - name: Grant JobTemplate Execute on each catalog launcher
-      ansible.builtin.uri:
-        url: "{{ _cms_awx_api_base }}/role_user_assignments/"
-        method: POST
-        url_username: "{{ _cms_awx_admin_user }}"
-        url_password: "{{ _cms_awx_admin_password }}"
-        force_basic_auth: true
-        body_format: json
-        body:
-          user: "{{ _cms_awx_svc_user_id }}"
-          role_definition: "{{ _cms_awx_template_execute_role_id }}"
-          object_id: "{{ item }}"
-        status_code: [201, 400]  # 400 if assignment already exists
-      loop: "{{ _cms_awx_catalog_jt_ids | default([]) }}"
-      when: not _cms_awx_token_already_provisioned
-      no_log: true
-
     # ── Create AWX personal token (always create fresh for provisioning) ─
     - name: Check for existing personal token with same description
       ansible.builtin.uri:
@@ -1000,3 +952,143 @@
         - _cms_awx_deployment_ready.resources[0].status.readyReplicas | default(0) | int >= 1
       retries: 60
       delay: 5
+
+    # ── Reconcile catalog launcher Execute grants (every run, idempotent) ─
+    # dmfdeploy/dmfdeploy#122: grant dmf-cms-svc JobTemplate Execute on every
+    # catalog launcher (media-launch-* / media-finalise-*) on EVERY run — NOT
+    # only at first token provisioning. Catalog functions added after bootstrap
+    # (the GitOps "marketplace" model: git-add a Zot chart/image + Forgejo
+    # launcher + its AWX JT) otherwise never receive the console grant, so the
+    # Deploy button reports "template not found". Matched by naming convention
+    # so the grant set self-maintains — no second hardcoded list to drift from
+    # the canonical awx_catalog_job_templates. AWX returns 201 (granted) or 400
+    # (already assigned); both are success. This block does NOT depend on
+    # _cms_awx_token_already_provisioned; admin creds + _cms_awx_api_base are
+    # resolved unconditionally above and AWX readiness is gated earlier.
+    # Coverage note: JT discovery AND the grant read-back use page_size=200
+    # (today: ~10 launchers). Past 200 job templates / assignment rows both
+    # must paginate — treat that as the rework trigger (the read-back cap only
+    # risks a safe false-FAIL, never a false-green; dmfdeploy/dmfdeploy#122 P2).
+    - name: Look up dmf-cms-svc user id for grant reconcile
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/users/?username={{ cms_awx_svc_user | urlencode }}"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_recon_user_lookup
+      no_log: true
+
+    - name: Set reconcile svc user id
+      ansible.builtin.set_fact:
+        _cms_awx_recon_svc_user_id: >-
+          {{ (_cms_awx_recon_user_lookup.json.results | default([]) | first | default({})).id | default('') }}
+      no_log: true
+
+    - name: Get JobTemplate Execute role definition for reconcile
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/role_definitions/?name=JobTemplate%20Execute"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_recon_roles
+      no_log: true
+
+    - name: Set reconcile JobTemplate Execute role id
+      ansible.builtin.set_fact:
+        _cms_awx_recon_role_id: >-
+          {{ (_cms_awx_recon_roles.json.results
+              | selectattr('name', 'equalto', 'JobTemplate Execute')
+              | list | first | default({})).id | default('') }}
+      no_log: true
+
+    - name: List all job templates for grant reconcile
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/job_templates/?page_size=200"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_recon_all_jts
+      no_log: true
+
+    - name: Resolve catalog launcher JT ids by naming convention
+      ansible.builtin.set_fact:
+        _cms_awx_recon_catalog_jt_ids: >-
+          {{ _cms_awx_recon_all_jts.json.results | default([])
+             | selectattr('name', 'match', cms_awx_catalog_jt_name_regex)
+             | map(attribute='id') | list }}
+      no_log: true
+
+    - name: Grant JobTemplate Execute on each catalog launcher (idempotent)
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/role_user_assignments/"
+        method: POST
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        body_format: json
+        body:
+          user: "{{ _cms_awx_recon_svc_user_id }}"
+          role_definition: "{{ _cms_awx_recon_role_id }}"
+          object_id: "{{ item }}"
+        status_code: [201, 400]  # 201 created; 400 if already assigned
+      loop: "{{ _cms_awx_recon_catalog_jt_ids | default([]) }}"
+      when:
+        - _cms_awx_recon_svc_user_id | string | length > 0
+        - _cms_awx_recon_role_id | string | length > 0
+      no_log: true
+
+    # Trust-but-verify (codex P1, #122 review): a POST 400 can mean "already
+    # assigned" OR a real malformed/forbidden error, so the grant loop's
+    # success is not proof. Re-read the svc user's JobTemplate Execute
+    # assignments and assert every catalog launcher is actually present —
+    # missing RBAC then fails loud instead of false-greening.
+    - name: Re-read dmf-cms-svc JobTemplate Execute assignments
+      ansible.builtin.uri:
+        url: "{{ _cms_awx_api_base }}/role_user_assignments/?user={{ _cms_awx_recon_svc_user_id }}&role_definition={{ _cms_awx_recon_role_id }}&page_size=200"
+        method: GET
+        url_username: "{{ _cms_awx_admin_user }}"
+        url_password: "{{ _cms_awx_admin_password }}"
+        force_basic_auth: true
+        status_code: 200
+      register: _cms_awx_recon_verify
+      when: _cms_awx_recon_catalog_jt_ids | default([]) | length > 0
+      no_log: true
+
+    - name: Compute catalog launchers still missing the Execute grant
+      ansible.builtin.set_fact:
+        _cms_awx_recon_ungranted_ids: >-
+          {{ _cms_awx_recon_catalog_jt_ids | default([]) | map('string') | list
+             | difference(
+                 _cms_awx_recon_verify.json.results | default([])
+                 | selectattr('role_definition', 'equalto', _cms_awx_recon_role_id | int)
+                 | selectattr('user', 'equalto', _cms_awx_recon_svc_user_id | int)
+                 | map(attribute='object_id') | map('string') | list
+               ) }}
+      when: _cms_awx_recon_catalog_jt_ids | default([]) | length > 0
+
+    - name: Assert every catalog launcher Execute grant is present
+      ansible.builtin.assert:
+        that:
+          - _cms_awx_recon_svc_user_id | string | length > 0
+          - _cms_awx_recon_role_id | string | length > 0
+          - _cms_awx_recon_ungranted_ids | default([]) | length == 0
+        fail_msg: >-
+          Catalog Execute reconcile incomplete for {{ cms_awx_svc_user }}:
+          JT id(s) {{ _cms_awx_recon_ungranted_ids | default([]) | join(', ') }}
+          match '{{ cms_awx_catalog_jt_name_regex }}' but still lack JobTemplate
+          Execute (a POST may have 400'd for a non-duplicate reason, or the
+          user/role lookups failed).
+      when: _cms_awx_recon_catalog_jt_ids | default([]) | length > 0
+
+    - name: Report catalog grant reconcile result
+      ansible.builtin.debug:
+        msg: >-
+          Catalog Execute reconcile OK: {{ cms_awx_svc_user }} can run
+          {{ _cms_awx_recon_catalog_jt_ids | default([]) | length }} launcher(s)
+          matching '{{ cms_awx_catalog_jt_name_regex }}'.
