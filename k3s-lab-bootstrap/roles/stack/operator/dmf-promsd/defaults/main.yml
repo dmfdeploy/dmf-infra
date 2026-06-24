@@ -4,7 +4,14 @@ dmf_promsd_release_name: dmf-promsd
 
 # Image from cluster-internal Zot (seeded by 630-zot-seed-platform.yml).
 dmf_promsd_image_repository: "registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}/dmf-promsd"
-dmf_promsd_image_tag: "{{ dmf_promsd_image_tag_override | default(lookup('file', role_path ~ '/../../../../../../dmf-promsd/VERSION') | trim) }}"
+# Image tag: read from the dmf-promsd checkout's VERSION at `origin/main`, NOT
+# the operator's working tree (#135, mirrors #119). The image is published to
+# GHCR only for released versions on main; reading the local working file meant
+# a clone parked on a feature branch silently deployed a stale (or
+# never-published) tag. `git show origin/main:VERSION` is deterministic and
+# independent of the checked-out branch (offline-safe, last-fetched ref).
+# Override with dmf_promsd_image_tag_override for hotfix testing only.
+dmf_promsd_image_tag: "{{ dmf_promsd_image_tag_override | default(lookup('pipe', 'git -C ' ~ role_path ~ '/../../../../../../dmf-promsd show origin/main:VERSION') | trim) }}"
 dmf_promsd_image_pull_policy: IfNotPresent
 
 # NetBox API — in-cluster svc DNS (ADR-0023, plain HTTP).
