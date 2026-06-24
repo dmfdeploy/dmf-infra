@@ -144,10 +144,16 @@
     # the dmf-cms checkout is three dirs up.
     dmf_cms_image_tag: "{{ cms_image_tag_override | default(lookup('pipe', 'git -C ' ~ playbook_dir ~ '/../../../dmf-cms show origin/main:VERSION') | trim) }}"
 
-    # dmf-promsd image tag. VERSION is the single source of truth; read it
-    # from the dmf-promsd checkout at playbook runtime. Mirror the pattern
-    # used for dmf_cms_image_tag above.
-    dmf_promsd_image_tag: "{{ dmf_promsd_image_tag_override | default(lookup('file', playbook_dir ~ '/../../../dmf-promsd/VERSION') | trim) }}"
+    # dmf-promsd image tag. VERSION is the single source of truth, read from
+    # `origin/main`, NOT the operator's working tree (#135, mirrors the
+    # dmf_cms_image_tag fix above / #119). The image is published to GHCR only
+    # for released versions on main; reading the local working file meant a
+    # clone parked on a feature branch silently seeded a stale or
+    # never-published tag. `git show origin/main:VERSION` is deterministic
+    # regardless of the checked-out branch (offline-safe, last-fetched ref).
+    # Override with dmf_promsd_image_tag_override (already unified with the
+    # dmf-promsd role default) for hotfix testing on a different tag.
+    dmf_promsd_image_tag: "{{ dmf_promsd_image_tag_override | default(lookup('pipe', 'git -C ' ~ playbook_dir ~ '/../../../dmf-promsd show origin/main:VERSION') | trim) }}"
 
     # awx-ee image tag. Sourced from awx-integration/defaults (this play does
     # not load that role, so the fallback must track its current pin — keep in
