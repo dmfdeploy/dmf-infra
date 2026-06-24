@@ -211,6 +211,13 @@
       delegate_to: localhost
       become: false
 
+    - name: "Stat catalog source dir (detect a missing dmf-media checkout, #105)"
+      ansible.builtin.stat:
+        path: "{{ cms_catalog_source_dir }}"
+      register: _cms_catalog_src_stat
+      delegate_to: localhost
+      become: false
+
     - name: Initialize catalog entries dict
       ansible.builtin.set_fact:
         _cms_catalog_entries: {}
@@ -228,6 +235,31 @@
           catalog: gathered {{ _cms_catalog_entries | length }} entries
           from {{ cms_catalog_source_dir }}
           ({{ _cms_catalog_files.matched | default(0) }} files matched)
+
+    - name: "Fail loud when catalog source dir is missing and enablement not set (#105)"
+      ansible.builtin.fail:
+        msg: >-
+          cms_catalog_source_dir is not a directory: {{ cms_catalog_source_dir }}.
+          This usually means the dmf-media checkout is absent (or the path is
+          mispointed). Proceeding would ship an EMPTY catalog and silently
+          regress a populated one (#105). Fix one of: check out dmf-media at the
+          expected path, set cms_catalog_source_dir, or explicitly set
+          cms_catalog_enabled=false to intentionally ship no catalog.
+      when:
+        - cms_catalog_enabled is not defined
+        - not (_cms_catalog_src_stat.stat.isdir | default(false))
+
+    - name: "Warn when catalog source dir exists but matched zero files (#105)"
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: cms_catalog_source_dir exists but yielded no usable catalog
+          entries ({{ cms_catalog_source_dir }}); the catalog will be empty. Add
+          catalog content, or set cms_catalog_enabled=false to make this
+          explicit (#105).
+      when:
+        - cms_catalog_enabled is not defined
+        - _cms_catalog_src_stat.stat.isdir | default(false)
+        - (_cms_catalog_entries | length) == 0
 
     - name: Set cms_catalog_enabled based on gathered entries
       ansible.builtin.set_fact:
