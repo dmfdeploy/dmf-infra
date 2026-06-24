@@ -48,8 +48,12 @@ venv/
 *.swo
 *~
 
-# Qwen artifacts
+# Qwen artifacts — the .qwen/skills/ view is materialized by sync-skills.sh
+# (ADR-0042) and must not be tracked; ignore it so stray per-agent skill adds
+# don't leak into the tree. The authored .qwen/settings.json (permission
+# allow-list) stays tracked, matching the umbrella's .gitignore (umbrella #26).
 .qwen/*.orig
+.qwen/skills/
 
 # ansible-builder build output (regenerated on every build)
 k3s-lab-bootstrap/ee/context/
