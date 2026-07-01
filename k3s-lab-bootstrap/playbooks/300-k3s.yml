@@ -1,4 +1,12 @@
 ---
+- name: Resolve the k3s bind IP on NAT'd nodes (#163)
+  hosts: k3s
+  gather_facts: true
+  become: false
+  tasks:
+    - name: Import NAT bind-IP resolution
+      ansible.builtin.import_tasks: ../tasks/resolve-k3s-node-ip.yml
+
 # ---------------------------------------------------------------------------
 # Resolve cloud provider-id from instance metadata (env-conditional).
 #
@@ -54,7 +62,7 @@
   become: true
   vars:
     k3s_version: "v1.33.12+k3s1"
-    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default('eth0')) }}"
+    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default(ansible_default_ipv4.interface | default('eth0'))) }}"
     k3s_server_disable_cloud_controller_resolved: "{{ k3s_server_disable_cloud_controller | default(false) }}"
     k3s_disable_servicelb_resolved: >-
       {{
@@ -152,7 +160,7 @@
   serial: 1
   vars:
     k3s_version: "v1.33.12+k3s1"
-    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default('eth0')) }}"
+    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default(ansible_default_ipv4.interface | default('eth0'))) }}"
     k3s_server_disable_cloud_controller_resolved: "{{ k3s_server_disable_cloud_controller | default(false) }}"
     k3s_disable_servicelb_resolved: >-
       {{
@@ -266,7 +274,7 @@
   become: true
   serial: 1
   vars:
-    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default('eth0')) }}"
+    k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default(ansible_default_ipv4.interface | default('eth0'))) }}"
     k3s_server_disable_cloud_controller_resolved: "{{ k3s_server_disable_cloud_controller | default(false) }}"
     k3s_disable_servicelb_resolved: >-
       {{

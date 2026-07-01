@@ -1,0 +1,36 @@
+---
+# On 1:1-NAT cloud nodes (e.g. Aliyun), the wizard sets k3s_node_ip to the
+# PUBLIC/NAT IP (the SSH target). That IP is not a local interface address,
+# so k3s fails to bind it and the service dies. We correct k3s_node_ip to
+# the node's real local address, preserving the original public IP as the
+# external-ip (for --node-external-ip) and as a TLS SAN so the API server
+# cert is valid when reached via the public address.
+#
+# The PUBLIC IP is added as a k3s API TLS SAN so kubectl via
+# https://<public-ip>:6443 works. If operators reach the API by a DNS name
+# (e.g. sslip.io), that name must be supplied separately via
+# k3s_server_tls_sans — it can't be inferred from the NAT IP.
+#
+# Non-NAT nodes (e.g. Hetzner, Lima): k3s_node_ip is already local → all
+# tasks skip → unchanged.
+- name: Fail fast — NAT'd node has no determinable local bind address (#163)
+  ansible.builtin.assert:
+    that:
+      - ansible_default_ipv4.address is defined
+      - (ansible_default_ipv4.address | default('')) | length > 0
+    fail_msg: >-
+      k3s_node_ip={{ k3s_node_ip }} is not a local address and Ansible could not
+      determine ansible_default_ipv4.address — set k3s_node_ip to a bindable
+      private/local address or fix the host default route.
+  when: k3s_node_ip not in (ansible_all_ipv4_addresses | default([]))
+
+- name: Preserve declared (public/NAT) node IP as external-ip + TLS SAN (#163)
+  ansible.builtin.set_fact:
+    k3s_node_external_ip: "{{ k3s_node_external_ip | default(k3s_node_ip, true) }}"
+    k3s_server_tls_sans: "{{ ((k3s_server_tls_sans | default([])) + [k3s_node_ip]) | unique }}"
+  when: k3s_node_ip not in (ansible_all_ipv4_addresses | default([]))
+
+- name: Bind k3s to the node's real local address on a NAT'd node (#163)
+  ansible.builtin.set_fact:
+    k3s_node_ip: "{{ ansible_default_ipv4.address }}"
+  when: k3s_node_ip not in (ansible_all_ipv4_addresses | default([]))

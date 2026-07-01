@@ -1,0 +1,128 @@
+---
+# Discrimination test for NAT bind-IP resolution (issue #163).
+#
+# On 1:1-NAT cloud nodes (e.g. Aliyun), the wizard sets k3s_node_ip to the
+# PUBLIC/NAT IP. That IP is not a local interface address, so k3s fails to
+# bind it (--node-ip=<public IP> → rc 1). The resolve-k3s-node-ip task file
+# corrects k3s_node_ip to the node's real local address, preserving the
+# original public IP as external-ip and TLS SAN.
+#
+# This test imports the SAME task file as 300-k3s.yml (lockstep: if that
+# file drifts, this test breaks).
+#
+# Run locally:
+#   ansible-playbook tests/test-k3s-nat-bind-ip.yml
+
+- name: Discrimination test — k3s NAT bind-IP resolution (#163)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    # ── NAT case ────────────────────────────────────────────────────────────
+    - name: NAT case — fixture vars (public IP not in local interfaces)
+      ansible.builtin.set_fact:
+        k3s_node_ip: "203.0.113.9"
+        ansible_all_ipv4_addresses:
+          - "198.51.100.5"
+        ansible_default_ipv4:
+          address: "198.51.100.5"
+          interface: "eth0"
+
+    - name: NAT case — import resolve-k3s-node-ip.yml (lockstep with 300-k3s.yml)
+      ansible.builtin.import_tasks: ../tasks/resolve-k3s-node-ip.yml
+
+    - name: NAT case — assert k3s_node_ip corrected to local address
+      ansible.builtin.assert:
+        that:
+          - k3s_node_ip == "198.51.100.5"
+        success_msg: >-
+          NAT case: k3s_node_ip corrected to local address 198.51.100.5 (bindable).
+        fail_msg: >-
+          NAT case: k3s_node_ip not corrected — got {{ k3s_node_ip }},
+          expected 198.51.100.5.
+
+    - name: NAT case — assert original public IP preserved as external-ip
+      ansible.builtin.assert:
+        that:
+          - k3s_node_external_ip == "203.0.113.9"
+        success_msg: >-
+          NAT case: k3s_node_external_ip preserved as 203.0.113.9.
+        fail_msg: >-
+          NAT case: k3s_node_external_ip not preserved — got
+          {{ k3s_node_external_ip }}, expected 203.0.113.9.
+
+    - name: NAT case — assert original public IP in TLS SANs
+      ansible.builtin.assert:
+        that:
+          - "'203.0.113.9' in k3s_server_tls_sans"
+        success_msg: >-
+          NAT case: 203.0.113.9 in k3s_server_tls_sans (API cert valid via public IP).
+        fail_msg: >-
+          NAT case: 203.0.113.9 NOT in k3s_server_tls_sans — got
+          {{ k3s_server_tls_sans }}.
+
+    - name: NAT case — discriminator (original IP was not local)
+      ansible.builtin.assert:
+        that:
+          - "'203.0.113.9' not in ansible_all_ipv4_addresses"
+        success_msg: >-
+          NAT case: 203.0.113.9 was never a local address — the old --node-ip
+          would have been unbindable.
+        fail_msg: >-
+          NAT case: 203.0.113.9 IS in ansible_all_ipv4_addresses — the test
+          fixture is wrong (not a NAT scenario).
+
+    # ── non-NAT case ────────────────────────────────────────────────────────
+    - name: Non-NAT case — fixture vars (node IP is already local)
+      ansible.builtin.set_fact:
+        k3s_node_ip: "198.51.100.5"
+        ansible_all_ipv4_addresses:
+          - "198.51.100.5"
+        ansible_default_ipv4:
+          address: "198.51.100.5"
+          interface: "eth0"
+
+    - name: Non-NAT case — import resolve-k3s-node-ip.yml (lockstep with 300-k3s.yml)
+      ansible.builtin.import_tasks: ../tasks/resolve-k3s-node-ip.yml
+
+    - name: Non-NAT case — assert k3s_node_ip unchanged
+      ansible.builtin.assert:
+        that:
+          - k3s_node_ip == "198.51.100.5"
+        success_msg: >-
+          Non-NAT case: k3s_node_ip unchanged at 198.51.100.5 (already local).
+        fail_msg: >-
+          Non-NAT case: k3s_node_ip was changed — got {{ k3s_node_ip }},
+          expected 198.51.100.5.
+
+    # ── NAT fail-fast guard case ────────────────────────────────────────────
+    - name: NAT guard case — fixture vars (public IP not local, no default route)
+      ansible.builtin.set_fact:
+        k3s_node_ip: "203.0.113.9"
+        ansible_all_ipv4_addresses:
+          - "198.51.100.5"
+        ansible_default_ipv4: {}
+
+    - name: NAT guard case — import resolve-k3s-node-ip.yml (expect fail-fast)
+      block:
+        - name: NAT guard case — import resolve-k3s-node-ip.yml
+          ansible.builtin.import_tasks: ../tasks/resolve-k3s-node-ip.yml
+      rescue:
+        - name: NAT guard case — record that the guard fired
+          ansible.builtin.set_fact:
+            nat_guard_fired: true
+            ansible_failed_result: "{{ ansible_failed_result }}"
+
+    - name: NAT guard case — assert the guard fired with clear message
+      ansible.builtin.assert:
+        that:
+          - nat_guard_fired | default(false)
+          - "'could not determine ansible_default_ipv4.address' in ansible_failed_result.msg | default('')"
+        success_msg: >-
+          NAT guard case: fail-fast guard fired with clear message about
+          ansible_default_ipv4.address.
+        fail_msg: >-
+          NAT guard case: fail-fast guard did NOT fire or message is wrong —
+          nat_guard_fired={{ nat_guard_fired | default(false) }},
+          ansible_failed_result={{ ansible_failed_result | default({}) }}.
