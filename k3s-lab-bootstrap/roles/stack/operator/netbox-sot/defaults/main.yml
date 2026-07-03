@@ -225,8 +225,11 @@ netbox_sot_monitoring_tags:
 netbox_sot_monitoring_choice_sets:
   - name: "dmf_blackbox_probe_modules"
     description: "DMF blackbox-exporter probe modules"
+    # Must stay lock-step with blackbox_modules in base/blackbox-exporter
+    # (playbook 691 reconciles extra_choices on live envs).
     extra_choices:
       - [http_2xx, http_2xx]
+      - [http_2xx_302, http_2xx_302]
       - [http_2xx_insecure, http_2xx_insecure]
       - [tcp_connect, tcp_connect]
       - [icmp, icmp]
@@ -271,6 +274,17 @@ netbox_sot_monitoring_custom_fields:
     type: "select"
     default: "http_2xx"
     choice_set: "dmf_blackbox_probe_modules"
+    required: false
+    object_types:
+      - "ipam.service"
+      - "dcim.device"
+      - "virtualization.virtualmachine"
+  - name: "probe_path"
+    label: "Monitoring Probe Path"
+    description: "URL path appended to the probe target for http_ modules (ADR-0038 Amendment B)."
+    type: "text"
+    default: ""
+    choice_set: ""
     required: false
     object_types:
       - "ipam.service"

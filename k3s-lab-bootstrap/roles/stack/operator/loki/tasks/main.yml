@@ -72,23 +72,13 @@
   retries: "{{ loki_wait_retries }}"
   delay: "{{ loki_wait_delay }}"
 
-- name: Create Loki readiness path middleware
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    definition:
-      apiVersion: traefik.io/v1alpha1
-      kind: Middleware
-      metadata:
-        name: loki-ready-path
-        namespace: "{{ loki_namespace }}"
-      spec:
-        replacePath:
-          path: /ready
-
-# HTTP→HTTPS redirect is handled at the Traefik entrypoint (see base/ingress).
-# Delete-before-recreate clears any stale `tls.secretName` from older runs.
-- name: Remove legacy Loki IngressRoutes
+# Loki has no public ingress. Both real consumers use in-cluster service DNS
+# (promtail push and the Grafana datasource via loki-gateway, ADR-0023), and
+# health probing hits :3100/ready in-cluster via the probe_path custom field
+# (ADR-0038 Amendment B). The former public /loki/ready IngressRoute + its
+# replacePath middleware existed only as an external-probe workaround and are
+# removed on every run so upgraded envs converge.
+- name: Remove Loki IngressRoutes
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: absent
@@ -100,34 +90,14 @@
     - loki
     - loki-redirect
 
-- name: Create Loki HTTPS IngressRoute
+- name: Remove Loki readiness path middleware
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    definition:
-      apiVersion: traefik.io/v1alpha1
-      kind: IngressRoute
-      metadata:
-        name: loki
-        namespace: "{{ loki_namespace }}"
-      spec:
-        entryPoints:
-          - websecure
-        tls: {}
-        routes:
-          - match: "Path(`{{ loki_path }}/ready`) || Path(`{{ loki_path }}/ready/`)"
-            kind: Rule
-            priority: 100
-            middlewares:
-              - name: loki-ready-path
-            services:
-              - name: loki
-                port: 3100
-          - match: "PathPrefix(`{{ loki_path }}`)"
-            kind: Rule
-            services:
-              - name: loki-gateway
-                port: 80
+    state: absent
+    api_version: traefik.io/v1alpha1
+    kind: Middleware
+    name: loki-ready-path
+    namespace: "{{ loki_namespace }}"
 
 - name: Cleanup temp values file
   ansible.builtin.file:
