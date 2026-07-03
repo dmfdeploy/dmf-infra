@@ -8,7 +8,7 @@ blackbox_helm_chart_version: "11.11.0"
 blackbox_fullname_override: blackbox
 
 # Blackbox probe modules — must match the NetBox choice set
-# (dmf_blackbox_probe_modules). Four modules cover the DMF probe lanes.
+# (dmf_blackbox_probe_modules). Five modules cover the DMF probe lanes.
 blackbox_modules:
   http_2xx:
     prober: http
@@ -17,6 +17,19 @@ blackbox_modules:
       valid_status_codes: []
       method: GET
       preferred_ip_protocol: ip4
+  # For targets whose healthy root response is a redirect that must not be
+  # dereferenced (ADR-0038 Amendment B). Canonical case: Grafana answers /
+  # with 302 → /login, and following it chains through OAuth auto-login to
+  # the external local-CA auth URL, which fails TLS verification. With
+  # follow_redirects off the probe never leaves the in-cluster target.
+  http_2xx_302:
+    prober: http
+    timeout: 5s
+    http:
+      valid_status_codes: [200, 301, 302, 303, 307, 308]
+      method: GET
+      preferred_ip_protocol: ip4
+      follow_redirects: false
   http_2xx_insecure:
     prober: http
     timeout: 5s

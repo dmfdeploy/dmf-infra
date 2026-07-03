@@ -165,6 +165,31 @@
     - dmf_app_effective_monitoring_tag == 'monitoring:probe'
     - dmf_app_probe_module | length > 0
 
+# ── Custom-field stamping (probe_path) ─────────────────────────────────────
+# Stamp probe_path (ADR-0038 Amendment B) when the app's override declares one.
+# dmf-promsd appends it to the composed probe target for http_ modules only.
+- name: "Stamp probe_path custom field on {{ dmf_app_service_key }}"
+  ansible.builtin.uri:
+    url: "{{ dmf_born_inventory_netbox_api_base }}/ipam/services/{{ dmf_app_service_id }}/"
+    method: PATCH
+    headers: "{{ dmf_born_inventory_netbox_headers }}"
+    body_format: json
+    body:
+      custom_fields:
+        probe_path: "{{ dmf_app_probe_path }}"
+    status_code: 200
+    validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
+  vars:
+    dmf_app_probe_path: >-
+      {{
+        dmf_born_inventory_app_monitoring_overrides[dmf_app_service_key].probe_path
+        | default('')
+      }}
+  when:
+    - dmf_app_service_id | int > 0
+    - dmf_app_effective_monitoring_tag == 'monitoring:probe'
+    - dmf_app_probe_path | length > 0
+
 # ── Custom-field stamping (cluster_service/namespace/port) ────────────────
 # Stamp ADR-0038 Amendment A cluster identity custom fields on every service
 # that has coordinates in dmf_born_inventory_app_cluster_coords. Enables the

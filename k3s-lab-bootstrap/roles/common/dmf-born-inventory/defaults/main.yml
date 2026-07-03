@@ -163,10 +163,22 @@ dmf_born_inventory_monitoring_tag: "monitoring:probe"
 # Default probe module for the probe lane.
 dmf_born_inventory_default_probe_module: http_2xx
 
-# Per-app monitoring overrides. key -> {tag, probe_module?, metrics_port?}.
+# Per-app monitoring overrides. key -> {tag, probe_module?, metrics_port?, probe_path?}.
 # When an app exposes /metrics, override to {tag: monitoring:scrape, metrics_port: N}.
-# For probe lane overrides, set {tag: monitoring:probe, probe_module: http_2xx_insecure}.
-dmf_born_inventory_app_monitoring_overrides: {}
+# For probe lane overrides, set {tag: monitoring:probe, probe_module: http_2xx_302}.
+# probe_path (ADR-0038 Amendment B) is appended to the composed probe target by
+# dmf-promsd for http_ modules only — use it when an app's health contract lives
+# on a specific path rather than the service root.
+dmf_born_inventory_app_monitoring_overrides:
+  # Grafana's / answers 302 → /login; following redirects chains through OAuth
+  # auto-login to the external local-CA auth URL and dies on TLS verification.
+  # http_2xx_302 accepts the redirect status without dereferencing it.
+  grafana:
+    probe_module: http_2xx_302
+  # Loki's root returns non-2xx by design; its health contract is GET /ready
+  # on the HTTP port (3100, per dmf_born_inventory_app_cluster_coords).
+  loki:
+    probe_path: /ready
 # Example (app with a /metrics endpoint):
 #   dmf_born_inventory_app_monitoring_overrides:
 #     prometheus: { tag: "monitoring:scrape", metrics_port: 9090 }
