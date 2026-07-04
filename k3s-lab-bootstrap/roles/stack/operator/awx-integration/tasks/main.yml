@@ -2059,3 +2059,186 @@
   when:
     - awx_catalog_jt_lookup.results is defined
     - awx_catalog_jt_lookup.results[loop_index0].json.results | length > 0
+
+# ---------------------------------------------------------------------------
+# Infra job templates (dmfdeploy/dmfdeploy#166 WP-F): monitoring-apply lane.
+# SSH-to-control-node model (like eso-openbao-health-check): default AWX
+# execution queue + awx-control-node-ssh Machine credential. Deliberately NO
+# dmf-catalog-cg attach — that Container Group pins pods to the nmos
+# namespace/launcher SA, which is media catalog plumbing only.
+# ---------------------------------------------------------------------------
+- name: Lookup existing infra job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/?name={{ jt_item.name | urlencode }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_infra_jt_lookup is success
+    or (awx_infra_jt_lookup.status | default(0) >= 400 and awx_infra_jt_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ awx_infra_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+  register: awx_infra_jt_lookup
+  run_once: true
+  no_log: true
+
+- name: Create AWX infra job templates (fail loud on missing playbook)
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ jt_item.name }}"
+      description: "{{ jt_item.description }}"
+      job_type: run
+      inventory: "{{ awx_integration_inventory_id }}"
+      project: "{{ awx_catalog_project_ids[jt_item.project_name] }}"
+      playbook: "{{ jt_item.playbook }}"
+      execution_environment: "{{ awx_dmf_ee_id }}"
+      ask_variables_on_launch: "{{ jt_item.ask_variables_on_launch | default(false) }}"
+      extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
+    status_code: 201
+  failed_when: false
+  until: >-
+    awx_infra_jt_created is success
+    or (awx_infra_jt_created.status | default(0) >= 400 and awx_infra_jt_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ awx_infra_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  when: >-
+    awx_infra_jt_lookup is defined and
+    awx_infra_jt_lookup.results[loop_index0].json.results
+    | default([]) | length == 0
+  register: awx_infra_jt_created
+  # no_log hides the task input (admin password in url_password). The
+  # registered result IS populated, so the surface task below can show
+  # per-JT failure details. failed_when: false lets the loop complete
+  # so we see EVERY failing entry, not just the first.
+  no_log: true
+
+- name: Surface AWX infra JT create failures (per-entry response body)
+  ansible.builtin.debug:
+    msg: |
+      {% for r in awx_infra_jt_created.results %}
+      {% if r.skipped | default(false) %}
+      JT '{{ r.jt_item.name }}': skipped (already exists)
+      {% elif (r.status | default(0)) == 201 %}
+      JT '{{ r.jt_item.name }}': created
+      {% else %}
+      JT '{{ r.jt_item.name }}': FAILED status={{ r.status | default('no-response') }}
+        playbook    : {{ r.jt_item.playbook }}
+        project     : {{ r.jt_item.project_name }}
+        response    : {{ r.json | default(r.content | default('(no body)')) }}
+        msg         : {{ r.msg | default('') }}
+      {% endif %}
+      {% endfor %}
+  when: awx_infra_jt_created is defined
+
+- name: Fail role if any AWX infra JT create returned non-201
+  ansible.builtin.fail:
+    msg: >-
+      One or more AWX infra job template creates failed — see the per-entry
+      response bodies above. Most common cause: the playbook named in
+      awx_infra_job_templates[].playbook is not present in the AWX project's
+      source repo (paths are repo-root-relative for dmf-infra, i.e. prefixed
+      k3s-lab-bootstrap/playbooks/...).
+  when: >-
+    awx_infra_jt_created.results
+    | rejectattr('skipped', 'defined')
+    | rejectattr('status', 'eq', 201)
+    | list | length > 0
+
+- name: Update existing infra job templates (idempotent)
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ (awx_infra_jt_lookup.results[loop_index0].json.results[0].id) }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      description: "{{ jt_item.description }}"
+      playbook: "{{ jt_item.playbook }}"
+      execution_environment: "{{ awx_dmf_ee_id }}"
+      ask_variables_on_launch: "{{ jt_item.ask_variables_on_launch | default(false) }}"
+      extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
+    status_code: 200
+  until: >-
+    _awx_infra_jt_update is success
+    or (_awx_infra_jt_update.status | default(0) >= 400 and _awx_infra_jt_update.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _awx_infra_jt_update
+  loop: "{{ awx_infra_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  run_once: true
+  when:
+    - awx_infra_jt_lookup.results is defined
+    - awx_infra_jt_lookup.results[loop_index0].json.results | length > 0
+  no_log: true
+
+- name: Lookup infra job template IDs by name
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/?name={{ jt_item.name | urlencode }}&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_infra_jt_ids is success
+    or (awx_infra_jt_ids.status | default(0) >= 400 and awx_infra_jt_ids.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ awx_infra_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+  register: awx_infra_jt_ids
+  run_once: true
+
+- name: Attach SSH credential to infra job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ jt_id }}/credentials/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      id: "{{ awx_control_node_ssh_cred_id }}"
+    status_code: [201, 204, 400]
+  until: >-
+    _awx_infra_jt_cred is success
+    or (_awx_infra_jt_cred.status | default(0) >= 400 and _awx_infra_jt_cred.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _awx_infra_jt_cred
+  vars:
+    jt_id: "{{ (awx_infra_jt_ids.results[loop_index0].json.results[0].id) }}"
+  loop: "{{ awx_infra_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  run_once: true
+  when:
+    - awx_infra_jt_ids.results is defined
+    - awx_infra_jt_ids.results[loop_index0].json.results | length > 0
+  no_log: true
