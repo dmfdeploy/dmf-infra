@@ -245,6 +245,37 @@ awx_catalog_job_templates:
     extra_vars:
       mxl_release: mxl-hello
 
+# ── Infra job templates (dmfdeploy/dmfdeploy#166 WP-F) ─────────────────────
+# Monitoring-apply lane: runs dmf-infra playbooks against hosts:k3s_control
+# over SSH — the same execution model as eso-openbao-health-check, NOT the
+# media catalog lane. These JTs therefore use AWX's default execution queue
+# plus the awx-control-node-ssh Machine credential; they must NEVER get the
+# dmf-catalog-cg Container Group, whose pod spec pins jobs to the nmos
+# namespace/launcher ServiceAccount (media catalog plumbing only).
+# Playbook paths are repo-root-relative for the dmf-infra project (its
+# roles_path points into k3s-lab-bootstrap/, unlike dmf-runbooks).
+# The prometheus role asserts the env-specific Alertmanager receiver URLs
+# (ntfy/watchdog) at run time; they are intentionally not stamped here —
+# ask_variables_on_launch lets the operator supply them per launch.
+# On constrained sandbox envs prefer bin/run-playbook.sh (no AWX wake cost,
+# dmfdeploy#106); these JTs are the committed GitOps lane for full envs.
+awx_infra_job_templates:
+  - name: monitoring-apply-prometheus
+    description: "Apply prometheus role — rules-as-code, are-we-ok suite (dmfdeploy#166)"
+    playbook: "k3s-lab-bootstrap/playbooks/vertical-monitoring/100-prometheus.yml"
+    project_name: "dmf-infra"
+    ask_variables_on_launch: true
+  - name: monitoring-apply-grafana
+    description: "Apply grafana role — dashboards + providers (dmfdeploy#166)"
+    playbook: "k3s-lab-bootstrap/playbooks/vertical-monitoring/120-grafana.yml"
+    project_name: "dmf-infra"
+    ask_variables_on_launch: true
+  - name: monitoring-apply-blackbox
+    description: "Apply blackbox-exporter role — probe modules (dmfdeploy#166)"
+    playbook: "k3s-lab-bootstrap/playbooks/vertical-monitoring/150-blackbox.yml"
+    project_name: "dmf-infra"
+    ask_variables_on_launch: true
+
 # ── Shared DMF AWX Execution Environment + Container Group (ADR-0025) ──────
 # Per ADR-0025 §8.7(b), media catalog launchers run as AWX EE pods in the
 # target namespace through a dedicated Container Group. The Container Group
