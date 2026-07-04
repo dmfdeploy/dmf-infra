@@ -1,12 +1,18 @@
 {# ────────────────────────────────────────────────────────────────────────────
    Vendored prometheus chart scrape_configs (chart prometheus-25.8.0).
-   Captured from a live render — must be refreshed when the chart is bumped.
-   The ONLY local modification is on the `prometheus` self-scrape job:
-   `metrics_path: {{ prometheus_path }}/metrics` is set so the self-scrape
-   works under `server.prefixURL` (--web.route-prefix), which moves the
-   internal /metrics endpoint to {{ prometheus_path }}/metrics.
+   Captured from a live render — must be refreshed when the chart is bumped,
+   PRESERVING the local modifications listed below (they are NOT chart
+   content and a naive re-vendor drops them):
+     1. `prometheus` self-scrape job: `metrics_path: {{ prometheus_path }}/metrics`
+        so the self-scrape works under `server.prefixURL` (--web.route-prefix),
+        which moves the internal /metrics endpoint to {{ prometheus_path }}/metrics.
+     2. `netbox-scrape` / `netbox-probe` / `netbox-snmp` http_sd jobs appended
+        at the end — the ADR-0038 NetBox-driven SD lanes via dmf-promsd.
+     3. `dmf-static-probes` appended last — static blackbox lanes for
+        non-NetBox infrastructure anchors (dmfdeploy/dmfdeploy#166 WP-D),
+        driven by prometheus_static_probe_targets in defaults.
    Helm replaces lists wholesale — there's no partial-merge for scrape_configs
-   — so vendoring is the cleanest way to fix just the self-scrape entry while
+   — so vendoring is the cleanest way to patch/extend entries while
    keeping the rest of the chart-default jobs intact.
    Indentation is 6 spaces, matching its insertion point under
    serverFiles.prometheus.yml.scrape_configs in values.yml.j2.
@@ -347,3 +353,39 @@
         - source_labels:
           - __param_target
           target_label: instance
+{# dmf-static-probes (dmfdeploy/dmfdeploy#166 WP-D): blackbox lanes for
+   anchors with no NetBox object (internet/DNS/ingress/sd-pipeline; plan D5).
+   Per-target `module` label is relabeled to __param_module so one job mixes
+   icmp/dns/tcp/http probes; module/lane/probe_name remain as target labels
+   for the alert suite + dashboards. Empty targets are skipped; the job is
+   omitted entirely when no targets remain. ~60s interval bounds load. #}
+{% set _static_probe_targets = prometheus_static_probe_targets
+     | selectattr('target', 'defined')
+     | rejectattr('target', 'equalto', '')
+     | list %}
+{% if _static_probe_targets | length > 0 %}
+      - job_name: dmf-static-probes
+        metrics_path: /probe
+        scrape_interval: {{ prometheus_static_probe_interval }}
+        static_configs:
+{% for t in _static_probe_targets %}
+        - targets:
+          - {{ t.target | to_json }}
+          labels:
+            module: {{ t.module | to_json }}
+            lane: {{ t.lane | to_json }}
+            probe_name: {{ t.name | to_json }}
+{% endfor %}
+        relabel_configs:
+        - source_labels:
+          - __address__
+          target_label: __param_target
+        - source_labels:
+          - module
+          target_label: __param_module
+        - replacement: blackbox:9115
+          target_label: __address__
+        - source_labels:
+          - __param_target
+          target_label: instance
+{% endif %}
