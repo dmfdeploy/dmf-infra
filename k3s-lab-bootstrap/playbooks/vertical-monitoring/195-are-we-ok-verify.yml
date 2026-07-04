@@ -1,0 +1,200 @@
+---
+# Verify the are-we-ok rules/probe slice (dmfdeploy/dmfdeploy#166) at the
+# source of truth. Deliberately Alertmanager-INDEPENDENT: rules deploy even
+# when prometheus_alertmanager_enabled=false (fail-soft, plan D3), so this
+# play must verify them on such envs too — 190-monitoring-verify covers the
+# Alertmanager/ntfy notify path and ends early when alerting is disabled.
+# Read-only: no smoke alerts, no cluster mutations.
+- name: Verify are-we-ok rules, static probe lanes, and blackbox capabilities
+  hosts: k3s_control[0]
+  become: false
+  gather_facts: false
+  vars:
+    monitoring_verify_namespace: "{{ prometheus_namespace | default('monitoring') }}"
+    # Every default static probe lane must be present AND return
+    # probe_success=1 — named, not counted, so a missing target can't hide
+    # behind another (e.g. promsd-ready behind a lan-gateway addition).
+    # Envs that legitimately drop a lane (e.g. ICMP-blocked egress) override
+    # this list together with prometheus_static_probe_targets.
+    monitoring_verify_required_probes:
+      - internet-cloudflare
+      - internet-google
+      - cluster-dns
+      - cluster-ingress
+      - promsd-live
+      - promsd-ready
+      - netbox-http
+    # 4 recording groups + >=5 alert groups (dmf-watchdog is AM-gated).
+    monitoring_verify_min_rule_groups: 9
+  tasks:
+    - name: Read rendered rule keys from the prometheus-server ConfigMap
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ monitoring_verify_namespace }}"
+          - get
+          - cm
+          - prometheus-server
+          - -o
+          - jsonpath={.data.recording_rules\.yml}{"\n---SPLIT---\n"}{.data.alerting_rules\.yml}
+      register: _verify_cm_rules
+      changed_when: false
+
+    - name: Assert ConfigMap rule keys are populated
+      ansible.builtin.assert:
+        that:
+          - "'dmf:promsd_discovered_targets' in _verify_cm_rules.stdout"
+          - "'instance:node_load_per_core' in _verify_cm_rules.stdout"
+          - "'HostMemoryPressure' in _verify_cm_rules.stdout"
+          - "'PromsdStale' in _verify_cm_rules.stdout"
+        fail_msg: >-
+          prometheus-server ConfigMap recording_rules.yml/alerting_rules.yml
+          do not carry the are-we-ok rule set — the values render or the Helm
+          apply did not land.
+        quiet: true
+
+    - name: Read Prometheus service ClusterIP
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ monitoring_verify_namespace }}"
+          - get
+          - svc
+          - prometheus-server
+          - -o
+          - jsonpath={.spec.clusterIP}
+      register: _verify_prom_cluster_ip
+      changed_when: false
+
+    - name: Set Prometheus API base URL
+      ansible.builtin.set_fact:
+        _verify_prom_api: >-
+          http://{{ _verify_prom_cluster_ip.stdout | trim }}:80{{ prometheus_path | default('/prometheus') }}
+
+    - name: Wait for rule groups to load (config hot-reload can lag ~60s)
+      ansible.builtin.uri:
+        url: "{{ _verify_prom_api }}/api/v1/rules"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: _verify_rules
+      until: >-
+        (_verify_rules.json.data.groups | default([]) | length)
+        >= (monitoring_verify_min_rule_groups | int)
+      retries: 12
+      delay: 10
+
+    - name: Assert no rule evaluates with errors
+      ansible.builtin.assert:
+        that:
+          - >-
+            _verify_rules.json.data.groups
+            | map(attribute='rules') | flatten
+            | selectattr('health', 'equalto', 'err')
+            | list | length == 0
+        fail_msg: >-
+          One or more recording/alerting rules report health=err — check
+          {{ _verify_prom_api }}/api/v1/rules for lastError details.
+        quiet: true
+
+    - name: Wait for all required dmf-static-probes targets, discovered and up
+      ansible.builtin.uri:
+        url: "{{ _verify_prom_api }}/api/v1/targets?state=active"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: _verify_targets
+      vars:
+        _static: >-
+          {{ _verify_targets.json.data.activeTargets | default([])
+             | selectattr('scrapePool', 'equalto', 'dmf-static-probes') | list }}
+        _static_names: "{{ _static | map(attribute='labels.probe_name') | list }}"
+      until: >-
+        (monitoring_verify_required_probes | difference(_static_names)
+         | length == 0)
+        and (_static | rejectattr('health', 'equalto', 'up') | list | length == 0)
+      retries: 12
+      delay: 10
+
+    - name: Check every required probe lane returns probe_success=1
+      ansible.builtin.uri:
+        url: >-
+          {{ _verify_prom_api }}/api/v1/query?query={{
+            ('probe_success{probe_name=~"'
+             ~ (monitoring_verify_required_probes | join('|'))
+             ~ '"}') | urlencode }}
+        method: GET
+        return_content: true
+        status_code: 200
+      register: _verify_probes
+      until: >-
+        (_verify_probes.json.data.result | default([]) | length
+         == (monitoring_verify_required_probes | length))
+        and (_verify_probes.json.data.result | map(attribute='value')
+             | map('last') | reject('equalto', '1') | list | length == 0)
+      retries: 12
+      delay: 10
+
+    - name: Read internet/sd-pipeline probe results (informational)
+      ansible.builtin.uri:
+        url: >-
+          {{ _verify_prom_api }}/api/v1/query?query={{
+            'probe_success{job="dmf-static-probes"}' | urlencode }}
+        method: GET
+        return_content: true
+        status_code: 200
+      register: _verify_all_probes
+
+    - name: Show per-lane probe results
+      ansible.builtin.debug:
+        msg: >-
+          {{ _verify_all_probes.json.data.result
+             | map(attribute='metric.probe_name')
+             | zip(_verify_all_probes.json.data.result | map(attribute='value') | map('last'))
+             | list }}
+
+    - name: Read blackbox container capabilities
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ monitoring_verify_namespace }}"
+          - get
+          - deploy
+          - blackbox
+          - -o
+          - jsonpath={.spec.template.spec.containers[0].securityContext.capabilities}
+      register: _verify_blackbox_caps
+      changed_when: false
+
+    - name: Assert blackbox has NET_RAW when icmp lanes are enabled
+      ansible.builtin.assert:
+        that:
+          - "'NET_RAW' in _verify_blackbox_caps.stdout"
+        fail_msg: >-
+          blackbox deployment lacks CAP_NET_RAW — icmp probes will fail
+          silently (chart default drops ALL; see blackbox_allow_icmp).
+        quiet: true
+      when: blackbox_allow_icmp | default(true) | bool
+
+    - name: Show verification summary
+      ansible.builtin.debug:
+        msg: >-
+          Rules loaded ({{ _verify_rules.json.data.groups | length }} groups,
+          no health=err); all required probe lanes
+          ({{ monitoring_verify_required_probes | join(', ') }}) discovered,
+          up, and probe_success=1 — including the ICMP anchors (NET_RAW
+          live-proven) and promsd /readyz freshness; blackbox capabilities
+          OK. Alertmanager lane is covered separately by
+          190-monitoring-verify when enabled.
