@@ -1,7 +1,25 @@
+# Two provider-keyed dashboard ConfigMaps (dmfdeploy/dmfdeploy#166 WP-G /
+# Amendment A): `dmf` is the operator default surface, `system` the expert
+# tier (demoted dotdc k8s views — Global + Nodes kept; Namespaces + Pods
+# deleted as kubectl-duplicated drill-downs). Matches the provider/mount
+# pairs in values.yml.j2.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: grafana-custom-dashboards
+  name: grafana-dmf-dashboards
+  namespace: {{ grafana_namespace }}
+  labels:
+    grafana_dashboard: "1"
+data:
+  dmf-are-we-ok.json: |
+{{ lookup('file', role_path + '/files/dmf-are-we-ok.json') | indent(4, first=True) }}
+  dmf-platform-services.json: |
+{{ lookup('file', role_path + '/files/dmf-platform-services.json') | indent(4, first=True) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-system-dashboards
   namespace: {{ grafana_namespace }}
   labels:
     grafana_dashboard: "1"
@@ -10,7 +28,3 @@ data:
 {{ lookup('file', role_path + '/files/k8s-views-global.json') | indent(4, first=True) }}
   k8s-views-nodes.json: |
 {{ lookup('file', role_path + '/files/k8s-views-nodes.json') | indent(4, first=True) }}
-  k8s-views-namespaces.json: |
-{{ lookup('file', role_path + '/files/k8s-views-namespaces.json') | indent(4, first=True) }}
-  k8s-views-pods.json: |
-{{ lookup('file', role_path + '/files/k8s-views-pods.json') | indent(4, first=True) }}

@@ -1,0 +1,223 @@
+{
+  "__comment": "Are we OK? — the one-glance operator verdict pane (dmfdeploy/dmfdeploy#166 WP-E). Recording-rule-backed, 1m min interval, few panels: must stay legible while the node is thrashing. Verdict absence semantics: the static-probe clause counts REQUIRED lanes missing-or-failing (a lane that disappears goes RED, it cannot hide behind absence) — the required set is LOCK-STEP with prometheus_static_probe_targets defaults (base/prometheus) and monitoring_verify_required_probes (195-are-we-ok-verify); update all three together. Only the thermal clause is absent-tolerant (plan §2b): missing sensors mean n/a, never red. Sorts alphabetically before 'Platform services' so it fronts the DMF folder (Amendment A §3).",
+  "title": "Are we OK?",
+  "uid": "dmf-are-we-ok",
+  "schemaVersion": 39,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "tags": ["dmf", "verdict"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Are we OK?",
+      "description": "GREEN: no critical alerts firing, every REQUIRED probe lane present AND up (a missing lane is red, not ignored), memory above the floor, thermals OK where sensors exist. AMBER: warnings firing. RED: any critical clause broken.",
+      "gridPos": { "x": 0, "y": 0, "w": 14, "h": 6 },
+      "datasource": "Prometheus",
+      "targets": [
+        {
+          "refId": "A",
+          "instant": true,
+          "expr": "clamp_max((count(ALERTS{alertstate=\"firing\",severity=\"critical\"}) or vector(0)) + clamp_min(7 - (count(probe_success{job=\"dmf-static-probes\",probe_name=~\"internet-cloudflare|internet-google|cluster-dns|cluster-ingress|promsd-live|promsd-ready|netbox-http\"} == 1) or vector(0)), 0) + (count(instance:node_mem_avail_ratio <= 0.05) or vector(0)) + (count(rpi:node_temp_celsius:max >= 80) or vector(0)), 1) * 2 + clamp_max(count(ALERTS{alertstate=\"firing\",severity=\"warning\"}) or vector(0), 1)"
+        }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "YES — all clear", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "DEGRADED — warnings firing", "index": 1 } } },
+            { "type": "value", "options": { "2": { "text": "NOT OK", "index": 2 } } },
+            { "type": "value", "options": { "3": { "text": "NOT OK", "index": 3 } } }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Critical alerts firing",
+      "gridPos": { "x": 14, "y": 0, "w": 5, "h": 6 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "refId": "A", "instant": true, "expr": "count(ALERTS{alertstate=\"firing\",severity=\"critical\"}) or vector(0)" }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Warnings firing",
+      "gridPos": { "x": 19, "y": 0, "w": 5, "h": 6 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "refId": "A", "instant": true, "expr": "count(ALERTS{alertstate=\"firing\",severity=\"warning\"}) or vector(0)" }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] }
+        }
+      }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Memory available (ratio)",
+      "gridPos": { "x": 0, "y": 6, "w": 6, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "instance:node_mem_avail_ratio", "legendFormat": "{{instance}}", "interval": "1m" } ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit", "min": 0, "max": 1,
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "yellow", "value": 0.05 }, { "color": "green", "value": 0.1 } ] }
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Load per core",
+      "gridPos": { "x": 6, "y": 6, "w": 6, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "instance:node_load_per_core", "legendFormat": "{{instance}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Swap used (ratio) / swap IO (pages/s)",
+      "gridPos": { "x": 12, "y": 6, "w": 6, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "refId": "A", "expr": "instance:node_swap_used_ratio", "legendFormat": "used {{instance}}", "interval": "1m" },
+        { "refId": "B", "expr": "instance:node_swap_io_pages:rate5m", "legendFormat": "io {{instance}}", "interval": "1m" }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" } }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "IO wait (ratio)",
+      "gridPos": { "x": 18, "y": 6, "w": 6, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "instance:node_iowait_ratio", "legendFormat": "{{instance}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0 } }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Probe lanes (success)",
+      "gridPos": { "x": 0, "y": 13, "w": 8, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "probe_success{job=\"dmf-static-probes\"}", "legendFormat": "{{lane}}/{{probe_name}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1 } }
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "Probe latency (10m avg)",
+      "gridPos": { "x": 8, "y": 13, "w": 8, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "probe:latency_avg{job=\"dmf-static-probes\"}", "legendFormat": "{{lane}}/{{probe_name}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 22,
+      "type": "timeseries",
+      "title": "Probe jitter (10m stddev)",
+      "gridPos": { "x": 16, "y": 13, "w": 8, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "probe:latency_jitter{job=\"dmf-static-probes\"}", "legendFormat": "{{lane}}/{{probe_name}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "s" } }
+    },
+    {
+      "id": 30,
+      "type": "stat",
+      "title": "Workload alerts firing",
+      "description": "PodCrashLooping / PodNotReady / PodOOMKilled currently firing.",
+      "gridPos": { "x": 0, "y": 20, "w": 6, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "refId": "A", "instant": true, "expr": "count(ALERTS{alertname=~\"PodCrashLooping|PodNotReady|PodOOMKilled\",alertstate=\"firing\"}) or vector(0)" }
+      ],
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 1 } ] }
+        }
+      }
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Container restarts (15m rate)",
+      "gridPos": { "x": 6, "y": 20, "w": 6, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "sum(rate(kube_pod_container_status_restarts_total[15m]))", "legendFormat": "restarts/s", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 } }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "NetBox-discovered targets",
+      "gridPos": { "x": 12, "y": 20, "w": 6, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "dmf:promsd_discovered_targets", "legendFormat": "{{job}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 } }
+    },
+    {
+      "id": 33,
+      "type": "stat",
+      "title": "SD pipeline fresh",
+      "description": "Boolean blackbox probe of dmf-promsd /readyz — goes red when the NetBox snapshot exceeds its staleness threshold. Counts + boolean only until promsd exposes /metrics (plan OQ-4): no false precision.",
+      "gridPos": { "x": 18, "y": 20, "w": 6, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "instant": true, "expr": "probe_success{probe_name=\"promsd-ready\"}" } ],
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "STALE", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "FRESH", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        }
+      }
+    },
+    {
+      "id": 40,
+      "type": "timeseries",
+      "title": "Scrape health by job (up ratio)",
+      "gridPos": { "x": 0, "y": 27, "w": 12, "h": 6 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "dmf:targets_up_ratio", "legendFormat": "{{job}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1 } }
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Rule evaluation failures (15m)",
+      "description": "Monitoring must break loudly: non-zero means the verdict above may be running on missing series.",
+      "gridPos": { "x": 12, "y": 27, "w": 12, "h": 6 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "increase(prometheus_rule_evaluation_failures_total[15m])", "legendFormat": "failures", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 } }
+    }
+  ]
+}
