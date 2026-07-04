@@ -269,6 +269,32 @@
         name: base/k3s
         tasks_from: containerd-registries.yml
 
+# MXL processor placement label (dmfdeploy/dmfdeploy#17). On the single-node
+# profile the only node carries the media workloads, so it gets
+# dmf.io/role=mxl-processor at bootstrap — placement records stay truthful and
+# the MXL charts' nodeSelector keeps working unchanged. Post-install
+# `kubectl label --overwrite` (not INSTALL_K3S_EXEC --node-label, which only
+# applies at install time) so re-runs and existing nodes converge. NO taint —
+# a taint on the only node would repel every platform workload (see the
+# 2026-05-29 loopback plan §4 taint-interaction table).
+- name: Label MXL processor nodes
+  hosts: k3s_control
+  become: true
+  tasks:
+    - name: Apply dmf.io/role=mxl-processor to the single node
+      ansible.builtin.command:
+        argv:
+          - k3s
+          - kubectl
+          - label
+          - node
+          - "--all"
+          - "--overwrite"
+          - "dmf.io/role=mxl-processor"
+      register: _mxl_label_result
+      changed_when: "'not labeled' not in _mxl_label_result.stdout"
+      when: (dmf_mxl_processor_label_all_nodes | default(dmf_release_profile is defined and dmf_release_profile == 'sandbox-single-node')) | bool
+
 - name: Configure k3s audit logging
   hosts: k3s_control
   become: true

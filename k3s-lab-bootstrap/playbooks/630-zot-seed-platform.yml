@@ -179,8 +179,18 @@
     nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('sha256:c4bad3fb15f3015e0ab742de3b68719ff13c590ea28b465ca08ffac13fc55f62') }}"
 
     mxl_hello_seed_chart_name: "{{ mxl_hello_chart_name | default('mxl-hello') }}"
-    mxl_hello_seed_chart_version: "{{ mxl_hello_chart_version | default('0.1.0') }}"
-    mxl_hello_seed_chart_digest: "{{ mxl_hello_chart_digest | default('sha256:ecfd201e5c21b68cabe8b32b002fe5915983c99bcc0e49ef3d3d4efa54ec0124') }}"
+    mxl_hello_seed_chart_version: "{{ mxl_hello_chart_version | default('0.1.1') }}"
+    mxl_hello_seed_chart_digest: "{{ mxl_hello_chart_digest | default('sha256:6d362e694e25ee36f3734e4f0b266a86904b92c42ca8952088ecf442b8736e1e') }}"
+
+    # MXL fabrics-demo chart + image (dmfdeploy/dmfdeploy#17). The IMAGE is
+    # digest-pinned to the proven spike artifact (v1.0.3 is a digest-preserving
+    # retag of v1.0.3-fabrics-dev — see the plan's Amendment A); the chart
+    # defaults pull it from Zot at zot.../dmf/mxl-fabrics-demo:v1.0.3.
+    mxl_fabrics_seed_chart_name: "{{ mxl_fabrics_chart_name | default('mxl-fabrics-demo') }}"
+    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.2.0') }}"
+    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:02dae352ee22d48e3dcaa5f976e55bffb6b2fd5d8efbbd3fd284d441ff09f539') }}"
+    mxl_fabrics_image_tag: "{{ mxl_fabrics_tag | default('v1.0.3') }}"
+    mxl_fabrics_image_digest: "{{ mxl_fabrics_digest | default('sha256:84980dc0c3e1de0a8f3ce12ce4d5149229c73a44b140c15ed77b8e84fb2108b1') }}"
 
     # Architecture to pull from GHCR's multi-arch manifest indices.
     # Inventory's `dmf_architecture` is the source of truth (rendered by
@@ -221,6 +231,12 @@
         source_repo: "docker.io/library/python"
         source_digest: "sha256:9bde4953fa9a7abb6db6669bb1b3f10aac83cf38d69a7bfc4941313ccd4c9686"
         zot_repo: "{{ zot_registry_host }}/dmf/library/python"
+      - name: mxl-fabrics-demo
+        # Consolidated MXL demo image, arm64 single-manifest, DIGEST-PINNED to
+        # the artifact the 2026-05-30 fabrics spike proved GREEN (#17).
+        tag: "{{ mxl_fabrics_image_tag }}"
+        source_digest: "{{ mxl_fabrics_image_digest }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/mxl-fabrics-demo"
 
     # OCI Helm charts to mirror from GHCR → Zot. Skopeo handles chart
     # artifacts via the registry API just like images, but without arch flags.
@@ -240,6 +256,11 @@
         digest: "{{ mxl_hello_seed_chart_digest }}"
         source_repo: "ghcr.io/{{ ghcr_namespace }}/charts/{{ mxl_hello_seed_chart_name }}"
         zot_repo: "{{ zot_registry_host }}/dmf/charts/{{ mxl_hello_seed_chart_name }}"
+      - name: "{{ mxl_fabrics_seed_chart_name }}"
+        version: "{{ mxl_fabrics_seed_chart_version }}"
+        digest: "{{ mxl_fabrics_seed_chart_digest }}"
+        source_repo: "ghcr.io/{{ ghcr_namespace }}/charts/{{ mxl_fabrics_seed_chart_name }}"
+        zot_repo: "{{ zot_registry_host }}/dmf/charts/{{ mxl_fabrics_seed_chart_name }}"
 
   tasks:
     # ── Prerequisite checks ──────────────────────────────────────────────
