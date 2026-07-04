@@ -71,17 +71,19 @@ forgejo_repos:
 #               per-cluster in-cluster Forgejo (pull-mirror via this var)
 # Repos listed here MUST exist publicly on GitHub or the mirror sync 422s.
 #
-# Why dmf-media and dmf-infra aren't here (yet):
-# Per ADR-0014 they should also be mirrored. They are listed in
-# `forgejo_repos` above so the role creates an in-cluster Forgejo repo
-# for each, but they are NOT yet published to GitHub — that happens
-# under Move 7 of the 2026-05-22 forward plan (public-publish
-# expansion). Until then they sit as non-mirror in-cluster Forgejo
-# repos and are not used as AWX project sources. When Move 7 publishes
-# those repos to GitHub, add entries here pointing at the canonical
-# GitHub URLs and the pull-mirror chain takes over.
+# dmf-media and dmf-infra joined the mirror list 2026-07-04
+# (dmfdeploy/dmfdeploy#17): both have been public on GitHub since the
+# 2026-06-10 first public release, but the old "not yet published — Move 7"
+# gap here left their in-cluster Forgejo repos as EMPTY non-mirror stubs.
+# Their AWX catalog projects (awx-integration awx_catalog_projects) then
+# "synced" that empty repo successfully and every JT create against them
+# failed 400 "Playbook not found for project" (surfaced by the #17 live
+# verify on the monitoring-apply lane). ensure-mirror-repo.yml converts the
+# existing stubs on re-run (delete + /repos/migrate).
 forgejo_mirror_repos:
   dmf-runbooks: https://github.com/dmfdeploy/dmf-runbooks.git
+  dmf-infra: https://github.com/dmfdeploy/dmf-infra.git
+  dmf-media: https://github.com/dmfdeploy/dmf-media.git
 
 # Seed local repos from controller filesystem paths (one-shot init).
 # Each entry: { repo: <forgejo-repo-name>, source_path: <controller-path>, required_files: [list] }
