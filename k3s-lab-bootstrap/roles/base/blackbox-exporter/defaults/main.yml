@@ -8,8 +8,18 @@ blackbox_helm_chart_version: "11.11.0"
 blackbox_fullname_override: blackbox
 
 # Blackbox probe modules — must match the NetBox choice set
-# (dmf_blackbox_probe_modules). Five modules cover the DMF probe lanes.
+# (dmf_blackbox_probe_modules). Six modules cover the DMF probe lanes.
 blackbox_modules:
+  # In-cluster DNS health lane (dmfdeploy/dmfdeploy#166 WP-D): the probe
+  # TARGET is the DNS server (CoreDNS), which resolves query_name below.
+  dns:
+    prober: dns
+    timeout: 5s
+    dns:
+      query_name: kubernetes.default.svc.cluster.local
+      query_type: A
+      transport_protocol: udp
+      preferred_ip_protocol: ip4
   http_2xx:
     prober: http
     timeout: 5s
@@ -47,6 +57,12 @@ blackbox_modules:
     timeout: 5s
     icmp:
       preferred_ip_protocol: ip4
+
+# ICMP probes need CAP_NET_RAW: chart 11.11.0's default securityContext
+# drops ALL capabilities, so the icmp module fails silently without this.
+# Adds NET_RAW (only) back to the blackbox container — no other privilege
+# broadening. Set false on envs that strip the icmp lanes.
+blackbox_allow_icmp: true
 
 # Sandbox-sized resources — blackbox is lightweight (dispatches probes,
 # no TSDB or heavy state). Sized above alertmanager (20m/64Mi) since it

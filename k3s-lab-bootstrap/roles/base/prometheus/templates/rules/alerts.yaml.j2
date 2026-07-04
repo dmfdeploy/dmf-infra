@@ -1,0 +1,485 @@
+# Alert suite — "Are we OK?" graceful-degradation slice (dmfdeploy/dmfdeploy#166).
+#
+# Discrete, diffable rules file (plan §5 WP-C). Low-logic template: the ONLY
+# Jinja here is threshold/`for:` interpolation from role defaults and the
+# Alertmanager-dependent group gate — rule structure stays reviewable as YAML.
+# Verify: render with test vars, then `promtool check rules` on the output
+# (see the role README note in the PR).
+#
+# Design rules (plan §1): warn-before-crit, generous `for:` debounce (the
+# reference rig is *normally* near the edge), severity in {critical,warning,
+# info}, runbook_url into dmf-runbooks. Thresholds are first-guess values
+# pending the OQ-5 live baselining pass — tune via role vars, not by editing
+# expressions.
+#
+# Alert-name contract:
+# - `Watchdog` is matched BY NAME by the Alertmanager route (values.yml.j2)
+#   for the healthchecks.io dead-man's switch — never rename it.
+# - `NodeDown`/`PodCrashLooping`/`PersistentVolumeNearFull` predate this suite
+#   (kept over the plan's KubeNodeNotReady/DiskNearFull aliases to avoid
+#   churn; HostDiskNearFull below covers node filesystems separately).
+groups:
+{% if prometheus_alertmanager_enabled | bool %}
+  - name: dmf-watchdog
+    rules:
+      # Dead-man's switch: fires constantly; Alertmanager pings
+      # healthchecks.io on every group interval. Ping stream stops =>
+      # external alert even when Prometheus/Alertmanager are dead.
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+          category: watchdog
+        annotations:
+          summary: Alerting pipeline is alive
+          description: >-
+            This alert always fires. If Alertmanager stops pinging the
+            external dead-man's switch, investigate Prometheus or
+            Alertmanager health.
+{% endif %}
+
+  - name: dmf-node-saturation
+    rules:
+      - alert: HostMemoryPressure
+        expr: instance:node_mem_avail_ratio < {{ prometheus_alert_mem_avail_warn_ratio }}
+        for: 5m
+        labels:
+          severity: warning
+          category: node
+        annotations:
+          summary: Host {% raw %}{{ $labels.instance }}{% endraw %} available memory below {{ (prometheus_alert_mem_avail_warn_ratio * 100) | int }}%
+          description: >-
+            Available memory on {% raw %}{{ $labels.instance }}{% endraw %} is
+            {% raw %}{{ $value | humanizePercentage }}{% endraw %} of total.
+            This is the first link of the dmfdeploy#106 chain (memory pressure
+            -> swap thrash -> load spiral -> k3s flaps).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hostmemorypressure"
+      - alert: HostMemoryPressure
+        expr: instance:node_mem_avail_ratio < {{ prometheus_alert_mem_avail_crit_ratio }}
+        for: 5m
+        labels:
+          severity: critical
+          category: node
+        annotations:
+          summary: Host {% raw %}{{ $labels.instance }}{% endraw %} available memory below {{ (prometheus_alert_mem_avail_crit_ratio * 100) | int }}%
+          description: >-
+            Available memory on {% raw %}{{ $labels.instance }}{% endraw %} is
+            {% raw %}{{ $value | humanizePercentage }}{% endraw %} of total —
+            OOM-kill territory on this rig.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hostmemorypressure"
+      - alert: HostSwapThrashing
+        expr: instance:node_swap_io_pages:rate5m > {{ prometheus_alert_swap_io_pages_rate }}
+        for: 10m
+        labels:
+          severity: warning
+          category: node
+        annotations:
+          summary: Host {% raw %}{{ $labels.instance }}{% endraw %} is swap-thrashing
+          description: >-
+            Sustained swap in+out of {% raw %}{{ $value | humanize }}{% endraw +%}
+            pages/s on {% raw %}{{ $labels.instance }}{% endraw %} — the kswapd
+            signature that preceded k3s restart cycling in dmfdeploy#106.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hostswapthrashing"
+      - alert: HostHighLoad
+        expr: instance:node_load_per_core > {{ prometheus_alert_load_per_core }}
+        for: 10m
+        labels:
+          severity: warning
+          category: node
+        annotations:
+          summary: Host {% raw %}{{ $labels.instance }}{% endraw %} load per core > {{ prometheus_alert_load_per_core }}
+          description: >-
+            load1 per core on {% raw %}{{ $labels.instance }}{% endraw %} is
+            {% raw %}{{ $value | humanize }}{% endraw %}. On this rig high load
+            with moderate CPU% means memory reclaim / IO wait, not compute.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hosthighload"
+      - alert: HostIOWaitHigh
+        expr: instance:node_iowait_ratio > {{ prometheus_alert_iowait_ratio }}
+        for: 10m
+        labels:
+          severity: warning
+          category: node
+        annotations:
+          summary: Host {% raw %}{{ $labels.instance }}{% endraw %} iowait above {{ (prometheus_alert_iowait_ratio * 100) | int }}%
+          description: >-
+            CPU iowait ratio on {% raw %}{{ $labels.instance }}{% endraw %} is
+            {% raw %}{{ $value | humanizePercentage }}{% endraw %} — storage is
+            the bottleneck (SD-card class symptom on the reference rig).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hostiowaithigh"
+      # Thermal/fan: bare-metal-Pi-only series; on VM/cloud envs these
+      # expressions match nothing and the alerts simply never fire (plan §2b).
+      - alert: HostThermalHot
+        expr: rpi:node_temp_celsius:max > {{ prometheus_alert_temp_warn_celsius }}
+        for: 5m
+        labels:
+          severity: warning
+          category: node
+        annotations:
+          summary: Host {% raw %}{{ $labels.instance }}{% endraw %} temperature above {{ prometheus_alert_temp_warn_celsius }}C
+          description: >-
+            Max thermal-zone temperature on {% raw %}{{ $labels.instance }}{% endraw +%}
+            is {% raw %}{{ $value | humanize }}{% endraw %}C.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hostthermalhot"
+      - alert: HostThermalHot
+        expr: rpi:node_temp_celsius:max > {{ prometheus_alert_temp_crit_celsius }}
+        for: 5m
+        labels:
+          severity: critical
+          category: node
+        annotations:
+          summary: Host {% raw %}{{ $labels.instance }}{% endraw %} temperature above {{ prometheus_alert_temp_crit_celsius }}C
+          description: >-
+            Max thermal-zone temperature on {% raw %}{{ $labels.instance }}{% endraw +%}
+            is {% raw %}{{ $value | humanize }}{% endraw %}C — CPU throttling
+            imminent or active.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hostthermalhot"
+      - alert: HostFanMaxed
+        expr: rpi:fan_saturation >= 1
+        for: 15m
+        labels:
+          severity: info
+          category: node
+        annotations:
+          summary: Host {% raw %}{{ $labels.instance }}{% endraw %} cooling fan pinned at max
+          description: >-
+            The pwm-fan on {% raw %}{{ $labels.instance }}{% endraw %} has been
+            at its maximum state for 15m — sustained thermal load.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hostfanmaxed"
+      - alert: HostDiskNearFull
+        expr: >-
+          (1 - node_filesystem_avail_bytes{fstype!~"tmpfs|ramfs|overlay|squashfs"}
+               / node_filesystem_size_bytes{fstype!~"tmpfs|ramfs|overlay|squashfs"})
+          > {{ prometheus_alert_pv_full_threshold }}
+        for: 10m
+        labels:
+          severity: warning
+          category: node
+        annotations:
+          summary: Filesystem {% raw %}{{ $labels.mountpoint }}{% endraw %} on {% raw %}{{ $labels.instance }}{% endraw %} >{{ (prometheus_alert_pv_full_threshold * 100) | int }}% full
+          description: >-
+            Node filesystem {% raw %}{{ $labels.device }}{% endraw %} mounted at
+            {% raw %}{{ $labels.mountpoint }}{% endraw %} is
+            {% raw %}{{ $value | humanizePercentage }}{% endraw %} used.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#hostdisknearfull"
+
+  - name: dmf-workload-health
+    rules:
+      - alert: NodeDown
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: {{ prometheus_alert_node_down_for }}
+        labels:
+          severity: critical
+          category: node
+        annotations:
+          summary: Node {% raw %}{{ $labels.node }}{% endraw %} is NotReady
+          description: >-
+            Node {% raw %}{{ $labels.node }}{% endraw %} has been NotReady
+            for more than {{ prometheus_alert_node_down_for }}.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#nodedown"
+      - alert: PodCrashLooping
+        expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
+        for: {{ prometheus_alert_crashloop_for }}
+        labels:
+          severity: warning
+          category: pod
+        annotations:
+          summary: Pod {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw %} crashlooping
+          description: >-
+            Container {% raw %}{{ $labels.container }}{% endraw %} in
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            has been CrashLoopBackOff for {{ prometheus_alert_crashloop_for }}.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#podcrashlooping"
+      - alert: PodOOMKilled
+        expr: >-
+          (kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1)
+          and on(namespace, pod, container)
+          (increase(kube_pod_container_status_restarts_total[30m]) > 0)
+        labels:
+          severity: warning
+          category: pod
+        annotations:
+          summary: Container {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}{% endraw %} OOMKilled
+          description: >-
+            Container {% raw %}{{ $labels.container }}{% endraw %} in
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw %} was
+            OOM-killed within the last 30m — memory limit too tight or node
+            memory pressure (graceful-degradation signal on this rig).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#podoomkilled"
+      - alert: PodNotReady
+        expr: kube_pod_status_phase{phase=~"Pending|Unknown"} > 0
+        for: 15m
+        labels:
+          severity: warning
+          category: pod
+        annotations:
+          summary: Pod {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw %} stuck {% raw %}{{ $labels.phase }}{% endraw +%}
+          description: >-
+            Pod {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            has been {% raw %}{{ $labels.phase }}{% endraw %} for 15m
+            (unschedulable or lost).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#podnotready"
+      - alert: ContainerCPUThrottling
+        expr: >-
+          sum by(namespace, pod, container)
+            (rate(container_cpu_cfs_throttled_periods_total[5m]))
+          / sum by(namespace, pod, container)
+            (rate(container_cpu_cfs_periods_total[5m]))
+          > 0.25
+        for: 15m
+        labels:
+          severity: info
+          category: pod
+        annotations:
+          summary: Container {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}{% endraw %} CPU-throttled
+          description: >-
+            More than 25% of CFS periods throttled for 15m — the CPU limit is
+            the constraint (expected under graceful degradation; informational).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#containercputhrottling"
+      - alert: PersistentVolumeNearFull
+        expr: >-
+          (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes)
+          > {{ prometheus_alert_pv_full_threshold }}
+        for: 10m
+        labels:
+          severity: warning
+          category: storage
+        annotations:
+          summary: PV {% raw %}{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}{% endraw %} >{{ (prometheus_alert_pv_full_threshold * 100) | int }}% full
+          description: >-
+            PVC {% raw %}{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}{% endraw +%}
+            is above {{ (prometheus_alert_pv_full_threshold * 100) | int }}% used. Expand or
+            free space before the workload goes read-only.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#persistentvolumenearfull"
+
+  - name: dmf-monitoring-self
+    rules:
+      - alert: TargetDown
+        expr: up{job=~"prometheus|kubernetes-apiservers|kubernetes-nodes|kubernetes-nodes-cadvisor|dmf-static-probes"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          category: monitoring
+        annotations:
+          summary: Scrape target {% raw %}{{ $labels.instance }}{% endraw %} (job {% raw %}{{ $labels.job }}{% endraw %}) down
+          description: >-
+            Prometheus cannot scrape {% raw %}{{ $labels.instance }}{% endraw +%}
+            in critical job {% raw %}{{ $labels.job }}{% endraw %}. For job
+            dmf-static-probes this means blackbox-exporter itself is
+            unreachable (monitoring must break loudly, plan constraint 2).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#targetdown"
+{% if prometheus_alertmanager_enabled | bool %}
+      - alert: AlertmanagerDown
+        expr: prometheus_notifications_alertmanagers_discovered < 1
+        for: 5m
+        labels:
+          severity: critical
+          category: monitoring
+        annotations:
+          summary: Prometheus sees no Alertmanager
+          description: >-
+            prometheus_notifications_alertmanagers_discovered < 1 — the notify
+            path is broken. The are-we-ok verdict pane still works (it reads
+            ALERTS from Prometheus directly), but nothing will page.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#alertmanagerdown"
+      - alert: PrometheusNotificationErrors
+        expr: rate(prometheus_notifications_errors_total[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          category: monitoring
+        annotations:
+          summary: Prometheus alert notifications are failing
+          description: >-
+            Errors sending alerts to Alertmanager for 10m — notifications are
+            being dropped or delayed.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#prometheusnotificationerrors"
+{% endif %}
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: monitoring
+        annotations:
+          summary: Prometheus config reload failed
+          description: >-
+            The last configuration reload failed — Prometheus is running on a
+            STALE config; rule/scrape changes are not live (hot-reload path
+            from the config-reloader sidecar is broken).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#prometheusconfigreloadfailed"
+      - alert: PrometheusTSDBReloadFailed
+        expr: increase(prometheus_tsdb_reloads_failures_total[3h]) > 0
+        labels:
+          severity: warning
+          category: monitoring
+        annotations:
+          summary: Prometheus TSDB reload failures
+          description: TSDB block reload failed within the last 3h.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#prometheustsdbreloadfailed"
+      - alert: PrometheusRuleEvalFailures
+        expr: increase(prometheus_rule_evaluation_failures_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          category: monitoring
+        annotations:
+          summary: Prometheus rule evaluation failures
+          description: >-
+            Recording/alerting rule evaluations are failing — the verdict pane
+            and alert suite may be running on missing series.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#prometheusruleevalfailures"
+
+  - name: dmf-sd-pipeline
+    rules:
+      # born-inventory is a one-shot seeding job, not a service (plan D4):
+      # "monitoring it" == watching NetBox -> dmf-promsd -> Prometheus SD.
+      - alert: PromsdDown
+        expr: probe_success{probe_name="promsd-live"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: sd-pipeline
+        annotations:
+          summary: dmf-promsd is down
+          description: >-
+            Blackbox probe of dmf-promsd /healthz (liveness) is failing —
+            Prometheus is running on its last-known SD target sets.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#promsddown"
+      # /readyz goes non-2xx when the NetBox snapshot exceeds the staleness
+      # threshold (Amendment A: /healthz is liveness-only, ALWAYS 200 — it can
+      # never carry freshness). Suppressed while promsd is down outright.
+      - alert: PromsdStale
+        expr: >-
+          probe_success{probe_name="promsd-ready"} == 0
+          unless on() (probe_success{probe_name="promsd-live"} == 0)
+        for: 10m
+        labels:
+          severity: warning
+          category: sd-pipeline
+        annotations:
+          summary: dmf-promsd NetBox snapshot is stale
+          description: >-
+            dmf-promsd is alive but /readyz reports not-ready — its NetBox
+            snapshot is older than the staleness threshold (NetBox unreachable
+            or refresh loop wedged).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#promsdstale"
+      - alert: NetBoxUnreachable
+        expr: probe_success{probe_name="netbox-http"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: sd-pipeline
+        annotations:
+          summary: NetBox is unreachable
+          description: >-
+            Blackbox probe of the in-cluster NetBox service is failing — the
+            monitoring source of truth (ADR-0038) is down; SD will go stale.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#netboxunreachable"
+      - alert: DiscoveredTargetsZeroOrStale
+        expr: >-
+          sum(dmf:promsd_discovered_targets) < 1
+          or absent(dmf:promsd_discovered_targets)
+        for: 15m
+        labels:
+          severity: warning
+          category: sd-pipeline
+        annotations:
+          summary: NetBox-driven SD yields zero targets
+          description: >-
+            The netbox-* scrape jobs materialize no targets — either NetBox
+            holds no monitoring-enabled objects (pipeline empty) or discovery
+            broke silently. A true freshness metric needs the OQ-4 promsd
+            /metrics endpoint; until then this is count + /readyz boolean.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#discoveredtargetszeroorstale"
+
+  - name: dmf-connectivity
+    rules:
+      # Lanes come from the dmf-static-probes job's lane label (plan D5).
+      # The lan-gateway lane has no default target (cloud envs have no LAN);
+      # its alerts match nothing until an env adds the target via inventory.
+      - alert: InternetUnreachable
+        expr: max(probe_success{lane="internet"}) == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: connectivity
+        annotations:
+          summary: All internet anchors unreachable
+          description: >-
+            ICMP probes to every public anchor are failing — the node has no
+            internet path (or blackbox lost NET_RAW; see TargetDown).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#internetunreachable"
+      - alert: InternetHighLatency
+        expr: probe:latency_avg{lane="internet"} > 0.15
+        for: 15m
+        labels:
+          severity: warning
+          category: connectivity
+        annotations:
+          summary: Internet anchor {% raw %}{{ $labels.instance }}{% endraw %} latency high
+          description: >-
+            10m average RTT to {% raw %}{{ $labels.instance }}{% endraw %} is
+            {% raw %}{{ $value | humanizeDuration }}{% endraw %} (threshold
+            150ms — first-guess, OQ-5 baselining pending).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#internethighlatency"
+      - alert: IngressDown
+        expr: probe_success{lane="ingress"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: connectivity
+        annotations:
+          summary: Cluster ingress (Traefik) unreachable
+          description: >-
+            TCP probe to the Traefik service is failing — every public surface
+            of the platform is dark.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#ingressdown"
+      - alert: DNSDown
+        expr: probe_success{lane="cluster-dns"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: connectivity
+        annotations:
+          summary: Cluster DNS (CoreDNS) failing
+          description: >-
+            DNS probe against CoreDNS is failing — in-cluster name resolution
+            is broken; expect cascading pod failures.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#dnsdown"
+      - alert: DNSSlow
+        expr: probe:latency_avg{lane="cluster-dns"} > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          category: connectivity
+        annotations:
+          summary: Cluster DNS latency high
+          description: >-
+            10m average CoreDNS lookup time is
+            {% raw %}{{ $value | humanizeDuration }}{% endraw %} — resolution is
+            degrading (typical under node saturation).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#dnsslow"
+      - alert: GatewayUnreachable
+        expr: probe_success{lane="lan-gateway"} == 0
+        for: 5m
+        labels:
+          severity: warning
+          category: connectivity
+        annotations:
+          summary: LAN gateway unreachable
+          description: >-
+            ICMP probe to the LAN gateway is failing — local network path
+            degraded (env-specific lane).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#gatewayunreachable"
+      - alert: GatewayHighJitter
+        expr: probe:latency_jitter{lane="lan-gateway"} > 0.05
+        for: 15m
+        labels:
+          severity: info
+          category: connectivity
+        annotations:
+          summary: LAN gateway jitter high
+          description: >-
+            RTT stddev to the LAN gateway over 10m exceeds 50ms — unstable
+            local link.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#gatewayhighjitter"

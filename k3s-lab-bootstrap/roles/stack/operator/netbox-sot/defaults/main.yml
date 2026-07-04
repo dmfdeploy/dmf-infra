@@ -233,6 +233,7 @@ netbox_sot_monitoring_choice_sets:
       - [http_2xx_insecure, http_2xx_insecure]
       - [tcp_connect, tcp_connect]
       - [icmp, icmp]
+      - [dns, dns]
   - name: "dmf_snmp_modules"
     description: "DMF SNMP-exporter modules"
     extra_choices:

@@ -1,0 +1,69 @@
+# Recording rules — "Are we OK?" observability slice (dmfdeploy/dmfdeploy#166).
+#
+# Pure YAML (no templating): slurped into serverFiles.recording_rules.yml by
+# templates/values.yml.j2. Keep this file promtool-checkable as-is:
+#   promtool check rules files/rules/recording.yaml
+#
+# Purpose: precompute the signals the are-we-ok verdict pane and the alert
+# suite consume, so dashboard queries stay cheap on a saturated node and
+# alert expressions stay stable (plan §5 WP-B).
+#
+# Cross-env caveat (plan §2b): the rpi:* thermal/fan series exist only on
+# bare-metal Pi nodes — on VM/cloud envs node-exporter exposes no hwmon/
+# pwm-fan series, these rules simply produce no samples, and every consumer
+# must treat absence as "n/a", not "bad".
+groups:
+  - name: dmf-node-recording
+    rules:
+      # Load normalized by core count — the plan's saturation signal is
+      # load/core, not raw load1 (4-core Pi at load 24 == 6.0/core).
+      - record: instance:node_load_per_core
+        expr: >-
+          node_load1
+          / on(instance)
+          count by(instance) (node_cpu_seconds_total{mode="idle"})
+      - record: instance:node_mem_avail_ratio
+        expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+      # clamp_min guards swapless nodes (SwapTotal == 0 -> ratio 0, not NaN).
+      - record: instance:node_swap_used_ratio
+        expr: >-
+          (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes)
+          / clamp_min(node_memory_SwapTotal_bytes, 1)
+      # Pages/s swapped in+out — the kswapd-thrash signal from dmfdeploy#106.
+      - record: instance:node_swap_io_pages:rate5m
+        expr: rate(node_vmstat_pswpin[5m]) + rate(node_vmstat_pswpout[5m])
+      # The real bottleneck signal on the reference rig (load >> CPU%).
+      - record: instance:node_iowait_ratio
+        expr: avg by(instance) (rate(node_cpu_seconds_total{mode="iowait"}[5m]))
+
+  - name: dmf-rpi-recording
+    rules:
+      # Bare-metal-Pi-only series (absent on VM/cloud envs — see header).
+      - record: rpi:node_temp_celsius:max
+        expr: max by(instance) (node_hwmon_temp_celsius)
+      - record: rpi:fan_saturation
+        expr: >-
+          node_cooling_device_cur_state{type="pwm-fan"}
+          / node_cooling_device_max_state{type="pwm-fan"}
+
+  - name: dmf-probe-recording
+    rules:
+      # Per-series (no aggregation) so lane/probe_name/instance labels from
+      # the static probe job and the netbox-probe lane are preserved.
+      - record: probe:latency_avg
+        expr: avg_over_time(probe_duration_seconds[10m])
+      - record: probe:latency_jitter
+        expr: stddev_over_time(probe_duration_seconds[10m])
+      - record: probe:loss_ratio
+        expr: 1 - avg_over_time(probe_success[10m])
+
+  - name: dmf-sd-recording
+    rules:
+      - record: dmf:targets_up_ratio
+        expr: avg by(job) (up)
+      # Count of targets the NetBox -> dmf-promsd -> Prometheus SD pipeline
+      # currently materializes (discovered != healthy: up==0 still counts).
+      # Zero targets yields NO series (count over empty vector) — the
+      # DiscoveredTargetsZeroOrStale alert pairs this with absent().
+      - record: dmf:promsd_discovered_targets
+        expr: count by(job) (up{job=~"netbox-.*"})

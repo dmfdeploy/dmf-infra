@@ -79,7 +79,8 @@ server:
   prefixURL: "{{ prometheus_path }}"
 
 # ──────────────────────────────────────────────────────────────
-# serverFiles — prometheus.yml scrape_configs (always) + alert rules (conditional)
+# serverFiles — prometheus.yml scrape_configs + recording/alerting rules
+# (rules always deploy; only Watchdog/notify alerts are AM-gated — see below)
 #
 # scrape_configs is vendored from chart-default (prometheus-25.8.0) so we can
 # patch the `prometheus` self-scrape job's metrics_path to match
@@ -94,67 +95,20 @@ serverFiles:
   prometheus.yml:
     scrape_configs:
 {% include 'scrape_configs.yml.j2' %}
-{% if prometheus_alertmanager_enabled | bool %}
-  # Alert rules — minimum viable set.
-  # Watchdog is a dead-man's switch: it fires constantly, and Alertmanager
-  # pings healthchecks.io on every group interval. If the ping stream stops,
-  # healthchecks.io raises an *external* alert — covering the case where
-  # Alertmanager or Prometheus itself is down and cannot alert internally.
+  # ──────────────────────────────────────────────────────────────
+  # Rules-as-code (dmfdeploy/dmfdeploy#166): discrete, diffable rule files
+  # under the role, slurped into the chart's serverFiles keys.
+  #   files/rules/recording.yaml       — pure YAML, promtool-checkable as-is
+  #   templates/rules/alerts.yaml.j2   — low-logic template (threshold vars)
+  # The from_yaml round-trip validates both parse at render time.
+  # Rules deploy regardless of Alertmanager state: the are-we-ok verdict pane
+  # reads ALERTS directly from Prometheus (fail-soft, plan D3); only the
+  # Watchdog/notify-path alerts are gated on prometheus_alertmanager_enabled
+  # inside the template. The chart-default prometheus.yml rule_files list
+  # already references /etc/config/{recording,alerting}_rules.yml.
+  # Alertmanager routing + receivers live under alertmanager.config (above).
+  # ──────────────────────────────────────────────────────────────
+  recording_rules.yml:
+{{ lookup('file', role_path + '/files/rules/recording.yaml') | from_yaml | to_nice_yaml(indent=2) | indent(4, true) }}
   alerting_rules.yml:
-    groups:
-      - name: cluster-health
-        rules:
-          - alert: Watchdog
-            expr: vector(1)
-            labels:
-              severity: none
-              category: watchdog
-            annotations:
-              summary: Alerting pipeline is alive
-              description: >-
-                This alert always fires. If Alertmanager stops pinging the
-                external dead-man's switch, investigate Prometheus or
-                Alertmanager health.
-
-          - alert: NodeDown
-            expr: kube_node_status_condition{condition="Ready",status="true"} == 0
-            for: {{ prometheus_alert_node_down_for }}
-            labels:
-              severity: critical
-              category: node
-            annotations:
-              summary: Node {% raw %}{{ $labels.node }}{% endraw %} is NotReady
-              description: >-
-                Node {% raw %}{{ $labels.node }}{% endraw %} has been NotReady
-                for more than {{ prometheus_alert_node_down_for }}.
-
-          - alert: PodCrashLooping
-            expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
-            for: {{ prometheus_alert_crashloop_for }}
-            labels:
-              severity: warning
-              category: pod
-            annotations:
-              summary: Pod {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw %} crashlooping
-              description: >-
-                Container {% raw %}{{ $labels.container }}{% endraw %} in
-                {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw %}
-                has been CrashLoopBackOff for {{ prometheus_alert_crashloop_for }}.
-
-          - alert: PersistentVolumeNearFull
-            expr: >-
-              (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes)
-              > {{ prometheus_alert_pv_full_threshold }}
-            for: 10m
-            labels:
-              severity: warning
-              category: storage
-            annotations:
-              summary: PV {% raw %}{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}{% endraw %} >{{ (prometheus_alert_pv_full_threshold * 100) | int }}% full
-              description: >-
-                PVC {% raw %}{{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }}{% endraw %}
-                is above {{ (prometheus_alert_pv_full_threshold * 100) | int }}% used. Expand or
-                free space before the workload goes read-only.
-
-# Alertmanager routing + receivers now live under alertmanager.config (above).
-{% endif %}
+{{ lookup('template', role_path + '/templates/rules/alerts.yaml.j2') | from_yaml | to_nice_yaml(indent=2) | indent(4, true) }}

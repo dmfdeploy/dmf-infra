@@ -58,3 +58,62 @@ prometheus_alertmanager_watchdog_url: ""
 prometheus_alert_pv_full_threshold: 0.85
 prometheus_alert_crashloop_for: 10m
 prometheus_alert_node_down_for: 5m
+
+# Are-we-OK suite thresholds (dmfdeploy/dmfdeploy#166, templates/rules/
+# alerts.yaml.j2). First-guess values tuned for a node that is NORMALLY near
+# the edge (warn-before-crit + debounce); the OQ-5 live baselining pass may
+# move them — override per env in inventory, don't edit the rule template.
+prometheus_alert_mem_avail_warn_ratio: 0.10
+prometheus_alert_mem_avail_crit_ratio: 0.05
+# Sustained swap in+out pages/s (~4 MB/s at 4k pages) — dmfdeploy#106 signature.
+prometheus_alert_swap_io_pages_rate: 1000
+prometheus_alert_load_per_core: 4.0
+prometheus_alert_iowait_ratio: 0.25
+prometheus_alert_temp_warn_celsius: 70
+prometheus_alert_temp_crit_celsius: 80
+# runbook_url base for every alert annotation (anchors = lowercase alertname).
+prometheus_alert_runbook_base: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md"
+
+# Static blackbox probe lanes (dmfdeploy/dmfdeploy#166 WP-D) — the four probe
+# lanes from plan D5 that have NO NetBox object (ADR-0038 covers platform
+# apps via dmf-promsd; these are infrastructure anchors below/outside that
+# model). Rendered into the `dmf-static-probes` job in scrape_configs.yml.j2;
+# each entry's `module` must exist in blackbox_modules (base/blackbox-exporter)
+# and `lane`/`name` become the lane/probe_name labels the alert suite and
+# dashboards key on. Entries with an empty target are skipped at render.
+# LAN-gateway lane intentionally ships no default: cloud envs have no LAN.
+# Add per env in inventory, e.g.:
+#   - { name: lan-gateway, lane: lan-gateway, module: icmp, target: "<lan-gateway>" }
+prometheus_static_probe_interval: 60s
+prometheus_static_probe_targets:
+  - name: internet-cloudflare
+    lane: internet
+    module: icmp
+    target: "1.1.1.1"
+  - name: internet-google
+    lane: internet
+    module: icmp
+    target: "8.8.8.8"
+  - name: cluster-dns
+    lane: cluster-dns
+    module: dns
+    target: "kube-dns.kube-system.svc.cluster.local:53"
+  - name: cluster-ingress
+    lane: ingress
+    module: tcp_connect
+    target: "traefik.kube-system.svc.cluster.local:443"
+  # sd-pipeline lane: /healthz = liveness (feeds PromsdDown), /readyz =
+  # boolean cache freshness (feeds PromsdStale; Amendment A — /healthz is
+  # always 200 and can never carry freshness).
+  - name: promsd-live
+    lane: sd-pipeline
+    module: http_2xx
+    target: "http://dmf-promsd.monitoring.svc.cluster.local:8000/healthz"
+  - name: promsd-ready
+    lane: sd-pipeline
+    module: http_2xx
+    target: "http://dmf-promsd.monitoring.svc.cluster.local:8000/readyz"
+  - name: netbox-http
+    lane: sd-pipeline
+    module: http_2xx
+    target: "http://netbox.netbox.svc.cluster.local/"
