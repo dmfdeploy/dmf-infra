@@ -1,0 +1,102 @@
+{
+  "__comment": "Platform services — per-instance health from the NetBox-driven lanes (ADR-0038), plus the dmf-promsd adapter-health row (dmfdeploy/dmfdeploy#166 WP-G / Amendment A §2). Freshness is a boolean /readyz probe and target counts ONLY until promsd gains /metrics (plan OQ-4) — panels say so; no false precision (UX Constitution Art. 1). Operator vocabulary in titles (Art. 3).",
+  "title": "Platform services",
+  "uid": "dmf-platform-services",
+  "schemaVersion": 39,
+  "editable": true,
+  "graphTooltip": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "tags": ["dmf", "netbox"],
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Service health (NetBox probe lane)",
+      "description": "probe_success per NetBox-discovered instance. Labels come from the NetBox stamping (source of truth).",
+      "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [
+        { "refId": "A", "instant": true, "format": "table", "expr": "probe_success{job=\"netbox-probe\"}" }
+      ],
+      "transformations": [
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true }, "renameByName": { "Value": "up (1=healthy)" } } }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] },
+          "custom": { "cellOptions": { "type": "color-background" } }
+        },
+        "overrides": [
+          { "matcher": { "id": "byRegexp", "options": "^(?!up).*" }, "properties": [ { "id": "custom.cellOptions", "value": { "type": "auto" } } ] }
+        ]
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Service health over time",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "probe_success{job=\"netbox-probe\"}", "legendFormat": "{{instance}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1 } }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Exporter scrapes (NetBox scrape/snmp lanes)",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "up{job=~\"netbox-.*\"}", "legendFormat": "{{job}}/{{instance}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "max": 1 } }
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Discovery: targets materialized per lane",
+      "description": "Count of targets the NetBox → dmf-promsd → Prometheus pipeline currently materializes (discovered ≠ healthy). Count only — a true freshness/age series needs the promsd /metrics endpoint (OQ-4).",
+      "gridPos": { "x": 0, "y": 16, "w": 8, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "expr": "dmf:promsd_discovered_targets", "legendFormat": "{{job}}", "interval": "1m" } ],
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0 } }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Discovery data fresh",
+      "description": "Boolean blackbox probe of dmf-promsd /readyz — non-2xx when the NetBox snapshot exceeds its staleness threshold. Boolean only until OQ-4 lands.",
+      "gridPos": { "x": 8, "y": 16, "w": 8, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "instant": true, "expr": "probe_success{probe_name=\"promsd-ready\"}" } ],
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "STALE", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "FRESH", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "type": "stat",
+      "title": "Discovery service alive",
+      "description": "Boolean blackbox probe of dmf-promsd /healthz (liveness only — it cannot carry freshness; see the panel to the left).",
+      "gridPos": { "x": 16, "y": 16, "w": 8, "h": 7 },
+      "datasource": "Prometheus",
+      "targets": [ { "refId": "A", "instant": true, "expr": "probe_success{probe_name=\"promsd-live\"}" } ],
+      "options": { "colorMode": "background", "graphMode": "none" },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "index": 0 } } },
+            { "type": "value", "options": { "1": { "text": "ALIVE", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] }
+        }
+      }
+    }
+  ]
+}

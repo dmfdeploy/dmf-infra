@@ -84,6 +84,10 @@ prometheus_alert_runbook_base: "https://github.com/dmfdeploy/dmf-runbooks/blob/m
 # LAN-gateway lane intentionally ships no default: cloud envs have no LAN.
 # Add per env in inventory, e.g.:
 #   - { name: lan-gateway, lane: lan-gateway, module: icmp, target: "<lan-gateway>" }
+# LOCK-STEP: the default probe_name set below is mirrored by
+# monitoring_verify_required_probes (playbooks/vertical-monitoring/
+# 195-are-we-ok-verify.yml) and the verdict expression in
+# roles/base/grafana/files/dmf-are-we-ok.json — change all three together.
 prometheus_static_probe_interval: 60s
 prometheus_static_probe_targets:
   - name: internet-cloudflare

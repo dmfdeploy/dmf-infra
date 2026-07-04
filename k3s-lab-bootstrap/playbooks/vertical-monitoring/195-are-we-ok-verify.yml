@@ -16,6 +16,8 @@
     # behind another (e.g. promsd-ready behind a lan-gateway addition).
     # Envs that legitimately drop a lane (e.g. ICMP-blocked egress) override
     # this list together with prometheus_static_probe_targets.
+    # LOCK-STEP: also mirrored by the verdict expression in
+    # roles/base/grafana/files/dmf-are-we-ok.json — change all three together.
     monitoring_verify_required_probes:
       - internet-cloudflare
       - internet-google
@@ -187,6 +189,34 @@
           silently (chart default drops ALL; see blackbox_allow_icmp).
         quiet: true
       when: blackbox_allow_icmp | default(true) | bool
+
+    - name: Read grafana dashboard ConfigMaps (WP-G provider split)
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ monitoring_verify_namespace }}"
+          - get
+          - cm
+          - -o
+          - name
+      register: _verify_grafana_cms
+      changed_when: false
+
+    - name: Assert dmf/system dashboard ConfigMaps exist and legacy one is gone
+      ansible.builtin.assert:
+        that:
+          - "'configmap/grafana-dmf-dashboards' in _verify_grafana_cms.stdout_lines"
+          - "'configmap/grafana-system-dashboards' in _verify_grafana_cms.stdout_lines"
+          - "'configmap/grafana-custom-dashboards' not in _verify_grafana_cms.stdout_lines"
+        fail_msg: >-
+          Dashboard ConfigMap layout does not match the WP-G provider split
+          (expected grafana-dmf-dashboards + grafana-system-dashboards, and
+          the legacy grafana-custom-dashboards removed).
+        quiet: true
 
     - name: Show verification summary
       ansible.builtin.debug:
