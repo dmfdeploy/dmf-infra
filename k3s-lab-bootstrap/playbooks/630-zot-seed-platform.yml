@@ -187,8 +187,8 @@
     # retag of v1.0.3-fabrics-dev — see the plan's Amendment A); the chart
     # defaults pull it from Zot at zot.../dmf/mxl-fabrics-demo:v1.0.3.
     mxl_fabrics_seed_chart_name: "{{ mxl_fabrics_chart_name | default('mxl-fabrics-demo') }}"
-    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.2.0') }}"
-    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:02dae352ee22d48e3dcaa5f976e55bffb6b2fd5d8efbbd3fd284d441ff09f539') }}"
+    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.2.1') }}"
+    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:3d6ae453b73347d1b12525f4c5deb850bb8d40b49b64c58277fe663522f23512') }}"
     mxl_fabrics_image_tag: "{{ mxl_fabrics_tag | default('v1.0.3') }}"
     mxl_fabrics_image_digest: "{{ mxl_fabrics_digest | default('sha256:84980dc0c3e1de0a8f3ce12ce4d5149229c73a44b140c15ed77b8e84fb2108b1') }}"
 
