@@ -488,6 +488,130 @@
           name: awx
           namespace: awx
 
+# ── MXL catalog namespace + launcher grants (dmfdeploy/dmfdeploy#17) ────────
+# The catalog Container Group keeps running EE pods in the nmos namespace
+# under the nmos-cpp-launcher SA; MXL workloads deploy into the mxl namespace,
+# so that same launcher identity gets namespaced grants there. Namespaces are
+# cluster-scoped — the launcher can neither create nor delete them, so this
+# role owns the mxl namespace lifecycle.
+
+- name: Ensure MXL namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: mxl
+        labels:
+          dmf.layer: "5"
+          dmf.function: mxl
+
+- name: Ensure catalog launcher Role exists in mxl
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: mxl-launcher
+        namespace: mxl
+        labels:
+          app.kubernetes.io/component: awx-launcher
+          dmf.function: mxl
+      rules:
+        - apiGroups: [""]
+          resources:
+            - configmaps
+            - persistentvolumeclaims
+            - pods
+            - secrets
+            - services
+            # the mxl-fabrics-demo chart renders its own SA (mxl-view)
+            - serviceaccounts
+          verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
+        - apiGroups: ["apps"]
+          resources:
+            - deployments
+            - statefulsets
+          verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
+        # The chart renders a namespaced Role/RoleBinding for mxl-view
+        # (coordinator ConfigMap patch). Kubernetes' escalation check allows
+        # the launcher to grant only rules it already holds — configmaps are
+        # covered above, so this passes without escalate/bind verbs. The
+        # chart's cluster-scoped node-reader RBAC is pre-created below
+        # instead (launched with nodeAccess.create=false).
+        - apiGroups: ["rbac.authorization.k8s.io"]
+          resources:
+            - roles
+            - rolebindings
+          verbs: ["create", "get", "list", "watch", "patch", "update", "delete"]
+
+- name: Bind catalog launcher SA into mxl
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: mxl-launcher
+        namespace: mxl
+        labels:
+          app.kubernetes.io/component: awx-launcher
+          dmf.function: mxl
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: mxl-launcher
+      subjects:
+        - kind: ServiceAccount
+          name: nmos-cpp-launcher
+          namespace: nmos
+
+- name: Ensure MXL status-sidecar node-reader ClusterRole exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: mxl-node-reader
+        labels:
+          dmf.function: mxl
+          dmf.component: mxl-status-sidecar
+      rules:
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["get", "list"]
+
+- name: Bind MXL pod service accounts to the node-reader ClusterRole
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: mxl-node-reader
+        labels:
+          dmf.function: mxl
+          dmf.component: mxl-status-sidecar
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: mxl-node-reader
+      subjects:
+        - kind: ServiceAccount
+          name: default
+          namespace: mxl
+        - kind: ServiceAccount
+          name: mxl-view
+          namespace: mxl
+
 - name: Ingress readiness gate — Traefik + AWX
   ansible.builtin.include_role:
     name: shared/gate-ingress-ready

@@ -109,3 +109,21 @@ cms_docker_host: "{{ cms_docker_socket | default('unix:///var/run/docker.sock') 
 # controller. Catalog YAML files found here are read into the Helm values
 # and mounted into the dmf-cms pod at /etc/dmf-cms/catalog/.
 cms_catalog_source_dir: "{{ playbook_dir }}/../../../dmf-media/catalog"
+
+# ── Media Workloads + MXL live-view console wiring (dmfdeploy/dmfdeploy#17) ──
+# The v0.12 console is fail-closed: the Media Workloads page stays dark unless
+# DMF_CONSOLE_MEDIA_TENANCY is set, and the MXL live-view panel is driven by
+# DMF_CONSOLE_MXL_ENDPOINTS. The single-node sandbox profile is single-tenant
+# by construction, so it defaults to tenancy "single" and points the live view
+# at the two per-release MXL status Services. Other profiles render nothing
+# (chart defaults keep the surfaces dark) until deliberately configured.
+cms_media_tenancy: >-
+  {{ 'single' if (dmf_release_profile | default('')) == 'sandbox-single-node' else '' }}
+# "scoped" tenancy only: raw-group→tenant map ("group=tenant|tenant;...").
+cms_media_group_tenant_map: ""
+# Endpoint roles are the CONSOLE's selector contract (producer/receiver —
+# src/dmf_cms/mxl.py matches ep.role exactly; the preview fan-out asks for
+# "receiver"), independent of the chart's source/view release roles.
+cms_mxl_endpoints: >-
+  {{ 'producer|generic|http://mxl-videotestsrc.mxl.svc.cluster.local:9000,receiver|generic|http://mxl-videotest-view.mxl.svc.cluster.local:9000'
+     if (dmf_release_profile | default('')) == 'sandbox-single-node' else '' }}

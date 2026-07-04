@@ -212,12 +212,25 @@ awx_catalog_job_templates:
       mxl_role: source
       mxl_release: mxl-videotestsrc
       mxl_interface: eth0
+      # Profile-derived (dmfdeploy/dmfdeploy#17): colocated pod-network pair
+      # on the single-node profile; the original cross-host hostNetwork shape
+      # everywhere else. Override awx_integration_mxl_placement_mode to force.
+      mxl_placement_mode: "{{ awx_integration_mxl_placement_mode | default('single-node' if (dmf_release_profile | default('')) == 'sandbox-single-node' else 'split-node', true) }}"
+      # roles/mxl stamps the NetBox catalog record (ADR-0037/0038) — same
+      # credential plumbing as the NMOS catalog JTs.
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-finalise-mxl-videotestsrc
     description: "Teardown MXL test-pattern source (finalise stage)"
     playbook: "playbooks/teardown-mxl-fabrics-demo.yml"
     project_name: "dmf-runbooks"
     extra_vars:
       mxl_release: mxl-videotestsrc
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-launch-mxl-videotest-view
     description: "Launch MXL test-pattern viewer (configure stage)"
     playbook: "playbooks/launch-mxl-fabrics-demo.yml"
@@ -226,24 +239,38 @@ awx_catalog_job_templates:
       mxl_role: view
       mxl_release: mxl-videotest-view
       mxl_interface: eth0
+      # Keep in lock-step with media-launch-mxl-videotestsrc above.
+      mxl_placement_mode: "{{ awx_integration_mxl_placement_mode | default('single-node' if (dmf_release_profile | default('')) == 'sandbox-single-node' else 'split-node', true) }}"
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-finalise-mxl-videotest-view
     description: "Teardown MXL test-pattern viewer (finalise stage)"
     playbook: "playbooks/teardown-mxl-fabrics-demo.yml"
     project_name: "dmf-runbooks"
     extra_vars:
       mxl_release: mxl-videotest-view
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-launch-mxl-hello
     description: "Launch MXL Hello single-node demo (configure stage)"
     playbook: "playbooks/launch-mxl-hello.yml"
     project_name: "dmf-runbooks"
     extra_vars:
       mxl_release: mxl-hello
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-finalise-mxl-hello
     description: "Teardown MXL Hello single-node demo (finalise stage)"
     playbook: "playbooks/teardown-mxl-hello.yml"
     project_name: "dmf-runbooks"
     extra_vars:
       mxl_release: mxl-hello
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
 
 # ── Infra job templates (dmfdeploy/dmfdeploy#166 WP-F) ─────────────────────
 # Monitoring-apply lane: runs dmf-infra playbooks against hosts:k3s_control

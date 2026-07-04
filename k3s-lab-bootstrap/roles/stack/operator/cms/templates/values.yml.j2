@@ -82,6 +82,19 @@ netbox:
     key: {{ cms_runtime_secret_netbox_token_key | to_json }}
   sslVerify: {{ cms_netbox_ssl_verify | default(false) | to_json }}
 
+{% if cms_media_tenancy | trim %}
+media:
+  tenancy: {{ cms_media_tenancy | trim | to_json }}
+{% if cms_media_group_tenant_map | trim %}
+  groupTenantMap: {{ cms_media_group_tenant_map | trim | to_json }}
+{% endif %}
+{% endif %}
+
+{% if cms_mxl_endpoints | trim %}
+mxl:
+  endpoints: {{ cms_mxl_endpoints | trim | to_json }}
+{% endif %}
+
 forgejo:
   apiUrl: {{ ("http://forgejo-http." ~ (forgejo_namespace | default('forgejo')) ~ ".svc.cluster.local:3000") | to_json }}
   apiToken:
