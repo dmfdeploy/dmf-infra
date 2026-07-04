@@ -36,11 +36,17 @@ grafana.ini:
   server:
     root_url: "%(protocol)s://%(domain)s{{ grafana_path }}"
     serve_from_sub_path: true
+  # The verdict pane IS the front door (Amendment A §3).
+  dashboards:
+    default_home_dashboard_path: /var/lib/grafana/dashboards/dmf/dmf-are-we-ok.json
 {% else %}
 grafana.ini:
   server:
     root_url: "https://{{ grafana_host }}/"
     serve_from_sub_path: false
+  # The verdict pane IS the front door (Amendment A §3).
+  dashboards:
+    default_home_dashboard_path: /var/lib/grafana/dashboards/dmf/dmf-are-we-ok.json
 {% endif %}
 
 datasources:
@@ -57,22 +63,38 @@ datasources:
         url: http://loki-gateway.{{ grafana_namespace }}.svc.cluster.local
         access: proxy
 
-# Dashboard providers - only custom dashboards from ConfigMap
+# Dashboard providers (dmfdeploy/dmfdeploy#166 WP-G / Amendment A): the chart
+# keys external-ConfigMap dashboards PER PROVIDER (dashboardsConfigMaps.<name>
+# mounted at /var/lib/grafana/dashboards/<name>) — two provider/ConfigMap
+# pairs, no sidecar. `foldersFromFilesStructure` is a sidecar-provider knob
+# and does NOT work with direct ConfigMap mounts (no subdirectories).
+#   dmf    — folder "DMF": the operator's default surface ("Are we OK?",
+#            "Platform services"; operator vocabulary per UX-Const. Art. 3).
+#   system — folder "System": expert tier (demoted dotdc k8s views).
 dashboardProviders:
   dashboardproviders.yaml:
     apiVersion: 1
     providers:
-      - name: custom
+      - name: dmf
         orgId: 1
-        folder: Kubernetes
+        folder: DMF
         type: file
         disableDeletion: false
         editable: true
         options:
-          path: /var/lib/grafana/dashboards/custom
+          path: /var/lib/grafana/dashboards/dmf
+      - name: system
+        orgId: 1
+        folder: System
+        type: file
+        disableDeletion: false
+        editable: true
+        options:
+          path: /var/lib/grafana/dashboards/system
 
 dashboardsConfigMaps:
-  custom: grafana-custom-dashboards
+  dmf: grafana-dmf-dashboards
+  system: grafana-system-dashboards
 
 # Dashboards from https://github.com/dotdc/grafana-dashboards-kubernetes
 # Adapted for single-cluster k3s environment
