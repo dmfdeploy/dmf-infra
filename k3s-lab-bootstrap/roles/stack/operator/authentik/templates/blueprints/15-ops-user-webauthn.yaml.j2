@@ -22,7 +22,39 @@ entries:
       user_verification: required
       resident_key_requirement: required
 
-  # --- Ops user ---
+  # --- Baseline groups (existence only — memberships are set user-side below) ---
+  # Deliberately NO `users` attr here: the blueprint importer passes attrs
+  # straight to the serializer with replace semantics (BlueprintEntry has no
+  # additive `method` field), so a group-side `users` list would EVICT any
+  # other members of these groups on every blueprint re-apply. Declaring the
+  # groups bare only upserts their existence. The console's startup
+  # ensure_group seeding also upserts dmf-console-admin by name, so ordering
+  # between blueprint apply and console start is safe either way.
+  - model: authentik_core.group
+    id: dmf-group-ops-admin
+    state: present
+    identifiers:
+      name: ops-admin
+
+  # The dmf-init-created ops user must be console super-admin: the console
+  # resolves its role from the OIDC groups claim (dmf-cms security.py
+  # ROLE_GROUPS), and without a dmf-console-* group it lands as viewer, which
+  # hides Catalog + Media Workloads entirely. The ops user is deliberately
+  # NOT an Authentik admin (two-identity model, ADR-0024/0028), so this
+  # membership cannot be self-served from the UI — it must be
+  # blueprint-managed.
+  - model: authentik_core.group
+    id: dmf-group-console-admin
+    state: present
+    identifiers:
+      name: dmf-console-admin
+
+  # --- Ops user (owns its baseline memberships) ---
+  # `groups` here is the blueprint-owned BASELINE: re-apply resets the ops
+  # user's memberships to exactly this list (self-contained; it never touches
+  # other users of either group). Grant additional standing memberships by
+  # adding them here, not ad hoc in the UI, or they will not survive a
+  # blueprint re-apply.
   - model: authentik_core.user
     id: dmf-user-ops
     state: present
@@ -33,14 +65,6 @@ entries:
       email: {{ authentik_bootstrap_passkey_email | to_json }}
       name: {{ authentik_bootstrap_passkey_name | to_json }}
       is_active: true
-
-  # --- Add user to ops-admin group (upsert, blueprint-managed) ---
-  - model: authentik_core.group
-    id: dmf-group-ops-admin
-    state: present
-    identifiers:
-      name: ops-admin
-    method: add_users
-    attrs:
-      users:
-        - !KeyOf dmf-user-ops
+      groups:
+        - !KeyOf dmf-group-ops-admin
+        - !KeyOf dmf-group-console-admin
