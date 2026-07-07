@@ -17,8 +17,17 @@ cms_ingress_class: traefik-private
 # vault_base_domain is set by bootstrap-secrets.sh export-vars.
 base_domain: "{{ vault_base_domain | default(cert_manager_cluster_domain | default('dmf.example.com')) }}"
 
-# Logout redirect URL — where users land after OIDC sign-out.
-# Points to the platform apex (landing page).
+# Logout landing — the OIDC post_logout_redirect_uri the console passes to
+# Authentik's RP-initiated (end-session) logout (dmfdeploy/dmfdeploy#185 WP-E).
+# The console now routes /auth/logout through the IdP end-session endpoint so
+# the SSO session is terminated (not just the console session); this URL is
+# where Authentik returns the browser AFTER sign-out: the platform landing
+# page (apex). The old "next login is silent" problem is fixed on the console
+# side (end-session terminates the SSO session) independently of this value, so
+# this is purely where the signed-out user lands — the landing page, not back
+# inside the console. Must be registered as an allowed post-logout redirect on
+# the dmf-console provider for Authentik to honour it (else the IdP shows its
+# own logged-out page — SSO is terminated either way).
 cms_logout_redirect_url: "https://{{ base_domain }}/"
 
 # Master enable flag — set to false to skip the entire role (e.g. when
