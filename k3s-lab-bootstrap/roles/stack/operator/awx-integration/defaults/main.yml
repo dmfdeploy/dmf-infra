@@ -253,24 +253,6 @@ awx_catalog_job_templates:
       netbox_api_url: "{{ awx_integration_netbox_url }}"
       vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
-  - name: media-launch-mxl-hello
-    description: "Launch MXL Hello single-node demo (configure stage)"
-    playbook: "playbooks/launch-mxl-hello.yml"
-    project_name: "dmf-runbooks"
-    extra_vars:
-      mxl_release: mxl-hello
-      netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
-      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
-  - name: media-finalise-mxl-hello
-    description: "Teardown MXL Hello single-node demo (finalise stage)"
-    playbook: "playbooks/teardown-mxl-hello.yml"
-    project_name: "dmf-runbooks"
-    extra_vars:
-      mxl_release: mxl-hello
-      netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
-      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
 
 # ── Infra job templates (dmfdeploy/dmfdeploy#166 WP-F) ─────────────────────
 # Monitoring-apply lane: runs dmf-infra playbooks against hosts:k3s_control

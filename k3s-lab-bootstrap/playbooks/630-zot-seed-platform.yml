@@ -178,10 +178,6 @@
     nmos_crosspoint_seed_chart_version: "{{ nmos_crosspoint_chart_version | default('0.1.1') }}"
     nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('sha256:c4bad3fb15f3015e0ab742de3b68719ff13c590ea28b465ca08ffac13fc55f62') }}"
 
-    mxl_hello_seed_chart_name: "{{ mxl_hello_chart_name | default('mxl-hello') }}"
-    mxl_hello_seed_chart_version: "{{ mxl_hello_chart_version | default('0.1.1') }}"
-    mxl_hello_seed_chart_digest: "{{ mxl_hello_chart_digest | default('sha256:6d362e694e25ee36f3734e4f0b266a86904b92c42ca8952088ecf442b8736e1e') }}"
-
     # MXL fabrics-demo chart + image (dmfdeploy/dmfdeploy#17). The IMAGE is
     # digest-pinned to the proven spike artifact (v1.0.3 is a digest-preserving
     # retag of v1.0.3-fabrics-dev — see the plan's Amendment A); the chart
@@ -251,11 +247,6 @@
         digest: "{{ nmos_crosspoint_seed_chart_digest }}"
         source_repo: "ghcr.io/{{ ghcr_namespace }}/charts/{{ nmos_crosspoint_seed_chart_name }}"
         zot_repo: "{{ zot_registry_host }}/dmf/charts/{{ nmos_crosspoint_seed_chart_name }}"
-      - name: "{{ mxl_hello_seed_chart_name }}"
-        version: "{{ mxl_hello_seed_chart_version }}"
-        digest: "{{ mxl_hello_seed_chart_digest }}"
-        source_repo: "ghcr.io/{{ ghcr_namespace }}/charts/{{ mxl_hello_seed_chart_name }}"
-        zot_repo: "{{ zot_registry_host }}/dmf/charts/{{ mxl_hello_seed_chart_name }}"
       - name: "{{ mxl_fabrics_seed_chart_name }}"
         version: "{{ mxl_fabrics_seed_chart_version }}"
         digest: "{{ mxl_fabrics_seed_chart_digest }}"
