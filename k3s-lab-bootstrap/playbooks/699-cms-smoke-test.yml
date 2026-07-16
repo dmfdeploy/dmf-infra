@@ -106,6 +106,60 @@
         cms_awx_api_token: "{{ cms_runtime_secret.resources[0].data.awxApiToken | b64decode }}"
       no_log: true
 
+    # ────────────────────────────────────────────────────────────────
+    # AWX scale-to-zero detection (#233). On the sandbox lane AWX runs
+    # under on-demand scale-to-zero: awx-web is scaled to 0 replicas
+    # between catalog jobs, so the live token-validity check below 503s —
+    # a FALSE failure, not a real one (an asleep AWX serves no API, but its
+    # token cannot go invalid while it is down). Mirror the
+    # audit-admin-identities.yml sibling guard (#124) exactly: skip the
+    # live-API check (with a loud notice) when the autoscale helper is
+    # deployed AND AWX is DELIBERATELY scaled to zero.
+    #
+    # "Deliberately asleep" is keyed on DESIRED replicas (spec.replicas==0),
+    # NOT readyReplicas: a crashlooping AWX has spec.replicas>0 but
+    # readyReplicas==0, and that is a real outage we must NOT skip (it would
+    # let the smoke test go green while AWX is broken). Keyed on live cluster
+    # state, NOT dmf_awx_autoscale_enabled (set play-scoped in the profile
+    # prelude, not reliably visible here) — a genuinely-down AWX with no
+    # autoscale helper, or desired replicas > 0, still falls through to the
+    # check + assert below and fails loudly.
+    - name: Detect AWX autoscale helper presence
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n awx get deploy awx-autoscale
+          -o name 2>/dev/null | wc -l
+      register: _cms_awx_autoscale
+      changed_when: false
+      failed_when: false
+
+    - name: Detect AWX web desired (spec) replicas
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n awx get deploy awx-web
+          -o jsonpath='{.spec.replicas}'
+      register: _cms_awx_web_desired
+      changed_when: false
+      failed_when: false
+
+    - name: Set AWX scale-to-zero skip fact
+      ansible.builtin.set_fact:
+        _cms_awx_asleep: >-
+          {{ (_cms_awx_autoscale.stdout | default('0') | trim | int) > 0
+             and (_cms_awx_web_desired.stdout | default('') | trim | int(-1)) == 0 }}
+
+    - name: Note AWX token check skipped (AWX deliberately scaled to zero)
+      ansible.builtin.debug:
+        msg: >-
+          AWX is scaled to zero (awx-autoscale helper present, awx-web at 0
+          desired replicas) — the token-validity API check cannot run while the
+          API is asleep, and an asleep AWX cannot invalidate its token. SKIPPING
+          the AWX token-validity assertion. To verify it, wake AWX first
+          (playbooks/awx-wake.yml) and re-run this smoke test.
+      when: _cms_awx_asleep | bool
+
     - name: Verify AWX token is valid by accessing inventories
       ansible.builtin.uri:
         url: "{{ cms_awx_api_base }}/inventories/?format=json"
@@ -115,6 +169,7 @@
         status_code: 200
       register: cms_awx_inventories_check
       no_log: true
+      when: not _cms_awx_asleep | bool
 
     - name: Assert AWX token is valid and can list inventories
       ansible.builtin.assert:
@@ -126,6 +181,7 @@
           Could not authenticate to AWX API.
           Status: {{ cms_awx_inventories_check.status }}
           Response: {{ cms_awx_inventories_check.json | default({}) | to_json }}
+      when: not _cms_awx_asleep | bool
 
     - name: Report smoke test summary
       ansible.builtin.debug:
@@ -133,5 +189,7 @@
           DMF Console smoke test passed:
             - healthz: 200
             - AWX token: present in Secret
-            - AWX token: authenticates as dmf-cms-svc
+            - AWX token: {{ 'not authenticated — AWX deliberately asleep, live check skipped'
+                            if _cms_awx_asleep | bool
+                            else 'authenticates as dmf-cms-svc' }}
           Next: manually launch eso-openbao-health-check from the console UI.
