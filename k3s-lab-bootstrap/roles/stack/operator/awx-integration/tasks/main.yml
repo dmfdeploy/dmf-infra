@@ -1808,7 +1808,10 @@
       execution_environment: "{{ awx_dmf_ee_id }}"
       instance_groups:
         - "{{ awx_dmf_catalog_cg_id }}"
-      ask_variables_on_launch: false
+      # #239: launch-time extra_vars (e.g. workload_slug from a dmf-cms
+      # deploy) are AWX-dropped unless the JT opts in. See the security
+      # trade-off note on the reconcile task below for the full rationale.
+      ask_variables_on_launch: true
       extra_vars: "{{ jt_item.extra_vars | default({}) | to_json }}"
     status_code: 201
   failed_when: false
@@ -1894,6 +1897,57 @@
   when:
     - awx_catalog_jt_lookup_ids.results is defined
     - awx_catalog_jt_lookup_ids.results[loop_index0].json.results | length > 0
+  no_log: true
+
+# #239: reconcile ask_variables_on_launch on catalog JTs that already existed
+# before this flag flipped to true above. The create task only fires for a
+# brand-new JT (when: lookup found nothing), so a live env's pre-existing JTs
+# would otherwise keep ask_variables_on_launch: false forever — the whole
+# #239 workload-tag chain stays a live no-op on any env that bootstrapped
+# before this change. Diff-gated (not the blanket always-PATCH style of the
+# execution-environment task above) so a converged env is a zero-PATCH
+# no-op on re-run: the lookup response already carries the JT's current
+# ask_variables_on_launch, so we only write when it disagrees with desired.
+#
+# Security trade-off (state this honestly): ask_variables_on_launch: true
+# lets any AWX-API-credentialed caller override ALL of a JT's extra_vars at
+# launch — including the vault_* token vars these catalog JTs carry (AWX has
+# no per-var allowlist short of Surveys, which these JTs don't use).
+# Mitigations: (1) AWX API access on this platform is held only by dmf-cms's
+# server-side integration config plus the AWX admin — never exposed to an
+# end operator directly; (2) dmf-cms's console-side deploy endpoint is the
+# only launcher-facing caller and validates + injects exactly one key,
+# workload_slug, nothing else; (3) this flag is a hard prerequisite for the
+# v0.2b WP3a topology_params seam (umbrella dmfdeploy/dmfdeploy#201, which
+# already carries a spec-gap comment naming this PR) — there is no path to
+# that work without it.
+- name: Reconcile ask_variables_on_launch on existing catalog job templates (#239)
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ (awx_catalog_jt_lookup_ids.results[loop_index0].json.results[0].id) }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      ask_variables_on_launch: true
+    status_code: 200
+  until: >-
+    _awx_catalog_jt_ask_vars_reconcile is success
+    or (_awx_catalog_jt_ask_vars_reconcile.status | default(0) >= 400 and _awx_catalog_jt_ask_vars_reconcile.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _awx_catalog_jt_ask_vars_reconcile
+  loop: "{{ awx_catalog_job_templates }}"
+  loop_control:
+    loop_var: jt_item
+    label: "{{ jt_item.name }}"
+    index_var: loop_index0
+  run_once: true
+  when:
+    - awx_catalog_jt_lookup_ids.results is defined
+    - awx_catalog_jt_lookup_ids.results[loop_index0].json.results | length > 0
+    - not (awx_catalog_jt_lookup_ids.results[loop_index0].json.results[0].ask_variables_on_launch | default(false))
   no_log: true
 
 # ---------------------------------------------------------------------------
