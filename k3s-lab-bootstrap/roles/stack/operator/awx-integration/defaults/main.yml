@@ -292,6 +292,12 @@ awx_infra_job_templates:
 # ServiceAccount created by awx-integration tasks.
 awx_dmf_catalog_cg_display_name: "DMF Catalog Container Group"
 
+# Single-node facility: one catalog lifecycle job at a time on the
+# dmf-catalog-cg queue (umbrella #254; console-side lock is dmf-cms#40,
+# this is the AWX-layer backstop). InstanceGroup API field — cannot be
+# set via operator extra_settings (see awx-instance.yml.j2 note).
+awx_dmf_catalog_cg_max_concurrent_jobs: 1
+
 # The catalog launchers (media-* JTs above) run inside a custom AWX EE pod
 # pulled from cluster-internal Zot. Source of truth: ghcr.io/dmfdeploy/awx-ee,
 # mirrored to Zot by playbooks/630-zot-seed-platform.yml.
