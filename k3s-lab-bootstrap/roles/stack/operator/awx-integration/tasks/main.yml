@@ -1702,6 +1702,18 @@
             imagePullPolicy: IfNotPresent
   run_once: true
 
+- name: Assert catalog Container Group concurrency cap is a positive integer
+  ansible.builtin.assert:
+    that:
+      - awx_dmf_catalog_cg_max_concurrent_jobs | int >= 1
+    fail_msg: >-
+      awx_dmf_catalog_cg_max_concurrent_jobs must be an integer >= 1 (got
+      '{{ awx_dmf_catalog_cg_max_concurrent_jobs }}'). AWX treats
+      max_concurrent_jobs=0 as UNLIMITED — 0 (or any value | int coerces to 0)
+      would silently disable the umbrella #254 concurrency backstop while the
+      readback assert still passes.
+  run_once: true
+
 - name: Lookup DMF catalog Container Group
   ansible.builtin.uri:
     url: "{{ awx_integration_api_base }}/instance_groups/?name=dmf-catalog-cg"
@@ -1730,6 +1742,7 @@
       name: "dmf-catalog-cg"
       is_container_group: true
       pod_spec_override: "{{ awx_dmf_catalog_pod_spec_override }}"
+      max_concurrent_jobs: "{{ awx_dmf_catalog_cg_max_concurrent_jobs | int }}"
     status_code: 201
   until: >-
     awx_dmf_catalog_cg_created is success
@@ -1751,6 +1764,7 @@
     body:
       is_container_group: true
       pod_spec_override: "{{ awx_dmf_catalog_pod_spec_override }}"
+      max_concurrent_jobs: "{{ awx_dmf_catalog_cg_max_concurrent_jobs | int }}"
     status_code: 200
   until: >-
     awx_dmf_catalog_cg_updated is success
@@ -1767,6 +1781,34 @@
       {{ (awx_dmf_catalog_cg_lookup.json.results | first).id
          if awx_dmf_catalog_cg_lookup.json.count | int > 0
          else awx_dmf_catalog_cg_created.json.id }}
+  run_once: true
+
+- name: Read back DMF catalog Container Group
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/instance_groups/{{ awx_dmf_catalog_cg_id }}/"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_dmf_catalog_cg_readback is success
+    or (awx_dmf_catalog_cg_readback.status | default(0) >= 400 and awx_dmf_catalog_cg_readback.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_dmf_catalog_cg_readback
+  run_once: true
+
+- name: Assert DMF catalog Container Group concurrency cap is applied
+  ansible.builtin.assert:
+    that:
+      - (awx_dmf_catalog_cg_readback.json.max_concurrent_jobs | int) == (awx_dmf_catalog_cg_max_concurrent_jobs | int)
+    fail_msg: >-
+      dmf-catalog-cg max_concurrent_jobs is
+      {{ awx_dmf_catalog_cg_readback.json.max_concurrent_jobs }}, expected
+      {{ awx_dmf_catalog_cg_max_concurrent_jobs }}. This is the AWX-layer
+      concurrency backstop for umbrella #254 — deploy and teardown must never
+      run simultaneously on this single-node facility's catalog queue.
   run_once: true
 
 - name: Lookup existing catalog job templates
