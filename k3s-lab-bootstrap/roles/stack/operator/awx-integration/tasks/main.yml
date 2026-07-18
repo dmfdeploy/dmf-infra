@@ -1700,6 +1700,10 @@
           - name: worker
             image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
             imagePullPolicy: IfNotPresent
+            resources:
+              requests:
+                cpu: "{{ awx_dmf_catalog_ee_cpu_request }}"
+                memory: "{{ awx_dmf_catalog_ee_memory_request }}"
   run_once: true
 
 - name: Assert catalog Container Group concurrency cap is a positive integer
@@ -1712,6 +1716,31 @@
       max_concurrent_jobs=0 as UNLIMITED — 0 (or any value | int coerces to 0)
       would silently disable the umbrella #254 concurrency backstop while the
       readback assert still passes.
+  run_once: true
+
+- name: Assert catalog Container Group EE worker resource requests are valid
+  ansible.builtin.assert:
+    that:
+      - awx_dmf_catalog_ee_cpu_request is match('^[0-9]+m$')
+      - (awx_dmf_catalog_ee_cpu_request | regex_replace('m$', '') | int) >= 100
+      - >-
+        (awx_dmf_catalog_ee_memory_request is match('^[0-9]+Mi$') and
+        (awx_dmf_catalog_ee_memory_request | regex_replace('Mi$', '') | int) >= 256)
+        or
+        (awx_dmf_catalog_ee_memory_request is match('^[0-9]+Gi$') and
+        (awx_dmf_catalog_ee_memory_request | regex_replace('Gi$', '') | int) >= 1)
+    fail_msg: >-
+      awx_dmf_catalog_ee_cpu_request ('{{ awx_dmf_catalog_ee_cpu_request }}')
+      and awx_dmf_catalog_ee_memory_request
+      ('{{ awx_dmf_catalog_ee_memory_request }}') failed validation. Accepted
+      forms here are deliberately narrow: whole millicores >= 100m for CPU,
+      and binary quantities >= 256Mi or >= 1Gi for memory — NOT a general
+      Kubernetes-quantity validator (fractional millicores, bare CPU cores,
+      decimal Mi/Gi, or K/Ki/M/G/plain-byte memory are all refused here even
+      though Kubernetes itself would accept some of them). A typo'd
+      near-zero reserve (e.g. 0.5m or a bare byte count read as Mi) would
+      silently defeat the umbrella dmfdeploy/dmfdeploy#202 WP0 ee_reserve
+      contract while the Container Group still deploys.
   run_once: true
 
 - name: Lookup DMF catalog Container Group
@@ -1809,6 +1838,21 @@
       {{ awx_dmf_catalog_cg_max_concurrent_jobs }}. This is the AWX-layer
       concurrency backstop for umbrella #254 — deploy and teardown must never
       run simultaneously on this single-node facility's catalog queue.
+  run_once: true
+
+- name: Assert DMF catalog Container Group EE worker resource requests are applied
+  ansible.builtin.assert:
+    that:
+      - ((awx_dmf_catalog_cg_readback.json.pod_spec_override | from_yaml).spec.containers[0].resources.requests.cpu) == awx_dmf_catalog_ee_cpu_request
+      - ((awx_dmf_catalog_cg_readback.json.pod_spec_override | from_yaml).spec.containers[0].resources.requests.memory) == awx_dmf_catalog_ee_memory_request
+    fail_msg: >-
+      dmf-catalog-cg worker container resource requests are
+      {{ (awx_dmf_catalog_cg_readback.json.pod_spec_override | from_yaml).spec.containers[0].resources.requests }},
+      expected cpu={{ awx_dmf_catalog_ee_cpu_request }}
+      memory={{ awx_dmf_catalog_ee_memory_request }}. This is the umbrella
+      dmfdeploy/dmfdeploy#202 WP0 ee_reserve contract — a missing or
+      mismatched request here means the L3 capacity preflight is reading
+      the wrong number for this single constrained node.
   run_once: true
 
 - name: Lookup existing catalog job templates
