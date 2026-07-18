@@ -298,6 +298,17 @@ awx_dmf_catalog_cg_display_name: "DMF Catalog Container Group"
 # set via operator extra_settings (see awx-instance.yml.j2 note).
 awx_dmf_catalog_cg_max_concurrent_jobs: 1
 
+# These are the EE job pod's scheduling claims on the single constrained
+# node — the L3 capacity preflight (umbrella dmfdeploy/dmfdeploy#202 WP0)
+# reads them as its ee_reserve; absent/zero requests would make the
+# preflight fall back to a blind configured floor (L3 plan §3.2(b)).
+# Requests only, no limits. The pre-apply assert in tasks/main.yml only
+# accepts whole millicores >= 100m for CPU, and binary Mi >= 256Mi or
+# Gi >= 1Gi for memory (narrower than what Kubernetes itself allows — a
+# deliberate typo backstop, see the assert's fail_msg).
+awx_dmf_catalog_ee_cpu_request: "250m"
+awx_dmf_catalog_ee_memory_request: "512Mi"
+
 # The catalog launchers (media-* JTs above) run inside a custom AWX EE pod
 # pulled from cluster-internal Zot. Source of truth: ghcr.io/dmfdeploy/awx-ee,
 # mirrored to Zot by playbooks/630-zot-seed-platform.yml.
