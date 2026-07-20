@@ -612,6 +612,67 @@
           name: mxl-view
           namespace: mxl
 
+# ── L3 launcher capacity-preflight read RBAC (umbrella #202 WP3) ───────────
+# The L3 launcher first-play (dmf-runbooks roles/l3_run_guard) recomputes
+# node allocatable + all-namespace pod requests IN-CLUSTER, scheduler-
+# accurate, before every catalog deploy/rollback — the launcher SA's
+# existing namespaced Roles (mxl-launcher above, nmos-cpp-launcher) can see
+# neither cluster-scoped Nodes nor Pods outside their own namespace. Read-
+# only, cluster-scoped, get+list only (no watch — the preflight is a
+# point-in-time snapshot per run, not a controller).
+- name: Ensure L3 capacity-preflight-reader ClusterRole exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: dmf-l3-preflight-reader
+        labels:
+          dmf.function: l3-launcher
+          dmf.component: capacity-preflight
+      rules:
+        # umbrella #202 WP3 R2c (codex round-1 P2): "get" verified unused —
+        # l3_run_guard's preflight.yml/capacity.yml only ever LIST nodes/pods
+        # cluster-wide (kubernetes.core.k8s_info with no name filter), never
+        # a per-resource GET. Least-privilege: list only.
+        - apiGroups: [""]
+          resources: ["nodes"]
+          verbs: ["list"]
+        - apiGroups: [""]
+          resources: ["pods"]
+          verbs: ["list"]
+        # umbrella #202 WP3 R3c (codex round-2 P1-1a): preflight.yml's
+        # target-namespace reachability check is a NAMED GET on the
+        # Namespace object (not a list) — the launcher SA's own namespaced
+        # Roles can't see cluster-scoped Namespace objects at all, so this
+        # in-cluster path could never pass that check without this grant.
+        - apiGroups: [""]
+          resources: ["namespaces"]
+          verbs: ["get"]
+
+- name: Bind catalog launcher SA to the L3 capacity-preflight-reader ClusterRole
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: dmf-l3-preflight-reader
+        labels:
+          dmf.function: l3-launcher
+          dmf.component: capacity-preflight
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: dmf-l3-preflight-reader
+      subjects:
+        - kind: ServiceAccount
+          name: nmos-cpp-launcher
+          namespace: nmos
+
 - name: Ingress readiness gate — Traefik + AWX
   ansible.builtin.include_role:
     name: shared/gate-ingress-ready
