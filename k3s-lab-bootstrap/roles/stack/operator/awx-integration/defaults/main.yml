@@ -151,6 +151,14 @@ awx_catalog_projects:
 # Move 1 + Catalog: AWX job templates for catalog entries (ADR-0014)
 # Each entry maps to a thin launcher in dmf-runbooks/playbooks/.
 # The dmf-runbooks project must exist before these are created.
+#
+# umbrella #202 WP3 R3c (codex round-2 P1-9 infra half, ADR-0032): every
+# media-* entry below carries ONLY netbox_api_url + vault_netbox_catalog_token
+# — vault_netbox_api_token (the admin token) was swept out of all 8
+# launch/finalise entries (media-rollback-run already never carried it,
+# R2c). The catalog lane is scoped-writer-only end to end now; grep this
+# file for "vault_netbox_api_token" to confirm it appears nowhere in
+# awx_catalog_job_templates.
 awx_catalog_job_templates:
   - name: media-launch-nmos-cpp
     description: "Launch NMOS IS-04/05 registry + mock nodes (configure stage)"
@@ -158,7 +166,6 @@ awx_catalog_job_templates:
     project_name: "dmf-runbooks"
     extra_vars:
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       # ADR-0032: the launcher writes NetBox via this scoped catalog-writer
       # token (ipam.service + extras.tag), NOT the superuser admin token.
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
@@ -172,7 +179,6 @@ awx_catalog_job_templates:
     project_name: "dmf-runbooks"
     extra_vars:
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-launch-nmos-crosspoint
@@ -181,7 +187,6 @@ awx_catalog_job_templates:
     project_name: "dmf-runbooks"
     extra_vars:
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
       # Crosspoint admin password (OpenBao-sourced). The launcher hashes it to
@@ -201,7 +206,6 @@ awx_catalog_job_templates:
     project_name: "dmf-runbooks"
     extra_vars:
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-launch-mxl-videotestsrc
@@ -219,7 +223,6 @@ awx_catalog_job_templates:
       # roles/mxl stamps the NetBox catalog record (ADR-0037/0038) — same
       # credential plumbing as the NMOS catalog JTs.
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-finalise-mxl-videotestsrc
@@ -229,7 +232,6 @@ awx_catalog_job_templates:
     extra_vars:
       mxl_release: mxl-videotestsrc
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-launch-mxl-videotest-view
     description: "Launch MXL test-pattern viewer (configure stage)"
@@ -242,7 +244,6 @@ awx_catalog_job_templates:
       # Keep in lock-step with media-launch-mxl-videotestsrc above.
       mxl_placement_mode: "{{ awx_integration_mxl_placement_mode | default('single-node' if (dmf_release_profile | default('')) == 'sandbox-single-node' else 'split-node', true) }}"
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
   - name: media-finalise-mxl-videotest-view
     description: "Teardown MXL test-pattern viewer (finalise stage)"
@@ -251,8 +252,27 @@ awx_catalog_job_templates:
     extra_vars:
       mxl_release: mxl-videotest-view
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      vault_netbox_api_token: "{{ awx_integration_netbox_token | default(vault_netbox_api_token | default(''), true) }}"
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
+  - name: media-rollback-run
+    description: "L3 rollback: return a failed run's surfaces to pre-run state (umbrella #202)"
+    playbook: "playbooks/rollback-run.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      # umbrella #202 WP3 R2c (codex round-1 P1-10): vault_netbox_api_token
+      # (the admin token) is DELIBERATELY OMITTED here — a rollback never
+      # carries the admin token, only the scoped catalog-writer token
+      # (ADR-0032). dmf-runbooks' own defaults/main.yml (R2c-runbooks)
+      # correspondingly drops its prior fallback from the catalog token to
+      # this one: an absent scoped token now fails closed (a hard assert in
+      # l3_run_guard's preflight.yml), rather than silently upgrading to
+      # the admin token.
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
+      # No l3_run_id / l3_rollback_reason default here — deliberately absent.
+      # Both are per-invocation, caller-supplied identity (l3_run_guard's
+      # rollback_identity.yml asserts them required + hex32/non-empty); a
+      # static default would let a blank launch silently target the wrong
+      # run or fabricate a reason.
 
 # ── Infra job templates (dmfdeploy/dmfdeploy#166 WP-F) ─────────────────────
 # Monitoring-apply lane: runs dmf-infra playbooks against hosts:k3s_control
