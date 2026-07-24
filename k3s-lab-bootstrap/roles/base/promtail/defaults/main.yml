@@ -3,3 +3,12 @@ promtail_namespace: monitoring
 promtail_helm_repo: https://grafana.github.io/helm-charts
 promtail_helm_chart_version: "6.16.4"
 promtail_loki_url: "http://loki-gateway.monitoring.svc.cluster.local/loki/api/v1/push"
+
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits. Promtail's ~900m launch-episode burst (log
+# flood during fullshape launch, minutes-long) is deliberately NOT
+# reserved via a limit — see umbrella issue #276 for the measured rationale.
+promtail_resources:
+  requests:
+    cpu: 25m
+    memory: 192Mi

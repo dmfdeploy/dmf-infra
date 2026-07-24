@@ -36,6 +36,22 @@
     wait_timeout: 300s
     values:
       installCRDs: true
+      # umbrella #276: measured request honesty (2026-07-24 sample
+      # archive); requests-only, no limits.
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+      webhook:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+      certController:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 96Mi
 
 - name: Wait for ClusterSecretStore CRD to be established
   kubernetes.core.k8s_info:

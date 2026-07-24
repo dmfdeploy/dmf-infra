@@ -32,6 +32,11 @@ persistence:
   size: {{ forgejo_storage_size | to_json }}
   storageClass: {{ forgejo_storage_class | to_json }}
 
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits.
+resources:
+{{ forgejo_resources | to_nice_yaml(indent=2) | indent(2, true) }}
+
 gitea:
   admin:
     username: {{ forgejo_admin_username | to_json }}

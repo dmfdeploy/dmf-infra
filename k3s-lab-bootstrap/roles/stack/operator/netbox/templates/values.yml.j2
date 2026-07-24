@@ -148,10 +148,17 @@ netbox:
 
   # Main container resource requests/limits — see netbox_resources' own
   # comment in defaults/main.yml for the umbrella #258 measured rationale.
-  # netbox-worker stays on its chart defaults; valkey/postgresql carry
-  # explicit trimmed requests since #258 round 2 (blocks further below).
+  # valkey/postgresql carry explicit trimmed requests since #258 round 2
+  # (blocks further below); netbox-worker's own request was added by #276
+  # (see netbox_worker_resources' own comment in defaults/main.yml).
   resources:
 {{ netbox_resources | to_nice_yaml(indent=2) | indent(4, true) }}
+
+  # umbrella #276: measured request honesty (2026-07-24 sample archive);
+  # requests-only, no limits.
+  worker:
+    resources:
+{{ netbox_worker_resources | to_nice_yaml(indent=2) | indent(6, true) }}
 
   # Media persistence (shared between netbox and worker)
   persistence:

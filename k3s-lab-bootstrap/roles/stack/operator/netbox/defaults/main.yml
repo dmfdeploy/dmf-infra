@@ -153,3 +153,13 @@ netbox_valkey_resources:
     cpu: 150m
     memory: 192Mi
     ephemeral-storage: 2Gi
+
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits. netbox-worker was explicitly out of scope for
+# #258 (see netbox_resources' own comment above) — this is its first
+# explicit request, off the fresh #276 106-sample archive (med/p95/max
+# 1/2/2m CPU, mem max 224Mi).
+netbox_worker_resources:
+  requests:
+    cpu: 10m
+    memory: 256Mi

@@ -58,3 +58,9 @@ tolerations:
 # `${HOSTNAME}` as a literal string per Grafana docs.
 extraArgs:
   - -config.expand-env=true
+
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits — see promtail_resources' own comment in
+# defaults/main.yml for the launch-episode-burst rationale.
+resources:
+{{ promtail_resources | to_nice_yaml(indent=2) | indent(2, true) }}

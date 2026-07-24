@@ -26,6 +26,11 @@ envFromSecret: {{ grafana_oidc_secret_name | to_json }}
 deploymentStrategy:
   type: Recreate
 
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits.
+resources:
+{{ grafana_resources | to_nice_yaml(indent=2) | indent(2, true) }}
+
 persistence:
   enabled: true
   size: {{ grafana_storage_size }}

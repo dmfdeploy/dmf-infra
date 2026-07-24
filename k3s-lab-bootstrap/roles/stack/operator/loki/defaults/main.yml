@@ -21,3 +21,20 @@ loki_helm_repo: https://grafana.github.io/helm-charts
 loki_helm_chart_version: "6.6.2"
 loki_wait_retries: 60
 loki_wait_delay: 5
+
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits.
+loki_resources:
+  requests:
+    cpu: 100m
+    memory: 768Mi
+
+loki_gateway_resources:
+  requests:
+    cpu: 5m
+    memory: 32Mi
+
+loki_canary_resources:
+  requests:
+    cpu: 5m
+    memory: 32Mi
