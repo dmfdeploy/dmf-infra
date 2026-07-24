@@ -102,3 +102,15 @@ authentik_ntfy_url: >-
         else prometheus_alertmanager_ntfy_url | default('')
     )
   }}
+
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits.
+authentik_server_resources:
+  requests:
+    cpu: 50m
+    memory: 1536Mi
+
+authentik_postgresql_resources:
+  requests:
+    cpu: 25m
+    memory: 192Mi

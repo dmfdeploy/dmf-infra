@@ -73,6 +73,22 @@
     values:
       crds:
         enabled: false
+      # umbrella #276: measured request honesty (2026-07-24 sample
+      # archive); requests-only, no limits.
+      resources:
+        requests:
+          cpu: 10m
+          memory: 64Mi
+      webhook:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
+      cainjector:
+        resources:
+          requests:
+            cpu: 10m
+            memory: 64Mi
   when: >
     cert_manager_force_helm_upgrade | bool or
     _cert_manager_helm_status.rc != 0

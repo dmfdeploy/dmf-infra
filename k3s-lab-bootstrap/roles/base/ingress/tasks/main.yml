@@ -61,12 +61,17 @@
 # traefik-private tuning). Other modes keep Traefik defaults here.
 - name: Configure Traefik entrypoint (HTTPS redirect; +upload timeouts when collapsed)
   vars:
+    # umbrella #276: measured request honesty (2026-07-24 sample archive);
+    # requests-only, no limits.
     _traefik_values: >-
       {{
         {'ports': {'web': {'redirectTo': {'port': 'websecure', 'priority': 10}}}}
         | combine(
             {'additionalArguments': ingress_upload_timeout_args}
             if cluster_ingress_mode == 'single-node-servicelb' else {}
+          )
+        | combine(
+            {'resources': {'requests': {'cpu': '10m', 'memory': '96Mi'}}}
           )
       }}
   kubernetes.core.k8s:

@@ -35,6 +35,25 @@ prometheus_resources:
     cpu: 500m
     memory: 1536Mi
 
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits.
+prometheus_kube_state_metrics_resources:
+  requests:
+    cpu: 10m
+    memory: 48Mi
+
+prometheus_node_exporter_resources:
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+# umbrella #276: the configmap-reload SIDECAR only — the main server
+# container's own prometheus_resources above is untouched.
+prometheus_configmap_reload_resources:
+  requests:
+    cpu: 5m
+    memory: 32Mi
+
 # Alertmanager + minimum alert rules.
 # Set webhook URLs via inventory or -e. Leave empty to disable alerting entirely
 # (chart still installs Prometheus; Alertmanager component is not deployed).

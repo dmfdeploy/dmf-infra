@@ -39,3 +39,10 @@ grafana_local_ca_secret: dmf-local-ca
 grafana_local_ca_secret_namespace: cert-manager
 grafana_local_ca_configmap: dmf-local-ca
 grafana_local_ca_mount_path: /etc/ssl/certs/dmf-local-ca.crt
+
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits.
+grafana_resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi

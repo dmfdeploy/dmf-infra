@@ -36,6 +36,10 @@ server:
   replicas: {{ authentik_server_replicas }}
   ingress:
     enabled: false
+  # umbrella #276: measured request honesty (2026-07-24 sample archive);
+  # requests-only, no limits.
+  resources:
+{{ authentik_server_resources | to_nice_yaml(indent=2) | indent(4, true) }}
 
 worker:
   replicas: {{ authentik_worker_replicas }}
@@ -55,3 +59,7 @@ postgresql:
       enabled: true
       storageClass: {{ authentik_postgresql_storage_class }}
       size: {{ authentik_postgresql_storage_size }}
+    # umbrella #276: measured request honesty (2026-07-24 sample archive);
+    # requests-only, no limits.
+    resources:
+{{ authentik_postgresql_resources | to_nice_yaml(indent=2) | indent(6, true) }}

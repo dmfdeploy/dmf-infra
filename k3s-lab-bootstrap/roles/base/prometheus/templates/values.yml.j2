@@ -54,9 +54,26 @@ prometheus-pushgateway:
 
 kube-state-metrics:
   enabled: true
+  # umbrella #276: measured request honesty (2026-07-24 sample archive);
+  # requests-only, no limits.
+  resources:
+{{ prometheus_kube_state_metrics_resources | to_nice_yaml(indent=2) | indent(4, true) }}
 
 prometheus-node-exporter:
   enabled: true
+  # umbrella #276: measured request honesty (2026-07-24 sample archive);
+  # requests-only, no limits.
+  resources:
+{{ prometheus_node_exporter_resources | to_nice_yaml(indent=2) | indent(4, true) }}
+
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits. This is the configmap-reload SIDECAR in the
+# prometheus-server pod — the main server container's own resources stay
+# under server.resources below, untouched.
+configmapReload:
+  prometheus:
+    resources:
+{{ prometheus_configmap_reload_resources | to_nice_yaml(indent=2) | indent(6, true) }}
 
 server:
   persistentVolume:

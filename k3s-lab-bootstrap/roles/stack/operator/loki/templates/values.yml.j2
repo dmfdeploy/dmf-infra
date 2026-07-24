@@ -46,6 +46,10 @@ singleBinary:
     enabled: true
     size: {{ loki_storage_size }}
     storageClass: {{ loki_storage_class }}
+  # umbrella #276: measured request honesty (2026-07-24 sample archive);
+  # requests-only, no limits.
+  resources:
+{{ loki_resources | to_nice_yaml(indent=2) | indent(4, true) }}
 
 backend:
   replicas: 0
@@ -59,6 +63,16 @@ write:
 gateway:
   enabled: true
   replicas: 1
+  # umbrella #276: measured request honesty (2026-07-24 sample archive);
+  # requests-only, no limits.
+  resources:
+{{ loki_gateway_resources | to_nice_yaml(indent=2) | indent(4, true) }}
+
+lokiCanary:
+  # umbrella #276: measured request honesty (2026-07-24 sample archive);
+  # requests-only, no limits.
+  resources:
+{{ loki_canary_resources | to_nice_yaml(indent=2) | indent(4, true) }}
 
 chunksCache:
   enabled: false

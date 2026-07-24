@@ -89,3 +89,10 @@ forgejo_local_ca_trust_enabled: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
 forgejo_local_ca_configmap: dmf-local-ca
 forgejo_local_ca_secret: dmf-local-ca
 forgejo_local_ca_namespace: cert-manager
+
+# umbrella #276: measured request honesty (2026-07-24 sample archive);
+# requests-only, no limits.
+forgejo_resources:
+  requests:
+    cpu: 25m
+    memory: 192Mi

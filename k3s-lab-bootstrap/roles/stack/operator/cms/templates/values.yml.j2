@@ -101,7 +101,11 @@ forgejo:
     existingSecretName: {{ cms_runtime_secret_name | to_json }}
     key: {{ cms_runtime_secret_forgejo_token_key | to_json }}
 
-resources: {}
+# umbrella #276: measured request honesty (2026-07-24 sample archive); requests-only, no limits
+resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
 
 catalog:
   enabled: {{ cms_catalog_enabled | default(false) | to_json }}
