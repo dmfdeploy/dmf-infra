@@ -139,6 +139,15 @@ awx_catalog_projects:
     description: "Thin launcher playbooks for catalog entries"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-runbooks.git"
     roles_path: "/var/lib/awx/projects/dmf-runbooks/roles"
+    # umbrella #277: pin to the tagged release (dmf-runbooks#22), not
+    # `main` — JT registrations (awx_catalog_job_templates below) are
+    # audited against ONE specific playbook-contract snapshot; letting
+    # the project float on main while the JTs are registration-frozen is
+    # exactly the mechanism that let #277's drift (a WP3 var rename the
+    # JTs never picked up) escape silently. Bump this tag deliberately,
+    # in lock-step with the next JT contract audit — never let it drift
+    # back to `main`.
+    scm_branch: "v0.3.0"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
@@ -159,6 +168,25 @@ awx_catalog_projects:
 # R2c). The catalog lane is scoped-writer-only end to end now; grep this
 # file for "vault_netbox_api_token" to confirm it appears nowhere in
 # awx_catalog_job_templates.
+#
+# umbrella #277 audit (2026-07-24, release-alignment PR): every entry below
+# re-verified against its target playbook's ACTUAL var contract in
+# dmf-runbooks origin/main — #277's live incident (job 165) was exactly a
+# JT registration drifted silently out of step with a WP3-era playbook
+# rename. Findings: media-launch-nmos-cpp/-crosspoint were pinning chart
+# version via a var name (nmos_cpp_chart_version/crosspoint_chart_version)
+# neither playbook has read since the WP3 R6a single-source rename to
+# l3_chart_version — both fixed (renamed the extra_vars KEY, not the
+# awx-integration var it reads from). media-launch-mxl-videotestsrc/
+# -videotest-view were passing the dead mxl_release alias instead of
+# l3_release/l3_catalog_key — the view entry's version of this was #277's
+# actual live bug (identity silently fell back to the source release's
+# default). The four finalise/teardown entries + media-rollback-run were
+# independently confirmed ALREADY CORRECT (teardown-*.yml never defines
+# l3_release/l3_catalog_key in its own scope, so mxl_release/
+# nmos_namespace-with-a-hardcoded-release-name are the actually-live vars
+# there — see the mxl finalise entries' own comments for why "fixing" them
+# to l3_release would be wrong, not right).
 awx_catalog_job_templates:
   - name: media-launch-nmos-cpp
     description: "Launch NMOS IS-04/05 registry + mock nodes (configure stage)"
@@ -172,7 +200,13 @@ awx_catalog_job_templates:
       # Pin the chart version the launcher pulls from Zot (overrides the
       # launcher's hardcoded default, which lags behind chart bumps without a
       # Forgejo republish). 0.1.2 adds the registry query-ws :81 Service port.
-      nmos_cpp_chart_version: "{{ nmos_cpp_chart_version }}"
+      # umbrella #277: the WP3 R6a single-source rename means
+      # launch-nmos-cpp.yml's OWN var is l3_chart_version, not
+      # nmos_cpp_chart_version — this JT used to pass the latter, which the
+      # playbook never reads at all (a silently inert extra_var; every
+      # launch actually installed the playbook's own hardcoded default
+      # regardless). Verified against dmf-runbooks origin/main.
+      l3_chart_version: "{{ nmos_cpp_chart_version }}"
   - name: media-finalise-nmos-cpp
     description: "Teardown NMOS workloads (finalise stage)"
     playbook: "playbooks/teardown-nmos-cpp.yml"
@@ -199,7 +233,11 @@ awx_catalog_job_templates:
       # Pin the chart version the launcher pulls from Zot (overrides the
       # launcher's hardcoded default, which lags chart bumps without a Forgejo
       # republish). 0.1.1 carries the wss mixed-content fix (image + chart).
-      crosspoint_chart_version: "{{ nmos_crosspoint_chart_version }}"
+      # umbrella #277: same drift class as media-launch-nmos-cpp — the
+      # playbook's own var is l3_chart_version (WP3 R6a rename), not
+      # crosspoint_chart_version, which launch-nmos-crosspoint.yml never
+      # reads at all. Verified against dmf-runbooks origin/main.
+      l3_chart_version: "{{ nmos_crosspoint_chart_version }}"
   - name: media-finalise-nmos-crosspoint
     description: "Teardown NMOS Crosspoint (finalise stage)"
     playbook: "playbooks/teardown-nmos-crosspoint.yml"
@@ -214,7 +252,23 @@ awx_catalog_job_templates:
     project_name: "dmf-runbooks"
     extra_vars:
       mxl_role: source
-      mxl_release: mxl-videotestsrc
+      # umbrella #277: WP3 R6a single-sourced identity to l3_release/
+      # l3_catalog_key — launch-mxl-fabrics-demo.yml's own mxl_release is
+      # now a COSMETIC alias derived FROM l3_release (mxl_release: "{{
+      # l3_release }}" in the playbook's own vars:), so an extra_var here
+      # named mxl_release would silently do nothing for identity (it has
+      # NO effect on which release/NetBox record actually gets mutated —
+      # verified against dmf-runbooks origin/main + its own R6b comment).
+      # This was the live #277 bug for the SIBLING view JT below (identity
+      # fell back to this playbook's own default, mxl-videotestsrc, while
+      # mxl_role=view applied — an in-place role flip of the wrong
+      # release); this source JT only ever "worked" because its intended
+      # values happened to coincide with the playbook's defaults.
+      l3_release: mxl-videotestsrc
+      l3_catalog_key: mxl-videotestsrc
+      # Chart version pin (umbrella #258/dmf-media#19 measured calibration
+      # — mirrors nmos_cpp_chart_version's own pin/rationale above).
+      l3_chart_version: "0.3.1"
       mxl_interface: eth0
       # Profile-derived (dmfdeploy/dmfdeploy#17): colocated pod-network pair
       # on the single-node profile; the original cross-host hostNetwork shape
@@ -230,6 +284,16 @@ awx_catalog_job_templates:
     playbook: "playbooks/teardown-mxl-fabrics-demo.yml"
     project_name: "dmf-runbooks"
     extra_vars:
+      # umbrella #277 audit: UNLIKE the launch entries above, mxl_release
+      # IS the live, load-bearing identity var here — teardown-mxl-
+      # fabrics-demo.yml never defines l3_release/l3_catalog_key in its
+      # own scope, so roles/mxl's netbox_service_name/cluster_service
+      # fall back to mxl_function_key/mxl_release (undefined l3_* ->
+      # default fallback) exactly as intended. Verified against
+      # dmf-runbooks origin/main — do NOT "fix" this to l3_release by
+      # analogy with the launch entries; that would leave this var
+      # correctly-named for a var the playbook doesn't read at this
+      # entry point at all.
       mxl_release: mxl-videotestsrc
       netbox_api_url: "{{ awx_integration_netbox_url }}"
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
@@ -239,7 +303,17 @@ awx_catalog_job_templates:
     project_name: "dmf-runbooks"
     extra_vars:
       mxl_role: view
-      mxl_release: mxl-videotest-view
+      # umbrella #277 THE BUG: this JT used to pass mxl_release (a dead
+      # cosmetic alias here, see media-launch-mxl-videotestsrc's own
+      # comment) and nothing else for identity — l3_release/l3_catalog_key
+      # were never set, so they fell back to the playbook's own DEFAULT
+      # (mxl-videotestsrc, the SOURCE release) while mxl_role=view still
+      # applied — live incident, job 165: launching this JT replaced the
+      # running SOURCE release with role=view in place. Fixed the same way
+      # as the source JT: explicit l3_release/l3_catalog_key here.
+      l3_release: mxl-videotest-view
+      l3_catalog_key: mxl-videotest-view
+      l3_chart_version: "0.3.1"
       mxl_interface: eth0
       # Keep in lock-step with media-launch-mxl-videotestsrc above.
       mxl_placement_mode: "{{ awx_integration_mxl_placement_mode | default('single-node' if (dmf_release_profile | default('')) == 'sandbox-single-node' else 'split-node', true) }}"
@@ -250,6 +324,8 @@ awx_catalog_job_templates:
     playbook: "playbooks/teardown-mxl-fabrics-demo.yml"
     project_name: "dmf-runbooks"
     extra_vars:
+      # umbrella #277 audit: live/load-bearing here — see
+      # media-finalise-mxl-videotestsrc's own comment above.
       mxl_release: mxl-videotest-view
       netbox_api_url: "{{ awx_integration_netbox_url }}"
       vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"

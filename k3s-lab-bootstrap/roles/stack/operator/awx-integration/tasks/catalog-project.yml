@@ -1,6 +1,12 @@
 ---
 # Parameterized catalog project creation/update (Move 1 + Catalog, ADR-0014)
-# Loop variable: catalog_project (name, description, scm_url, roles_path)
+# Loop variable: catalog_project (name, description, scm_url, roles_path,
+# optional scm_branch — umbrella #277: JT registrations (awx_catalog_
+# job_templates) and the playbook contracts they target must move
+# together; an unpinned project floating on `main` while JT var names are
+# registration-frozen is exactly how #277's drift escaped. Defaults to
+# 'main' for any project that doesn't set its own scm_branch — see
+# awx_catalog_projects' own dmf-runbooks entry for the pinned case.)
 # Updates: awx_catalog_project_ids fact map
 
 - name: "Lookup AWX project: {{ catalog_project.name }}"
@@ -33,7 +39,7 @@
       organization: "{{ awx_integration_org_id }}"
       scm_type: "git"
       scm_url: "{{ catalog_project.scm_url }}"
-      scm_branch: "main"
+      scm_branch: "{{ catalog_project.scm_branch | default('main') }}"
       scm_update_on_launch: true
       credential: "{{ awx_integration_scm_cred_id }}"
     status_code: 201
@@ -62,7 +68,7 @@
     body_format: json
     body:
       scm_url: "{{ catalog_project.scm_url }}"
-      scm_branch: "main"
+      scm_branch: "{{ catalog_project.scm_branch | default('main') }}"
       scm_update_on_launch: true
       credential: "{{ awx_integration_scm_cred_id }}"
       scm_delete_on_update: true
