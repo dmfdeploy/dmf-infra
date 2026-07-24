@@ -146,6 +146,13 @@ netbox:
       http:
         max_body_size: 104857600
 
+  # Main container resource requests/limits — see netbox_resources' own
+  # comment in defaults/main.yml for the umbrella #258 measured rationale.
+  # netbox-worker/valkey/postgresql are untouched (already matching their
+  # own chart defaults' measured requests).
+  resources:
+{{ netbox_resources | to_nice_yaml(indent=2) | indent(4, true) }}
+
   # Media persistence (shared between netbox and worker)
   persistence:
     enabled: true
