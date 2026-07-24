@@ -103,5 +103,11 @@ netbox_resources:
     ephemeral-storage: 50Mi
   limits:
     cpu: 1000m
-    memory: 1024Mi
+    # 2Gi, not the sustained-use-derived 1024Mi first tried: NetBox's
+    # steady state measures ~211Mi avg / 351Mi max (umbrella #258), but
+    # every AWX inventory sync pulls /api/schema/?format=json — a burst
+    # that OOMKilled the pod at a 1Gi limit (live, 2026-07-24, restart
+    # count 2). Requests stay sustained-honest; the limit accommodates
+    # the known burst, matching the former preset's value.
+    memory: 2Gi
     ephemeral-storage: 2Gi
