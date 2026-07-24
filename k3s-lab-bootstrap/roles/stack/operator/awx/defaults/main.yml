@@ -188,6 +188,22 @@ awx_task_resource_requirements:
 #     requests: { cpu: 50m, memory: 256Mi }
 #     limits:   { cpu: 1000m, memory: 768Mi }
 #
+# umbrella dmfdeploy/dmfdeploy#258 round 2 — same UNDEFINED-by-default
+# convention: redis/rsyslog/ee sidecars fall through to the awx-operator's
+# OWN internal role defaults (requests-only, no limits — verified against
+# ansible/awx-operator roles/installer/defaults/main.yml: redis 50m/64Mi,
+# rsyslog 100m/128Mi, ee 100m/64Mi) on lab/cloud; the sandbox profile
+# prelude trims CPU requests only (measured near-idle) while preserving
+# the operator's own memory value and adding no limits (there were none
+# to preserve "untouched" — see bootstrap-sandbox-profile.yml's own
+# _awx_fit_redis/_awx_fit_rsyslog/_awx_fit_ee comment for the numbers).
+#   awx_redis_resource_requirements:
+#     requests: { cpu: 25m, memory: 64Mi }
+#   awx_rsyslog_resource_requirements:
+#     requests: { cpu: 25m, memory: 128Mi }
+#   awx_ee_resource_requirements:
+#     requests: { cpu: 50m, memory: 64Mi }
+#
 # NOT settable here: job concurrency cap (max_concurrent_jobs) and per-job EE
 # pod memory — both live on the InstanceGroup and need a REST PATCH via
 # awx-integration. See the DEFERRED note in templates/awx-instance.yml.j2.

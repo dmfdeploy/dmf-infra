@@ -59,6 +59,13 @@
         awx_web_resource_requirements: "{{ awx_web_resource_requirements | default(_awx_fit_web) }}"
         awx_task_resource_requirements: "{{ awx_task_resource_requirements | default(_awx_fit_task) }}"
         awx_postgres_resource_requirements: "{{ awx_postgres_resource_requirements | default(_awx_fit_postgres) }}"
+        # umbrella dmfdeploy/dmfdeploy#258 round 2 — same requests-only fit,
+        # now covering the sidecars the operator's own internal defaults
+        # otherwise apply untouched (see this task's own vars: block below
+        # for the measured rationale).
+        awx_redis_resource_requirements: "{{ awx_redis_resource_requirements | default(_awx_fit_redis) }}"
+        awx_rsyslog_resource_requirements: "{{ awx_rsyslog_resource_requirements | default(_awx_fit_rsyslog) }}"
+        awx_ee_resource_requirements: "{{ awx_ee_resource_requirements | default(_awx_fit_ee) }}"
         # uwsgi processes per web container (AWX CR spec.uwsgi_processes,
         # Helm chart 3.2.1 / operator appVersion 2.19.1). AWX default ~5;
         # proven 2 on 8 GB Pi 4 (#93).
@@ -75,9 +82,25 @@
       # ~1.2-1.5Gi. Limits don't reserve memory, so the 10 GiB node still fits
       # the stack; REQUESTS stay lean so scheduling isn't starved. MAX_FORKS=5
       # remains the real concurrency guard. (WP1S §8 gate #8 resource-sanity.)
+      #
+      # umbrella dmfdeploy/dmfdeploy#258 round 2 (2026-07-24, data-backed,
+      # requests only — the netbox 1Gi-limit OOM lesson is a hard rule this
+      # round: no limit anywhere below changes). web's cpu request 100m ->
+      # 50m: measured 26m avg POD-TOTAL (web+redis+rsyslog combined) on
+      # v5on-r8aw, 2x margin. task/postgres unchanged this round (already
+      # trimmed/justified above). redis/rsyslog/ee are NEW this round — the
+      # awx-operator's own internal defaults (verified against
+      # ansible/awx-operator roles/installer/defaults/main.yml) ship
+      # requests-only, no limits, so there is no limit to preserve OR add:
+      #   redis:   operator default 50m/64Mi  -> 25m/64Mi  (measured well
+      #            under 1m of the 26m pod-total above)
+      #   rsyslog: operator default 100m/128Mi -> 25m/128Mi (near-idle)
+      #   ee:      operator default 100m/64Mi  -> 50m/64Mi (control-plane
+      #            EE container, awx-task pod — idle between job runs;
+      #            distinct from the PER-JOB EE pod capacity.yml/L3 gates)
       vars:
         _awx_fit_web:
-          requests: {cpu: 100m, memory: 768Mi}
+          requests: {cpu: 50m, memory: 768Mi}
           limits: {cpu: 1000m, memory: 1536Mi}
         _awx_fit_task:
           requests: {cpu: 150m, memory: 1Gi}
@@ -85,6 +108,12 @@
         _awx_fit_postgres:
           requests: {cpu: 50m, memory: 256Mi}
           limits: {cpu: 1000m, memory: 768Mi}
+        _awx_fit_redis:
+          requests: {cpu: 25m, memory: 64Mi}
+        _awx_fit_rsyslog:
+          requests: {cpu: 25m, memory: 128Mi}
+        _awx_fit_ee:
+          requests: {cpu: 50m, memory: 64Mi}
       when: (dmf_awx_profile | default('single-node-low-concurrency')) == 'single-node-low-concurrency'
       tags:
         - always
