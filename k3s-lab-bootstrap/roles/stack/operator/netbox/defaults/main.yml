@@ -90,9 +90,14 @@ netbox_unit_processes_spare: 2
 # (10-min idle + 15-min under a loaded source-pod run, 30 samples each)
 # measured avg 11m/max 63m CPU and avg 211Mi/max 351Mi memory for the main
 # netbox container — the 500m CPU request was the single largest
-# over-declaration on the platform's scheduling claim. netbox-worker/
-# valkey/postgresql are NOT touched here: measured 1-12m CPU / 24-224Mi
-# memory, already matching their own chart defaults' 100m/128Mi requests.
+# over-declaration on the platform's scheduling claim. netbox-worker is
+# NOT touched by either #258 round (measured 1m CPU / 24Mi memory,
+# already near-idle; the chart DOES expose its own separate worker.
+# resources/worker.resourcesPreset knob, just not one either round's
+# scope named). valkey/postgresql were left alone in round 1 (matching
+# their own chart defaults' 100m/128Mi requests at the time) but ARE
+# trimmed in round 2 — see netbox_postgresql_resources/
+# netbox_valkey_resources below.
 netbox_resources:
   requests:
     cpu: 100m
@@ -110,4 +115,41 @@ netbox_resources:
     # count 2). Requests stay sustained-honest; the limit accommodates
     # the known burst, matching the former preset's value.
     memory: 2Gi
+    ephemeral-storage: 2Gi
+
+# postgresql/valkey subchart resource requests/limits. umbrella
+# dmfdeploy/dmfdeploy#258 round 2 (2026-07-24, data-backed, requests
+# only): both subcharts currently fall through to the bitnami-common
+# `resourcesPreset: "nano"` (verified against the vendored netbox-7.3.0
+# chart's own postgresql/valkey subchart values.yaml + charts/common's
+# _resources.tpl preset table: requests {cpu: 100m, memory: 128Mi,
+# ephemeral-storage: 50Mi}, limits {cpu: 150m, memory: 192Mi,
+# ephemeral-storage: 2Gi}) — an explicit `resources:` block REPLACES the
+# preset wholesale (same "medium" -> explicit lesson as netbox_resources
+# above), so every value below except requests.cpu is the nano preset's
+# own value, preserved byte-for-byte, not re-derived.
+# valkey: measured avg 12m CPU (near-idle pub/sub cache). postgresql:
+# measured avg 4m CPU, but kept more conservative (50m, not floored to
+# valkey's level) since DB load spikes coincide with app-level bursts
+# (the SAME netbox schema-sync burst that OOMKilled netbox_resources'
+# memory limit above, per its own comment) — CPU only, not memory-risky
+# the way that burst was, but still not floored to the bare measured avg.
+netbox_postgresql_resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+    ephemeral-storage: 50Mi
+  limits:
+    cpu: 150m
+    memory: 192Mi
+    ephemeral-storage: 2Gi
+
+netbox_valkey_resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+    ephemeral-storage: 50Mi
+  limits:
+    cpu: 150m
+    memory: 192Mi
     ephemeral-storage: 2Gi

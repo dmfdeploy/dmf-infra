@@ -148,8 +148,8 @@ netbox:
 
   # Main container resource requests/limits — see netbox_resources' own
   # comment in defaults/main.yml for the umbrella #258 measured rationale.
-  # netbox-worker/valkey/postgresql are untouched (already matching their
-  # own chart defaults' measured requests).
+  # netbox-worker stays on its chart defaults; valkey/postgresql carry
+  # explicit trimmed requests since #258 round 2 (blocks further below).
   resources:
 {{ netbox_resources | to_nice_yaml(indent=2) | indent(4, true) }}
 
@@ -173,6 +173,10 @@ netbox:
         enabled: true
         storageClass: {{ netbox_storage_class }}
         size: {{ netbox_storage_size }}
+      # umbrella #258 round 2 — see netbox_postgresql_resources' own
+      # comment in defaults/main.yml for the measured rationale.
+      resources:
+{{ netbox_postgresql_resources | to_nice_yaml(indent=2) | indent(8, true) }}
 
   # Valkey (Redis fork) subchart
   valkey:
@@ -189,5 +193,9 @@ netbox:
         enabled: true
         storageClass: {{ netbox_storage_class }}
         size: {{ netbox_storage_size }}
+      # umbrella #258 round 2 — see netbox_valkey_resources' own comment
+      # in defaults/main.yml for the measured rationale.
+      resources:
+{{ netbox_valkey_resources | to_nice_yaml(indent=2) | indent(8, true) }}
     replica:
       replicaCount: 0
