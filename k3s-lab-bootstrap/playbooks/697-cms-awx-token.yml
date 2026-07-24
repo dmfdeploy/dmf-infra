@@ -27,14 +27,15 @@
     cms_awx_target_job_template: eso-openbao-health-check
     # Catalog launchers the Console drives — dmf-cms-svc needs JobTemplate
     # Execute (least-priv; no system admin) on each. Matched by naming
-    # convention (media-launch-* / media-finalise-*) at reconcile time rather
-    # than a hardcoded list: the old second list (a) drifted from the canonical
+    # convention (media-launch-* / media-finalise-* / media-rollback-*) at
+    # reconcile time rather than a hardcoded list: the old second list (a)
+    # drifted from the canonical
     # awx_catalog_job_templates in the awx-integration role and (b) was granted
     # only under the first-provisioning gate, so catalog functions added later
     # (the GitOps "marketplace" model) never received the grant. See the
     # "Reconcile catalog launcher Execute grants" block and
     # dmfdeploy/dmfdeploy#122.
-    cms_awx_catalog_jt_name_regex: '^media-(launch|finalise)-'
+    cms_awx_catalog_jt_name_regex: '^media-(launch|finalise|rollback)-'
     cms_awx_inventory_label: "NetBox"
 
   roles:
