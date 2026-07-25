@@ -349,6 +349,22 @@ awx_catalog_job_templates:
       # rollback_identity.yml asserts them required + hex32/non-empty); a
       # static default would let a blank launch silently target the wrong
       # run or fabricate a reason.
+  - name: media-switch-source
+    description: "Reconfigure a viewer's active source (coarse reconnect actuator, umbrella #201 WP4b, spec §6.2 quiesce -> re-point -> select)"
+    playbook: "playbooks/switch-mxl-fabrics-demo.yml"
+    project_name: "dmf-runbooks"
+    # No JT-level extra_vars defaults, deliberately: unlike every other
+    # entry above, this playbook touches NEITHER NetBox NOR a fresh Helm
+    # install (see its own header) — netbox_api_url/vault_netbox_catalog_token
+    # would be dead, unread extra_vars here (the #277 audit's own lesson:
+    # never pass a var the target playbook's actual contract doesn't read
+    # — verified against dmf-runbooks origin/main). Every value this
+    # playbook DOES need (topology_params/receiver_instance/
+    # source_instance/reason) is per-request, supplied by dmf-cms's own
+    # ReconnectViaAwxActuator at launch time (src/dmf_cms/switch_source.py's
+    # own "EXTRA_VARS PAYLOAD CONTRACT") — ask_variables_on_launch (force-set
+    # true for every entry in this list, see tasks/main.yml) is what lets
+    # those actually reach the job.
 
 # ── Infra job templates (dmfdeploy/dmfdeploy#166 WP-F) ─────────────────────
 # Monitoring-apply lane: runs dmf-infra playbooks against hosts:k3s_control

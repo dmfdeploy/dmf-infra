@@ -27,15 +27,22 @@
     cms_awx_target_job_template: eso-openbao-health-check
     # Catalog launchers the Console drives — dmf-cms-svc needs JobTemplate
     # Execute (least-priv; no system admin) on each. Matched by naming
-    # convention (media-launch-* / media-finalise-* / media-rollback-*) at
-    # reconcile time rather than a hardcoded list: the old second list (a)
-    # drifted from the canonical
+    # convention (media-launch-* / media-finalise-* / media-rollback-* /
+    # media-switch-*) at reconcile time rather than a hardcoded list: the
+    # old second list (a) drifted from the canonical
     # awx_catalog_job_templates in the awx-integration role and (b) was granted
     # only under the first-provisioning gate, so catalog functions added later
     # (the GitOps "marketplace" model) never received the grant. See the
     # "Reconcile catalog launcher Execute grants" block and
     # dmfdeploy/dmfdeploy#122.
-    cms_awx_catalog_jt_name_regex: '^media-(launch|finalise|rollback)-'
+    #
+    # umbrella #201 WP4b: added the `switch` verb proactively for
+    # media-switch-source (the WP4/WP5 SwitchSourceCommand actuator's own
+    # JT) — closing the exact class of gap umbrella #279 named: a job
+    # template AWX can launch but the console's own credential grant never
+    # covers fails as a mystery 404 in production, not at build time.
+    # Caught here, before dmf-cms's actuator ever reaches this JT live.
+    cms_awx_catalog_jt_name_regex: '^media-(launch|finalise|rollback|switch)-'
     cms_awx_inventory_label: "NetBox"
 
   roles:
