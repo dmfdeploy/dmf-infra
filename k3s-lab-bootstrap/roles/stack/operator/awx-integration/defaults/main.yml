@@ -147,7 +147,7 @@ awx_catalog_projects:
     # JTs never picked up) escape silently. Bump this tag deliberately,
     # in lock-step with the next JT contract audit — never let it drift
     # back to `main`.
-    scm_branch: "v0.3.0"
+    scm_branch: "v0.4.0"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
