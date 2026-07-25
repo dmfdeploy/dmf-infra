@@ -268,7 +268,7 @@ awx_catalog_job_templates:
       l3_catalog_key: mxl-videotestsrc
       # Chart version pin (umbrella #258/dmf-media#19 measured calibration
       # — mirrors nmos_cpp_chart_version's own pin/rationale above).
-      l3_chart_version: "0.3.1"
+      l3_chart_version: "0.4.0"
       mxl_interface: eth0
       # Profile-derived (dmfdeploy/dmfdeploy#17): colocated pod-network pair
       # on the single-node profile; the original cross-host hostNetwork shape
@@ -313,7 +313,7 @@ awx_catalog_job_templates:
       # as the source JT: explicit l3_release/l3_catalog_key here.
       l3_release: mxl-videotest-view
       l3_catalog_key: mxl-videotest-view
-      l3_chart_version: "0.3.1"
+      l3_chart_version: "0.4.0"
       mxl_interface: eth0
       # Keep in lock-step with media-launch-mxl-videotestsrc above.
       mxl_placement_mode: "{{ awx_integration_mxl_placement_mode | default('single-node' if (dmf_release_profile | default('')) == 'sandbox-single-node' else 'split-node', true) }}"
