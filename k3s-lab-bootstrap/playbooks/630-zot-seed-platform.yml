@@ -182,14 +182,17 @@
     # digest-pinned to the proven spike artifact (v1.0.3 is a digest-preserving
     # retag of v1.0.3-fabrics-dev — see the plan's Amendment A); the chart
     # defaults pull it from Zot at zot.../dmf/mxl-fabrics-demo:v1.0.3.
-    # 0.3.1 (umbrella dmfdeploy/dmfdeploy#258, dmf-media#19) is the
+    # 0.4.0 (umbrella dmfdeploy/dmfdeploy#201 WP2, dmf-media#21) adds the
+    # topology parameterisation + selection-gated supervisor (per-source
+    # flow.id/pattern/sourceId, active-source gate) — digest from the GHCR
+    # publish of the merged chart. 0.3.1 (dmfdeploy/dmfdeploy#258, dmf-media#19) was the
     # measured-calibration line — burstable QoS requests/limits derived
     # from live per-container measurements, replacing 0.3.0's lean
     # request-only placeholders (published to GHCR same day, superseded
     # before this seed bump ever pointed at it).
     mxl_fabrics_seed_chart_name: "{{ mxl_fabrics_chart_name | default('mxl-fabrics-demo') }}"
-    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.3.1') }}"
-    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:cf71889bdb590b0415e5f82990506bbb8467ad8761e3cd9f8fc5843e1a7e9f50') }}"
+    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.4.0') }}"
+    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:4893c8e79a6ac27fc069c12dfdb721cddce3bfa02d2334ed89ad1b73fcebcbb6') }}"
     mxl_fabrics_image_tag: "{{ mxl_fabrics_tag | default('v1.0.3') }}"
     mxl_fabrics_image_digest: "{{ mxl_fabrics_digest | default('sha256:84980dc0c3e1de0a8f3ce12ce4d5149229c73a44b140c15ed77b8e84fb2108b1') }}"
 
