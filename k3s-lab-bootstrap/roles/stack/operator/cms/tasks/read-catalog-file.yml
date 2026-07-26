@@ -19,12 +19,20 @@
       ansible.builtin.set_fact:
         _cms_catalog_parsed: "{{ _cms_catalog_slurp.content | b64decode | from_yaml }}"
 
-    - name: Skip file without key field
+    # umbrella #201 WP3a runtime contract: topology_params instance files
+    # (topology_ref targets) live in the same catalog dir and MUST reach the
+    # pod's mounted catalog alongside the entries — the console's fail-closed
+    # loader refuses a topology deploy whose ref'd file is absent. The
+    # console's own entry loader was gate-verified to skip non-entry files
+    # cleanly, so mounting them is safe.
+    - name: Skip file that is neither a catalog entry nor a topology_params doc
       ansible.builtin.debug:
-        msg: "catalog: {{ _cms_catalog_file_item.path }} lacks 'key' — skipping"
-      when: _cms_catalog_parsed.key is not defined
+        msg: "catalog: {{ _cms_catalog_file_item.path }} lacks 'key'/'topology_params' — skipping"
+      when:
+        - _cms_catalog_parsed.key is not defined
+        - _cms_catalog_parsed.topology_params is not defined
 
-    - name: Merge valid catalog entry into entries dict
+    - name: Merge catalog entry or topology_params doc into entries dict
       ansible.builtin.set_fact:
         _cms_catalog_entries: "{{ _cms_catalog_entries | combine({ _cms_catalog_file_item.path | basename: _cms_catalog_parsed }) }}"
-      when: _cms_catalog_parsed.key is defined
+      when: _cms_catalog_parsed.key is defined or _cms_catalog_parsed.topology_params is defined
