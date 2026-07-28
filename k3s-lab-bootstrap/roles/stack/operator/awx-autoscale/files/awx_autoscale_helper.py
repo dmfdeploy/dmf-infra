@@ -38,11 +38,12 @@ LISTEN_PORT = int(os.environ.get("AWX_AUTOSCALE_LISTEN_PORT", "8080"))
 GRACE_PERIOD = int(os.environ.get("AWX_AUTOSCALE_GRACE_PERIOD", "300"))
 MAX_STARTUP_WAIT = int(os.environ.get("AWX_AUTOSCALE_MAX_STARTUP_WAIT", "1200"))
 WAKE_POLL_INTERVAL = int(os.environ.get("AWX_AUTOSCALE_WAKE_POLL_INTERVAL", "10"))
-# #295: once every launch-ready signal first goes green, re-confirm the
-# authenticated check once more after this short settle window before
-# declaring ready — a single success can still be followed by another
-# transient 500 (observed live: staggered per-worker readiness inside the
-# single AWX web pod).
+# #295: once every launch-ready signal first goes green, take a SECOND
+# COMPLETE snapshot — all four signals re-evaluated from scratch, nothing
+# latched — after this short settle window before declaring ready. A single
+# green snapshot can still be followed by another transient 500 (observed
+# live: staggered per-worker readiness inside the single AWX web pod). Any
+# signal regressing on the confirmation snapshot re-arms the whole gate.
 STABILIZATION_DELAY = float(os.environ.get("AWX_AUTOSCALE_STABILIZATION_DELAY", "3"))
 REAPER_POLL_INTERVAL = int(os.environ.get("AWX_AUTOSCALE_REAPER_POLL_INTERVAL", "60"))
 WEB_REPLICAS = int(os.environ.get("AWX_AUTOSCALE_WEB_REPLICAS", "1"))
@@ -490,6 +491,18 @@ def wait_awx_ready(timeout: float) -> bool:
     return False
 
 
+def _positive_capacity(value) -> bool:
+    """True only for a real, positive numeric capacity.
+
+    JSON booleans must be rejected explicitly: ``isinstance(True, int)`` is
+    true in Python, so a body carrying ``"capacity": true`` would otherwise
+    read as capacity 1 and pass the gate (#295).
+    """
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, (int, float)) and value > 0
+
+
 def _check_awx_api_ping() -> bool:
     """Check /api/v2/ping/ returns 200 AND the named 'controlplane'
     instance_group reports registered capacity > 0.
@@ -503,6 +516,10 @@ def _check_awx_api_ping() -> bool:
     any() over all groups — an unrelated instance_group (e.g. an
     execution-node pool) reporting capacity > 0 must not be mistaken for
     the control plane being ready.
+
+    Every decoded layer is validated: a non-object body, a non-list
+    ``instance_groups``, or a non-object group entry yields a plain False
+    (a normal not-ready snapshot) rather than an escaping AttributeError.
     """
     try:
         req = Request(f"{AWX_API_URL}/api/v2/ping/", method="GET")
@@ -510,14 +527,42 @@ def _check_awx_api_ping() -> bool:
             if resp.status != 200:
                 return False
             body = json.loads(resp.read())
-            groups = body.get("instance_groups") or []
+            if not isinstance(body, dict):
+                return False
+            groups = body.get("instance_groups")
+            if not isinstance(groups, list):
+                return False
             for group in groups:
-                if group.get("name") == "controlplane":
-                    capacity = group.get("capacity")
-                    return isinstance(capacity, int) and capacity > 0
+                if isinstance(group, dict) and group.get("name") == "controlplane":
+                    return _positive_capacity(group.get("capacity"))
             return False  # controlplane group not found
-    except (HTTPError, URLError, OSError, ValueError, TypeError):
+    except (HTTPError, URLError, OSError, ValueError, TypeError, AttributeError):
         return False
+
+
+def _is_awx_collection(body) -> bool:
+    """Validate an AWX paginated-collection response body (#295).
+
+    Key presence is NOT enough. A proxy error page, a partially-initialized
+    backend, or a truncated response can decode to JSON whose ``count`` /
+    ``results`` are null or the wrong type; such a body cannot support the
+    console's lookup semantics and must not count as authenticated-ready.
+    Direct probes against the previous key-presence predicate accepted both
+    ``{"count": null, "results": null}`` and ``{"count": "five",
+    "results": {}}``.
+
+    Requires the real AWX shape: ``count`` a non-boolean int >= 0,
+    ``results`` a list, and every element of ``results`` an object.
+    """
+    if not isinstance(body, dict):
+        return False
+    count = body.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return False
+    results = body.get("results")
+    if not isinstance(results, list):
+        return False
+    return all(isinstance(item, dict) for item in results)
 
 
 def _check_awx_authenticated_ready() -> bool:
@@ -532,6 +577,10 @@ def _check_awx_authenticated_ready() -> bool:
     identity, and does NOT use the console's exact lookup/launch paths.
     It is a strengthened best-effort gate only. Console-side bounded
     transient retry is the required companion fix (#295).
+
+    The body is fully read, decoded ONCE, and validated against the AWX
+    paginated-collection shape (see _is_awx_collection) — status 200 plus
+    key presence is not enough.
     """
     try:
         token = _read_secret(AWX_TOKEN_PATH)
@@ -543,9 +592,8 @@ def _check_awx_authenticated_ready() -> bool:
         with urlopen(req, timeout=5) as resp:
             if resp.status != 200:
                 return False
-            body = json.loads(resp.read())
-            return isinstance(body, dict) and "count" in body and "results" in body
-    except (HTTPError, URLError, OSError, ValueError, KeyError, TypeError):
+            return _is_awx_collection(json.loads(resp.read()))
+    except (HTTPError, URLError, OSError, ValueError, KeyError, TypeError, AttributeError):
         return False
 
 
