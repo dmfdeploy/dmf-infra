@@ -38,6 +38,12 @@ LISTEN_PORT = int(os.environ.get("AWX_AUTOSCALE_LISTEN_PORT", "8080"))
 GRACE_PERIOD = int(os.environ.get("AWX_AUTOSCALE_GRACE_PERIOD", "300"))
 MAX_STARTUP_WAIT = int(os.environ.get("AWX_AUTOSCALE_MAX_STARTUP_WAIT", "1200"))
 WAKE_POLL_INTERVAL = int(os.environ.get("AWX_AUTOSCALE_WAKE_POLL_INTERVAL", "10"))
+# #295: once every launch-ready signal first goes green, re-confirm the
+# authenticated check once more after this short settle window before
+# declaring ready — a single success can still be followed by another
+# transient 500 (observed live: staggered per-worker readiness inside the
+# single AWX web pod).
+STABILIZATION_DELAY = float(os.environ.get("AWX_AUTOSCALE_STABILIZATION_DELAY", "3"))
 REAPER_POLL_INTERVAL = int(os.environ.get("AWX_AUTOSCALE_REAPER_POLL_INTERVAL", "60"))
 WEB_REPLICAS = int(os.environ.get("AWX_AUTOSCALE_WEB_REPLICAS", "1"))
 TASK_REPLICAS = int(os.environ.get("AWX_AUTOSCALE_TASK_REPLICAS", "1"))
@@ -383,8 +389,30 @@ def patch_awx_asleep() -> None:
 
 
 def wait_awx_ready(timeout: float) -> bool:
-    """Poll until web + task Deployments have readyReplicas >= 1 AND
-    the AWX API /api/v2/ping/ returns 200.
+    """Poll until AWX is launch-ready, not merely pods-up/ping-200 (#295).
+
+    Reproduced live against AWX 24.6.1: readyReplicas >= 1 on both
+    Deployments plus an unauthenticated /api/v2/ping/ 200 is NOT sufficient.
+    A real deploy dispatched the instant that gate went green hit a bare
+    Django ``Server Error (500)`` from AWX's OWN backend on the very next
+    authenticated call (job template lookup) — not a network-level
+    reset/timeout. ping's lightweight view can succeed for several seconds
+    while an authenticated, ORM/RBAC-backed read still 500s.
+
+    Four signals must ALL be true (independent gates, not a strict sequence):
+      1. web Deployment readyReplicas >= 1
+      2. task Deployment readyReplicas >= 1
+      3. /api/v2/ping/ 200 + registered instance_group capacity > 0 (see
+         _check_awx_api_ping)
+      4. an authenticated read succeeds (see _check_awx_authenticated_ready).
+         Re-checked every poll — NOT latched once ping is up, since a
+         transient 500 here must re-arm the gate, not just delay the first
+         check.
+
+    Once all four first go green, one more authenticated read is required
+    after STABILIZATION_DELAY before returning True — a single success can
+    still be followed by another transient 500 (staggered per-worker
+    readiness inside the single AWX web pod).
 
     Keyed on readyReplicas + API (never observedGeneration — absent on this CR).
     Returns True if ready within timeout, False otherwise.
@@ -417,12 +445,24 @@ def wait_awx_ready(timeout: float) -> bool:
             except (HTTPError, URLError):
                 pass
 
-        # Check AWX API ping (only after both Deployments are ready)
+        # Check AWX API ping + registered capacity (only after both
+        # Deployments are ready). Latched: capacity doesn't regress once
+        # an instance has registered under normal operation.
         if web_ready and task_ready and not api_ok:
             api_ok = _check_awx_api_ping()
 
+        # Authenticated read — NOT latched. A transient 500 here must
+        # re-arm the gate on the next poll, not be forgiven forever (#295).
+        auth_ok = False
         if web_ready and task_ready and api_ok:
-            return True
+            auth_ok = _check_awx_authenticated_ready()
+
+        if web_ready and task_ready and api_ok and auth_ok:
+            time.sleep(STABILIZATION_DELAY)
+            if _check_awx_authenticated_ready():
+                return True
+            # Confirmation failed — loop again at the normal cadence
+            # rather than busy-spinning on the short stabilization delay.
 
         time.sleep(WAKE_POLL_INTERVAL)
 
@@ -430,9 +470,43 @@ def wait_awx_ready(timeout: float) -> bool:
 
 
 def _check_awx_api_ping() -> bool:
-    """Check if AWX API /api/v2/ping/ returns 200."""
+    """Check /api/v2/ping/ returns 200 AND at least one instance_group
+    reports registered capacity > 0.
+
+    Status-200 alone is insufficient (#295): right after wake, ping can
+    return 200 while every instance_group still shows capacity 0 — the
+    execution/control instance hasn't sent its first heartbeat yet.
+    Reproduced live against AWX 24.6.1.
+    """
     try:
         req = Request(f"{AWX_API_URL}/api/v2/ping/", method="GET")
+        with urlopen(req, timeout=5) as resp:
+            if resp.status != 200:
+                return False
+            body = json.loads(resp.read())
+            groups = body.get("instance_groups") or []
+            return any((g.get("capacity") or 0) > 0 for g in groups)
+    except (HTTPError, URLError, OSError, ValueError):
+        return False
+
+
+def _check_awx_authenticated_ready() -> bool:
+    """Check AWX can serve an authenticated, ORM/RBAC-backed API read.
+
+    ping-200 alone proved insufficient (#295, reproduced live against AWX
+    24.6.1): the Django backend can still return a bare 500 on endpoints
+    that exercise the ORM/RBAC stack for several seconds after ping already
+    succeeds and both Deployments report readyReplicas >= 1. job_templates
+    (page_size=1, cheap) exercises exactly the code path the console's
+    post-wake job-template lookup depends on.
+    """
+    try:
+        token = _read_secret(AWX_TOKEN_PATH)
+        req = Request(
+            f"{AWX_API_URL}/api/v2/job_templates/?page_size=1",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+            method="GET",
+        )
         with urlopen(req, timeout=5) as resp:
             return resp.status == 200
     except (HTTPError, URLError, OSError):
