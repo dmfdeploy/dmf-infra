@@ -9,9 +9,13 @@ zot_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
 zot_storage_size: 20Gi
 
 # Resources (small; bump if the registry becomes heavily used)
+# umbrella #299 WP1: cpu request 50m -> 25m. Measured p95 2.0m / max 19m
+# against a 500m limit, so the 500m burst headroom for an image push is
+# untouched — only the scheduling reservation comes down. Memory and both
+# limits are unchanged.
 zot_resources:
   requests:
-    cpu: 50m
+    cpu: 25m
     memory: 128Mi
   limits:
     cpu: 500m

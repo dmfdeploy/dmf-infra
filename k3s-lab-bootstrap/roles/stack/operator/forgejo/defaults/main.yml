@@ -96,3 +96,39 @@ forgejo_resources:
   requests:
     cpu: 25m
     memory: 192Mi
+
+# umbrella #299 WP1: the chart's own initContainers default is cpu 100m
+# (charts/forgejo/values.yaml initContainers.resources), and the scheduler
+# charges a pod max(sum(app), max(init)) — so those inits, not the 25m app
+# container, were setting forgejo's entire 100m pod request. The three that
+# render (init-directories, init-app-ini, configure-gitea) do mkdir and
+# config rendering; configure-gpg stays dormant behind signing.enabled=false.
+#
+# 25m, not lower: sum(app) is 25m, so anything at or below 25m yields the
+# SAME 25m effective pod request and the SAME 75m saving — 25m just buys
+# more CFS contention weight for free.
+#
+# memory 128Mi and the empty limits below are the chart defaults copied
+# BYTE-FOR-BYTE. That is DEFENSIVE EXPLICITNESS, not a hazard being
+# dodged — forgejo does NOT have the preset-replacement problem:
+# initContainers.resources is a plain map in charts/forgejo/values.yaml,
+# so Helm recursively coalesces a partial override into it and a
+# cpu-only override would have kept memory and limits by itself.
+# Verified by rendering the chart with a cpu-only override: the init
+# containers still came out with memory 128Mi and limits {}.
+#
+# Do NOT generalise netbox's rule to here, and do not weaken this block
+# to cpu-only on the strength of that. Restating the whole mapping keeps
+# the effective values readable at the point of change and immune to a
+# future chart bump that switches this key to the conditional
+# resourcesPreset form netbox uses. THAT form is the real hazard: the
+# same cpu-only override against netbox's init.resources renders
+# {requests: {cpu: 50m}} — memory, ephemeral-storage and every limit
+# silently gone, because a non-empty map there selects a different
+# template branch instead of merging (the #258 lesson; see
+# netbox_init_resources' own comment).
+forgejo_init_resources:
+  limits: {}
+  requests:
+    cpu: 25m
+    memory: 128Mi

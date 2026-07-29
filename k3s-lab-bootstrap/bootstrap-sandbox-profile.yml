@@ -105,8 +105,25 @@
         _awx_fit_task:
           requests: {cpu: 150m, memory: 1Gi}
           limits: {cpu: 1500m, memory: 2Gi}
+        # umbrella #299 WP1: cpu request 50m -> 25m. Measured p95 2.6m /
+        # max 21.7m against the 1000m limit below, which is untouched —
+        # migration/vacuum bursts keep their full headroom. Memory request
+        # and both limits unchanged.
+        #
+        # This one CR field moves BOTH postgres containers, which is what
+        # makes the trim actually land: the scheduler charges the pod
+        # max(sum(app), max(init)), and awx-operator 2.19.1 (chart 3.2.1)
+        # renders the data-volume-init container's resources from
+        #   postgres_init_container_resource_requirements
+        #     | default(postgres_resource_requirements)
+        # in roles/installer/templates/statefulsets/postgres.yaml.j2, and
+        # ships NO default for postgres_init_container_resource_requirements.
+        # Since our CR never sets that field, the init container inherits
+        # this value verbatim. Byte-identical template across operator
+        # 2.17.0-2.19.1. If a future CR ever sets the init-specific field,
+        # this coupling breaks and the init must be trimmed alongside.
         _awx_fit_postgres:
-          requests: {cpu: 50m, memory: 256Mi}
+          requests: {cpu: 25m, memory: 256Mi}
           limits: {cpu: 1000m, memory: 768Mi}
         _awx_fit_redis:
           requests: {cpu: 25m, memory: 64Mi}

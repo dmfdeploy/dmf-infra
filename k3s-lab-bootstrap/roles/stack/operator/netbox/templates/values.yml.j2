@@ -154,11 +154,26 @@ netbox:
   resources:
 {{ netbox_resources | to_nice_yaml(indent=2) | indent(4, true) }}
 
+  # umbrella #299 WP1: the init-dirs init container, previously left on the
+  # chart's `nano` resourcesPreset at cpu 100m. Passes the FULL resources
+  # object — an explicit block replaces the preset wholesale.
+  init:
+    resources:
+{{ netbox_init_resources | to_nice_yaml(indent=2) | indent(6, true) }}
+
   # umbrella #276: measured request honesty (2026-07-24 sample archive);
   # requests-only, no limits.
   worker:
     resources:
 {{ netbox_worker_resources | to_nice_yaml(indent=2) | indent(6, true) }}
+
+    # umbrella #299 WP1: the wait-for-backend init container, previously
+    # left on the chart's `nano` resourcesPreset at cpu 100m — which set
+    # this pod's whole request over a 10m app container. Full object, same
+    # preset-replacement reason as above.
+    waitForBackend:
+      resources:
+{{ netbox_worker_wait_for_backend_resources | to_nice_yaml(indent=2) | indent(8, true) }}
 
   # Media persistence (shared between netbox and worker)
   persistence:

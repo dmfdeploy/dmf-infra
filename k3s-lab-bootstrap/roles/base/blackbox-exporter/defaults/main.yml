@@ -69,7 +69,10 @@ blackbox_allow_icmp: true
 # runs multiple prober goroutines, but well under Prometheus.
 blackbox_resources:
   requests:
-    cpu: 50m
+    # umbrella #299 WP1: 50m -> 10m. Measured p95 1.0m / max 1.1m — the
+    # prober goroutines are almost entirely I/O wait. The 100m limit below
+    # is untouched, so a probe fan-out can still burst 10x its request.
+    cpu: 10m
     memory: 64Mi
   limits:
     cpu: 100m

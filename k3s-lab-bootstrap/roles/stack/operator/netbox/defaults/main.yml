@@ -100,7 +100,13 @@ netbox_unit_processes_spare: 2
 # netbox_valkey_resources below.
 netbox_resources:
   requests:
-    cpu: 100m
+    # umbrella #299 WP1: 100m -> 50m. Measured p95 11.5m / max 127m against
+    # the 1000m limit below, which is untouched — only the scheduling
+    # reservation comes down, the burst headroom is unchanged. Trimmed in
+    # lockstep with netbox_init_resources: the scheduler charges a pod
+    # max(sum(app), max(init)), so trimming only one of the two would buy
+    # nothing at all.
+    cpu: 50m
     memory: 512Mi
     # Preserved from the chart's former resourcesPreset "medium" — an
     # explicit resources block replaces the preset WHOLESALE, and the
@@ -163,3 +169,45 @@ netbox_worker_resources:
   requests:
     cpu: 10m
     memory: 256Mi
+
+# umbrella #299 WP1: the two INIT containers the chart renders had never
+# been wired to a role knob at all, so both silently fell through to the
+# bitnami-common `resourcesPreset: "nano"` — cpu 100m each. Since the
+# scheduler charges a pod max(sum(app), max(init)), that 100m was setting
+# BOTH pods' entire request: netbox despite sum(app)=100m (now 50m), and
+# netbox-worker outright, over a sum(app) of just 10m.
+#
+# Every value below except requests.cpu is the nano preset's own value,
+# preserved BYTE-FOR-BYTE, not re-derived — an explicit resources block
+# replaces the preset WHOLESALE (the #258 lesson; see netbox_resources'
+# and netbox_postgresql_resources' own comments above). Dropping any of
+# them would silently unbound these containers' memory and
+# ephemeral-storage.
+#
+# init-dirs (netbox pod) — a mkdir; 50m to match the app container it
+# shares the pod's effective request with. Anything at or below 50m gives
+# the same effective 50m, so there is nothing to gain by going lower.
+netbox_init_resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+    ephemeral-storage: 50Mi
+  limits:
+    cpu: 150m
+    memory: 192Mi
+    ephemeral-storage: 2Gi
+
+# wait-for-backend (netbox-worker pod) — a `kubectl rollout status` POLL
+# LOOP. 25m is a deliberate semantic FLOOR, NOT a measurement: the
+# #276 archive's 1m/2m figures are the long-running worker APP container,
+# and a completed init container cannot be calibrated from that query at
+# all. Do not "refine" this down against worker-app numbers.
+netbox_worker_wait_for_backend_resources:
+  requests:
+    cpu: 25m
+    memory: 128Mi
+    ephemeral-storage: 50Mi
+  limits:
+    cpu: 150m
+    memory: 192Mi
+    ephemeral-storage: 2Gi
