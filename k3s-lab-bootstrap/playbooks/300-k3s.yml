@@ -76,6 +76,21 @@
       }}
     k3s_server_tls_sans_resolved: "{{ k3s_server_tls_sans | default([]) }}"
     k3s_server_extra_args_resolved: "{{ k3s_server_extra_args | default([]) }}"
+    # umbrella #313: kubelet log-rotation cadence. k3s ships no
+    # --container-log-max-*, so the kubelet falls back to its own built-in
+    # defaults (10Mi x 5 files). k3s_container_log_max_size/files are
+    # UNDEFINED unless an operator sets them in inventory — the args below
+    # are only appended when explicitly set, so a default apply leaves
+    # k3s_kubelet_args_resolved (and the rendered systemd drop-in) byte-
+    # identical to before #313: a true no-op, no restart. The #313 design's
+    # own recommended candidate — 50Mi x 3 files, ~5x fewer rotations during
+    # a byte-rate runaway (the #309 receptor-EOF mitigation), 150Mi vs 50Mi
+    # per-container retained cap — is a DELIBERATE opt-in
+    # (k3s_container_log_max_size: 50Mi, k3s_container_log_max_files: 3 in
+    # inventory), applied only after confirming node disk budget can absorb
+    # the larger retained-per-container cap across every container on the
+    # node; setting either var for the first time changes the kubelet-arg
+    # list and triggers a one-time k3s restart on that node.
     k3s_kubelet_args_resolved: >-
       {{
         (k3s_kubelet_args | default([]))
@@ -83,6 +98,8 @@
             if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
             else [] )
         + (k3s_constrained_kubelet_args | default([]))
+        + (['container-log-max-size=' ~ k3s_container_log_max_size] if k3s_container_log_max_size is defined else [])
+        + (['container-log-max-files=' ~ k3s_container_log_max_files] if k3s_container_log_max_files is defined else [])
       }}
     k3s_disable_server_args: >-
       {{
@@ -173,6 +190,21 @@
         | default((dmf_storage_backend | default('longhorn')) != 'local-path')
       }}
     k3s_join_server_extra_args_resolved: "{{ k3s_join_server_extra_args | default([]) }}"
+    # umbrella #313: kubelet log-rotation cadence. k3s ships no
+    # --container-log-max-*, so the kubelet falls back to its own built-in
+    # defaults (10Mi x 5 files). k3s_container_log_max_size/files are
+    # UNDEFINED unless an operator sets them in inventory — the args below
+    # are only appended when explicitly set, so a default apply leaves
+    # k3s_kubelet_args_resolved (and the rendered systemd drop-in) byte-
+    # identical to before #313: a true no-op, no restart. The #313 design's
+    # own recommended candidate — 50Mi x 3 files, ~5x fewer rotations during
+    # a byte-rate runaway (the #309 receptor-EOF mitigation), 150Mi vs 50Mi
+    # per-container retained cap — is a DELIBERATE opt-in
+    # (k3s_container_log_max_size: 50Mi, k3s_container_log_max_files: 3 in
+    # inventory), applied only after confirming node disk budget can absorb
+    # the larger retained-per-container cap across every container on the
+    # node; setting either var for the first time changes the kubelet-arg
+    # list and triggers a one-time k3s restart on that node.
     k3s_kubelet_args_resolved: >-
       {{
         (k3s_kubelet_args | default([]))
@@ -180,6 +212,8 @@
             if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
             else [] )
         + (k3s_constrained_kubelet_args | default([]))
+        + (['container-log-max-size=' ~ k3s_container_log_max_size] if k3s_container_log_max_size is defined else [])
+        + (['container-log-max-files=' ~ k3s_container_log_max_files] if k3s_container_log_max_files is defined else [])
       }}
     k3s_server_url: "https://{{ hostvars[k3s_control_node].k3s_node_ip }}:6443"
     k3s_disable_server_args: >-
@@ -314,6 +348,21 @@
       }}
     k3s_server_tls_sans_resolved: "{{ k3s_server_tls_sans | default([]) }}"
     k3s_server_extra_args_resolved: "{{ k3s_server_extra_args | default([]) }}"
+    # umbrella #313: kubelet log-rotation cadence. k3s ships no
+    # --container-log-max-*, so the kubelet falls back to its own built-in
+    # defaults (10Mi x 5 files). k3s_container_log_max_size/files are
+    # UNDEFINED unless an operator sets them in inventory — the args below
+    # are only appended when explicitly set, so a default apply leaves
+    # k3s_kubelet_args_resolved (and the rendered systemd drop-in) byte-
+    # identical to before #313: a true no-op, no restart. The #313 design's
+    # own recommended candidate — 50Mi x 3 files, ~5x fewer rotations during
+    # a byte-rate runaway (the #309 receptor-EOF mitigation), 150Mi vs 50Mi
+    # per-container retained cap — is a DELIBERATE opt-in
+    # (k3s_container_log_max_size: 50Mi, k3s_container_log_max_files: 3 in
+    # inventory), applied only after confirming node disk budget can absorb
+    # the larger retained-per-container cap across every container on the
+    # node; setting either var for the first time changes the kubelet-arg
+    # list and triggers a one-time k3s restart on that node.
     k3s_kubelet_args_resolved: >-
       {{
         (k3s_kubelet_args | default([]))
@@ -321,6 +370,8 @@
             if (hostvars[inventory_hostname]._k3s_provider_id_resolved | default('')) | length > 0
             else [] )
         + (k3s_constrained_kubelet_args | default([]))
+        + (['container-log-max-size=' ~ k3s_container_log_max_size] if k3s_container_log_max_size is defined else [])
+        + (['container-log-max-files=' ~ k3s_container_log_max_files] if k3s_container_log_max_files is defined else [])
       }}
     # k3s_base_server_args here MUST include --node-name and --cluster-init
     # because the audit-logging.conf.j2 drop-in REPLACES the install-time

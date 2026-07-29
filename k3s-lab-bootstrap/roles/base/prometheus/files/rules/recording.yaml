@@ -67,3 +67,46 @@ groups:
       # DiscoveredTargetsZeroOrStale alert pairs this with absent().
       - record: dmf:promsd_discovered_targets
         expr: count by(job) (up{job=~"netbox-.*"})
+
+  - name: dmf-runaway-recording
+    rules:
+      # Per-container log volume rate (umbrella #313 — #308's own signature:
+      # the mxl status-sidecar spinner produced ~40k lines/min / ~9 MB/s from
+      # ONE container, invisible until it saturated node CPU/disk). Promtail's
+      # own read counters are keyed by `path` (the tailed file), which under
+      # k3s/containerd is /var/log/pods/<namespace>_<pod>_<uid>/<container>/
+      # <n>.log — label_replace normalizes that into namespace/pod/container
+      # labels so these rules aggregate per CONTAINER, not per raw file path
+      # (a container's log rotates across several distinct paths over time).
+      # Record names are the stable contract the alert suite
+      # (templates/rules/alerts.yaml.j2) queries — validate the underlying
+      # `path` label shape against the live /metrics output post-deploy; if
+      # promtail's own label differs, fix the regex here, keep these names.
+      - record: container:promtail_log_lines_per_second:rate1m
+        expr: |
+          sum by (namespace, pod, container) (
+            label_replace(
+              label_replace(
+                label_replace(
+                  rate(promtail_read_lines_total[1m]),
+                  "namespace", "$1", "path", "^/var/log/pods/([^_]+)_[^_]+_[^/]+/[^/]+/.*$"
+                ),
+                "pod", "$1", "path", "^/var/log/pods/[^_]+_([^_]+)_[^/]+/[^/]+/.*$"
+              ),
+              "container", "$1", "path", "^/var/log/pods/[^_]+_[^_]+_[^/]+/([^/]+)/.*$"
+            )
+          )
+      - record: container:promtail_log_bytes_per_second:rate1m
+        expr: |
+          sum by (namespace, pod, container) (
+            label_replace(
+              label_replace(
+                label_replace(
+                  rate(promtail_read_bytes_total[1m]),
+                  "namespace", "$1", "path", "^/var/log/pods/([^_]+)_[^_]+_[^/]+/[^/]+/.*$"
+                ),
+                "pod", "$1", "path", "^/var/log/pods/[^_]+_([^_]+)_[^/]+/[^/]+/.*$"
+              ),
+              "container", "$1", "path", "^/var/log/pods/[^_]+_[^_]+_[^/]+/([^/]+)/.*$"
+            )
+          )

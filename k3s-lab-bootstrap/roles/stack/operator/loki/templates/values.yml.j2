@@ -27,6 +27,12 @@ loki:
   limits_config:
     # Default retention floor; security streams override below.
     retention_period: {{ loki_retention }}
+    # umbrella #313: per-stream ingestion caps — see loki_per_stream_rate_
+    # limit's own comment in defaults/main.yml for the full rationale
+    # (below Loki's 3.0 defaults; paired with the mandatory
+    # LokiPerStreamRateLimitDropping{,Bytes} alerts — never silent).
+    per_stream_rate_limit: {{ loki_per_stream_rate_limit }}
+    per_stream_rate_limit_burst: {{ loki_per_stream_rate_limit_burst }}
     # Per-stream retention overrides. Keep selectors aligned with the
     # `job` label set in Promtail scrape configs and the per-app sidecars.
     retention_stream:

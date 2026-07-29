@@ -105,6 +105,22 @@ prometheus_alert_temp_crit_celsius: 80
 # runbook_url base for every alert annotation (anchors = lowercase alertname).
 prometheus_alert_runbook_base: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md"
 
+# Runaway-workload guard thresholds (dmfdeploy/dmfdeploy#313, templates/
+# rules/alerts.yaml.j2's dmf-runaway-workload group). First-guess values —
+# override per env in inventory, don't edit the rule template. Catches
+# #308's own live numbers (~40k lines/min, ~170m CPU) and would have caught
+# the promtail 1.53-core/76h episode via the CPU-ratio pair.
+prometheus_alert_log_line_rate_warn_per_min: 1000
+prometheus_alert_log_line_rate_crit_per_min: 10000
+prometheus_alert_log_byte_rate_warn_bytes_per_sec: 262144   # 256 KiB/s
+prometheus_alert_log_byte_rate_crit_bytes_per_sec: 1048576  # 1 MiB/s
+prometheus_alert_cpu_over_request_warn_ratio: 2.0
+prometheus_alert_cpu_over_request_crit_ratio: 3.0
+# Shared `for:` debounce for the three mandatory drop alerts (promtail's own
+# limit stage + Loki's per-stream limits) — these are never-silent guards,
+# not saturation signals, so a single short debounce covers all three.
+prometheus_alert_ingestion_drop_for: 2m
+
 # Static blackbox probe lanes (dmfdeploy/dmfdeploy#166 WP-D) — the four probe
 # lanes from plan D5 that have NO NetBox object (ADR-0038 covers platform
 # apps via dmf-promsd; these are infrastructure anchors below/outside that
