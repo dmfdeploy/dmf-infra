@@ -157,7 +157,38 @@ awx_catalog_projects:
     # before the topology group-render loop reused it, so every topology
     # launch failed the gate with `path ".../mxl-fabrics-demo" not found`
     # (live AWX job 288). Scalar launches were unaffected.
-    scm_branch: "v0.4.1"
+    #
+    # v0.4.1 -> v0.4.2 (umbrella #306): delivers the media-switch-source
+    # chart-argument fix (dmf-runbooks ef81caa) — PHASE 2's `helm upgrade`
+    # was missing the positional CHART argument entirely, so every switch
+    # ran whatever chart argv happened to fall into that slot rather than
+    # the receiver's own installed chart; job 392 (2026-07-29) caught this
+    # live, still running the old argv while this pin sat on v0.4.1. This
+    # pin IS the delivery mechanism — the fix is inert until the project
+    # advances past v0.4.1.
+    # JT contract audit (required before this bump, per the note above):
+    # `git diff v0.4.1..origin/main` (dmf-runbooks) touches
+    # playbooks/switch-mxl-fabrics-demo.yml, roles/l3_run_guard/tasks/
+    # _assert_reserved_vars.yml, a new roles/l3_run_guard/tasks/
+    # switch_resolve_chart.yml, and the test harness — nothing under any
+    # */defaults/ path. The playbook filename referenced by the
+    # media-switch-source JT below (playbook: playbooks/switch-mxl-fabrics-
+    # demo.yml) is unchanged, and that playbook's documented extra_vars
+    # contract (topology_params/receiver_instance/source_instance/reason,
+    # consumed VERBATIM from dmf-cms's ReconnectViaAwxActuator) is
+    # untouched by the diff — only the task body past that header changed
+    # (new switch_resolve_chart include + the helm argv fix). The new
+    # _switch_* facts the fix introduces (_switch_chart_ref,
+    # _switch_chart_name, _switch_helm_metadata, _switch_receiver_metadata,
+    # _switch_receiver_chart_version, _switch_helm_upgrade_help,
+    # _switch_rollback_flag, _switch_chart_tmp) are internal-only — added
+    # to _assert_reserved_vars.yml's reserved list specifically so they
+    # CANNOT be supplied as caller extra_vars, reinforcing rather than
+    # expanding the JT-facing surface. The media-switch-source JT already
+    # carries no JT-level extra_vars defaults by design (see its own
+    # comment below) — nothing there needs to change. Conclusion: JT
+    # contract intact, re-pin is a pure delivery-mechanism bump.
+    scm_branch: "v0.4.2"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
