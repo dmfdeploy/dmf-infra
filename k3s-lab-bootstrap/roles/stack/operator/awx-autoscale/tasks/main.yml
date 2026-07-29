@@ -210,6 +210,18 @@
                 app: awx-autoscale
             template:
               metadata:
+                annotations:
+                  # Roll the Deployment whenever the helper source changes
+                  # (#297). The helper is mounted from a ConfigMap; updating
+                  # that ConfigMap does NOT restart the python process, which
+                  # loaded the script once at startup. Observed live
+                  # 2026-07-28: the play reported changed=1 and rollout "ok"
+                  # while the pod stayed 7h29m old still running the previous
+                  # helper, so the #295 fix silently did not exist in-cluster.
+                  # Same file, same lookup, as the ConfigMap above.
+                  awx-autoscale.dmf/helper-checksum: >-
+                    {{ lookup('file', role_path ~ '/files/awx_autoscale_helper.py')
+                       | hash('sha1') }}
                 labels:
                   app: awx-autoscale
                   dmf.function: awx-autoscale
