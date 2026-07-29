@@ -37,6 +37,14 @@ persistence:
 resources:
 {{ forgejo_resources | to_nice_yaml(indent=2) | indent(2, true) }}
 
+# umbrella #299 WP1: the chart's initContainers default (cpu 100m) dominated
+# the pod's effective request, since the scheduler charges
+# max(sum(app), max(init)). Carries the chart's own memory request and empty
+# limits unchanged — see forgejo_init_resources in defaults/main.yml.
+initContainers:
+  resources:
+{{ forgejo_init_resources | to_nice_yaml(indent=2) | indent(4, true) }}
+
 gitea:
   admin:
     username: {{ forgejo_admin_username | to_json }}

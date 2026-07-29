@@ -29,7 +29,10 @@ prometheus_helm_chart_version: "25.8.0"
 # Limits unchanged.
 prometheus_resources:
   requests:
-    cpu: 100m
+    # umbrella #299 WP1: 100m -> 35m. Measured p95 11.5m / max 49m against
+    # the 500m limit below, which is untouched — scrape-storm burst headroom
+    # is unchanged, only the scheduling reservation comes down.
+    cpu: 35m
     memory: 1024Mi
   limits:
     cpu: 500m

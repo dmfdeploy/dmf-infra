@@ -35,7 +35,10 @@ dmf_promsd_external_secret_api_version: "{{ eso_crd_api_version | default('exter
 # Sized between alertmanager (20m/64Mi) and promtail (100m/128Mi).
 dmf_promsd_resources:
   requests:
-    cpu: 50m
+    # umbrella #299 WP1: 50m -> 15m. Measured p95 2.4m / max 2.4m — a
+    # NetBox-polling SD adapter with no TSDB, flat by nature. The 200m
+    # limit below is untouched.
+    cpu: 15m
     memory: 64Mi
   limits:
     cpu: 200m
