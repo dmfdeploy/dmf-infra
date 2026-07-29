@@ -82,6 +82,17 @@
               # patch: direct Deployment scaling for fast wake/sleep (#110) —
               # takes the operator's ~6-10 min reconcile off the critical path.
               verbs: ["get", "patch"]
+            - apiGroups: [""]
+              resources: ["pods"]
+              # list: the wake gate counts readiness from real Pods and refuses
+              # to report launch-ready while any of them is still terminating
+              # (#298). Deployment status cannot express that — upstream drops
+              # terminating pods from readyReplicas, and the field that would
+              # report them (status.terminatingReplicas) is alpha until k8s
+              # 1.35. Read-only, and scoped to this namespace by the Role.
+              # WITHOUT THIS RULE THE GATE FAILS CLOSED and every wake times
+              # out, so this rule and the helper ConfigMap must land together.
+              verbs: ["get", "list"]
             - apiGroups: ["coordination.k8s.io"]
               resources: ["leases"]
               verbs: ["get", "create", "update"]

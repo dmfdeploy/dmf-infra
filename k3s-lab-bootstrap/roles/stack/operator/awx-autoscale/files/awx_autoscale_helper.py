@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from typing import Any
 from urllib.error import HTTPError, URLError
+from urllib.parse import quote
 from urllib.request import Request, urlopen
 
 # ---------------------------------------------------------------------------
@@ -389,36 +390,173 @@ def patch_awx_asleep() -> None:
     audit("awx_cr_patched", state="asleep")
 
 
+def _pod_is_nonterminal(pod: dict) -> bool:
+    """True for a pod that has not reached a terminal phase.
+
+    This is upstream ``controller.IsPodActive`` MINUS its deletionTimestamp
+    clause, and the omission is deliberate — do not "restore" it. Upstream
+    folds "terminating" into "not active" because it only wants a live count;
+    this gate needs terminating pods to stay VISIBLE so
+    ``_deployment_launch_ready`` can refuse on them. Termination is evaluated
+    separately, by ``_pod_is_terminating``. Calling this a mirror of
+    IsPodActive would be wrong, and a reader who assumed the equivalence
+    would reintroduce #298.
+
+    The phase filter itself matters on its own: an evicted pod left behind in
+    phase Failed would otherwise count as a stuck member forever and hold
+    /ensure-awake shut for the whole MAX_STARTUP_WAIT budget.
+    """
+    phase = (pod.get("status") or {}).get("phase")
+    return phase not in ("Succeeded", "Failed")
+
+
+def _pod_is_terminating(pod: dict) -> bool:
+    """True once the pod has a deletionTimestamp — it is on its way out.
+
+    Upstream drops such pods from readyReplicas the moment the timestamp is
+    set, so their presence is invisible in Deployment status; the only way to
+    know a drain is still in flight is to look at the pods themselves.
+    """
+    return bool((pod.get("metadata") or {}).get("deletionTimestamp"))
+
+
+def _pod_is_ready(pod: dict) -> bool:
+    """True only when the pod carries a Ready condition with status "True"."""
+    conditions = (pod.get("status") or {}).get("conditions")
+    if not isinstance(conditions, list):
+        return False
+    for cond in conditions:
+        if isinstance(cond, dict) and cond.get("type") == "Ready":
+            return cond.get("status") == "True"
+    return False
+
+
+def _list_deployment_pods(dep: dict) -> list | None:
+    """List the Pods a Deployment selects, via the Deployment's OWN selector.
+
+    Deriving the label selector from ``spec.selector.matchLabels`` rather than
+    hardcoding AWX's labels keeps this correct across awx-operator versions.
+
+    Returns None when the pod set cannot be determined (no usable selector,
+    API error, malformed body). Callers MUST treat None as not-ready: failing
+    open here would restore exactly the #298 behaviour.
+    """
+    selector = ((dep.get("spec") or {}).get("selector") or {}).get("matchLabels")
+    if not isinstance(selector, dict) or not selector:
+        return None
+    label_selector = ",".join(f"{k}={v}" for k, v in sorted(selector.items()))
+    try:
+        resp = _k8s_request(
+            "GET",
+            f"/api/v1/namespaces/{NAMESPACE}/pods"
+            f"?labelSelector={quote(label_selector, safe='=,')}",
+        )
+    except (HTTPError, URLError, OSError, ValueError) as e:
+        # Most likely cause on first rollout: the namespaced Role is missing
+        # the pods list/get rule this gate depends on. Loud, because the
+        # symptom is an /ensure-awake that never returns ready. ValueError
+        # covers a truncated/undecodable body — this runs on the /ensure-awake
+        # request thread, so nothing may escape it.
+        audit("pod_list_failed", selector=label_selector, error=str(e))
+        return None
+    if not isinstance(resp, dict):
+        return None
+    items = resp.get("items")
+    if not isinstance(items, list):
+        return None
+    return [p for p in items if isinstance(p, dict)]
+
+
+def _deployment_launch_ready(name: str) -> tuple:
+    """Is this Deployment awake AND settled? Returns (ready, reason).
+
+    ``status.readyReplicas`` is NOT the signal (#298). Every pre-#298 signal
+    describes the REPLACEMENT generation or the AWX API; none of them can see
+    that the PREVIOUS generation is still tearing down. AWX's web/task pods
+    carry no readinessProbe, so the replacement pod's Ready condition flips the
+    instant its container starts (measured ~18s post-wake), and the AWX API
+    answers normally throughout — so the gate opens while the outgoing
+    dispatcher/receptor is still cancelling its in-flight work units. Work
+    admitted into that window is corrupted by the teardown, not by anything
+    wrong with the pod serving it.
+
+    What this predicate establishes is therefore narrow and specific: the
+    previous generation is COMPLETELY GONE. Four conditions, all required:
+
+      1. ``status.observedGeneration >= metadata.generation`` — otherwise the
+         controller has not yet run a sync pass that saw our scale patch, and
+         ``status`` describes the world before it. (The "no observedGeneration"
+         note elsewhere in this file is about the AWX CR, which genuinely lacks
+         it; Deployments publish it.) NOTE this is necessary, not sufficient:
+         upstream sets observedGeneration unconditionally in the same struct
+         literal as the replica counts, which are summed from whatever
+         ReplicaSet status happened to be in the informer cache. It rules out
+         obviously pre-patch status; it does not prove convergence. Conditions
+         3 and 4 are what actually establish that.
+      2. ``spec.replicas >= 1`` — defensive. The awx-operator reconciles
+         asynchronously, so in principle a pass that began while the CR still
+         read asleep could land after our wake patch and put replicas back to
+         0; a pod that is Ready right now and already scheduled for deletion is
+         not launch-ready. (This was NOT the #298 mechanism — the live data
+         shows no such lost update — but the check is free and the state is
+         unambiguously not-launch-ready.)
+      3. NO active pod carries a deletionTimestamp — the previous generation's
+         drain must have COMPLETED, not merely been started. There is no
+         status-level signal for this: upstream excludes terminating pods from
+         readyReplicas entirely (controller.IsPodActive), and the field that
+         would report them, status.terminatingReplicas, is KEP-3973 — alpha
+         and off by default until k8s 1.35. Listing the pods is the only way.
+      4. at least one active, non-terminating pod reports Ready.
+
+    Condition 3 is the load-bearing one: 4 alone is satisfied by the fresh pod
+    while the old one is still dying.
+    """
+    path = f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{name}"
+    try:
+        dep = _k8s_request("GET", path)
+    except (HTTPError, URLError, OSError, ValueError) as e:
+        return False, f"deployment_unreadable:{e}"
+    if not isinstance(dep, dict):
+        return False, "deployment_malformed"
+
+    generation = (dep.get("metadata") or {}).get("generation")
+    observed = (dep.get("status") or {}).get("observedGeneration")
+    if isinstance(generation, bool) or not isinstance(generation, int):
+        return False, "generation_missing"
+    if isinstance(observed, bool) or not isinstance(observed, int):
+        return False, "observed_generation_missing"
+    if observed < generation:
+        return False, f"status_stale:observed={observed}<generation={generation}"
+
+    replicas = (dep.get("spec") or {}).get("replicas")
+    if isinstance(replicas, bool) or not isinstance(replicas, int) or replicas < 1:
+        return False, f"spec_replicas={replicas}"
+
+    pods = _list_deployment_pods(dep)
+    if pods is None:
+        return False, "pods_unreadable"
+
+    active = [p for p in pods if _pod_is_nonterminal(p)]
+    terminating = [p for p in active if _pod_is_terminating(p)]
+    if terminating:
+        return False, f"draining:{len(terminating)}_terminating"
+    ready = [p for p in active if _pod_is_ready(p)]
+    if not ready:
+        return False, f"ready_pods=0/active={len(active)}"
+    return True, "ready"
+
+
 def check_launch_ready_snapshot() -> dict:
     """Evaluate all four readiness signals at this moment (not latched).
 
-    Returns dict with web_ready, task_ready, api_ok, auth_ok, and all_ready keys.
+    Returns dict with web_ready, task_ready, api_ok, auth_ok, and all_ready keys
+    plus a web_reason/task_reason pair for diagnosing a wake that never opens.
     Each signal is re-evaluated fresh on every call — no persistence across snapshots.
     """
-    web_ready = False
-    task_ready = False
+    web_ready, web_reason = _deployment_launch_ready(f"{AWX_CR_NAME}-web")
+    task_ready, task_reason = _deployment_launch_ready(f"{AWX_CR_NAME}-task")
     api_ok = False
     auth_ok = False
-
-    # Check web Deployment
-    try:
-        dep = _k8s_request(
-            "GET",
-            f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{AWX_CR_NAME}-web",
-        )
-        web_ready = (dep.get("status", {}).get("readyReplicas") or 0) >= 1
-    except (HTTPError, URLError):
-        pass
-
-    # Check task Deployment
-    try:
-        dep = _k8s_request(
-            "GET",
-            f"/apis/apps/v1/namespaces/{NAMESPACE}/deployments/{AWX_CR_NAME}-task",
-        )
-        task_ready = (dep.get("status", {}).get("readyReplicas") or 0) >= 1
-    except (HTTPError, URLError):
-        pass
 
     # Check AWX API ping + capacity (only after both Deployments are ready)
     if web_ready and task_ready:
@@ -431,6 +569,8 @@ def check_launch_ready_snapshot() -> dict:
     return {
         "web_ready": web_ready,
         "task_ready": task_ready,
+        "web_reason": web_reason,
+        "task_reason": task_reason,
         "api_ok": api_ok,
         "auth_ok": auth_ok,
         "all_ready": web_ready and task_ready and api_ok and auth_ok,
@@ -450,10 +590,20 @@ def wait_awx_ready(timeout: float) -> bool:
 
     All four signals must be GREEN TOGETHER on TWO separate snapshots
     separated by STABILIZATION_DELAY before returning True:
-      1. web Deployment readyReplicas >= 1
-      2. task Deployment readyReplicas >= 1
+      1. web Deployment settled + at least one Ready, non-terminating pod
+      2. task Deployment settled + at least one Ready, non-terminating pod
       3. /api/v2/ping/ 200 + registered 'controlplane' instance_group capacity > 0
       4. an authenticated read succeeds
+
+    Signals 1 and 2 are Deployment-SETTLED checks, NOT readyReplicas (#298):
+    see _deployment_launch_ready. A wake arriving mid-drain used to go green
+    off the replacement generation alone — readyReplicas from the fresh pod
+    (no readinessProbe, so Ready at container start) and a perfectly healthy
+    AWX API — while the outgoing generation was still tearing down.
+
+    This is a state predicate, NOT a delay. A wake from a settled asleep state
+    still opens the gate as fast as it did before (live: 16-25s, unchanged);
+    only a wake that overlaps an in-flight drain is held back.
 
     Each snapshot re-evaluates all signals from scratch — no latching.
 
@@ -467,11 +617,15 @@ def wait_awx_ready(timeout: float) -> bool:
     brand-new all-ready snapshot (at the normal WAKE_POLL_INTERVAL cadence)
     before attempting stabilization again.
 
-    Keyed on readyReplicas + API (never observedGeneration — absent on this CR).
+    Keyed on Deployment-settled + pods + API. observedGeneration IS consulted
+    for the Deployments (they publish it); the AWX CR, which does not, is
+    still never keyed on.
+
     Returns True if two complete green snapshots are achieved within timeout,
     False otherwise.
     """
     deadline = time.monotonic() + timeout
+    snapshot = None
 
     while time.monotonic() < deadline:
         snapshot = check_launch_ready_snapshot()
@@ -485,9 +639,16 @@ def wait_awx_ready(timeout: float) -> bool:
             # Fall through to the normal poll cadence below; the next
             # iteration requires a fresh all-ready snapshot before
             # stabilization is retried.
+            snapshot = confirmation
 
         time.sleep(WAKE_POLL_INTERVAL)
 
+    # Timed out. Log WHY the last snapshot fell short — with the gate now
+    # keyed on pods, "the wake never opened" has several distinct causes
+    # (still draining, missing pods RBAC, operator wrote replicas back to 0)
+    # and they are indistinguishable without this.
+    if snapshot is not None:
+        audit("wake_gate_timeout", **snapshot)
     return False
 
 
@@ -660,6 +821,156 @@ def has_active_work() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# AWX API-activity query (idle-reaper, #298)
+# ---------------------------------------------------------------------------
+
+# SUPPLEMENTARY, BEST-EFFORT ONLY. This is NOT a fix for the 693 guillotine
+# and must not be described as one.
+#
+# Jobs are not the only way AWX is used: 693-awx-integration.yml drives ~152
+# tasks entirely through the REST API and launches nothing, so a job-only
+# reaper cannot distinguish it from an empty cluster. The activity stream is
+# the nearest available evidence that SOMETHING is driving AWX, so consulting
+# it delays a sleep more often than not consulting it. What it cannot do is
+# establish that 693 is running:
+#
+#   * it records MUTATIONS only — a read-only or idempotent stretch of a play
+#     produces no entries at all, however long it runs;
+#   * this helper authenticates as awx-svc, deliberately NOT a superuser and
+#     NOT a system auditor. AWX 24.6.1 filters the activity stream for normal
+#     users down to objects they can read (awx/main/access.py), and 693's
+#     mutations are made under ADMIN credentials — so most of them are
+#     invisible here. Broadening awx-svc to system auditor to "fix" this is
+#     explicitly rejected: it trades a scheduling nicety for a real
+#     privilege escalation.
+#
+# So a long play CAN still age past the grace period and be slept mid-run —
+# whether it does depends on whether awx-svc happens to keep seeing fresh
+# entries, which nothing guarantees.
+# Pausing the autoscaler remains the operator workaround. The real fix is an
+# explicit, renewable hold on the wake Lease taken by the AWX-consumer phase
+# itself (patching the Lease directly, so no helper endpoint and no
+# NetworkPolicy widening) — tracked separately, out of scope here.
+#
+# Direction of failure: this predicate can only ever EXTEND the wake window,
+# never shorten it. A degraded outcome either falls back to the job-only
+# behaviour that shipped before it (UNAVAILABLE, QUIET) or fails open by
+# holding the window open (UNKNOWN, which deliberately does NOT fall back —
+# it resets the idle timer and keeps AWX awake). Neither can produce an
+# EARLIER sleep than the pre-#298 reaper would have taken.
+ACTIVITY_RECENT = "recent"            # a mutation younger than the grace period
+ACTIVITY_QUIET = "quiet"              # reachable, newest mutation is older
+ACTIVITY_UNAVAILABLE = "unavailable"  # structurally absent (401/403/404)
+ACTIVITY_UNKNOWN = "unknown"          # transient failure / unparseable
+
+
+def _parse_awx_timestamp(raw) -> float | None:
+    """Parse an AWX ISO-8601 timestamp to a POSIX float. None if unparseable.
+
+    AWX emits e.g. "2026-07-29T06:54:01.123456Z"; datetime.fromisoformat does
+    not accept a bare trailing Z before 3.11, and the container base image is
+    pinned to python:3.12-slim, so normalise it rather than depend on that.
+    A naive timestamp is read as UTC (AWX stores UTC).
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    text = raw.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp()
+
+
+def query_awx_activity(max_age: float) -> str:
+    """Is there a mutation VISIBLE TO awx-svc newer than ``max_age`` seconds?
+
+    Supplementary evidence only — see this section's header comment for what
+    this can and cannot establish. A QUIET answer does NOT mean nobody is
+    using AWX.
+
+    Returns ACTIVITY_RECENT / ACTIVITY_QUIET / ACTIVITY_UNAVAILABLE /
+    ACTIVITY_UNKNOWN.
+
+    Degradation contract (#298):
+      - 401/403/404 -> ACTIVITY_UNAVAILABLE. The token cannot read the stream,
+        or the endpoint is not there. Callers fall back to TODAY's job-only
+        behaviour — never to anything sleepier than today.
+      - activity stream administratively disabled -> AWX keeps serving the
+        endpoint and simply stops appending, so the newest entry ages out and
+        this returns ACTIVITY_QUIET. Same fallback, no special case.
+      - transient failure / malformed body -> ACTIVITY_UNKNOWN, which callers
+        treat as "not idle".
+
+    ACTIVITY_UNKNOWN is a deliberate fail-open with a REAL COST, not a
+    can't-happen case. An endpoint-specific persistent fault — the activity
+    stream 500ing or returning a malformed body while /api/v2/unified_jobs/
+    stays perfectly healthy — yields UNKNOWN on every poll and keeps AWX
+    awake indefinitely. query_awx_work() does NOT rescue this: it queries a
+    different endpoint and would keep answering WORK_IDLE throughout. We take
+    that cost because the alternative (treat "cannot tell" as "idle") sleeps
+    AWX out from under work we simply failed to observe. The audit trail is
+    activity_stream_error / activity_stream_malformed on every poll, so a
+    wedged reaper is diagnosable from the log rather than silent.
+
+    A clock skew that puts the newest entry in the future yields a negative
+    age, which reads as RECENT — the safe direction (stay awake).
+
+    This helper's own polling cannot self-perpetuate: the activity stream
+    records create/update/delete, and every call the helper makes is a GET.
+    """
+    url = (f"{AWX_API_URL}/api/v2/activity_stream/"
+           "?order_by=-timestamp&page_size=1")
+    try:
+        token = _read_secret(AWX_TOKEN_PATH)
+        req = Request(
+            url,
+            headers={"Authorization": f"Bearer {token}",
+                     "Accept": "application/json"},
+            method="GET",
+        )
+        with urlopen(req, timeout=10) as resp:
+            if resp.status != 200:
+                audit("activity_stream_unexpected_status", status=resp.status)
+                return ACTIVITY_UNKNOWN
+            body = json.loads(resp.read())
+    except HTTPError as e:
+        if e.code in (401, 403, 404):
+            audit("activity_stream_unavailable", status=e.code,
+                  action="fall_back_to_job_only")
+            return ACTIVITY_UNAVAILABLE
+        audit("activity_stream_error", status=e.code, error=str(e))
+        return ACTIVITY_UNKNOWN
+    except (URLError, OSError, ValueError, TypeError) as e:
+        audit("activity_stream_error", error=str(e))
+        return ACTIVITY_UNKNOWN
+
+    if not _is_awx_collection(body):
+        audit("activity_stream_malformed")
+        return ACTIVITY_UNKNOWN
+
+    results = body["results"]
+    if not results:
+        return ACTIVITY_QUIET
+
+    stamp = _parse_awx_timestamp(results[0].get("timestamp"))
+    if stamp is None:
+        audit("activity_stream_unparseable_timestamp",
+              raw=results[0].get("timestamp"))
+        return ACTIVITY_UNKNOWN
+
+    age = time.time() - stamp
+    if age < max_age:
+        audit("api_activity_found", age_seconds=round(age, 1))
+        return ACTIVITY_RECENT
+    return ACTIVITY_QUIET
+
+
+# ---------------------------------------------------------------------------
 # /ensure-awake handler
 # ---------------------------------------------------------------------------
 
@@ -808,8 +1119,13 @@ def idle_reaper_loop() -> None:
 
     Sleep ONLY when:
       1. No active work (unified_jobs query returns 0).
-      2. now > min_awake_until (the wake lease has expired).
-      3. Idle time exceeds the grace period.
+      2. No awx-svc-VISIBLE AWX API mutation in the last grace period either
+         (activity stream, #298) — supplementary evidence that delays a sleep,
+         NOT a guarantee that nothing is driving AWX. See the ACTIVITY_*
+         section header: a REST-only play can still be slept mid-run, and
+         pausing the autoscaler remains the operator workaround for 693.
+      3. now > min_awake_until (the wake lease has expired).
+      4. Idle time exceeds the grace period.
 
     If the AWX API cannot be queried, DO NOT sleep (fail-open).
     """
@@ -845,7 +1161,47 @@ def idle_reaper_loop() -> None:
                 idle_since = None
                 continue
 
-            # WORK_IDLE: AWX reachable, no active work, past the lease window.
+            # WORK_IDLE: AWX reachable, no active JOBS, past the lease window.
+            # Before acting on that, look for supplementary evidence that
+            # something is driving the AWX API (#298). This DELAYS a sleep
+            # when a mutation happens to be visible to awx-svc; it does not
+            # establish that nothing is running when it comes back QUIET.
+            activity = query_awx_activity(GRACE_PERIOD)
+
+            if activity == ACTIVITY_RECENT:
+                # Identical treatment to WORK_ACTIVE: AWX is in use, keep it
+                # awake and hold the wake window open. Extending the Lease is
+                # safe here (unlike the UNREACHABLE path, issue #103) — we only
+                # reach this branch because the AWX API answered, so AWX is
+                # awake and an /ensure-awake caller that waits on this Lease
+                # will be satisfied rather than starved.
+                new_min_awake = now + GRACE_PERIOD
+                _lease.create_or_update(
+                    new_min_awake, f"reaper-{os.getpid()}")
+                idle_since = None
+                continue
+
+            if activity == ACTIVITY_UNKNOWN:
+                # Could not tell. Do NOT sleep, and do NOT extend the Lease —
+                # the same #103-safe shape as WORK_UNREACHABLE.
+                #
+                # This is a deliberate fail-open with a real cost: an
+                # activity-stream-specific persistent fault (500s, or a
+                # malformed body) alongside a perfectly healthy
+                # /api/v2/unified_jobs/ yields UNKNOWN every poll and keeps
+                # AWX awake indefinitely. query_awx_work() does not rescue it
+                # — different endpoint, still answering IDLE. Accepted over
+                # the alternative, which sleeps AWX out from under work we
+                # merely failed to observe. Diagnosable from the repeated
+                # activity_stream_error / activity_stream_malformed audit
+                # lines rather than silent.
+                idle_since = None
+                continue
+
+            # ACTIVITY_QUIET or ACTIVITY_UNAVAILABLE: proceed on the job-only
+            # evidence, exactly as before this change. QUIET is NOT proof of
+            # an idle AWX — only that nothing awx-svc can see has changed
+            # recently.
             if idle_since is None:
                 idle_since = now
                 audit("reaper_idle_start", idle_since=now)

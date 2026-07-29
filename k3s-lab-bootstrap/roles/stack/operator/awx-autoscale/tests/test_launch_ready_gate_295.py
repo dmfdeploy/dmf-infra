@@ -28,8 +28,11 @@ from urllib.error import HTTPError, URLError
 
 import pytest
 
+import fake_k8s
+from fake_k8s import drained_cluster, pod
+
 # The helper reads these at import time (no defaults); set test values first.
-os.environ.setdefault("AWX_AUTOSCALE_NAMESPACE", "awx")
+os.environ.setdefault("AWX_AUTOSCALE_NAMESPACE", fake_k8s.NAMESPACE)
 os.environ.setdefault("AWX_AUTOSCALE_AWX_API_URL", "http://awx.test")
 os.environ.setdefault("AWX_AUTOSCALE_WAKE_POLL_INTERVAL", "1")  # speed up polls (still int)
 os.environ.setdefault("AWX_AUTOSCALE_STABILIZATION_DELAY", "0.01")  # speed up stabilization
@@ -38,17 +41,6 @@ _HELPER = Path(__file__).resolve().parents[1] / "files" / "awx_autoscale_helper.
 _spec = importlib.util.spec_from_file_location("awx_autoscale_helper", _HELPER)
 helper = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(helper)
-
-
-def _k8s_deploy_ready(replicas):
-    """Mock Kubernetes API response for a Deployment."""
-    m = mock.MagicMock()
-    m.__enter__.return_value = m
-    m.__exit__.return_value = False
-    m.read.return_value = json.dumps({
-        "status": {"readyReplicas": replicas}
-    }).encode()
-    return m
 
 
 def _ping_response(capacity):
@@ -122,7 +114,7 @@ def test_ping_200_alone_not_launch_ready_no_capacity(urlopen_mock, k8s_mock, _):
     the execution instance hasn't sent its first heartbeat yet.
     """
     # Both Deployments ready
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     # Ping returns 200 but instance_group capacity is 0
     urlopen_mock.return_value = _ping_response(capacity=0)
@@ -144,7 +136,7 @@ def test_ping_200_capacity_ok_but_auth_fails(urlopen_mock, k8s_mock, _):
     post-wake job-template lookup would hit this and error the operation.
     """
     # Both Deployments ready
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     # Sequence of urlopen calls:
     # 1. ping returns 200 + capacity > 0
@@ -171,7 +163,7 @@ def test_all_signals_green_becomes_ready(urlopen_mock, k8s_mock, _):
     all succeed. Verifies the fix accepts launch-ready state correctly.
     """
     # Both Deployments ready
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     # All urlopen calls succeed
     ping_ok = _ping_response(capacity=20)
@@ -203,7 +195,7 @@ def test_transient_auth_failure_re_arms_gate(urlopen_mock, k8s_mock, _):
     every poll until it succeeds.
     """
     # Both Deployments ready
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     ping_ok = _ping_response(capacity=20)
     job_fail = _job_templates_response(status=500)
@@ -244,7 +236,7 @@ def test_body_read_reset_during_auth(urlopen_mock, k8s_mock, _):
     Regression test for #295: the prior implementation returned True on status==200
     without actually reading the body. This test ensures body-read errors are caught.
     """
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     ping_ok = _ping_response(capacity=20)
 
@@ -267,7 +259,7 @@ def test_body_read_reset_during_auth(urlopen_mock, k8s_mock, _):
 @mock.patch.object(helper, "urlopen")
 def test_invalid_json_in_auth_response(urlopen_mock, k8s_mock, _):
     """Auth returns 200 but body is invalid JSON → NOT ready."""
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     ping_ok = _ping_response(capacity=20)
 
@@ -290,7 +282,7 @@ def test_invalid_json_in_auth_response(urlopen_mock, k8s_mock, _):
 @mock.patch.object(helper, "urlopen")
 def test_missing_count_field_in_auth(urlopen_mock, k8s_mock, _):
     """Auth returns 200 + valid JSON but missing 'count' field → NOT ready."""
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     ping_ok = _ping_response(capacity=20)
 
@@ -312,27 +304,25 @@ def test_missing_count_field_in_auth(urlopen_mock, k8s_mock, _):
 @mock.patch.object(helper, "_k8s_request")
 @mock.patch.object(helper, "urlopen")
 def test_regression_task_readiness_between_snapshots(urlopen_mock, k8s_mock, _):
-    """First snapshot all green, then task readiness drops to 0 → NOT ready.
+    """First snapshot all green, then task readiness regresses → NOT ready.
 
-    Regression test: the first poll is fully ready, but after stabilization delay,
-    the task deployment regresses to 0 ready replicas. Must NOT return true.
+    Regression test: the first poll is fully ready, but after the stabilization
+    delay the task deployment no longer has a Ready pod. Must NOT return true.
     """
     ping_ok = _ping_response(capacity=20)
     job_ok = _job_templates_response(status=200)
 
-    # Sequence: both deployments ready → after delay, task regresses to 0
-    call_count = [0]
-    def k8s_side_effect(method, path, *args, **kwargs):
-        call_count[0] += 1
-        # Count approximately: web check, task check, web check, task check (post-stabilization)
-        # On post-stabilization snapshot, task drops to 0
-        if "task" in path and call_count[0] >= 4:
-            return {"status": {"readyReplicas": 0}}
-        else:
-            return {"status": {"readyReplicas": 1}}
+    cluster = drained_cluster()
 
-    k8s_mock.side_effect = k8s_side_effect
-    urlopen_mock.side_effect = [ping_ok, job_ok, ping_ok, job_ok]
+    def regress_task(cl, method, path, n):
+        # Snapshot 1 reads web then task; from the confirmation snapshot on,
+        # the task pod is no longer Ready.
+        if cl.deployment_get_count("task") >= 2:
+            cl.task.pods = [pod("awx-task-restarting", ready=False)]
+
+    cluster.on_call = regress_task
+    k8s_mock.side_effect = cluster
+    urlopen_mock.side_effect = itertools.cycle([ping_ok, job_ok])
 
     result = helper.wait_awx_ready(timeout=5.0)
     assert result is False, \
@@ -344,7 +334,7 @@ def test_regression_task_readiness_between_snapshots(urlopen_mock, k8s_mock, _):
 @mock.patch.object(helper, "urlopen")
 def test_regression_controlplane_capacity_between_snapshots(urlopen_mock, k8s_mock, _):
     """First snapshot all green, then controlplane capacity drops to 0 → NOT ready."""
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     ping_ok = _ping_response(capacity=20)
     ping_fail = _ping_response(capacity=0)  # capacity drops post-stabilization
@@ -369,7 +359,7 @@ def test_regression_controlplane_capacity_between_snapshots(urlopen_mock, k8s_mo
 @mock.patch.object(helper, "urlopen")
 def test_regression_auth_fails_between_snapshots(urlopen_mock, k8s_mock, _):
     """First snapshot all green, then auth returns 500 → NOT ready."""
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
 
     ping_ok = _ping_response(capacity=20)
     job_ok = _job_templates_response(status=200)
@@ -393,7 +383,7 @@ def test_regression_auth_fails_between_snapshots(urlopen_mock, k8s_mock, _):
 @mock.patch.object(helper, "_k8s_request")
 @mock.patch.object(helper, "urlopen")
 def test_regression_web_readiness_between_snapshots(urlopen_mock, k8s_mock, _):
-    """First snapshot all green, then WEB readiness drops to 0 → NOT ready.
+    """First snapshot all green, then WEB readiness regresses → NOT ready.
 
     Symmetric counterpart to the task-readiness regression test: the
     confirmation snapshot must re-read BOTH Deployments, not just the task
@@ -403,23 +393,18 @@ def test_regression_web_readiness_between_snapshots(urlopen_mock, k8s_mock, _):
     ping_ok = _ping_response(capacity=20)
     job_ok = _job_templates_response(status=200)
 
-    # k8s call order within a snapshot is (web, task); calls 1-2 are the
-    # first snapshot, calls 3+ the confirmation and every later poll.
-    call_count = [0]
+    cluster = drained_cluster()
 
-    def k8s_side_effect(method, path, *args, **kwargs):
-        call_count[0] += 1
-        if "-web" in path and call_count[0] >= 3:
-            return {"status": {"readyReplicas": 0}}
-        return {"status": {"readyReplicas": 1}}
+    def regress_web(cl, method, path, n):
+        if cl.deployment_get_count("web") >= 2:
+            cl.web.pods = [pod("awx-web-restarting", ready=False)]
 
-    k8s_mock.side_effect = k8s_side_effect
+    cluster.on_call = regress_web
+    k8s_mock.side_effect = cluster
     # web_ready False short-circuits ping/auth, so no further AWX calls are
     # consumed after the first snapshot; repeat anyway so the poll loop can
     # run to the deadline without exhausting the mock.
-    urlopen_mock.side_effect = itertools.chain(
-        [ping_ok, job_ok], itertools.cycle([ping_ok, job_ok])
-    )
+    urlopen_mock.side_effect = itertools.cycle([ping_ok, job_ok])
 
     result = helper.wait_awx_ready(timeout=5.0)
     assert result is False, \
@@ -442,7 +427,7 @@ def test_ready_path_issues_exact_awx_request_sequence(urlopen_mock, k8s_mock, re
       - Authorization built from the token at the awx-svc mount path;
       - ping, auth, ping, auth — four calls, no more, no fewer.
     """
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
     urlopen_mock.side_effect = [
         _ping_response(capacity=20), _job_templates_response(status=200),
         _ping_response(capacity=20), _job_templates_response(status=200),
@@ -503,7 +488,7 @@ def test_unrelated_group_capacity_snapshot_not_ready(urlopen_mock, k8s_mock, _):
     """Same discriminator at snapshot level: pods up, unrelated group hot,
     controlplane still at zero → snapshot is not ready and auth is never
     probed."""
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
     urlopen_mock.return_value = _ping_response_groups([
         {"name": "controlplane", "capacity": 0, "instances": []},
         {"name": "execution-pool", "capacity": 40, "instances": ["exec-1"]},
@@ -629,7 +614,7 @@ def test_typed_schema_failure_keeps_gate_closed_end_to_end(urlopen_mock, k8s_moc
     auth 200 — but the body is `{"count": null, "results": null}` forever.
     wait_awx_ready must time out rather than declare AWX launch-ready.
     """
-    k8s_mock.return_value = {"status": {"readyReplicas": 1}}
+    k8s_mock.side_effect = drained_cluster()
     urlopen_mock.side_effect = itertools.cycle([
         _ping_response(capacity=20),
         _auth_body_response('{"count": null, "results": null}'),
