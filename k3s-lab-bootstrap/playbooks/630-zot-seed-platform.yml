@@ -190,9 +190,23 @@
     # from live per-container measurements, replacing 0.3.0's lean
     # request-only placeholders (published to GHCR same day, superseded
     # before this seed bump ever pointed at it).
+    # 0.4.1 (umbrella dmfdeploy/dmfdeploy#301, dmf-media#24) REMOVES the CPU
+    # limits from every media-path container; memory limits are unchanged.
+    # Measured live on 2026-07-29: the media path was CFS-throttled against its
+    # own quota while the node sat at 68% — source-b's writer pinned at 949.7m
+    # against a 950m limit, throttling 10.00 periods/s, and the viewer's
+    # preview encoder (`status`) wanting 333m against a 250m limit. The viewer
+    # showed no preview and its status container had been SIGKILLed. Raising
+    # the ceilings DROPPED total node CPU 2049m -> 1622m: a throttled
+    # constant-rate pipeline burns CPU on retries, PTS re-adjustment and
+    # dropped-grain handling, i.e. work it does BECAUSE it is late. Residual
+    # sub-period-burst throttling persisted even at raised limits, so the
+    # limits were removed rather than raised again. Memory limits stay — memory
+    # is not compressible (the #258 NetBox OOM lesson). Requests are unchanged
+    # and deliberately deferred to dmfdeploy/dmfdeploy#302.
     mxl_fabrics_seed_chart_name: "{{ mxl_fabrics_chart_name | default('mxl-fabrics-demo') }}"
-    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.4.0') }}"
-    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:4893c8e79a6ac27fc069c12dfdb721cddce3bfa02d2334ed89ad1b73fcebcbb6') }}"
+    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.4.1') }}"
+    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:ddab830072fc09a84d38318a2a6b2aee95872fb8fce0082f38681b6752672511') }}"
     mxl_fabrics_image_tag: "{{ mxl_fabrics_tag | default('v1.0.3') }}"
     mxl_fabrics_image_digest: "{{ mxl_fabrics_digest | default('sha256:84980dc0c3e1de0a8f3ce12ce4d5149229c73a44b140c15ed77b8e84fb2108b1') }}"
 
