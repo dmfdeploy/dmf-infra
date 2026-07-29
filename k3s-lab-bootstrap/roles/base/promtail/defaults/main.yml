@@ -12,3 +12,13 @@ promtail_resources:
   requests:
     cpu: 25m
     memory: 192Mi
+
+# umbrella #313: node-protection rate limit on promtail's own outbound push
+# (limit pipeline stage, templates/values.yml.j2). First-guess defaults —
+# see the template's own comment for why by_label_name is pod (not
+# container) and drop:true is non-tunable. Set _enabled: false to fall back
+# to the chart's stock pipeline entirely (operator escape hatch).
+promtail_log_line_limit_enabled: true
+promtail_log_line_limit_rate: 5000
+promtail_log_line_limit_burst: 10000
+promtail_log_line_limit_label: pod

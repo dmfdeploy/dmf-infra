@@ -1,4 +1,15 @@
 ---
+# umbrella #313: scrape promtail's own /metrics — the container:promtail_
+# log_{lines,bytes}_per_second:rate1m recording rules (roles/base/prometheus/
+# files/rules/recording.yaml) and the mandatory PromtailLogLimitDropping
+# alert depend on this. Picked up by the existing kubernetes-pods scrape job
+# (annotation-based discovery already in place; no new scrape job needed).
+# port=3101 is the chart's own http-listen-port default.
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "3101"
+  prometheus.io/path: /metrics
+
 config:
   clients:
     - url: {{ promtail_loki_url }}
@@ -28,6 +39,31 @@ config:
               job: k3s-audit
               host: ${HOSTNAME}
               __path__: /var/log/kubernetes/audit*.log
+    # umbrella #313: node-protection guard — caps promtail's own outbound
+    # push rate PER POD (by_label_name: pod; NOT container — container
+    # names like "status" collide across the mxl viewer AND source's own
+    # status sidecars, which would rate-limit them as one shared bucket).
+    # drop: true is a deliberate, non-tunable decision (only rate/burst/
+    # label are operator vars) — buffering instead of dropping just moves
+    # the burst into promtail's own memory, and this is exactly why the
+    # PromtailLogLimitDropping alert (roles/base/prometheus/templates/
+    # rules/alerts.yaml.j2) is mandatory, not optional: a silent limiter
+    # here would have hidden #308's own signal instead of surfacing it.
+    #
+    # Setting pipelineStages at all REPLACES the chart's own default
+    # pipeline, so `- cri: {}` must stay first: k3s/containerd log lines
+    # need CRI-format parsing (real timestamp + stream + content) before
+    # anything downstream — including this limit stage — can reason about
+    # them.
+{% if promtail_log_line_limit_enabled | bool %}
+    pipelineStages:
+      - cri: {}
+      - limit:
+          rate: {{ promtail_log_line_limit_rate }}
+          burst: {{ promtail_log_line_limit_burst }}
+          by_label_name: {{ promtail_log_line_limit_label }}
+          drop: true
+{% endif %}
 
 # Explicit hostPath mount for /var/log/kubernetes — the upstream chart's
 # default mount of /var/log is enough today, but declaring the narrower

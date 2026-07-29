@@ -13,6 +13,17 @@ loki_retention: 720h          # 30 days
 # below. Security streams (k3s API audit, Authentik audit, app-security) carry
 # a 6-month retention; everything else falls through to loki_retention.
 loki_security_retention: 4380h  # 6 months (≈ 182.5 days)
+# umbrella #313: per-stream ingestion caps — below Loki's own 3.0 defaults,
+# protecting the monitoring plane from a single runaway stream (#308's own
+# mxl status-sidecar spinner peaked at ~9 MB/s from ONE stream). Ingestion
+# limits protect Loki/the monitoring plane only — the node itself still pays
+# disk I/O and rotation churn regardless of these; that's what the promtail
+# limit stage (roles/base/promtail) and the kubelet rotation vars
+# (playbooks/300-k3s.yml) are for. Never silent: paired with the mandatory
+# LokiPerStreamRateLimitDropping{,Bytes} alerts (roles/base/prometheus/
+# templates/rules/alerts.yaml.j2).
+loki_per_stream_rate_limit: 1MB
+loki_per_stream_rate_limit_burst: 3MB
 # Compactor controls (must stay enabled for retention to be enforced; see the
 # pre-Tier-A bug where retention_period was set but compactor was disabled).
 loki_compactor_retention_delete_delay: 2h

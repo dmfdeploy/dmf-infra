@@ -251,6 +251,175 @@ groups:
             free space before the workload goes read-only.
           runbook_url: "{{ prometheus_alert_runbook_base }}#persistentvolumenearfull"
 
+  - name: dmf-runaway-workload
+    rules:
+      # Per-container log-volume rate (dmfdeploy#313 — #308's own signature:
+      # the mxl status-sidecar busy-wait produced ~40k lines/min from ONE
+      # container, invisible until it saturated node CPU/disk). Would have
+      # fired within a minute of the 2026-07-29 deploy.
+      - alert: ContainerLogLineRateHigh
+        expr: container:promtail_log_lines_per_second:rate1m * 60 > {{ prometheus_alert_log_line_rate_warn_per_min }}
+        for: 5m
+        labels:
+          severity: warning
+          category: runaway
+        annotations:
+          summary: Container {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}{% endraw %} log line rate above {{ prometheus_alert_log_line_rate_warn_per_min }}/min
+          description: >-
+            Container {% raw %}{{ $labels.container }}{% endraw %} in
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            is logging {% raw %}{{ $value | humanize }}{% endraw %} lines/min,
+            sustained for 5m.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#containerloglineratehigh"
+      - alert: ContainerLogLineRateCritical
+        expr: container:promtail_log_lines_per_second:rate1m * 60 > {{ prometheus_alert_log_line_rate_crit_per_min }}
+        for: 2m
+        labels:
+          severity: critical
+          category: runaway
+        annotations:
+          summary: Container {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}{% endraw %} log line rate above {{ prometheus_alert_log_line_rate_crit_per_min }}/min
+          description: >-
+            Container {% raw %}{{ $labels.container }}{% endraw %} in
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            is logging {% raw %}{{ $value | humanize }}{% endraw %} lines/min —
+            a runaway log volume, node CPU/disk at risk.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#containerloglineratecritical"
+      - alert: ContainerLogByteRateHigh
+        expr: container:promtail_log_bytes_per_second:rate1m > {{ prometheus_alert_log_byte_rate_warn_bytes_per_sec }}
+        for: 5m
+        labels:
+          severity: warning
+          category: runaway
+        annotations:
+          summary: Container {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}{% endraw %} log byte rate above {{ (prometheus_alert_log_byte_rate_warn_bytes_per_sec / 1024) | int }}KiB/s
+          description: >-
+            Container {% raw %}{{ $labels.container }}{% endraw %} in
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            is emitting {% raw %}{{ $value | humanize }}{% endraw %}B/s of log
+            output, sustained for 5m.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#containerlogbyteratehigh"
+      - alert: ContainerLogByteRateCritical
+        expr: container:promtail_log_bytes_per_second:rate1m > {{ prometheus_alert_log_byte_rate_crit_bytes_per_sec }}
+        for: 2m
+        labels:
+          severity: critical
+          category: runaway
+        annotations:
+          summary: Container {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}{% endraw %} log byte rate above {{ (prometheus_alert_log_byte_rate_crit_bytes_per_sec / 1048576) | int }}MiB/s
+          description: >-
+            Container {% raw %}{{ $labels.container }}{% endraw %} in
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            is emitting {% raw %}{{ $value | humanize }}{% endraw %}B/s of log
+            output — matches the #308 incident's own ~9 MB/s peak.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#containerlogbyteratecritical"
+      # Per-container CPU sustained above N x its declared request — the
+      # operator-approved runaway guard. Requests-only protection is
+      # contention fairness, not a brake; with CPU limits removed from the
+      # media path (dmfdeploy#301), nothing else caps a runaway container.
+      # The request side is collapsed with `max by (namespace, pod,
+      # container)` before matching: kube_pod_container_resource_requests
+      # can carry extra distinguishing labels (e.g. uid, node) that briefly
+      # produce more than one series per container during a reschedule —
+      # collapsing first guarantees a strict one-to-one `on(...)` match, so
+      # no group_left/group_right is needed on either the division or the
+      # guard. Guarded to request>0 by an explicit `and on(...)` clause:
+      # without it, a container with NO declared request would divide by
+      # zero into Inf, which is always > any finite threshold — a false
+      # alert on every unrequested container, not a guard.
+      - alert: ContainerCpuOverRequest
+        expr: >-
+          (
+            sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="", container!="POD"}[5m]))
+            / on (namespace, pod, container)
+            max by (namespace, pod, container) (kube_pod_container_resource_requests{resource="cpu"})
+          ) > {{ prometheus_alert_cpu_over_request_warn_ratio }}
+          and on (namespace, pod, container)
+          max by (namespace, pod, container) (kube_pod_container_resource_requests{resource="cpu"}) > 0
+        for: 10m
+        labels:
+          severity: warning
+          category: runaway
+        annotations:
+          summary: Container {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}{% endraw %} CPU above {{ prometheus_alert_cpu_over_request_warn_ratio }}x its request
+          description: >-
+            Container {% raw %}{{ $labels.container }}{% endraw %} in
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            is using {% raw %}{{ $value | humanize }}{% endraw %}x its declared
+            CPU request, sustained for 10m — the promtail 1.53-core/76h
+            episode's own signature.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#containercpuoverrequest"
+      - alert: ContainerCpuOverRequest
+        expr: >-
+          (
+            sum by (namespace, pod, container) (rate(container_cpu_usage_seconds_total{container!="", container!="POD"}[5m]))
+            / on (namespace, pod, container)
+            max by (namespace, pod, container) (kube_pod_container_resource_requests{resource="cpu"})
+          ) > {{ prometheus_alert_cpu_over_request_crit_ratio }}
+          and on (namespace, pod, container)
+          max by (namespace, pod, container) (kube_pod_container_resource_requests{resource="cpu"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+          category: runaway
+        annotations:
+          summary: Container {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }}{% endraw %} CPU above {{ prometheus_alert_cpu_over_request_crit_ratio }}x its request
+          description: >-
+            Container {% raw %}{{ $labels.container }}{% endraw %} in
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            is using {% raw %}{{ $value | humanize }}{% endraw %}x its declared
+            CPU request, sustained for 5m.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#containercpuoverrequest"
+      # Mandatory never-silent drop accounting (plan constraint: a silent
+      # limiter would have hidden #308's signal instead of surfacing it).
+      # One alert per drop path — promtail's own limit stage, and Loki's
+      # per-stream caps (samples + bytes, Loki exposes both counters).
+      - alert: PromtailLogLimitDropping
+        expr: sum by (namespace, pod) (rate(logentry_dropped_lines_total{reason="ratelimit_drop_stage"}[5m])) > 0
+        for: {{ prometheus_alert_ingestion_drop_for }}
+        labels:
+          severity: warning
+          category: runaway
+        annotations:
+          summary: Promtail is dropping log lines on {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+          description: >-
+            Promtail's own limit pipeline stage (roles/base/promtail) is
+            actively dropping log lines for
+            {% raw %}{{ $labels.namespace }}/{{ $labels.pod }}{% endraw +%}
+            (reason=ratelimit_drop_stage) — the node-protection guard is
+            engaged; check ContainerLogLineRate{High,Critical} for the pod's
+            own source container.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#promtailloglimitdropping"
+      - alert: LokiPerStreamRateLimitDropping
+        expr: sum by (tenant) (rate(loki_discarded_samples_total{reason="per_stream_rate_limit"}[5m])) > 0
+        for: {{ prometheus_alert_ingestion_drop_for }}
+        labels:
+          severity: warning
+          category: runaway
+        annotations:
+          summary: Loki is discarding samples over its per-stream rate limit
+          description: >-
+            loki_discarded_samples_total{reason="per_stream_rate_limit"} is
+            incrementing for tenant {% raw %}{{ $labels.tenant }}{% endraw %} —
+            a stream is exceeding Loki's per-stream ingestion cap; never
+            silent by design (a silent limiter would have hidden #308's
+            signal instead of surfacing it).
+          runbook_url: "{{ prometheus_alert_runbook_base }}#lokiperstreamratelimitdropping"
+      - alert: LokiPerStreamRateLimitDroppingBytes
+        expr: sum by (tenant) (rate(loki_discarded_bytes_total{reason="per_stream_rate_limit"}[5m])) > 0
+        for: {{ prometheus_alert_ingestion_drop_for }}
+        labels:
+          severity: warning
+          category: runaway
+        annotations:
+          summary: Loki is discarding bytes over its per-stream rate limit
+          description: >-
+            loki_discarded_bytes_total{reason="per_stream_rate_limit"} is
+            incrementing for tenant {% raw %}{{ $labels.tenant }}{% endraw %} —
+            the bytes-counted sibling of LokiPerStreamRateLimitDropping;
+            never silent by design.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#lokiperstreamratelimitdroppingbytes"
+
   - name: dmf-monitoring-self
     rules:
       - alert: TargetDown
