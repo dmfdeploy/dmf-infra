@@ -147,7 +147,17 @@ awx_catalog_projects:
     # JTs never picked up) escape silently. Bump this tag deliberately,
     # in lock-step with the next JT contract audit — never let it drift
     # back to `main`.
-    scm_branch: "v0.4.0"
+    #
+    # v0.4.0 -> v0.4.1 (umbrella #296): NO JT contract audit was required for
+    # this bump. `git diff v0.4.0..v0.4.1` touches only VERSION,
+    # roles/l3_run_guard/tasks/capacity.yml and the test harness — nothing
+    # under playbooks/ or */defaults/, so every registered JT's
+    # playbook/extra-vars contract is byte-identical. The fix is internal to
+    # the L3 capacity gate: the chart-fetch block deleted its temp chart dir
+    # before the topology group-render loop reused it, so every topology
+    # launch failed the gate with `path ".../mxl-fabrics-demo" not found`
+    # (live AWX job 288). Scalar launches were unaffected.
+    scm_branch: "v0.4.1"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
