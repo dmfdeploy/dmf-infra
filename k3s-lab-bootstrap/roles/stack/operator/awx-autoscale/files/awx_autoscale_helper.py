@@ -187,11 +187,27 @@ class LeaseManager:
             raise
 
     def create_or_update(self, min_awake_until: float, holder: str,
-                         max_retries: int = 5) -> tuple[dict, bool]:
+                         max_retries: int = 5, *,
+                         allow_owner_shrink: bool = False) -> tuple[dict, bool]:
         """Create or update the Lease with a new min_awake_until.
 
-        CAS retry loop on 409 (conflict). Uses max(existing, requested) for
-        min_awake_until so concurrent writers never shrink the window.
+        CAS retry loop on 409 (conflict). By default uses max(existing,
+        requested) for min_awake_until so concurrent writers never shrink
+        the window.
+
+        allow_owner_shrink (keyword-only, default False — #312): when True
+        AND this caller already holds the lease (existing_holder == holder),
+        min_awake_until becomes a TRUE REWRITE — effective_min is set to
+        exactly the requested value, which may shrink OR extend the current
+        floor. Reserved for the do_ensure_awake post-ready branch, which
+        knows readiness just arrived and wants to replace the acquire-time
+        startup floor (now + MAX_STARTUP_WAIT) with the much nearer
+        ready + GRACE_PERIOD deadline — the never-shrink max() default
+        could only ever extend that startup floor, never replace it, which
+        pinned every wake awake for ~MAX_STARTUP_WAIT regardless of how
+        fast readiness actually arrived. NEVER honored for a different
+        holder's active lease — the owner check below applies identically
+        whether or not this flag is set.
 
         Returns (lease_dict, acquired) where acquired is True ONLY if this
         caller won ownership (our holderIdentity written to the Lease).
@@ -256,12 +272,21 @@ class LeaseManager:
             lease_expired = existing_min <= now
 
             # Acquire only if the lease is expired or we already hold it.
+            # Owner-only, REGARDLESS of allow_owner_shrink: a different
+            # holder's active lease can never be stolen or shortened by
+            # this flag (#312 invariant).
             if not lease_expired and existing_holder != holder:
                 # Active lease held by someone else — don't steal.
                 return (existing, False)
 
-            # max(existing, requested) — never shrink the window.
-            effective_min = max(existing_min, min_awake_until)
+            if allow_owner_shrink and existing_holder == holder:
+                # True rewrite (#312) — may shrink OR extend past the
+                # startup floor, e.g. when readiness arrived late enough
+                # that ready + GRACE_PERIOD exceeds it.
+                effective_min = min_awake_until
+            else:
+                # Default: max(existing, requested) — never shrink the window.
+                effective_min = max(existing_min, min_awake_until)
 
             annotations[LEASE_MIN_AWAKE_ANNOTATION] = str(effective_min)
             existing["metadata"]["annotations"] = annotations
@@ -286,17 +311,29 @@ class LeaseManager:
         final = self.get()
         return (final or {}, False)
 
+    @staticmethod
+    def _annotation_min_awake(lease: dict) -> float:
+        """Parse min_awake_until off an already-fetched Lease dict (#312).
+
+        Shared by get_min_awake_until (which does its own fresh GET) and
+        do_ensure_awake's post-ready audit (which must log the value
+        actually PERSISTED by create_or_update's own return — re-reading
+        via a second GET would be both wasteful and not strictly the same
+        moment in time).
+        """
+        annotations = lease.get("metadata", {}).get("annotations") or {}
+        raw = annotations.get(LEASE_MIN_AWAKE_ANNOTATION, "0")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+
     def get_min_awake_until(self) -> float:
         """Read min_awake_until from the Lease annotations. 0.0 if absent."""
         lease = self.get()
         if lease is None:
             return 0.0
-        annotations = lease.get("metadata", {}).get("annotations") or {}
-        raw = annotations.get(LEASE_MIN_AWAKE_ANNOTATION, "0")
-        try:
-            return float(raw)
-        except ValueError:
-            return 0.0
+        return self._annotation_min_awake(lease)
 
     def record_sleep(self) -> None:
         """Annotate the Lease with sleep time + grace period."""
@@ -1008,11 +1045,24 @@ def do_ensure_awake() -> dict[str, Any]:
 
         ready = wait_awx_ready(MAX_STARTUP_WAIT)
         if ready:
-            # Extend lease from now — wake took some time.
-            final_min_awake = time.time() + GRACE_PERIOD
-            _lease.create_or_update(final_min_awake, holder_id)
+            # Rewrite (not merely extend) the lease floor to
+            # ready + GRACE_PERIOD now that readiness is known — replaces
+            # the acquire-time startup floor rather than only ever
+            # extending past it (#312: the old max()-based write pinned
+            # every wake awake for ~MAX_STARTUP_WAIT regardless of how
+            # fast readiness actually arrived). allow_owner_shrink is safe
+            # here specifically: this call chain is provably still the
+            # holder from the acquire above — an unexpired lease can only
+            # be rewritten by its own holder (create_or_update's owner-only
+            # guard applies identically with the flag set).
+            requested_min_awake = time.time() + GRACE_PERIOD
+            persisted_lease, _ = _lease.create_or_update(
+                requested_min_awake, holder_id, allow_owner_shrink=True)
+            persisted_min_awake = LeaseManager._annotation_min_awake(persisted_lease)
             audit("ensure_awake_ready",
-                  min_awake_until=final_min_awake, holder=holder_id)
+                  min_awake_until=persisted_min_awake,
+                  requested_min_awake_until=requested_min_awake,
+                  holder=holder_id)
             return {"ok": True, "detail": "awake and ready"}
 
         audit("ensure_awake_timeout", max_startup_wait=MAX_STARTUP_WAIT)
@@ -1131,6 +1181,11 @@ def idle_reaper_loop() -> None:
     """
     audit("reaper_started", interval=REAPER_POLL_INTERVAL, grace_period=GRACE_PERIOD)
     idle_since: float | None = None
+    # #312: the min_awake_until floor last audited as "parked" — None
+    # when not currently parked. Lets the parked branch below emit exactly
+    # one reaper_window_parked event per park (on the transition in, or
+    # when the floor itself changes) instead of one every poll.
+    parked_until: float | None = None
 
     while True:
         time.sleep(REAPER_POLL_INTERVAL)
@@ -1140,8 +1195,19 @@ def idle_reaper_loop() -> None:
 
             # Within the wake lease window — don't even check.
             if now < min_awake:
+                if parked_until is None or parked_until != min_awake:
+                    audit("reaper_window_parked", min_awake_until=min_awake,
+                          remaining=round(min_awake - now, 1))
+                    parked_until = min_awake
                 idle_since = None
                 continue
+
+            # Floor no longer holds us back — clear the sentinel BEFORE
+            # querying AWX (#312), so a query made this iteration is never
+            # attributed to a stale parked state.
+            if parked_until is not None:
+                audit("reaper_window_expired", min_awake_until=parked_until)
+                parked_until = None
 
             # Query active work (tri-state — UNREACHABLE is NOT ACTIVE).
             state = query_awx_work()
