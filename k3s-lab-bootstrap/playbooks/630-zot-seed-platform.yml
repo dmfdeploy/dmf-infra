@@ -70,6 +70,19 @@
 # copy is skipped (`changed_when: false`). Repeat bootstrap runs are
 # zero-cost when nothing has changed.
 #
+# Tag re-cuts: that presence gate is tag-based, so a digest pin that moves
+# under an UNCHANGED tag (e.g. the 2026-07-30 mxl v1.0.3 re-cut, umbrella
+# dmfdeploy/dmfdeploy#308) is invisible to it — a plain re-run silently
+# skips the new artifact. Pass `-e zot_seed_force=true` to bypass the gate:
+# skopeo re-copies every listed artifact (tags are overwritten in place, so
+# no manifest deletion is needed; blobs already present are not re-uploaded)
+# and the re-copied image tags are pruned from every node's containerd cache
+# (both consumer ref forms — cluster-internal and ingress-host) so
+# `IfNotPresent` pulls resolve the new digest. A digest-comparing gate was
+# deliberately NOT built: for manifest-LIST pins, the digest Zot stores after
+# a single-arch copy is the resolved per-arch manifest, not the pinned list
+# digest, so a naive stored-vs-pinned comparison would re-copy forever.
+#
 # Multi-arch: `--override-arch={{ dmf_seed_arch }} --override-os=linux`
 # selects only the env's architecture from GHCR's image manifest indices.
 # Chart artifacts are copied without arch selection.
@@ -104,6 +117,21 @@
     # reachability/HEAD checks in this play). Source (GHCR) verification is
     # unaffected. Cloud/lab keep verification on.
     zot_dest_tls_verify: "{{ 'false' if (dmf_tls_mode | default('') == 'local-ca') else 'true' }}"
+
+    # Bypass the tag-presence gate and re-copy every listed artifact.
+    # Needed when a digest pin moves under an unchanged tag — see the
+    # "Tag re-cuts" note in the header. Intended as an extra var:
+    # `-e zot_seed_force=true` on the wrapper invocation.
+    zot_seed_force: false
+
+    # The cluster-internal registry name SOME consumers pull through (the
+    # 300-k3s hosts.toml rewrite): the mxl chart values and the
+    # awx-integration image defaults use this form, so node containerd
+    # caches those images under it. OTHER consumers (cms role,
+    # dmf-promsd role) pull under the ingress host directly, so their
+    # cache entries carry {{ zot_registry_host }}/... refs instead. The
+    # force-mode prune below therefore removes BOTH ref forms per image.
+    zot_cluster_pull_host: "zot.zot.svc.cluster.local:5000"
 
     # Zot machine-write credentials (ADR-0033). This seed is a routine,
     # repeated WRITE path (re-run on every new image/chart tag), so per
@@ -405,13 +433,16 @@
           no_log: true
 
         - name: Compute which images need copying
+          # zot_seed_force bypasses the tag-presence gate — tag re-cuts
+          # are invisible to it (see the "Tag re-cuts" header note).
           ansible.builtin.set_fact:
             _zot_images_to_seed: >-
-              {{ zot_seed_images
+              {{ zot_seed_images if (zot_seed_force | bool) else
+                 (zot_seed_images
                  | zip(_zot_manifest_checks.results)
                  | selectattr('1.status', 'ne', 200)
                  | map(attribute='0')
-                 | list }}
+                 | list) }}
 
         - name: Report seed plan
           ansible.builtin.debug:
@@ -420,7 +451,7 @@
               ({{ _zot_images_to_seed | map(attribute='name') | join(', ') | default('none') }});
               {{ (zot_seed_images | length) - (_zot_images_to_seed | length) }} already present and skipped.
 
-        - name: Mirror image GHCR → Zot via skopeo (only for missing images)
+        - name: Mirror image GHCR → Zot via skopeo (missing or forced)
           # --retry-times=5: large awx-ee layers (100MB+) occasionally
           # trip the private-Traefik idle timeout mid-chunk-upload and
           # the upstream returns 504 Gateway Timeout. skopeo retries the
@@ -446,6 +477,33 @@
           register: _skopeo_copy
           changed_when: true
 
+        - name: Prune re-copied image tags from node containerd caches (force mode)
+          # A re-cut tag stays stale on the nodes otherwise: workloads pull
+          # with IfNotPresent, so containerd keeps serving the old cached
+          # digest even after Zot is updated (the second half of the
+          # umbrella #308 trap). Consumers reference the registry under two
+          # different names (see zot_cluster_pull_host above), so both ref
+          # forms are pruned per image; refs not present on a node make
+          # crictl exit non-zero, which is ignored. CRI RemoveImage removes
+          # the whole image record for a ref: a container already running
+          # from it keeps running on its snapshot, and the next pod start
+          # re-pulls from the (now updated) Zot — which is exactly the
+          # force path's goal.
+          ansible.builtin.command:
+            argv:
+              - crictl
+              - rmi
+              - "{{ zot_cluster_pull_host }}/{{ item.0.zot_repo | regex_replace('^' ~ zot_registry_host ~ '/', '') }}:{{ item.0.tag }}"
+              - "{{ item.0.zot_repo }}:{{ item.0.tag }}"
+          loop: "{{ _zot_images_to_seed | product(groups['k3s']) | list }}"
+          loop_control:
+            label: "{{ item.0.name }}:{{ item.0.tag }} @ {{ item.1 }}"
+          delegate_to: "{{ item.1 }}"
+          register: _cache_prune
+          failed_when: false
+          changed_when: "'Deleted' in (_cache_prune.stdout | default(''))"
+          when: zot_seed_force | bool
+
         # ── Per-chart: HEAD precheck → copy if absent ────────────────────
         - name: Probe each chart's current presence in Zot
           ansible.builtin.uri:
@@ -464,13 +522,15 @@
           no_log: true
 
         - name: Compute which charts need copying
+          # Same force semantics as the image gate above.
           ansible.builtin.set_fact:
             _zot_charts_to_seed: >-
-              {{ zot_seed_charts
+              {{ zot_seed_charts if (zot_seed_force | bool) else
+                 (zot_seed_charts
                  | zip(_zot_chart_manifest_checks.results)
                  | selectattr('1.status', 'ne', 200)
                  | map(attribute='0')
-                 | list }}
+                 | list) }}
 
         - name: Report chart seed plan
           ansible.builtin.debug:
@@ -479,7 +539,7 @@
               ({{ _zot_charts_to_seed | map(attribute='name') | join(', ') | default('none') }});
               {{ (zot_seed_charts | length) - (_zot_charts_to_seed | length) }} already present and skipped.
 
-        - name: Mirror chart GHCR → Zot via skopeo (only for missing charts)
+        - name: Mirror chart GHCR → Zot via skopeo (missing or forced)
           ansible.builtin.command:
             argv:
               - skopeo
