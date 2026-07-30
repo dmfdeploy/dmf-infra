@@ -188,7 +188,10 @@ awx_catalog_projects:
     # carries no JT-level extra_vars defaults by design (see its own
     # comment below) — nothing there needs to change. Conclusion: JT
     # contract intact, re-pin is a pure delivery-mechanism bump.
-    scm_branch: "v0.4.2"
+    #
+    # v0.4.2 -> v0.4.3 (umbrella #306): switch play replaces the
+    # helm-as-oracle wait with direct state verification.
+    scm_branch: "v0.4.3"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
