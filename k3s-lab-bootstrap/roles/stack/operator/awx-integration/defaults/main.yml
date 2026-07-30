@@ -314,7 +314,8 @@ awx_catalog_job_templates:
       # HELM CHART pin — NOT scm_branch (~line 160), which is the dmf-runbooks
       # project pin and coincidentally ALSO reads v0.4.1. Bumping the wrong
       # one is silent.
-      l3_chart_version: "0.4.1"
+      # 0.4.1 -> 0.4.2: umbrella #308 / dmf-media#26, the pacing-fix chart.
+      l3_chart_version: "0.4.2"
       mxl_interface: eth0
       # Profile-derived (dmfdeploy/dmfdeploy#17): colocated pod-network pair
       # on the single-node profile; the original cross-host hostNetwork shape
@@ -362,7 +363,8 @@ awx_catalog_job_templates:
       # Keep in lock-step with the source JT's pin above (0.4.0 -> 0.4.1,
       # umbrella #301 / dmf-media#24 — CPU limits removed from the media path).
       # Again: the mxl HELM CHART pin, not scm_branch (~line 160).
-      l3_chart_version: "0.4.1"
+      # 0.4.1 -> 0.4.2, umbrella #308 / dmf-media#26 — pacing fix.
+      l3_chart_version: "0.4.2"
       mxl_interface: eth0
       # Keep in lock-step with media-launch-mxl-videotestsrc above.
       mxl_placement_mode: "{{ awx_integration_mxl_placement_mode | default('single-node' if (dmf_release_profile | default('')) == 'sandbox-single-node' else 'split-node', true) }}"

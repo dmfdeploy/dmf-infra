@@ -179,9 +179,13 @@
     nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('sha256:c4bad3fb15f3015e0ab742de3b68719ff13c590ea28b465ca08ffac13fc55f62') }}"
 
     # MXL fabrics-demo chart + image (dmfdeploy/dmfdeploy#17). The IMAGE is
-    # digest-pinned to the proven spike artifact (v1.0.3 is a digest-preserving
-    # retag of v1.0.3-fabrics-dev — see the plan's Amendment A); the chart
-    # defaults pull it from Zot at zot.../dmf/mxl-fabrics-demo:v1.0.3.
+    # digest-pinned; the chart defaults pull it from Zot at
+    # zot.../dmf/mxl-fabrics-demo:v1.0.3. History: v1.0.3 originally launched
+    # as a digest-preserving retag of v1.0.3-fabrics-dev, the proven spike
+    # artifact (see the plan's Amendment A). It was RE-CUT 2026-07-30 with the
+    # 0.4.2 pacing-fix build (umbrella dmfdeploy/dmfdeploy#308) — same tag,
+    # new digest, now a BuildKit MANIFEST LIST (the original was
+    # single-manifest); see zot_seed_images below for the mirror-side detail.
     # 0.4.0 (umbrella dmfdeploy/dmfdeploy#201 WP2, dmf-media#21) adds the
     # topology parameterisation + selection-gated supervisor (per-source
     # flow.id/pattern/sourceId, active-source gate) — digest from the GHCR
@@ -204,11 +208,17 @@
     # limits were removed rather than raised again. Memory limits stay — memory
     # is not compressible (the #258 NetBox OOM lesson). Requests are unchanged
     # and deliberately deferred to dmfdeploy/dmfdeploy#302.
+    # 0.4.2 (umbrella dmfdeploy/dmfdeploy#308, dmf-media#26) is the pacing-fix
+    # chart. The image was re-cut at the same v1.0.3 tag with a new digest —
+    # the identity moves with the digest pin, not the tag. The new digest is a
+    # BuildKit MANIFEST LIST (the old one was a single-manifest image); the
+    # seed play's skopeo copy below resolves it correctly via
+    # --override-arch arm64.
     mxl_fabrics_seed_chart_name: "{{ mxl_fabrics_chart_name | default('mxl-fabrics-demo') }}"
-    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.4.1') }}"
-    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:ddab830072fc09a84d38318a2a6b2aee95872fb8fce0082f38681b6752672511') }}"
+    mxl_fabrics_seed_chart_version: "{{ mxl_fabrics_chart_version | default('0.4.2') }}"
+    mxl_fabrics_seed_chart_digest: "{{ mxl_fabrics_chart_digest | default('sha256:1d2db4da205b0ffc9ed3ebca6be06b91d25a6660258d46b6e42387bbe17de6fd') }}"
     mxl_fabrics_image_tag: "{{ mxl_fabrics_tag | default('v1.0.3') }}"
-    mxl_fabrics_image_digest: "{{ mxl_fabrics_digest | default('sha256:84980dc0c3e1de0a8f3ce12ce4d5149229c73a44b140c15ed77b8e84fb2108b1') }}"
+    mxl_fabrics_image_digest: "{{ mxl_fabrics_digest | default('sha256:3fb75956ea776e17a16eeaf56b7983df3524cb8c465c367d53589be548000970') }}"
 
     # Architecture to pull from GHCR's multi-arch manifest indices.
     # Inventory's `dmf_architecture` is the source of truth (rendered by
@@ -250,8 +260,12 @@
         source_digest: "sha256:9bde4953fa9a7abb6db6669bb1b3f10aac83cf38d69a7bfc4941313ccd4c9686"
         zot_repo: "{{ zot_registry_host }}/dmf/library/python"
       - name: mxl-fabrics-demo
-        # Consolidated MXL demo image, arm64 single-manifest, DIGEST-PINNED to
-        # the artifact the 2026-05-30 fabrics spike proved GREEN (#17).
+        # Consolidated MXL demo image, DIGEST-PINNED (#17). Originally the
+        # arm64 single-manifest artifact the 2026-05-30 fabrics spike proved
+        # GREEN; RE-CUT 2026-07-30 with the 0.4.2 pacing-fix build (umbrella
+        # #308) — the pinned digest is now a BuildKit MANIFEST LIST, resolved
+        # by this task's --override-arch below (see the mxl vars comment
+        # above for the full history).
         tag: "{{ mxl_fabrics_image_tag }}"
         source_digest: "{{ mxl_fabrics_image_digest }}"
         zot_repo: "{{ zot_registry_host }}/dmf/mxl-fabrics-demo"
