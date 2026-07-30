@@ -59,7 +59,7 @@ cat > /html/index.html << ENDOFHTML
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="The EBU's Dynamic Media Facility (DMF) — an open-source infrastructure lab exploring containerized broadcast workflows on k3s.">
+  <meta name="description" content="An open-source implementation of the EBU's Dynamic Media Facility (DMF) reference architecture on commodity hardware — containerized media functions, the upstream MXL essence-exchange SDK, and AMWA NMOS, on k3s.">
   <title>{{ landing_page_title }}</title>
 {% if dmf_cms_host is defined or cert_manager_cluster_domain is defined %}
   <link rel="preconnect" href="https://${PRECONNECT_HOST}" crossorigin>
@@ -378,7 +378,10 @@ cat > /html/index.html << ENDOFHTML
       <div class="hero-kicker"><svg class="ico" viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><circle cx="8" cy="8" r="3"/><circle cx="8" cy="8" r="0.5" fill="currentColor"/></svg> Mission</div>
       <h1>Dynamic Media Facility</h1>
       <p class="hero-sub">
-        The EBU's <strong>Dynamic Media Facility (DMF)</strong> is an architectural playbook for transitioning broadcast production from static hardware to software-defined, containerized workflows. This lab is a hands-on exploration of that concept — a small k3s cluster where we're learning how media functions, orchestration, and open infrastructure fit together.
+        The EBU's <strong>Dynamic Media Facility (DMF)</strong> is a reference architecture for moving broadcast production from fixed hardware to software-defined, containerized media functions. This project implements that model on commodity hardware: the EBU six-layer / four-vertical / six-stage taxonomy, the upstream <strong>MXL</strong> SDK carrying video essence between media functions, and AMWA <strong>NMOS IS-04</strong> registry and discovery — orchestrated by Ansible and AWX, with NetBox as the source of truth.
+      </p>
+      <p class="hero-sub">
+        It is a working single-node proof surface, not a production system. Multi-node HA and cloud are explicit non-goals for v0.1.
       </p>
     </section>
 
