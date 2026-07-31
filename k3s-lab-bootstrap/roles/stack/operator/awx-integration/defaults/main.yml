@@ -200,7 +200,50 @@ awx_catalog_projects:
     #
     # v0.4.2 -> v0.4.3 (umbrella #306): switch play replaces the
     # helm-as-oracle wait with direct state verification.
-    scm_branch: "v0.4.3"
+    #
+    # v0.4.3 -> v0.4.4 (umbrella #323): delivers the switch play's
+    # structured outcome event. The play now emits DMF_L3_SWITCH_OUTCOME on
+    # every terminal exit (23 enumerated from source; tokens `success`,
+    # `rollback_verified_previous_source_restored`,
+    # `rollback_verified_no_previous_source`, `rollback_verification_failed`,
+    # `refused` + a 9-value detail= naming the stage in flight), read from
+    # AWX job events BY TASK NAME rather than scraped from stdout. The
+    # emission is non-forgeable: a play-owned guard runs as the first task,
+    # outside the outer block, and a violation emits through a literal
+    # marker carrying no Jinja at all — extra_vars outrank both task-level
+    # `vars:` and `set_fact`, which is what made the pre-fix shape
+    # spoofable. Also: the temp-chart cleanup in the outer `always:` is now
+    # non-terminal, so a cleanup failure can no longer produce a FAILED job
+    # carrying a `success` event. This pin IS the delivery mechanism — the
+    # event is inert in AWX until the project advances past v0.4.3.
+    # JT contract audit (required before this bump, per the note above):
+    # `git diff v0.4.3..origin/main` (dmf-runbooks) touches
+    # playbooks/switch-mxl-fabrics-demo.yml, roles/l3_run_guard/tasks/
+    # _assert_reserved_vars.yml, two new emitters (_emit_switch_outcome.yml,
+    # _emit_switch_refused_literal.yml), a new switch_outcome_guard.yml, the
+    # test harness, and docs/README — **nothing under any */defaults/
+    # path** (verified by name-only filter, not by eyeball). The playbook
+    # filename referenced by the media-switch-source JT below (playbook:
+    # playbooks/switch-mxl-fabrics-demo.yml) is unchanged, and that
+    # playbook's documented extra_vars contract (topology_params/
+    # receiver_instance/source_instance/reason, consumed VERBATIM from
+    # dmf-cms's ReconnectViaAwxActuator) is **byte-identical** across the
+    # diff — checked by diffing that header block directly, not inferred
+    # from the absence of a rename. This bump warrants more care than its
+    # predecessors on exactly one point: it ADDS refusal conditions, so the
+    # audit must confirm the newly-guarded names are not JT-facing. They
+    # are not. switch_outcome_guard.yml asserts six internal names
+    # (_switch_outcome_emitted, l3_switch_outcome_token,
+    # l3_switch_outcome_kv, _switch_stage, _switch_upgrade_verify_ready,
+    # _switch_rollback_verified) and _assert_reserved_vars.yml gained four
+    # of the same — none is one of the four contract vars, so a JT payload
+    # that was accepted at v0.4.3 is still accepted at v0.4.4. As with the
+    # v0.4.1 -> v0.4.2 audit, these reserved additions REINFORCE rather
+    # than expand the JT-facing surface. The media-switch-source JT still
+    # carries no JT-level extra_vars defaults by design (see its own
+    # comment below) — nothing there needs to change. Conclusion: JT
+    # contract intact, re-pin is a pure delivery-mechanism bump.
+    scm_branch: "v0.4.4"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
