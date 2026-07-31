@@ -159,6 +159,49 @@ awx_task_replicas: 1
 awx_web_manage_replicas: true
 awx_task_manage_replicas: true
 
+# Control-plane execution environment — the awx-ee container of the awx-task
+# Deployment, where receptor runs and streams job pod logs. NOT the catalog job
+# EE (zot .../dmf/awx-ee, awx-integration/defaults awx_ee_catalog_tag); that one
+# is untouched by this pin.
+#
+# PINNED BY DIGEST, deliberately. quay.io/ansible/awx-ee publishes no versioned
+# tag newer than 24.6.1 (pushed 2024-07-02, the awx-operator 2.19.1 default),
+# whose embedded receptor is 1.4.8+d7fe592 — predating RECEPTOR_KUBE_RETRY_COUNT
+# entirely (the knob landed upstream in receptor PR #1425 on 2025-09-08, first
+# released in v1.6.0). So the retry budget below is only honoured on a newer EE.
+#
+# The digest resolves `awx-ee:latest` as of its 2026-05-19 build. It is the OCI
+# INDEX digest — platform resolution stays with the runtime; the linux/arm64
+# entry was verified present as
+# sha256:c5d22fdec4b1e09a975ef0e3c02241a47a18707aba669b3356a3e4ea5b6b82e5.
+# Measured embedded receptor: 1.6.5+git731bc47, with RECEPTOR_KUBE_RETRY_COUNT
+# verified present AND driving the log-READ path (pkg/workceptor/kubernetes.go:
+# GetKubeRetryCount at :277, os.Getenv at :280, read-path budget at :393 feeding
+# retryGetLogStream at :397).
+#
+# BUMP PROCEDURE — do not let this float:
+#   1. deliberately re-resolve the tag to a new digest;
+#   2. re-measure the binary:
+#        docker run --rm --platform linux/arm64 <ref> receptor --version
+#   3. re-verify the READ path in THAT version's tagged source before changing
+#      the pin. Presence of the env var is not sufficient — confirm the read
+#      loop consumes GetKubeRetryCount(), not merely the stream-open loop.
+#
+# ROLLBACK: set this to "" in env inventory. The CR field is then omitted and
+# the awx-operator default (quay.io/ansible/awx-ee:24.6.1) resumes.
+awx_control_plane_ee_image: "quay.io/ansible/awx-ee@sha256:eaab9b09f731e3561ee0d932123a9971c76095555520f71da7ff4f2d433b4c99"
+
+# Receptor's Kubernetes pod-log retry budget (RECEPTOR_KUBE_RETRY_COUNT),
+# delivered to the awx-ee container via spec.ee_extra_env. Upstream default is
+# 5; receptor clamps at 100 (DefaultKubeRetryCount/MaxKubeRetryCount).
+#
+# Raised to 60 after receptor exhausted the default budget of 5 and killed three
+# AWX jobs on 2026-07-30 (umbrella dmfdeploy/dmfdeploy#327): the read loop logs
+# "Detected ... Error ... Will retry N more times" counting down, then fails the
+# job with "Error reading from pod <ns>/<pod>: EOF". Requires a control-plane EE
+# carrying receptor >= 1.6.0 — see the digest pin above.
+awx_receptor_kube_retry_count: 60
+
 # Scheduling and resources (tune for lab sizing)
 awx_web_resource_requirements:
   requests:
