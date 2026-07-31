@@ -683,6 +683,11 @@
     gate_app_ready_url_password: "{{ awx_integration_admin_password }}"
     gate_app_ready_force_basic_auth: true
     gate_app_ready_validate_certs: "{{ awx_integration_validate_certs | bool }}"
+    # AWX cold-boots in ~5-6 min after a scale-from-zero wake, and the
+    # configure wrapper's --tags awx selection routes that cold boot
+    # straight into this gate (umbrella #317). 60 x 10s = 10 min.
+    gate_app_retries: 60
+    gate_app_delay: 10
 
 - name: Check AWX API availability
   ansible.builtin.uri:
