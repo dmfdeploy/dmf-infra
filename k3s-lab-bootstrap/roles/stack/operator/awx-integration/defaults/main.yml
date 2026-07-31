@@ -116,6 +116,15 @@ awx_integration_forgejo_user: "forgejo-svc"
 awx_integration_forgejo_token: >-
   {{ vault_forgejo_svc_token | default(forgejo_svc_token_effective | default(''), true) }}
 
+# umbrella #316: the in-cluster Forgejo repos are pull-mirrors of GitHub on a
+# ~1h interval, which races a pinned catalog project's re-pin right after a
+# GitHub tag push (dmf-runbooks v0.4.2, 2026-07-29 — the mirror hadn't caught
+# up yet and the project sync failed). catalog-project.yml triggers a
+# mirror-sync and polls this budget for the pinned ref to actually appear
+# before syncing the AWX project. 24 x 5s = 2 minutes.
+awx_integration_forgejo_mirror_wait_retries: 24
+awx_integration_forgejo_mirror_wait_delay: 5
+
 # Phase 8 (ADR-0016): AWX SSH Machine credential path for control-node access.
 # Placeholder default — every environment must override in its private
 # inventory with the operator-local path to the private key file.

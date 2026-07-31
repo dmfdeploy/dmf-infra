@@ -104,6 +104,63 @@
   register: _catalog_project_env_set
   no_log: "{{ not awx_integration_debug | bool }}"
 
+- name: "Derive Forgejo mirror repo + pinned ref: {{ catalog_project.name }}"
+  ansible.builtin.set_fact:
+    _catalog_project_forgejo_repo: "{{ catalog_project.scm_url | basename | regex_replace('\\.git$', '') }}"
+    _catalog_project_forgejo_ref: "{{ catalog_project.scm_branch | default('main') }}"
+
+- name: "Trigger Forgejo mirror-sync: {{ catalog_project.name }}"
+  # Best-effort: the in-cluster Forgejo repos are pull-mirrors of GitHub on a
+  # ~1h interval, so a project sync right after a GitHub tag push can race a
+  # stale mirror (umbrella #316). Kick a mirror-sync here to shrink that
+  # window, but don't hard-fail on it — a non-mirror repo, an unconfigured
+  # mirror, etc. all tolerate 4xx here. The authoritative gate is the ref-wait
+  # poll below.
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ _catalog_project_forgejo_repo }}/mirror-sync"
+    method: POST
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    status_code: [200, 202, 400, 401, 403, 404, 422]
+  register: _catalog_project_mirror_sync
+  failed_when: false
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Wait for pinned ref to mirror into Forgejo: {{ catalog_project.name }}"
+  # Authoritative gate for the mirror race (umbrella #316): the commits
+  # endpoint resolves a branch, tag, or SHA uniformly, returning 200 once the
+  # pinned ref exists in the mirror and 404 until it does.
+  ansible.builtin.uri:
+    url: "{{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ _catalog_project_forgejo_repo }}/commits?sha={{ _catalog_project_forgejo_ref | urlencode }}&limit=1&stat=false"
+    method: GET
+    headers:
+      Authorization: "token {{ awx_integration_forgejo_token }}"
+    status_code: [200, 404]
+  register: _catalog_project_mirror_ref_wait
+  failed_when: false
+  until: _catalog_project_mirror_ref_wait.status | default(0) == 200
+  retries: "{{ awx_integration_forgejo_mirror_wait_retries | default(24) }}"
+  delay: "{{ awx_integration_forgejo_mirror_wait_delay | default(5) }}"
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Assert pinned ref mirrored into Forgejo: {{ catalog_project.name }}"
+  ansible.builtin.assert:
+    that:
+      - _catalog_project_mirror_ref_wait.status | default(0) == 200
+    fail_msg: >-
+      AWX catalog project {{ catalog_project.name }} is pinned to ref
+      '{{ _catalog_project_forgejo_ref }}' in Forgejo repo
+      {{ awx_integration_forgejo_user }}/{{ _catalog_project_forgejo_repo }},
+      but that ref never appeared in the in-cluster Forgejo mirror after
+      waiting {{ awx_integration_forgejo_mirror_wait_retries | default(24) }}
+      retries x {{ awx_integration_forgejo_mirror_wait_delay | default(5) }}s
+      delay (~{{ (awx_integration_forgejo_mirror_wait_retries | default(24) | int)
+      * (awx_integration_forgejo_mirror_wait_delay | default(5) | int) }}s total).
+      Likely cause: the GitHub tag/branch has not yet mirrored into the
+      in-cluster Forgejo pull-mirror (~1h interval). Manual remedy: POST
+      {{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ _catalog_project_forgejo_repo }}/mirror-sync
+      then re-run this play once that returns.
+
 - name: "Trigger AWX project sync: {{ catalog_project.name }}"
   ansible.builtin.uri:
     url: "{{ awx_integration_api_base }}/projects/{{ _catalog_project_id }}/update/"
