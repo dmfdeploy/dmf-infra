@@ -105,6 +105,33 @@ spec:
   # Disable built-in ingress (we use Traefik IngressRoute)
   ingress_type: none
 
+{# Control-plane execution environment (umbrella dmfdeploy/dmfdeploy#327).
+   spec.control_plane_ee_image is a real, honoured field at awx-operator 2.19.1
+   — verified end-to-end, unlike spec.ee_pod_spec_override at the bottom of this
+   file: CRD config/crd/bases/awx.ansible.com_awxs.yaml:1347-1349 (type string),
+   override wiring roles/installer/tasks/resources_configuration.yml:29-35,
+   consumed at roles/installer/templates/deployments/task.yaml.j2:355 and
+   templates/settings/execution_environments.py.j2:6. Note the operator's own
+   template reads the underscore-prefixed _control_plane_ee_image, so this only
+   works because resources_configuration.yml:35 folds the public spec field in.
+   Empty → field omitted → the operator's default awx-ee:24.6.1 resumes. #}
+{% if awx_control_plane_ee_image | default('') | length > 0 %}
+  # Pinned by digest; see the defaults' bump procedure before changing it.
+  control_plane_ee_image: "{{ awx_control_plane_ee_image }}"
+{% endif %}
+{# Receptor's pod-log retry budget, delivered to the awx-ee container. The CRD
+   types ee_extra_env as a STRING (a block scalar holding a YAML list), not a
+   list — the operator splices it with indent(width=12, first=True) into the
+   env: of the <instance-name>-ee container of the awx-task Deployment, i.e.
+   the container running `exec receptor`. Kubernetes
+   env values must themselves be strings, so the rendered int is explicitly
+   quoted: bare inline Jinja would emit `value: 60`, which the API rejects. #}
+{% if awx_receptor_kube_retry_count is defined %}
+  ee_extra_env: |
+    - name: RECEPTOR_KUBE_RETRY_COUNT
+      value: "{{ awx_receptor_kube_retry_count | int }}"
+{% endif %}
+
   # Scheduling and resources
 {% if awx_web_resource_requirements is defined %}
   web_resource_requirements:
