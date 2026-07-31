@@ -96,5 +96,8 @@
       after {{ gate_app_retries | default(24) }} attempts.
       Last status={{ _gate_app_ready.status | default('none') }},
       msg={{ _gate_app_ready.msg | default('none') }}.
-      The app may be misconfigured or crashed — this is NOT a transient flap.
+      The app may be misconfigured or crashed — but a target recently
+      scaled from zero may still be cold-booting (a cold AWX can take
+      ~5-6 min to serve its API), so a longer budget
+      (raise gate_app_retries at the call site) may be the right response.
   when: _gate_app_ready.status | default(0) not in _gate_app_accept_codes
