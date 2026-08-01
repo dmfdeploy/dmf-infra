@@ -26,8 +26,10 @@
       - promsd-live
       - promsd-ready
       - netbox-http
-    # 4 recording groups + >=5 alert groups (dmf-watchdog is AM-gated).
-    monitoring_verify_min_rule_groups: 9
+    # 4 recording groups + >=6 alert groups. dmf-watchdog is NO LONGER
+    # AM-gated (the console's are-we-ok verdict needs it on alerting-disabled
+    # envs too), so it counts on every env.
+    monitoring_verify_min_rule_groups: 10
   tasks:
     - name: Read rendered rule keys from the prometheus-server ConfigMap
       ansible.builtin.command:
@@ -57,6 +59,19 @@
           prometheus-server ConfigMap recording_rules.yml/alerting_rules.yml
           do not carry the are-we-ok rule set — the values render or the Helm
           apply did not land.
+        quiet: true
+
+    - name: Assert the Watchdog rule deployed regardless of Alertmanager state
+      ansible.builtin.assert:
+        that:
+          - "'alert: Watchdog' in _verify_cm_rules.stdout"
+        fail_msg: >-
+          The Watchdog deadman rule is missing from alerting_rules.yml. It must
+          deploy on EVERY env, including prometheus_alertmanager_enabled=false:
+          the console's are-we-ok core (dmf-cms /api/workspace/health) treats
+          its absence as "cannot be verified as healthy" and refuses to render
+          a green verdict. Re-gating this group on Alertmanager is a
+          regression.
         quiet: true
 
     - name: Read Prometheus service ClusterIP
@@ -105,6 +120,40 @@
         fail_msg: >-
           One or more recording/alerting rules report health=err — check
           {{ _verify_prom_api }}/api/v1/rules for lastError details.
+        quiet: true
+
+    # The console's exact contract: dmf-cms /api/workspace/health reads THIS
+    # endpoint and matches alertname == "Watchdog" (or severity == "none") in
+    # state "firing". Asserting the ConfigMap key is not enough — verify the
+    # signal the console actually consumes, on the same API path.
+    - name: Wait for the Watchdog deadman to reach state=firing
+      ansible.builtin.uri:
+        url: "{{ _verify_prom_api }}/api/v1/alerts"
+        method: GET
+        return_content: true
+        status_code: 200
+      register: _verify_watchdog
+      until: >-
+        (_verify_watchdog.json.data.alerts | default([])
+         | selectattr('labels.alertname', 'equalto', 'Watchdog')
+         | selectattr('state', 'equalto', 'firing')
+         | list | length) > 0
+      retries: 12
+      delay: 10
+      failed_when: false
+
+    - name: Assert the console can verify facility health
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_verify_watchdog.json.data.alerts | default([])
+             | selectattr('labels.alertname', 'equalto', 'Watchdog')
+             | selectattr('state', 'equalto', 'firing')
+             | list | length) > 0
+        fail_msg: >-
+          No firing Watchdog alert on {{ _verify_prom_api }}/api/v1/alerts.
+          Without it the console renders "No alerts firing — but this cannot be
+          verified as healthy" and zero alerts mean nothing.
         quiet: true
 
     - name: Wait for all required dmf-static-probes targets, discovered and up

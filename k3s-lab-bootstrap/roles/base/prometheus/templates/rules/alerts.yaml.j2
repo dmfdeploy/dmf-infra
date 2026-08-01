@@ -13,18 +13,34 @@
 # expressions.
 #
 # Alert-name contract:
-# - `Watchdog` is matched BY NAME by the Alertmanager route (values.yml.j2)
-#   for the healthchecks.io dead-man's switch — never rename it.
+# - `Watchdog` is matched BY NAME by TWO consumers — never rename it:
+#     1. the Alertmanager route (values.yml.j2) for the healthchecks.io
+#        dead-man's switch, when prometheus_alertmanager_enabled;
+#     2. the console's are-we-ok core (dmf-cms /api/workspace/health), which
+#        matches `alertname == "Watchdog"` (or `severity: none`) on the
+#        Prometheus alerts API and will not render a green verdict without it.
+#   Consumer 2 is Alertmanager-INDEPENDENT, so the group must deploy
+#   unconditionally (see the group comment below).
 # - `NodeDown`/`PodCrashLooping`/`PersistentVolumeNearFull` predate this suite
 #   (kept over the plan's KubeNodeNotReady/DiskNearFull aliases to avoid
 #   churn; HostDiskNearFull below covers node filesystems separately).
 groups:
-{% if prometheus_alertmanager_enabled | bool %}
   - name: dmf-watchdog
     rules:
-      # Dead-man's switch: fires constantly; Alertmanager pings
-      # healthchecks.io on every group interval. Ping stream stops =>
-      # external alert even when Prometheus/Alertmanager are dead.
+      # Dead-man's switch: fires constantly. Two independent consumers, which
+      # is why this group is NOT gated on prometheus_alertmanager_enabled:
+      #  - Alertmanager (when enabled) pings healthchecks.io on every group
+      #    interval; ping stream stops => external alert even when
+      #    Prometheus/Alertmanager are dead.
+      #  - the console reads it straight off the Prometheus alerts API as the
+      #    proof that rule evaluation is alive, so a zero-alert answer can
+      #    render as *verified* green instead of unverifiable silence. Gating
+      #    this group on Alertmanager left every alerting-disabled env showing
+      #    "No alerts firing — but this cannot be verified as healthy", which
+      #    was an honest report of a self-inflicted gap.
+      # Proves rule evaluation + alert readback only — NOT notification
+      # delivery. AlertmanagerDown/PrometheusNotificationErrors (below, and
+      # correctly still AM-gated) cover the notify path.
       - alert: Watchdog
         expr: vector(1)
         labels:
@@ -33,10 +49,9 @@ groups:
         annotations:
           summary: Alerting pipeline is alive
           description: >-
-            This alert always fires. If Alertmanager stops pinging the
-            external dead-man's switch, investigate Prometheus or
-            Alertmanager health.
-{% endif %}
+            This alert always fires. If it is absent, Prometheus is not
+            evaluating rules. If Alertmanager stops pinging the external
+            dead-man's switch, investigate Prometheus or Alertmanager health.
 
   - name: dmf-node-saturation
     rules:
