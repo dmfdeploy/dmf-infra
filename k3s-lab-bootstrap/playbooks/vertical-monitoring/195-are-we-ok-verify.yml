@@ -26,9 +26,15 @@
       - promsd-live
       - promsd-ready
       - netbox-http
-    # 4 recording groups + >=6 alert groups. dmf-watchdog is NO LONGER
-    # AM-gated (the console's are-we-ok verdict needs it on alerting-disabled
-    # envs too), so it counts on every env.
+    # 5 recording groups + 7 alert groups = 12, in BOTH Alertmanager states:
+    # dmf-watchdog is no longer AM-gated (the console's are-we-ok verdict
+    # needs it on alerting-disabled envs too), and the remaining AM gate only
+    # drops two rules *inside* dmf-monitoring-self, never a whole group.
+    # This floor is a loose sanity bound — "the rule files landed at all" —
+    # not the regression guard. The discriminating checks are the explicit
+    # Watchdog assertions below: the rule is present in the rendered
+    # ConfigMap, and it reaches state=firing on the same /api/v1/alerts path
+    # the console reads.
     monitoring_verify_min_rule_groups: 10
   tasks:
     - name: Read rendered rule keys from the prometheus-server ConfigMap
