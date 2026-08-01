@@ -97,7 +97,7 @@ server:
 
 # ──────────────────────────────────────────────────────────────
 # serverFiles — prometheus.yml scrape_configs + recording/alerting rules
-# (rules always deploy; only Watchdog/notify alerts are AM-gated — see below)
+# (rules always deploy, Watchdog included; only notify-path alerts are AM-gated)
 #
 # scrape_configs is vendored from chart-default (prometheus-25.8.0) so we can
 # patch the `prometheus` self-scrape job's metrics_path to match
@@ -119,8 +119,10 @@ serverFiles:
   #   templates/rules/alerts.yaml.j2   — low-logic template (threshold vars)
   # The from_yaml round-trip validates both parse at render time.
   # Rules deploy regardless of Alertmanager state: the are-we-ok verdict pane
-  # reads ALERTS directly from Prometheus (fail-soft, plan D3); only the
-  # Watchdog/notify-path alerts are gated on prometheus_alertmanager_enabled
+  # reads ALERTS directly from Prometheus (fail-soft, plan D3). That includes
+  # the Watchdog deadman, which is the console's proof that rule evaluation is
+  # alive; only the notify-path alerts (AlertmanagerDown,
+  # PrometheusNotificationErrors) are gated on prometheus_alertmanager_enabled
   # inside the template. The chart-default prometheus.yml rule_files list
   # already references /etc/config/{recording,alerting}_rules.yml.
   # Alertmanager routing + receivers live under alertmanager.config (above).

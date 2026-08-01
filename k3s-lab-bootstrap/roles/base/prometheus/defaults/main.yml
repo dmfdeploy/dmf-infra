@@ -83,6 +83,8 @@ prometheus_ntfy_bridge_replicas: 1
 # fires constantly; Alertmanager pings this URL on every group interval. If
 # Alertmanager (or Prometheus, or the cluster) dies, pings stop and
 # healthchecks.io raises an external alert.
+# The Watchdog RULE itself deploys unconditionally (it is also the console's
+# are-we-ok liveness proof); only this external ping path needs Alertmanager.
 prometheus_alertmanager_watchdog_url: ""
 
 # Alert thresholds (override in inventory when lab characteristics differ).
