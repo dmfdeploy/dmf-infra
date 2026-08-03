@@ -243,7 +243,53 @@ awx_catalog_projects:
     # carries no JT-level extra_vars defaults by design (see its own
     # comment below) — nothing there needs to change. Conclusion: JT
     # contract intact, re-pin is a pure delivery-mechanism bump.
-    scm_branch: "v0.4.4"
+    #
+    # v0.4.4 -> v0.4.5 (umbrella #347, Arc 2b): delivers the finalise-purge
+    # launcher (playbooks/finalise-purge.yml) — permanent SoT removal of a
+    # finalised workload's residual NetBox catalog records — hardened
+    # through its own adversarial gate round (FIX-A2b.1/GATE-A2b.1: closed
+    # a reserved-var scanning gap that let a caller forge the launcher's
+    # DMF_L3_PURGE_OUTCOME success event against a genuinely dirty NetBox,
+    # added pagination to both the membership and final-read scans, and
+    # tightened C5 quartet type enforcement), plus a CI timeout bump and a
+    # play-scope netbox_api_token mapping fix. This pin IS the delivery
+    # mechanism for the NEW media-finalise-purge JT registered below — it
+    # is inert until the project advances past v0.4.4.
+    # JT contract audit (required before this bump, per the note above):
+    # `git -C ../dmf-runbooks diff v0.4.4..v0.4.5 -- '*/defaults/*'` —
+    # EMPTY (zero output, exit 0): nothing under any */defaults/ path
+    # changed at all. The full `git diff v0.4.4..v0.4.5 --stat` (19 files)
+    # is either brand-new (playbooks/finalise-purge.yml, 8 new
+    # roles/netbox_catalog_common + roles/l3_run_guard task files, one new
+    # filter plugin) or test/CI harness (.github/workflows/ci.yml,
+    # tests/harness/stub_netbox_api.py,
+    # tests/l3-finalise-purge-execution.yml,
+    # tests/scripts/check_playbook_structure.py,
+    # tests/scripts/check_reserved_vars.py) — an explicit --name-only grep
+    # for each of the EIGHT already-registered JTs' own playbook files
+    # (launch-/teardown-nmos-cpp.yml, launch-/teardown-nmos-crosspoint.yml,
+    # launch-/teardown-mxl-fabrics-demo.yml, rollback-run.yml,
+    # switch-mxl-fabrics-demo.yml) returns ZERO matches for every one of
+    # them — not diffed at all, so byte-identical, not merely
+    # contract-compatible. roles/l3_run_guard/tasks/_assert_reserved_vars.yml
+    # DID change (+78 lines): it reserves finalise-purge's own outcome-token
+    # names (l3_purge_outcome_token, l3_purge_outcome_kv, _purge_stage) plus
+    # ~20 _purge_* internal facts, and (same fix round, same root scanner
+    # gap) _merged_tags/_workload_tags/netbox_catalog_common_workload_tag_*
+    # — every registered JT's own extra_vars keys (netbox_api_url,
+    # vault_netbox_catalog_token, l3_chart_version, l3_release,
+    # l3_catalog_key, mxl_role, mxl_release, mxl_interface,
+    # mxl_placement_mode, crosspoint_ingress_host,
+    # vault_nmos_crosspoint_admin_password, topology_params/
+    # receiver_instance/source_instance/reason) is checked against this
+    # list by name and collides with none of it — same "reinforces, never
+    # restricts" conclusion as the v0.4.1->v0.4.2 and v0.4.3->v0.4.4
+    # audits above. Conclusion: JT contract of every EXISTING registration
+    # is intact; this bump's only JT-facing effect is the new
+    # media-finalise-purge entry below, whose own extra_vars were verified
+    # directly against finalise-purge.yml's header + preflight assert
+    # (see that entry's own comment).
+    scm_branch: "v0.4.5"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
@@ -471,6 +517,26 @@ awx_catalog_job_templates:
     # own "EXTRA_VARS PAYLOAD CONTRACT") — ask_variables_on_launch (force-set
     # true for every entry in this list, see tasks/main.yml) is what lets
     # those actually reach the job.
+  - name: media-finalise-purge
+    description: "Permanently remove a finalised workload's residual NetBox catalog records (delete-permanently, umbrella #347)"
+    playbook: "playbooks/finalise-purge.yml"
+    project_name: "dmf-runbooks"
+    extra_vars:
+      # Same scoped-writer credential plumbing as every other media-* JT
+      # above — see media-launch-nmos-cpp's own comment. workload_slug,
+      # purge_expected_service_ids, and the C5 quartet (purge_actor/
+      # purge_role/purge_reason/l3_request_id) are deliberately NOT set
+      # here: finalise-purge.yml requires all of them as caller-supplied
+      # extra_vars with no static default (verified against dmf-runbooks
+      # v0.4.5's playbooks/finalise-purge.yml — its own header + preflight
+      # assert), supplied per-launch by dmf-cms's finalise-purge endpoint.
+      # A static default for any of these would let a blank/stale launch
+      # silently target the wrong workload or fabricate an audit reason —
+      # same reasoning as media-rollback-run's own l3_run_id/
+      # l3_rollback_reason omission above.
+      netbox_api_url: "{{ awx_integration_netbox_url }}"
+      # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
+      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
 
 # ── Infra job templates (dmfdeploy/dmfdeploy#166 WP-F) ─────────────────────
 # Monitoring-apply lane: runs dmf-infra playbooks against hosts:k3s_control
