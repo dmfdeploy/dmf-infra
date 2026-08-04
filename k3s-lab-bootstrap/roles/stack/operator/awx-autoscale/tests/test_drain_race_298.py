@@ -1,6 +1,6 @@
 """Discriminating tests for #298: a wake arriving during a sleep-drain.
 
-Live timeline, env v5on-r8aw 2026-07-29 (helper audit log + AWX Postgres;
+Live timeline, env <env> 2026-07-29 (helper audit log + AWX Postgres;
 terminationGracePeriodSeconds is 30 on both awx-task and awx-web):
 
     06:54:01  reaper_sleep_trigger -> asleep; awx-task pod ...-ts6zx SIGTERMed

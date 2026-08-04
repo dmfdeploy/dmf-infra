@@ -86,7 +86,7 @@ netbox_unit_processes_spare: 2
 # our values.yml.j2 previously passed NEITHER through, so the effective
 # request was whatever that upstream preset resolves to (observed: 500m
 # CPU / 1024Mi memory). umbrella dmfdeploy/dmfdeploy#258 platform
-# request-budget audit (J1 gate): two sustained samples on v5on-r8aw
+# request-budget audit (J1 gate): two sustained samples on <env>
 # (10-min idle + 15-min under a loaded source-pod run, 30 samples each)
 # measured avg 11m/max 63m CPU and avg 211Mi/max 351Mi memory for the main
 # netbox container — the 500m CPU request was the single largest

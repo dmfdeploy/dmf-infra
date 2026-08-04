@@ -14,7 +14,7 @@ openbao_raft_node_id: "1"
 
 # Resources. umbrella dmfdeploy/dmfdeploy#258 platform request-budget audit
 # round 2 (2026-07-24, data-backed, requests only): measured avg 5m CPU on
-# v5on-r8aw — the 100m request was ~20x the observed average. Trimmed to
+# <env> — the 100m request was ~20x the observed average. Trimmed to
 # 25m (still 5x the measured avg). Memory request + both limits untouched.
 openbao_resources:
   requests:

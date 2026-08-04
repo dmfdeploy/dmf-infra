@@ -19,7 +19,7 @@ prometheus_helm_chart_version: "25.8.0"
 
 # Resource requests/limits to steer scheduling and avoid overcommit.
 # umbrella dmfdeploy/dmfdeploy#258 platform request-budget audit (J1 gate):
-# two sustained samples on v5on-r8aw (10-min idle + 15-min under a loaded
+# two sustained samples on <env> (10-min idle + 15-min under a loaded
 # source-pod run, 30 samples each) measured avg 11m/max 45m CPU and
 # avg 855Mi/max 879Mi memory — the 200m CPU request was ~4.5x the observed
 # max, pure over-declaration inflating the platform's scheduling claim on

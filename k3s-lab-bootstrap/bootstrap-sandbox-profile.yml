@@ -77,7 +77,7 @@
         # can still pin it off by setting dmf_awx_autoscale_enabled: false.
         dmf_awx_autoscale_enabled: "{{ dmf_awx_autoscale_enabled | default(true) }}"
       # Memory LIMITS are lab-parity (web 1536Mi, task 2Gi): tuned ONCE from the
-      # first imc1-cyh4 rollout, where a 1Gi web limit OOMKilled awx-web (exit
+      # first <env> rollout, where a 1Gi web limit OOMKilled awx-web (exit
       # 137) — AWX's web container runs 5 uWSGI workers + daphne and needs
       # ~1.2-1.5Gi. Limits don't reserve memory, so the 10 GiB node still fits
       # the stack; REQUESTS stay lean so scheduling isn't starved. MAX_FORKS=5
@@ -87,7 +87,7 @@
       # requests only — the netbox 1Gi-limit OOM lesson is a hard rule this
       # round: no limit anywhere below changes). web's cpu request 100m ->
       # 50m: measured 26m avg POD-TOTAL (web+redis+rsyslog combined) on
-      # v5on-r8aw, 2x margin. task/postgres unchanged this round (already
+      # <env>, 2x margin. task/postgres unchanged this round (already
       # trimmed/justified above). redis/rsyslog/ee are NEW this round — the
       # awx-operator's own internal defaults (verified against
       # ansible/awx-operator roles/installer/defaults/main.yml) ship
