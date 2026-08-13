@@ -116,27 +116,41 @@ cms_netbox_permissions:
     object_types:
       - "extras.tag"
 
-# ── DMF catalog writer service account (ADR-0032) ──────────────────────────
+# ── DMF catalog writer service account (ADR-0032, amended 2026-08-13) ──────
 # Scoped NetBox writer for catalog launchers (e.g. media-launch-nmos-cpp).
 # Per ADR-0032 (refining ADR-0028 C3), catalog launchers must mutate NetBox
 # via this narrowly-scoped account — never the superuser admin token. The
 # launcher CREATEs the per-deployment ipam.service record + the per-function
 # app:<key> tag and PATCHes the lifecycle tag across all 3 stages, so the
-# writer is scoped to exactly the two models it touches:
+# writer was originally scoped to exactly the two models it touched:
 #   ipam.service -> view, add, change
 #   extras.tag   -> view, add
-# No superuser/staff, no dcim, no tag change/delete. The 691 playbook mints +
-# persists the token (netbox_catalog_token) for the already-permissioned user.
+# No superuser/staff, no dcim write.
+#
+# AMENDMENT (dmfdeploy/dmfdeploy#347, 2026-08-13): media-finalise-purge
+# (Arc 2b delete-permanently) is the first and only launcher that actually
+# DELETEs an ipam.service record and its extras.tag, rather than patching a
+# lifecycle tag — a capability that didn't exist when ADR-0032 originally
+# scoped this account. Both the service-member DELETE
+# (netbox_catalog_common/tasks/_purge_delete_one_member.yml) and the tag
+# DELETE (purge_workload_tag.yml) use this same token, and both hit
+# NetBox's own ObjectPermission 403 with no_log/ignore_errors hiding it —
+# the playbook's own fail-closed final-read assert correctly refused to
+# claim success rather than silently reporting done. `delete` added below,
+# narrowly to the same two models this account already writes — no other
+# model, no staff/superuser bit. The 691 playbook mints + persists the
+# token (netbox_catalog_token) for the already-permissioned user; its
+# reconcile task is idempotent, so re-running 691 alone applies this.
 netbox_sot_catalog_writer_enabled: true
 netbox_sot_catalog_group: "dmf-catalog-writer"
 netbox_sot_catalog_username: "dmf-catalog-svc"
 netbox_sot_catalog_permissions:
   - name: "catalog-service-writer"
-    actions: ["view", "add", "change"]
+    actions: ["view", "add", "change", "delete"]
     object_types:
       - "ipam.service"
   - name: "catalog-tag-writer"
-    actions: ["view", "add"]
+    actions: ["view", "add", "delete"]
     object_types:
       - "extras.tag"
   # Read-only on dcim.device: the launcher looks up the parent load-balancer
