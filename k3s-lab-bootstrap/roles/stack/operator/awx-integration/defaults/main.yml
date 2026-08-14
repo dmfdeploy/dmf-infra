@@ -297,7 +297,31 @@ awx_catalog_projects:
     # media-finalise-purge entry below, whose own extra_vars were verified
     # directly against finalise-purge.yml's header + preflight assert
     # (see that entry's own comment).
-    scm_branch: "v0.4.5"
+    #
+    # v0.4.5 -> v0.4.6 (umbrella #347, ADR-0032 Amendment 3, 2026-08-14):
+    # media-finalise-purge moves off the shared dmf-catalog-svc identity
+    # onto a genuinely delete-only account (dmf-catalog-purge-svc) — this
+    # entry's own vault_netbox_purge_token extra_var (added below, same
+    # PR) is the delivery mechanism; it was inert (the JT ran v0.4.5 code
+    # that only ever read vault_netbox_catalog_token) until THIS bump.
+    # Confirmed live: with the extra_var wired but the pin still at
+    # v0.4.5, real AWX jobs (869, 874) both refused pre-lock — v0.4.5's
+    # play-scope mapping never read the new var, so netbox_api_token
+    # resolved empty every time. Not a race, not transient; deterministic
+    # until this pin moves.
+    # JT contract audit: `git -C ../dmf-runbooks diff v0.4.5..v0.4.6 --
+    # '*/defaults/*'` — EMPTY. Full `--stat` (5 files): playbooks/
+    # finalise-purge.yml + roles/l3_run_guard/tasks/_assert_netbox_token.yml
+    # (the identity-split token source + a caller-aware refusal message,
+    # see media-finalise-purge's own extra_vars entry below and
+    # dmf-runbooks#41), tests/l3-finalise-purge-execution.yml (lockstep
+    # test updates, no new JT-facing surface), roles/l3_run_guard/tasks/
+    # capacity.yml (one line, an env-id comment redaction, unrelated),
+    # VERSION. No other launcher's playbook file changed at all — every
+    # EXISTING registration's JT contract is intact; this bump's only
+    # JT-facing effect is that media-finalise-purge's own extra_vars
+    # (already declared below) finally reach code that reads them.
+    scm_branch: "v0.4.6"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
