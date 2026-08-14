@@ -1328,6 +1328,15 @@
       vars:
         perm_name: "{{ item.name }}"
         perm_desc: "DMF catalog {{ item.name }} access"
+        # NetBox ObjectPermission.constraints is a Django queryset filter
+        # (dict, applied as Q(**dict) — AND within the dict; NetBox itself
+        # ORs across multiple constraint dicts/permission rows). `to_json`
+        # renders a plain dict of string keys/values as valid Python literal
+        # syntax too, so it can be embedded directly; when an entry defines
+        # no constraints (the common case — unconstrained, model-wide grant)
+        # this must come out as the Python literal `None`, never JSON `null`.
+        perm_constraints_py: >-
+          {{ (item.constraints | to_json) if (item.constraints is defined and item.constraints) else 'None' }}
         cmd: |-
           cat > /tmp/nbs-perm-catalog-{{ item.name | replace('-', '_') }}.py << 'PY'
           import json
@@ -1338,6 +1347,7 @@
           perm_desc = "{{ perm_desc | replace('\"', '\\\"') }}"
           actions = {{ item.actions | to_json }}
           object_types = {{ item.object_types | to_json }}
+          constraints = {{ perm_constraints_py }}
           group_name = "{{ netbox_sot_catalog_group | replace('\"', '\\\"') }}"
 
           cts = []
@@ -1358,10 +1368,12 @@
                   name=perm_name,
                   description=perm_desc,
                   actions=actions,
+                  constraints=constraints,
               )
           else:
               perm.description = perm_desc
               perm.actions = actions
+              perm.constraints = constraints
               perm.save()
           perm.object_types.set(cts)
 
