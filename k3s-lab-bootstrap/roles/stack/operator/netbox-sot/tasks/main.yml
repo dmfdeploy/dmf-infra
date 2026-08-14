@@ -82,6 +82,24 @@
       /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-catalog.py | grep '^CATALOG_TOKEN=' | tail -n 1 | cut -d'=' -f2-
   when: netbox_sot_catalog_writer_enabled | bool
 
+- name: Set NetBox catalog purge token command
+  ansible.builtin.set_fact:
+    netbox_sot_purge_token_cmd: |-
+      cat > /tmp/nbs-token-purge.py << 'PY'
+      from users.models import Token, User
+      from users.constants import TOKEN_PREFIX
+      user = User.objects.get(username="{{ netbox_sot_catalog_purge_username | replace('"', '\\"') }}")
+      token = Token.objects.filter(user=user, description="DMF catalog purge (delete-only)").first()
+      if token:
+          token.delete()
+          token = None
+      if not token:
+          token = Token.objects.create(user=user, description="DMF catalog purge (delete-only)", write_enabled=True)
+      print("PURGE_TOKEN=" + TOKEN_PREFIX + token.key + "." + token.token)
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-purge.py | grep '^PURGE_TOKEN=' | tail -n 1 | cut -d'=' -f2-
+  when: netbox_sot_catalog_purge_enabled | bool
+
 - name: Set PromSD token command
   ansible.builtin.set_fact:
     netbox_sot_promsd_token_cmd: |-
@@ -165,6 +183,12 @@
   ansible.builtin.set_fact:
     netbox_sot_catalog_token_effective: "{{ netbox_sot_catalog_token }}"
   when: netbox_sot_catalog_writer_enabled | bool
+  no_log: true
+
+- name: Set effective NetBox catalog purge token
+  ansible.builtin.set_fact:
+    netbox_sot_purge_token_effective: "{{ netbox_sot_purge_token }}"
+  when: netbox_sot_catalog_purge_enabled | bool
   no_log: true
 
 - name: Set effective NetBox PromSD token
@@ -1466,6 +1490,214 @@
         status_code: 200
       when: netbox_sot_catalog_group_id | int not in (netbox_sot_catalog_user_group_ids | list)
 
+# ── Retire Amendment-2-era delete permission entries (Amendment 3) ─────────
+# Removing catalog-service-delete/catalog-tag-delete from
+# netbox_sot_catalog_permissions above only stops THIS role from declaring
+# them going forward — the reconcile loop above only ever creates/updates
+# entries it is given, it never prunes ones it no longer sees. On an
+# instance that already ran Amendment 2, those two ObjectPermission rows
+# (unconstrained... no, object-scoped, but still bound to dmf-catalog-svc,
+# which is exactly the identity Amendment 3 removes delete from) would
+# otherwise survive untouched forever. Explicit, idempotent delete by name;
+# a no-op once already retired.
+- name: Set retired catalog permission cleanup command
+  ansible.builtin.set_fact:
+    netbox_sot_catalog_retired_permission_cmd: |-
+      cat > /tmp/nbs-perm-catalog-retire.py << 'PY'
+      from users.models import ObjectPermission
+      names = {{ netbox_sot_catalog_retired_permission_names | to_json }}
+      removed = []
+      for name in names:
+          count, _ = ObjectPermission.objects.filter(name=name).delete()
+          if count:
+              removed.append(name)
+      print("REMOVED=" + ",".join(removed))
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-catalog-retire.py | grep '^REMOVED=' | tail -n 1
+
+- name: Retire Amendment-2-era catalog delete permission entries via NetBox pod
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_catalog_retired_permission_cmd] }}"
+  register: netbox_sot_catalog_retired_permissions_removed
+  changed_when: >-
+    'REMOVED=' in (netbox_sot_catalog_retired_permissions_removed.stdout | default(''))
+    and (netbox_sot_catalog_retired_permissions_removed.stdout | default('') | trim) != 'REMOVED='
+
+# ── DMF catalog PURGE service account (ADR-0032 Amendment 3) ───────────────
+# Mirrors the catalog writer block above exactly (group -> permissions ->
+# user), for the delete-only identity described in defaults/main.yml.
+- name: Ensure DMF catalog purge service account NetBox access
+  when: netbox_sot_catalog_purge_enabled | bool
+  block:
+    # ── Group ──
+    - name: Lookup catalog purge group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/?name={{ netbox_sot_catalog_purge_group | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_catalog_purge_group_lookup
+
+    - name: Create catalog purge group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/groups/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        body_format: json
+        body:
+          name: "{{ netbox_sot_catalog_purge_group }}"
+          description: "DMF catalog finalise-purge scoped delete-only access"
+        status_code: 201
+      when: netbox_sot_catalog_purge_group_lookup.json.count | int == 0
+      register: netbox_sot_catalog_purge_group_created
+
+    - name: Set catalog purge group id
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_purge_group_id: >-
+          {{ (netbox_sot_catalog_purge_group_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_catalog_purge_group_created.json.id) }}
+
+    # ── ObjectPermissions (one per netbox_sot_catalog_purge_permissions entry) ──
+    - name: Set catalog purge object permission commands
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_purge_permission_cmds: >-
+          {{ netbox_sot_catalog_purge_permission_cmds | default({})
+             | combine({ item.name: cmd }) }}
+      loop: "{{ netbox_sot_catalog_purge_permissions }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }}"
+      vars:
+        perm_name: "{{ item.name }}"
+        perm_desc: "DMF catalog {{ item.name }} access"
+        perm_constraints_json: >-
+          {{ (item.constraints | to_json) if (item.constraints is defined and item.constraints) else 'null' }}
+        cmd: |-
+          cat > /tmp/nbs-perm-catalog-{{ item.name | replace('-', '_') }}.py << 'PY'
+          import json
+          from django.contrib.contenttypes.models import ContentType
+          from users.models import ObjectPermission, Group
+
+          perm_name = "{{ perm_name | replace('\"', '\\\"') }}"
+          perm_desc = "{{ perm_desc | replace('\"', '\\\"') }}"
+          actions = {{ item.actions | to_json }}
+          object_types = {{ item.object_types | to_json }}
+          constraints = json.loads({{ perm_constraints_json | to_json }})
+          group_name = "{{ netbox_sot_catalog_purge_group | replace('\"', '\\\"') }}"
+
+          cts = []
+          missing = []
+          for entry in object_types:
+              app, model = entry.split('.', 1)
+              ct = ContentType.objects.filter(app_label=app, model=model).first()
+              if ct:
+                  cts.append(ct)
+              else:
+                  missing.append(entry)
+          if missing:
+              raise SystemExit("Missing content types: " + ", ".join(missing))
+
+          perm = ObjectPermission.objects.filter(name=perm_name).first()
+          if not perm:
+              perm = ObjectPermission.objects.create(
+                  name=perm_name,
+                  description=perm_desc,
+                  actions=actions,
+                  constraints=constraints,
+              )
+          else:
+              perm.description = perm_desc
+              perm.actions = actions
+              perm.constraints = constraints
+              perm.save()
+          perm.object_types.set(cts)
+
+          group = Group.objects.get(name=group_name)
+          perm.groups.set([group])
+          print(perm.id)
+          PY
+          /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-catalog-{{ item.name | replace('-', '_') }}.py
+
+    - name: Apply catalog purge object permissions via NetBox pod
+      ansible.builtin.command:
+        argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_catalog_purge_permission_cmds[item.name]] }}"
+      loop: "{{ netbox_sot_catalog_purge_permissions }}"
+      loop_control:
+        loop_var: item
+        label: "{{ item.name }}"
+      register: netbox_sot_catalog_purge_permissions_applied
+      changed_when: false
+
+    # ── User lookup/create + group assignment ──
+    - name: Lookup catalog purge service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/?username={{ netbox_sot_catalog_purge_username | urlencode }}"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_catalog_purge_user_lookup
+
+    - name: Create catalog purge service user
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/"
+        method: POST
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          username: "{{ netbox_sot_catalog_purge_username }}"
+          is_active: true
+          password: "{{ lookup('community.general.random_string', length=24, special=false) }}"
+          groups:
+            - "{{ netbox_sot_catalog_purge_group_id }}"
+        status_code: 201
+      when: netbox_sot_catalog_purge_user_lookup.json.count | int == 0
+      no_log: true
+      register: netbox_sot_catalog_purge_user_created
+
+    - name: Set catalog purge user id
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_purge_user_id: >-
+          {{ (netbox_sot_catalog_purge_user_lookup.json.results | default([]) | first | default({})).id
+             | default(netbox_sot_catalog_purge_user_created.json.id) }}
+
+    - name: Fetch catalog purge service user details
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_catalog_purge_user_id }}/"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        return_content: true
+        status_code: 200
+      register: netbox_sot_catalog_purge_user_detail
+
+    - name: Set catalog purge user group ids
+      ansible.builtin.set_fact:
+        netbox_sot_catalog_purge_user_group_ids: "{{ group_ids | unique | list }}"
+      vars:
+        groups: "{{ netbox_sot_catalog_purge_user_detail.json.groups | default([]) }}"
+        group_ids: >-
+          {{ (groups | select('mapping') | map(attribute='id') | list)
+             + (groups | select('number') | list) }}
+
+    - name: Ensure catalog purge user is in catalog purge group
+      ansible.builtin.uri:
+        url: "{{ netbox_sot_api_base }}/users/users/{{ netbox_sot_catalog_purge_user_id }}/"
+        method: PATCH
+        headers:
+          Authorization: "Bearer {{ netbox_sot_admin_token_effective }}"
+        body_format: json
+        body:
+          groups: "{{ netbox_sot_catalog_purge_user_group_ids | union([netbox_sot_catalog_purge_group_id | int]) }}"
+        status_code: 200
+      when: netbox_sot_catalog_purge_group_id | int not in (netbox_sot_catalog_purge_user_group_ids | list)
+
 # ── AWX token idempotency gate ──────────────────────────────────────────────
 # Reuse the OpenBao-persisted AWX inventory-source token when NetBox still has
 # the matching "AWX inventory source" token (ORM). A standalone 691 re-run that
@@ -1736,6 +1968,128 @@
         - netbox_sot_catalog_token_effective | length == 0
       no_log: true
 
+# ── Catalog PURGE token idempotency gate (ADR-0032 Amendment 3) ────────────
+# Byte-same shape as the catalog writer token gate above, mirrored for the
+# delete-only identity — reuse from OpenBao's persisted netbox_purge_token
+# iff NetBox still has a "DMF catalog purge (delete-only)" token for the
+# purge user; otherwise mint + persist.
+- name: Read existing catalog purge token from OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv get -format=json {{ netbox_sot_runtime_secret_path | quote }}'
+  register: _netbox_sot_purge_openbao_raw
+  changed_when: false
+  failed_when: false
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_sot_openbao_client_token }}"
+  no_log: true
+  when:
+    - netbox_sot_catalog_purge_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_purge_token_effective | length == 0
+
+- name: Parse existing catalog purge token from OpenBao
+  ansible.builtin.set_fact:
+    _netbox_sot_purge_openbao_token: >-
+      {{
+        (_netbox_sot_purge_openbao_raw.stdout | from_json).data.data.netbox_purge_token | default('')
+        if (_netbox_sot_purge_openbao_raw.rc | default(1)) == 0
+        and (_netbox_sot_purge_openbao_raw.stdout | default('') | length) > 0
+        else ''
+      }}
+  no_log: true
+  when:
+    - netbox_sot_catalog_purge_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_purge_token_effective | length == 0
+
+- name: Build NetBox catalog purge token existence-check command
+  ansible.builtin.set_fact:
+    netbox_sot_purge_token_check_cmd: |-
+      cat > /tmp/nbs-token-purge-check.py << 'PY'
+      from users.models import Token, User
+      try:
+          user = User.objects.get(username="{{ netbox_sot_catalog_purge_username | replace('"', '\\"') }}")
+          exists = Token.objects.filter(user=user, description="DMF catalog purge (delete-only)").exists()
+      except User.DoesNotExist:
+          exists = False
+      print("1" if exists else "0")
+      PY
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-token-purge-check.py | tail -n 1
+  when:
+    - netbox_sot_catalog_purge_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_purge_token_effective | length == 0
+    - _netbox_sot_purge_openbao_token | default('') | length > 0
+
+- name: Check NetBox for an existing catalog purge token (ORM)
+  ansible.builtin.command:
+    argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_purge_token_check_cmd] }}"
+  register: _netbox_sot_purge_nb_token_check
+  changed_when: false
+  when:
+    - netbox_sot_catalog_purge_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_purge_token_effective | length == 0
+    - _netbox_sot_purge_openbao_token | default('') | length > 0
+
+- name: Reuse existing catalog purge token from OpenBao (no rotation)
+  ansible.builtin.set_fact:
+    netbox_sot_purge_token_effective: "{{ _netbox_sot_purge_openbao_token }}"
+    _netbox_sot_purge_token_reused: true
+  no_log: true
+  when:
+    - netbox_sot_catalog_purge_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_purge_token_effective | length == 0
+    - _netbox_sot_purge_openbao_token | default('') | length > 0
+    - (_netbox_sot_purge_nb_token_check.stdout | default('0') | trim) == "1"
+
+- name: Report catalog purge token decision
+  ansible.builtin.debug:
+    msg: >-
+      DMF catalog purge token:
+      {{ 'REUSED from OpenBao (no rotation)'
+         if _netbox_sot_purge_token_reused | default(false) | bool
+         else 'will be minted (no valid existing token found)' }}
+  when:
+    - netbox_sot_catalog_purge_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+
+- name: Ensure catalog purge service token exists when enabled
+  when: netbox_sot_catalog_purge_enabled | bool
+  block:
+    - name: Create catalog purge token via NetBox pod
+      ansible.builtin.command:
+        argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_purge_token_cmd] }}"
+      register: netbox_sot_purge_token_created
+      changed_when: false
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_purge_token_effective | length == 0
+      no_log: true
+
+    - name: Set catalog purge token from pod output
+      ansible.builtin.set_fact:
+        netbox_sot_purge_token_effective: "{{ netbox_sot_purge_token_created.stdout | default('') | trim }}"
+      when:
+        - netbox_sot_manage_tokens | bool
+        - netbox_sot_purge_token_effective | length == 0
+      no_log: true
+
 - name: Build NetBox PromSD token existence-check command
   ansible.builtin.set_fact:
     netbox_sot_promsd_token_check_cmd: |-
@@ -1826,6 +2180,15 @@
          + [{'key': 'vault_netbox_catalog_token',
              'value': netbox_sot_catalog_token_effective}] }}
   when: netbox_sot_catalog_writer_enabled | bool
+  no_log: true
+
+- name: Add catalog purge token to NetBox vault token items
+  ansible.builtin.set_fact:
+    netbox_sot_vault_token_items: >-
+      {{ netbox_sot_vault_token_items
+         + [{'key': 'vault_netbox_purge_token',
+             'value': netbox_sot_purge_token_effective}] }}
+  when: netbox_sot_catalog_purge_enabled | bool
   no_log: true
 
 - name: Add PromSD token to NetBox vault token items
@@ -2087,6 +2450,35 @@
   when:
     - netbox_sot_persist_to_openbao | bool
     - netbox_sot_catalog_writer_enabled | bool
+
+# Merge the delete-only purge token into the same runtime secret (ADR-0032
+# Amendment 3) — same kv patch shape as the catalog writer token above,
+# under its own key so awx-integration can wire it into media-finalise-
+# purge's JT specifically, without touching the other catalog launcher JTs.
+- name: Persist NetBox catalog purge token to in-cluster OpenBao
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n'
+      "$OPENBAO_TOKEN"
+      "$NETBOX_PURGE_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ netbox_sot_openbao_namespace }}
+      exec -i {{ _netbox_sot_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      IFS= read -r PURGE_TOKEN;
+      export BAO_TOKEN;
+      bao kv patch {{ netbox_sot_runtime_secret_path | quote }}
+      netbox_purge_token="$PURGE_TOKEN"'
+  run_once: true
+  environment:
+    OPENBAO_TOKEN: "{{ _netbox_sot_openbao_client_token }}"
+    NETBOX_PURGE_TOKEN: "{{ netbox_sot_purge_token_effective }}"
+  changed_when: false
+  no_log: true
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_catalog_purge_enabled | bool
 
 # ── NetBox external datasource (git-backed from Forgejo) ────────────────────
 # Uses the core Data Sources model to sync files from a private Forgejo repo

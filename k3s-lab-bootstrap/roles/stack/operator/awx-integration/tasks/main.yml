@@ -58,6 +58,8 @@
       or awx_integration_forgejo_token | default('', true) | length == 0
       or (awx_integration_netbox_catalog_token | default('', true) | length == 0
           and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+      or (awx_integration_netbox_purge_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
 - name: Extract OpenBao credentials for AWX integration
   ansible.builtin.set_fact:
@@ -82,6 +84,8 @@
     - awx_integration_netbox_token | default('', true) | length == 0
       or awx_integration_forgejo_token | default('', true) | length == 0
       or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+      or (awx_integration_netbox_purge_token | default('', true) | length == 0
           and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
 - name: Extract OpenBao operator credentials for AWX persistence
@@ -120,6 +124,8 @@
       or awx_integration_forgejo_token | default('', true) | length == 0
       or (awx_integration_netbox_catalog_token | default('', true) | length == 0
           and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+      or (awx_integration_netbox_purge_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
 - name: Assert OpenBao pod exists for AWX integration
   ansible.builtin.assert:
@@ -135,6 +141,8 @@
       or awx_integration_forgejo_token | default('', true) | length == 0
       or (awx_integration_netbox_catalog_token | default('', true) | length == 0
           and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+      or (awx_integration_netbox_purge_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
 - name: Set OpenBao pod fact for AWX integration
   ansible.builtin.set_fact:
@@ -145,6 +153,8 @@
       or awx_integration_netbox_token | default('', true) | length == 0
       or awx_integration_forgejo_token | default('', true) | length == 0
       or (awx_integration_netbox_catalog_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+      or (awx_integration_netbox_purge_token | default('', true) | length == 0
           and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
 - name: Log into OpenBao with operator userpass for AWX persistence
@@ -195,6 +205,8 @@
       or awx_integration_forgejo_token | default('', true) | length == 0
       or (awx_integration_netbox_catalog_token | default('', true) | length == 0
           and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+      or (awx_integration_netbox_purge_token | default('', true) | length == 0
+          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
 - name: Extract OpenBao client token for AWX source-token reads
   ansible.builtin.set_fact:
@@ -227,6 +239,8 @@
     awx_integration_netbox_token | default('', true) | length == 0
     or (awx_integration_netbox_catalog_token | default('', true) | length == 0
         and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
+    or (awx_integration_netbox_purge_token | default('', true) | length == 0
+        and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
 # Set the awx inventory token from OpenBao ONLY when it wasn't already provided
 # (vault var / export-vars). The read above may also fire purely to fetch the
@@ -253,6 +267,22 @@
     awx_integration_netbox_catalog_token: >-
       {{
         (_awx_openbao_netbox_raw.stdout | from_json).data.data.netbox_catalog_token | default('', true)
+      }}
+  run_once: true
+  no_log: true
+  when:
+    - _awx_openbao_netbox_raw is defined
+    - _awx_openbao_netbox_raw.stdout is defined
+    - _awx_openbao_netbox_raw.stdout | length > 0
+
+# ADR-0032 Amendment 3: delete-only purge token, same secret/apps/netbox/runtime
+# read as the catalog-writer token above (one kv get already fetched it — no
+# second OpenBao round-trip needed).
+- name: Set NetBox catalog-purge token from in-cluster OpenBao
+  ansible.builtin.set_fact:
+    awx_integration_netbox_purge_token: >-
+      {{
+        (_awx_openbao_netbox_raw.stdout | from_json).data.data.netbox_purge_token | default('', true)
       }}
   run_once: true
   no_log: true
