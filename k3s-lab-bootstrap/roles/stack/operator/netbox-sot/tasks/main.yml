@@ -1500,6 +1500,34 @@
 # which is exactly the identity Amendment 3 removes delete from) would
 # otherwise survive untouched forever. Explicit, idempotent delete by name;
 # a no-op once already retired.
+#
+# lkirc review (dmf-infra PR#82): the manage.py cleanup used to be piped
+# through `| grep '^REMOVED=' | tail -n 1` inside a plain /bin/sh -c with
+# no pipefail — POSIX sh (and most /bin/sh providers, e.g. dash; this
+# can't just add `set -o pipefail`, a bash/ksh/zsh-only builtin) reports a
+# pipeline's exit status as its LAST command's, so a Python/DB failure
+# inside manage.py that crashes before ever printing REMOVED= produced
+# empty grep output, tail -n 1 on empty input still exits 0, and the task
+# reported a clean "ok" — indistinguishable from the legitimate
+# already-retired no-op (both produce no REMOVED= match). A silent
+# failure here leaves catalog-service-delete/catalog-tag-delete attached
+# to dmf-catalog-svc with no signal, the exact shared-token delete path
+# Amendment 3 exists to close.
+#
+# Fixed by removing the pipe entirely instead of chasing sh-dialect
+# pipefail support: manage.py's own raw stdout is captured (register,
+# below) and the REMOVED= marker is extracted Ansible-side via
+# stdout_lines|select — the assert task right after this one then checks
+# BOTH the command's own rc AND that exactly one marker line was found,
+# rather than trusting either signal alone. Verified directly against a
+# real `django-admin shell < script.py` (piped/non-tty stdin) that a
+# top-level Python exception — Django's shell.py uses
+# `exec(sys.stdin.read())` for non-interactive stdin, not the line-
+# buffered interactive REPL, so one failing statement aborts the whole
+# script rather than continuing to the next line — propagates as the
+# process's own non-zero exit AND correctly leaves zero REMOVED= lines in
+# stdout, even when the crash happens mid-for-loop after some names were
+# already deleted (so a partial run is caught, not just a total one).
 - name: Set retired catalog permission cleanup command
   ansible.builtin.set_fact:
     netbox_sot_catalog_retired_permission_cmd: |-
@@ -1513,15 +1541,38 @@
               removed.append(name)
       print("REMOVED=" + ",".join(removed))
       PY
-      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-catalog-retire.py | grep '^REMOVED=' | tail -n 1
+      /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell < /tmp/nbs-perm-catalog-retire.py
 
 - name: Retire Amendment-2-era catalog delete permission entries via NetBox pod
   ansible.builtin.command:
     argv: "{{ netbox_sot_kubectl_cmd + ['-n', netbox_sot_namespace, 'exec', netbox_sot_kubectl_exec_target, '--', '/bin/sh', '-c', netbox_sot_catalog_retired_permission_cmd] }}"
   register: netbox_sot_catalog_retired_permissions_removed
   changed_when: >-
-    'REMOVED=' in (netbox_sot_catalog_retired_permissions_removed.stdout | default(''))
-    and (netbox_sot_catalog_retired_permissions_removed.stdout | default('') | trim) != 'REMOVED='
+    (netbox_sot_catalog_retired_permissions_removed.stdout_lines
+     | select('match', '^REMOVED=') | list | length) == 1
+    and
+    (netbox_sot_catalog_retired_permissions_removed.stdout_lines
+     | select('match', '^REMOVED=') | list)[0] != 'REMOVED='
+
+- name: "Assert the retirement cleanup actually completed (fail-closed —
+    a Python/DB failure inside manage.py must never be reported as a
+    silent no-op; see the block header above for the grep|tail pipe this
+    replaces and why relying on rc alone would still miss a caught-but-
+    swallowed application-level failure that never re-raises)"
+  ansible.builtin.assert:
+    that:
+      - netbox_sot_catalog_retired_permissions_removed.rc == 0
+      - (netbox_sot_catalog_retired_permissions_removed.stdout_lines
+         | select('match', '^REMOVED=') | list | length) == 1
+    fail_msg: >-
+      NetBox catalog permission retirement cleanup did not complete
+      cleanly (rc={{ netbox_sot_catalog_retired_permissions_removed.rc }}).
+      Expected exactly one REMOVED=... marker line in stdout; a missing
+      or duplicated marker means manage.py's cleanup script did not run
+      to completion — catalog-service-delete/catalog-tag-delete may
+      still be attached to dmf-catalog-svc. Never treat this as a no-op;
+      re-run after investigating (the delete-by-name loop is idempotent,
+      see this block's own header).
 
 # ── DMF catalog PURGE service account (ADR-0032 Amendment 3) ───────────────
 # Mirrors the catalog writer block above exactly (group -> permissions ->
