@@ -136,23 +136,75 @@ cms_netbox_permissions:
 # DELETE (purge_workload_tag.yml) use this same token, and both hit
 # NetBox's own ObjectPermission 403 with no_log/ignore_errors hiding it —
 # the playbook's own fail-closed final-read assert correctly refused to
-# claim success rather than silently reporting done. `delete` added below,
+# claim success rather than silently reporting done. `delete` added,
 # narrowly to the same two models this account already writes — no other
-# model, no staff/superuser bit. The 691 playbook mints + persists the
-# token (netbox_catalog_token) for the already-permissioned user; its
-# reconcile task is idempotent, so re-running 691 alone applies this.
+# model, no staff/superuser bit.
+#
+# AMENDMENT 2 (dmfdeploy/dmfdeploy#393 review, 2026-08-14): the first delete
+# grant was model-wide (unconstrained `delete` on every ipam.service /
+# extras.tag record, not just finalise-purge's own workload) — lkirc caught
+# this as a real least-privilege violation. `delete` is now split out of
+# catalog-service-writer / catalog-tag-writer into its own permission entry
+# per model, each carrying an object-level `constraints` filter (NetBox
+# ObjectPermission.constraints — a Django queryset filter, applied via
+# Q(**dict) per entry, list-of-dicts ORed together, keys within one dict
+# ANDed: https://netboxlabs.com/docs/netbox/administration/permissions/):
+#   catalog-service-delete: {tags__name__startswith: "workload:"} — only
+#     ipam.service records tagged into some workload are deletable; a
+#     service with no workload:* tag (i.e. not a purge candidate at all)
+#     can never be deleted by this account, regardless of what else is true.
+#   catalog-tag-delete: {name__startswith: "workload:"} — extras.tag's own
+#     `name` is a plain CharField (not M2M), so this precisely allows
+#     deleting ONLY workload:<slug> Tag objects — never lifecycle:*, app:*,
+#     dmf-catalog, or any other tag in the instance.
+# Deliberately NOT attempted: also requiring the record's lifecycle tag be
+# bootstrapped/unknown (not active) in the SAME constraint. Tags are a
+# many-to-many relation, and NetBox's constraint mechanism builds exactly
+# one Q(**dict) per entry — two conditions on the same M2M field in one
+# dict require the SAME related tag row to satisfy both (Django's
+# documented multi-valued-relationship semantics), and the dict-of-lookups
+# format has no negation primitive, so "has tag A AND lacks tag B" across
+# two different tag rows is not expressible here, full stop — not a gap in
+# this implementation. Separately, whether a workload is currently active
+# is a live NetBox+Prometheus join (ADR-0013), not data NetBox itself can
+# ever have an opinion on, so it was never going to be RBAC-constraint
+# material regardless. That axis stays exclusively enforced by
+# finalise-purge's own preflight (dmf-cms resolve_purge_target), which is
+# also the only place capable of checking it. See ADR-0032 amendment.
+#
+# `delete` is deliberately its own permission entry, split from
+# view/add/change: those three apply to a record BEFORE it carries the
+# workload:*/lifecycle:* tags a launcher assigns after creation, so
+# constraining them the same way would make every catalog CREATE fail
+# closed against its own freshly-minted, not-yet-tagged record.
+#
+# The 691 playbook mints + persists the token (netbox_catalog_token) for
+# the already-permissioned user; its reconcile task is idempotent, so
+# re-running 691 alone applies this.
 netbox_sot_catalog_writer_enabled: true
 netbox_sot_catalog_group: "dmf-catalog-writer"
 netbox_sot_catalog_username: "dmf-catalog-svc"
 netbox_sot_catalog_permissions:
   - name: "catalog-service-writer"
-    actions: ["view", "add", "change", "delete"]
+    actions: ["view", "add", "change"]
     object_types:
       - "ipam.service"
+  - name: "catalog-service-delete"
+    actions: ["delete"]
+    object_types:
+      - "ipam.service"
+    constraints:
+      tags__name__startswith: "workload:"
   - name: "catalog-tag-writer"
-    actions: ["view", "add", "delete"]
+    actions: ["view", "add"]
     object_types:
       - "extras.tag"
+  - name: "catalog-tag-delete"
+    actions: ["delete"]
+    object_types:
+      - "extras.tag"
+    constraints:
+      name__startswith: "workload:"
   # Read-only on dcim.device: the launcher looks up the parent load-balancer
   # device (dmf-traefik) to attach the ipam.service to. View only — no write.
   - name: "catalog-device-reader"
