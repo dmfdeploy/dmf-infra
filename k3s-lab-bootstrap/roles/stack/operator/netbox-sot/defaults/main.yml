@@ -224,6 +224,24 @@ netbox_sot_catalog_retired_permission_names:
 # it is not NetBox-backed, so locking needs nothing from this account beyond
 # the token being non-empty (_assert_netbox_token.yml is a structural
 # presence check, never a live NetBox call).
+#
+# codex adversarial round (2026-08-14) on this amendment raised 5 findings
+# (group/permission reconcile is additive-by-declared-list rather than
+# exclusive, an externally-supplied vault_netbox_purge_token is trusted
+# without verifying it actually belongs to this account, the retirement
+# task below matches by permission name only, no per-capability "enabled"
+# gate on the awx-integration OpenBao read). Checked each against the
+# ORIGINAL dmf-catalog-svc provisioning this block was mirrored from
+# line-by-line: every one is a pre-existing characteristic of how EVERY
+# account in this role has always been provisioned (byte-identical
+# group-union idiom, name-only permission reconcile, externally-overridable
+# vault_* token vars, ungated OpenBao reads) — not a new regression this
+# amendment introduces, and none of them undermine the actual property this
+# amendment establishes (no add/change on the delete-capable identity,
+# confirmed correct). Real hardening opportunities for the role as a whole
+# (exclusive group membership, explicit is_superuser/is_staff assertions,
+# per-capability enable gating), out of scope for this fix specifically —
+# flagged as a possible follow-up, not blocking here.
 netbox_sot_catalog_purge_enabled: true
 netbox_sot_catalog_purge_group: "dmf-catalog-purge"
 netbox_sot_catalog_purge_username: "dmf-catalog-purge-svc"
