@@ -1330,13 +1330,20 @@
         perm_desc: "DMF catalog {{ item.name }} access"
         # NetBox ObjectPermission.constraints is a Django queryset filter
         # (dict, applied as Q(**dict) — AND within the dict; NetBox itself
-        # ORs across multiple constraint dicts/permission rows). `to_json`
-        # renders a plain dict of string keys/values as valid Python literal
-        # syntax too, so it can be embedded directly; when an entry defines
-        # no constraints (the common case — unconstrained, model-wide grant)
-        # this must come out as the Python literal `None`, never JSON `null`.
-        perm_constraints_py: >-
-          {{ (item.constraints | to_json) if (item.constraints is defined and item.constraints) else 'None' }}
+        # ORs across multiple constraint dicts/permission rows). Rendered as
+        # a JSON STRING here (perm_constraints_json), then `to_json`'d AGAIN
+        # at the point of use below so it lands in the heredoc as a properly
+        # quoted/escaped Python string literal that `json.loads()` parses at
+        # runtime — codex review caught that emitting the inner JSON tokens
+        # directly (the earlier version of this template) is only an
+        # accident of the two languages' literal syntax mostly overlapping:
+        # JSON's `true`/`false`/`null` are not valid Python and would
+        # NameError, and only quotes (not backslashes/newlines) were being
+        # escaped for values with the old approach. `json.loads` sidesteps
+        # both — correct for any future constraint value, not just today's
+        # two plain-string dicts.
+        perm_constraints_json: >-
+          {{ (item.constraints | to_json) if (item.constraints is defined and item.constraints) else 'null' }}
         cmd: |-
           cat > /tmp/nbs-perm-catalog-{{ item.name | replace('-', '_') }}.py << 'PY'
           import json
@@ -1347,7 +1354,7 @@
           perm_desc = "{{ perm_desc | replace('\"', '\\\"') }}"
           actions = {{ item.actions | to_json }}
           object_types = {{ item.object_types | to_json }}
-          constraints = {{ perm_constraints_py }}
+          constraints = json.loads({{ perm_constraints_json | to_json }})
           group_name = "{{ netbox_sot_catalog_group | replace('\"', '\\\"') }}"
 
           cts = []

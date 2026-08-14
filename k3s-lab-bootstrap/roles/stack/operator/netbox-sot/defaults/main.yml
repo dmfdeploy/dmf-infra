@@ -178,6 +178,19 @@ cms_netbox_permissions:
 # constraining them the same way would make every catalog CREATE fail
 # closed against its own freshly-minted, not-yet-tagged record.
 #
+# Residual risk (codex adversarial review, 2026-08-14 — not closeable here,
+# see ADR-0032 Amendment 2 for the full reasoning): because add on
+# extras.tag and change on ipam.service stay unconstrained (necessarily, per
+# above), this same token can manufacture delete-eligibility — create a
+# workload:<anything> tag, attach it to an arbitrary service via change,
+# then delete it. This constraint stops the blast radius lkirc actually
+# named (accidental/careless reach into unrelated NetBox records with no
+# workload:* involvement at all); it does not make a deliberately malicious
+# use of this token safe. Not fixable within this account's permission set
+# without either a narrower separate identity for workload:* tag creation
+# (explicitly not the direction taken here) or a detective control — flagged
+# as follow-up, not resolved.
+#
 # The 691 playbook mints + persists the token (netbox_catalog_token) for
 # the already-permissioned user; its reconcile task is idempotent, so
 # re-running 691 alone applies this.
