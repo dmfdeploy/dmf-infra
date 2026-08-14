@@ -101,6 +101,14 @@ awx_integration_netbox_token: >-
 # Defaulted empty so the source-token-read gating can detect "needs reading" and
 # the catalog JT wiring always has a defined var.
 awx_integration_netbox_catalog_token: "{{ vault_netbox_catalog_token | default('', true) }}"
+# ADR-0032 Amendment 3: the delete-only identity for media-finalise-purge
+# specifically (ipam.service + extras.tag view, constrained delete — no
+# add/change). Same sourcing story as the catalog-writer token above: read
+# from the SAME secret/apps/netbox/runtime OpenBao secret (key
+# netbox_purge_token, minted by 691-netbox-sot), one kv get serves both keys.
+# Every OTHER catalog launcher JT keeps using awx_integration_netbox_catalog_token
+# unchanged — this token is wired into media-finalise-purge's own extra_vars only.
+awx_integration_netbox_purge_token: "{{ vault_netbox_purge_token | default('', true) }}"
 # NetBox schema generation in v4.5.0 can take several minutes due to drf-spectacular
 # filterset warnings. The 600s timeout covers this, and caching avoids re-fetching
 # on subsequent syncs. See: docs/plans/AWX NetBox Inventory Sync Fix 2026-05-04.md
@@ -535,8 +543,18 @@ awx_catalog_job_templates:
       # same reasoning as media-rollback-run's own l3_run_id/
       # l3_rollback_reason omission above.
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      # ADR-0032: scoped catalog-writer token (see media-launch-nmos-cpp).
-      vault_netbox_catalog_token: "{{ awx_integration_netbox_catalog_token | default(vault_netbox_catalog_token | default(''), true) }}"
+      # ADR-0032 Amendment 3 (2026-08-14): finalise-purge is the ONE catalog
+      # launcher that moved off the shared dmf-catalog-svc token — it now
+      # gets its own delete-only identity (dmf-catalog-purge-svc), because
+      # dmf-catalog-svc's necessary add/change on the same two models made
+      # the shared token's delete grant self-manufacturable (create a
+      # workload:<x> tag, attach it, then delete — lkirc, twice). Every
+      # other media-* entry above is UNCHANGED and still carries
+      # vault_netbox_catalog_token. dmf-runbooks/playbooks/finalise-purge.yml
+      # was updated in lockstep to read vault_netbox_purge_token instead of
+      # vault_netbox_catalog_token (its own header already anticipated this
+      # kind of per-launcher token isolation).
+      vault_netbox_purge_token: "{{ awx_integration_netbox_purge_token | default(vault_netbox_purge_token | default(''), true) }}"
 
 # ── Infra job templates (dmfdeploy/dmfdeploy#166 WP-F) ─────────────────────
 # Monitoring-apply lane: runs dmf-infra playbooks against hosts:k3s_control

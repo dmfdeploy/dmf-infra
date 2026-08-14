@@ -38,6 +38,10 @@ netbox_sot_admin_token: "{{ vault_netbox_admin_token | default('') }}"
 netbox_sot_awx_token: "{{ vault_netbox_awx_token | default('') }}"
 netbox_sot_librenms_token: "{{ vault_netbox_librenms_token | default('') }}"
 netbox_sot_catalog_token: "{{ vault_netbox_catalog_token | default('') }}"
+# ADR-0032 Amendment 3: the delete-only identity for media-finalise-purge,
+# split out of netbox_sot_catalog_token — see the netbox_sot_catalog_purge_*
+# block below for why.
+netbox_sot_purge_token: "{{ vault_netbox_purge_token | default('') }}"
 netbox_sot_promsd_token: "{{ vault_netbox_promsd_token | default('') }}"
 # Match what the NetBox chart provisions. ADR-0028 D3 (2026-05-24): the
 # NetBox chart's local superuser is the literal `netbox-break-glass` (see
@@ -140,56 +144,32 @@ cms_netbox_permissions:
 # narrowly to the same two models this account already writes — no other
 # model, no staff/superuser bit.
 #
-# AMENDMENT 2 (dmfdeploy/dmfdeploy#393 review, 2026-08-14): the first delete
-# grant was model-wide (unconstrained `delete` on every ipam.service /
-# extras.tag record, not just finalise-purge's own workload) — lkirc caught
-# this as a real least-privilege violation. `delete` is now split out of
-# catalog-service-writer / catalog-tag-writer into its own permission entry
-# per model, each carrying an object-level `constraints` filter (NetBox
-# ObjectPermission.constraints — a Django queryset filter, applied via
-# Q(**dict) per entry, list-of-dicts ORed together, keys within one dict
-# ANDed: https://netboxlabs.com/docs/netbox/administration/permissions/):
-#   catalog-service-delete: {tags__name__startswith: "workload:"} — only
-#     ipam.service records tagged into some workload are deletable; a
-#     service with no workload:* tag (i.e. not a purge candidate at all)
-#     can never be deleted by this account, regardless of what else is true.
-#   catalog-tag-delete: {name__startswith: "workload:"} — extras.tag's own
-#     `name` is a plain CharField (not M2M), so this precisely allows
-#     deleting ONLY workload:<slug> Tag objects — never lifecycle:*, app:*,
-#     dmf-catalog, or any other tag in the instance.
-# Deliberately NOT attempted: also requiring the record's lifecycle tag be
-# bootstrapped/unknown (not active) in the SAME constraint. Tags are a
-# many-to-many relation, and NetBox's constraint mechanism builds exactly
-# one Q(**dict) per entry — two conditions on the same M2M field in one
-# dict require the SAME related tag row to satisfy both (Django's
-# documented multi-valued-relationship semantics), and the dict-of-lookups
-# format has no negation primitive, so "has tag A AND lacks tag B" across
-# two different tag rows is not expressible here, full stop — not a gap in
-# this implementation. Separately, whether a workload is currently active
-# is a live NetBox+Prometheus join (ADR-0013), not data NetBox itself can
-# ever have an opinion on, so it was never going to be RBAC-constraint
-# material regardless. That axis stays exclusively enforced by
-# finalise-purge's own preflight (dmf-cms resolve_purge_target), which is
-# also the only place capable of checking it. See ADR-0032 amendment.
+# AMENDMENT 2 (dmfdeploy/dmfdeploy#393 review, 2026-08-14, superseded by
+# Amendment 3 below): tried scoping the model-wide `delete` grant with a
+# NetBox ObjectPermission `constraints` filter (tags__name__startswith:
+# "workload:" on ipam.service, name__startswith: "workload:" on extras.tag)
+# instead of splitting identities. lkirc rejected this TWICE on the same
+# finding: dmf-catalog-svc also keeps unconstrained `add` on extras.tag and
+# unconstrained `change` on ipam.service (needed for every other launcher's
+# legitimate create/patch work), so the same token could manufacture its own
+# delete-eligibility — create a workload:<anything> tag, attach it to an
+# unrelated service via `change`, then delete it. Documented as an accepted,
+# not-closed residual risk at the time; the operator's direction was that
+# this needed a real fix, not a documented waiver. See Amendment 3.
 #
-# `delete` is deliberately its own permission entry, split from
-# view/add/change: those three apply to a record BEFORE it carries the
-# workload:*/lifecycle:* tags a launcher assigns after creation, so
-# constraining them the same way would make every catalog CREATE fail
-# closed against its own freshly-minted, not-yet-tagged record.
-#
-# Residual risk (codex adversarial review, 2026-08-14 — not closeable here,
-# see ADR-0032 Amendment 2 for the full reasoning): because add on
-# extras.tag and change on ipam.service stay unconstrained (necessarily, per
-# above), this same token can manufacture delete-eligibility — create a
-# workload:<anything> tag, attach it to an arbitrary service via change,
-# then delete it. This constraint stops the blast radius lkirc actually
-# named (accidental/careless reach into unrelated NetBox records with no
-# workload:* involvement at all); it does not make a deliberately malicious
-# use of this token safe. Not fixable within this account's permission set
-# without either a narrower separate identity for workload:* tag creation
-# (explicitly not the direction taken here) or a detective control — flagged
-# as follow-up, not resolved.
+# AMENDMENT 3 (dmfdeploy/dmfdeploy#347, 2026-08-14): closes the Amendment 2
+# gap by identity separation instead of a shared-token constraint.
+# `delete` is removed from this account entirely — dmf-catalog-svc reverts
+# to exactly its original ADR-0032 scope (view/add/change on ipam.service,
+# view/add on extras.tag, no delete, no staff/superuser, dcim.device stays
+# view-only) — and media-finalise-purge moves to a NEW, genuinely
+# delete-only account: netbox_sot_catalog_purge_permissions /
+# netbox_sot_catalog_purge_group / netbox_sot_catalog_purge_username, below.
+# That account cannot create or retag anything, so it cannot manufacture its
+# own delete-eligibility — Amendment 2's constraint is reused unchanged on
+# the new account, where it is now a real bound on this identity's blast
+# radius rather than a filter a sibling capability on the SAME token could
+# route around.
 #
 # The 691 playbook mints + persists the token (netbox_catalog_token) for
 # the already-permissioned user; its reconcile task is idempotent, so
@@ -202,28 +182,69 @@ netbox_sot_catalog_permissions:
     actions: ["view", "add", "change"]
     object_types:
       - "ipam.service"
-  - name: "catalog-service-delete"
-    actions: ["delete"]
-    object_types:
-      - "ipam.service"
-    constraints:
-      tags__name__startswith: "workload:"
   - name: "catalog-tag-writer"
     actions: ["view", "add"]
     object_types:
       - "extras.tag"
-  - name: "catalog-tag-delete"
-    actions: ["delete"]
-    object_types:
-      - "extras.tag"
-    constraints:
-      name__startswith: "workload:"
   # Read-only on dcim.device: the launcher looks up the parent load-balancer
   # device (dmf-traefik) to attach the ipam.service to. View only — no write.
   - name: "catalog-device-reader"
     actions: ["view"]
     object_types:
       - "dcim.device"
+
+# The two Amendment-2-era permission entries this account used to carry —
+# named here (not as a live list of grants — an inert list of retired
+# names for the retirement task below to look up and remove). Removing
+# entries from netbox_sot_catalog_permissions above only stops this role
+# from declaring them; the reconcile loop only ever creates/updates entries
+# it IS given, it never prunes ones it no longer sees, so on an
+# already-provisioned instance the old, wider-than-intended
+# catalog-service-delete/catalog-tag-delete grants would otherwise survive
+# untouched, unconstrained delete and all, indefinitely. See the explicit
+# retirement task in tasks/main.yml.
+netbox_sot_catalog_retired_permission_names:
+  - "catalog-service-delete"
+  - "catalog-tag-delete"
+
+# ── DMF catalog PURGE service account (ADR-0032 Amendment 3, 2026-08-14) ───
+# Genuinely delete-only identity for media-finalise-purge, split out of
+# dmf-catalog-svc to close the Amendment 2 self-manufactured-eligibility
+# finding (see the comment above). Verified against the actual finalise-
+# purge task include graph (dmf-runbooks netbox_catalog_common: purge_
+# workload_records/purge_workload_tag/purge_final_read, plus every
+# l3_run_guard task that playbook invokes — lock_only, teardown_pre_
+# mutation, lock_checkpoint, lock_release, release, fault_inject, _emit_
+# purge_outcome, purge_outcome_guard, gate_rescue) — its ENTIRE NetBox
+# surface is GET (list + by-id + tag-by-name) and DELETE on ipam.service and
+# extras.tag. No POST, no PATCH, no dcim.device read (that's only needed at
+# CREATE time, to attach a fresh service to its parent device — finalise-
+# purge never creates anything). The facility lock itself is a Kubernetes
+# ConfigMap (a different API entirely, _l3_api_url not netbox_api_url) —
+# it is not NetBox-backed, so locking needs nothing from this account beyond
+# the token being non-empty (_assert_netbox_token.yml is a structural
+# presence check, never a live NetBox call).
+netbox_sot_catalog_purge_enabled: true
+netbox_sot_catalog_purge_group: "dmf-catalog-purge"
+netbox_sot_catalog_purge_username: "dmf-catalog-purge-svc"
+netbox_sot_catalog_purge_permissions:
+  - name: "catalog-purge-reader"
+    actions: ["view"]
+    object_types:
+      - "ipam.service"
+      - "extras.tag"
+  - name: "catalog-purge-service-delete"
+    actions: ["delete"]
+    object_types:
+      - "ipam.service"
+    constraints:
+      tags__name__startswith: "workload:"
+  - name: "catalog-purge-tag-delete"
+    actions: ["delete"]
+    object_types:
+      - "extras.tag"
+    constraints:
+      name__startswith: "workload:"
 
 netbox_sot_awx_permission_name: "awx-readonly"
 netbox_sot_awx_permission_description: "AWX inventory read-only access"
