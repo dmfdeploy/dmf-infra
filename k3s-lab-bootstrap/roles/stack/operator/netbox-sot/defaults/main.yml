@@ -192,6 +192,17 @@ netbox_sot_catalog_permissions:
     actions: ["view"]
     object_types:
       - "dcim.device"
+  # Read-only on dcim.site: l3_run_guard's topology validation lists Sites
+  # to assert the env's own facility identity before any media work runs.
+  # View only — no write. Deliberately unconstrained (ADR-0032 Amendment 4,
+  # dmfdeploy/dmfdeploy#399): a single-site constraint would make the
+  # site-agreement check vacuous (it could never observe disagreement), and
+  # the intended direction is a multi-site facility picker a constraint now
+  # would have to be undone for.
+  - name: "catalog-site-reader"
+    actions: ["view"]
+    object_types:
+      - "dcim.site"
 
 # The two Amendment-2-era permission entries this account used to carry —
 # named here (not as a live list of grants — an inert list of retired
