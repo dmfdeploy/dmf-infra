@@ -321,7 +321,35 @@ awx_catalog_projects:
     # EXISTING registration's JT contract is intact; this bump's only
     # JT-facing effect is that media-finalise-purge's own extra_vars
     # (already declared below) finally reach code that reads them.
-    scm_branch: "v0.4.6"
+    #
+    # v0.4.6 -> v0.4.7 (umbrella #401, 2026-08-18): the launcher records
+    # which catalog entry a topology-spawned instance came from, and which
+    # declared sources[].id it embodies, as two NetBox tags
+    # (topology-parent:/topology-source:) inside its own owned tag
+    # namespace. dmf-cms then READS that relationship instead of
+    # re-deriving it from the instance name — the naming contract stays
+    # owned by dmf-runbooks, which is the whole point of the change.
+    # JT contract audit: `git -C ../dmf-runbooks diff v0.4.6..v0.4.7 --
+    # '*/defaults/*'` is NOT empty this time — unlike the bump above — so
+    # it was read rather than waved through. It touches roles/mxl/
+    # defaults/main.yml (two new vars, both EMPTY-DEFAULTED, plus the two
+    # tag lists becoming templated so they can append a conditional
+    # extra) and roles/netbox_catalog_common/defaults/main.yml (the two
+    # new prefixes joining _netbox_owned_namespace, so rollback/restore
+    # treat them like every other launcher-written fact). NEITHER new var
+    # is an extra_var: launch-mxl-fabrics-demo.yml sets both from
+    # play-internal values (l3_catalog_key, and item.source_id that
+    # l3_topology_release_group already derived), so nothing is expected
+    # from AWX that was not expected before. Full --stat (7 files): the
+    # two defaults above, launch-mxl-fabrics-demo.yml (+23, the two
+    # per-source include_role args), roles/mxl/tasks/defaults_only.yml
+    # (new, test harness only — no production path), tests/
+    # _topology-tag-scenario.yml + tests/tag-preservation.yml (coverage),
+    # VERSION. No job-template registration changes, no extra_vars surface
+    # change, no existing tag's meaning altered — every EXISTING
+    # registration's JT contract is intact, and every non-topology launch
+    # is a byte-for-byte no-op.
+    scm_branch: "v0.4.7"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
