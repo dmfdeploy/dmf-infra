@@ -16,7 +16,7 @@
 # running — see the role header note in templates/rules/alerts.yaml.j2 for
 # the same render-then-check contract applied to the whole rule suite).
 #
-# Three cases, matching the alert's own comment in alerts.yaml.j2:
+# Four cases, matching the alert's own comment in alerts.yaml.j2:
 #   (a) ~10m divergence (a normal reconcile including one failure+retry,
 #       dmfdeploy#424 live evidence) -> must NOT fire.
 #   (b) ~20m continuous divergence -> must fire.
@@ -28,13 +28,27 @@
 #       full debounce is pure luck of the timing — the windowed-ratio
 #       design instead just keeps averaging through the blip. Proves the
 #       alert is a real windowed-ratio check, not a relabelled debounce.
+#   (d) duplicate kube-state-metrics scrape targets — TWO series per
+#       operand, differing only in an `instance` label, both agreeing on
+#       every value (what two co-existing kube-state-metrics pods actually
+#       look like, e.g. during that Deployment's own rollout). Same
+#       divergence shape as (b) so the expected verdict is identical; this
+#       case exists purely to catch the cardinality bug the other three
+#       cannot (dmfdeploy/dmfdeploy#424 live sandbox deploy) — the raw
+#       `* on(namespace)` join sees two same-namespace series on each side
+#       and Prometheus refuses it outright ("found duplicate series for the
+#       match group ... many-to-many matching not allowed"), so the rule
+#       does not merely mis-evaluate, it stops evaluating. See the
+#       AWXReplicaDivergence comment in alerts.yaml.j2 for the `max by
+#       (namespace) (...)` fix this case verifies.
 #
 # Sample interval is 1m — finer than the 20m avg_over_time window, so the
 # subquery is never undersampled (the trap the work order flagged).
-# Each case's four input series share the same total sample count so no
-# series goes stale/absent partway through the window: every operand in the
-# expr is built from `bool` comparisons specifically so it's ALWAYS present
-# (0 or 1, never absent) — a real gap here would silently break that.
+# Each case's four (case (d): eight) input series share the same total
+# sample count so no series goes stale/absent partway through the window:
+# every operand in the expr is built from `bool` comparisons specifically
+# so it's ALWAYS present (0 or 1, never absent) — a real gap here would
+# silently break that.
 rule_files:
   - rendered_alerts.yml
 evaluation_interval: 1m
@@ -171,6 +185,61 @@ tests:
         values: "1x44"
     alert_rule_test:
       - eval_time: 40m
+        alertname: AWXReplicaDivergence
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: workload
+              component: web
+              namespace: awx
+            exp_annotations:
+              summary: "AWX web wants replicas but none are Available"
+              description: >-
+                The AWX CR is requesting a non-zero web_replicas count while
+                the web Deployment has had zero Available replicas for most
+                of the last 20m — the awx-operator reconcile loop is stuck
+                or repeatedly retrying and failing. Scale-to-zero sleep does
+                not trigger this: the CR asks for 0 replicas then.
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#awxreplicadivergence"
+
+  # ── (d) duplicate kube-state-metrics targets — must evaluate cleanly ────
+  # Same divergence shape as case (b) (~20m continuous, web only), except
+  # EVERY operand is duplicated into two series that differ only by an
+  # `instance` label — standing in for two co-existing kube-state-metrics
+  # pods (old and new, both scraped in the same interval during that
+  # Deployment's own rollout; dmfdeploy/dmfdeploy#424 live sandbox deploy
+  # observed exactly this shape). Both copies of each operand carry
+  # identical values throughout, which is the realistic case:
+  # two kube-state-metrics pods watching the same live API state agree, so
+  # this case isolates the CARDINALITY bug from any value-selection
+  # question. Against the unfixed expression (`* on(namespace)` joining two
+  # same-namespace series per side, no aggregation) promtool reports
+  # `evaluating query: found duplicate series for the match group
+  # {namespace="awx"} ... many-to-many matching not allowed` and the alert
+  # produces NO result at all — not merely a wrong one — while this case's
+  # divergence is live, which is what the fixed expression's `max by
+  # (namespace) (...)` wrapper on every selector exists to prevent.
+  # 26 samples (t=0..25): web-available 0 throughout, on both instances.
+  - interval: 1m
+    input_series:
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx", instance="kube-state-metrics-0:8080"}'
+        values: "1x25"
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx", instance="kube-state-metrics-1:8080"}'
+        values: "1x25"
+      - series: 'awx_cr_task_replicas{namespace="awx", name="awx", instance="kube-state-metrics-0:8080"}'
+        values: "1x25"
+      - series: 'awx_cr_task_replicas{namespace="awx", name="awx", instance="kube-state-metrics-1:8080"}'
+        values: "1x25"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-web", instance="kube-state-metrics-0:8080"}'
+        values: "0x25"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-web", instance="kube-state-metrics-1:8080"}'
+        values: "0x25"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-task", instance="kube-state-metrics-0:8080"}'
+        values: "1x25"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-task", instance="kube-state-metrics-1:8080"}'
+        values: "1x25"
+    alert_rule_test:
+      - eval_time: 25m
         alertname: AWXReplicaDivergence
         exp_alerts:
           - exp_labels:
