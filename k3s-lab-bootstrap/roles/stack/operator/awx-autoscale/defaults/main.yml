@@ -31,7 +31,18 @@ awx_autoscale_image_pull_policy: IfNotPresent
 # ── Helper tuning ────────────────────────────────────────────────────────
 # Grace period (seconds) after last active work before sleeping AWX.
 # Lives HERE, not in dmf-cms (spec §B).
-awx_autoscale_grace_period: 300
+#
+# dmfdeploy/dmfdeploy#424: raised 300 -> 900. The incident's trigger was a
+# sleep firing at exactly 300s idle with a wake landing 2s later — the
+# operator reconciled the already-superseded "asleep" patch and scaled a
+# live job's Deployments to zero. Widening the grace period does not close
+# that race (the reconcile-lag mechanism is unchanged); it only makes
+# sleep/wake transitions rarer, which makes the race rarer. That is a real
+# trade against the whole point of scale-to-zero: fewer transitions means
+# AWX stays awake (and billed/idle-resourced) longer per burst of work.
+# Accepted deliberately for the demo window (issue #424 Option B); revisit
+# if metered spend becomes the binding constraint again.
+awx_autoscale_grace_period: 900
 
 # Max time (seconds) /ensure-awake will wait for AWX to become ready.
 # Must cover the measured ~15 min Pi reconcile latency (Phase-0).
