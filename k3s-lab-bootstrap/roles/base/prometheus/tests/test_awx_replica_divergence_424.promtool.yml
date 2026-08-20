@@ -1,0 +1,189 @@
+# promtool rule unit test — AWXReplicaDivergence (dmfdeploy/dmfdeploy#424).
+#
+# rule_files below expects a RENDERED alerts.yaml.j2 (not the template) at
+# ./rendered_alerts.yml, next to this file. Render it with a real ansible
+# template task (role defaults as vars, same context values.yml.j2 uses via
+# lookup('template', ...) at deploy time), then run promtool:
+#
+#   cd roles/base/prometheus
+#   ansible localhost -m ansible.builtin.template \
+#     -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
+#     -e @defaults/main.yml
+#   promtool check rules tests/rendered_alerts.yml
+#   promtool test rules tests/test_awx_replica_divergence_424.promtool.yml
+#
+# rendered_alerts.yml is a build artifact, not committed (regenerate before
+# running — see the role header note in templates/rules/alerts.yaml.j2 for
+# the same render-then-check contract applied to the whole rule suite).
+#
+# Three cases, matching the alert's own comment in alerts.yaml.j2:
+#   (a) ~10m divergence (a normal reconcile including one failure+retry,
+#       dmfdeploy#424 live evidence) -> must NOT fire.
+#   (b) ~20m continuous divergence -> must fire.
+#   (c) divergence that FLAPS (divergent, briefly recovers for a sample or
+#       two, divergent again) but is sustained overall across the window ->
+#       must fire. This is the case a bare `for:` on the raw expression
+#       would fail: the timer resets on the recovery sample, and whether
+#       enough continuous badness remains afterward to reaccumulate the
+#       full debounce is pure luck of the timing — the windowed-ratio
+#       design instead just keeps averaging through the blip. Proves the
+#       alert is a real windowed-ratio check, not a relabelled debounce.
+#
+# Sample interval is 1m — finer than the 20m avg_over_time window, so the
+# subquery is never undersampled (the trap the work order flagged).
+# Each case's four input series share the same total sample count so no
+# series goes stale/absent partway through the window: every operand in the
+# expr is built from `bool` comparisons specifically so it's ALWAYS present
+# (0 or 1, never absent) — a real gap here would silently break that.
+rule_files:
+  - rendered_alerts.yml
+evaluation_interval: 1m
+
+tests:
+  # ── (a) ~10m divergence, then recovers — must NOT fire ─────────────────
+  # Mirrors the measured healthy-reconcile-with-retry window: CR patched
+  # asleep 13:09:19Z, first success 13:17:53Z, settled 13:19:14Z (~10min).
+  #
+  # dmfdeploy/dmfdeploy#424 gate finding (claude1, 2nd round): the prior
+  # version of this case started ALREADY divergent at t=0 — no healthy
+  # lead-in. That let a mutant with NO debounce at all (no avg_over_time,
+  # no `for:`, fires the instant the raw condition is true) pass the whole
+  # suite: this case's only assertion was ten minutes AFTER the divergence
+  # had already recovered, so nothing was ever checked WHILE divergent. In
+  # production the series is always present and healthy before an
+  # incident, so a real trailing window starts full of good samples and
+  # the ratio climbs slowly — that is the entire reason the windowed
+  # design doesn't over-fire, and this case wasn't modeling it.
+  #
+  # Fixed with a 20-sample healthy lead-in (t=0..19) before the same
+  # ~10min divergent stretch (t=20..30, 11 samples), then recovery
+  # (t=31..50). Two assertions now:
+  #   - eval_time 22m (2 minutes INTO the divergent stretch): trailing 20m
+  #     window is t=2..22, mostly the healthy lead-in (18 samples) plus
+  #     only 3 divergent ones — ratio 3/21 ≈ 14%, nowhere near the 0.7
+  #     threshold. A no-debounce mutant's raw condition IS true at t=22
+  #     (mid-divergence) and fires immediately regardless of window
+  #     history — this is the assertion that catches it.
+  #   - eval_time 31m (1 minute after the divergent stretch ends):
+  #     trailing 20m window is t=11..31 — 9 healthy, 11 divergent, 1
+  #     healthy — ratio 11/21 ≈ 52%, same shape/number as the original
+  #     single-assertion version, still meaningfully below 0.7 rather than
+  #     the window having aged the divergence out entirely (see the note
+  #     that used to be here — still true, just re-timed around the
+  #     lead-in). Chosen 1m after the last divergent sample specifically
+  #     so this assertion stays a pure ratio/threshold check: at t=31 the
+  #     raw condition itself is already false again, so a no-debounce (or
+  #     any bare-for) mutant agrees "not firing" here too — this
+  #     assertion isn't the one doing the discriminating, t=22 is.
+  # 51 samples total (t=0..50): 1 for t=0..19, 0 for t=20..30, 1 for
+  # t=31..50.
+  - interval: 1m
+    input_series:
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: "1x50"
+      - series: 'awx_cr_task_replicas{namespace="awx", name="awx"}'
+        values: "1x50"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-web"}'
+        values: "1x19 0x10 1x19"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-task"}'
+        values: "1x50"
+    alert_rule_test:
+      # Mid-divergence: real design's window is still mostly the healthy
+      # lead-in (ratio ~14%) so it must NOT fire, even though the raw
+      # divergence condition is true right now. This is the assertion a
+      # no-debounce mutant cannot pass.
+      - eval_time: 22m
+        alertname: AWXReplicaDivergence
+        exp_alerts: []
+      # Just after the divergent stretch ends: window still ~52% bad
+      # (matches the pre-lead-in version of this check) — meaningfully
+      # below 0.7, not the window having aged the divergence out entirely.
+      - eval_time: 31m
+        alertname: AWXReplicaDivergence
+        exp_alerts: []
+
+  # ── (b) ~20m continuous divergence — must fire ──────────────────────────
+  # 26 samples (t=0..25): web-available 0 throughout.
+  - interval: 1m
+    input_series:
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: "1x25"
+      - series: 'awx_cr_task_replicas{namespace="awx", name="awx"}'
+        values: "1x25"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-web"}'
+        values: "0x25"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-task"}'
+        values: "1x25"
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: AWXReplicaDivergence
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: workload
+              component: web
+              namespace: awx
+            exp_annotations:
+              summary: "AWX web wants replicas but none are Available"
+              description: >-
+                The AWX CR is requesting a non-zero web_replicas count while
+                the web Deployment has had zero Available replicas for most
+                of the last 20m — the awx-operator reconcile loop is stuck
+                or repeatedly retrying and failing. Scale-to-zero sleep does
+                not trigger this: the CR asks for 0 replicas then.
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#awxreplicadivergence"
+
+  # ── (c) flapping divergence, sustained overall — must fire ─────────────
+  # dmfdeploy/dmfdeploy#424 gate finding (claude1): the first version of
+  # this case (one early 2-sample recovery, then 21 CONTINUOUS divergent
+  # samples through eval_time) did not discriminate — a mutant rule with a
+  # bare `for: 20m` on the raw expression also passed it, because 21
+  # continuous samples is plenty for a 20m debounce to mature on its own.
+  # That proved the alert fires; it proved nothing about whether the
+  # windowed-ratio design is NECESSARY (Correction 1's entire point).
+  #
+  # Redesigned: a repeating cycle of 4 divergent samples then 1 recovered
+  # sample (0,0,0,0,1 repeating), 45 samples total (t=0..44). Every
+  # continuous divergent run in this series is exactly 4 samples long — at
+  # 1m spacing that is 3 minutes of ELAPSED time between the run's first
+  # and last true evaluation (a `for:` timer matures on elapsed time since
+  # pending-start, not sample count). No bare `for:` of 4m or longer can
+  # EVER mature against this series, at any eval_time, by construction —
+  # not just at the one eval_time this test happens to check. Meanwhile the
+  # window ratio stays ~0.81 (17/21 bad samples in the trailing 20m window
+  # ending at eval_time=40m: i%5==4 is the only recovered position, i.e.
+  # i in {24,29,34,39} within [20,40]) — comfortably above the 0.7
+  # threshold the real design fires on.
+  #
+  # Verified against claude1's bare-for mutant (same divergence signal,
+  # `for: 20m` on the raw expression, no annotations) at three durations —
+  # 10m, 20m, 25m — none matured, all three runs report 0 alerts firing.
+  # See the WORK ORDER B fix-round report for the exact commands/output.
+  - interval: 1m
+    input_series:
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: "1x44"
+      - series: 'awx_cr_task_replicas{namespace="awx", name="awx"}'
+        values: "1x44"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-web"}'
+        values: "0x3 1x0 0x3 1x0 0x3 1x0 0x3 1x0 0x3 1x0 0x3 1x0 0x3 1x0 0x3 1x0 0x3 1x0"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-task"}'
+        values: "1x44"
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: AWXReplicaDivergence
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: workload
+              component: web
+              namespace: awx
+            exp_annotations:
+              summary: "AWX web wants replicas but none are Available"
+              description: >-
+                The AWX CR is requesting a non-zero web_replicas count while
+                the web Deployment has had zero Available replicas for most
+                of the last 20m — the awx-operator reconcile loop is stuck
+                or repeatedly retrying and failing. Scale-to-zero sleep does
+                not trigger this: the CR asks for 0 replicas then.
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#awxreplicadivergence"
