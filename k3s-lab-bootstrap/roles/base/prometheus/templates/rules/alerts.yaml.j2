@@ -265,6 +265,71 @@ groups:
             is above {{ (prometheus_alert_pv_full_threshold * 100) | int }}% used. Expand or
             free space before the workload goes read-only.
           runbook_url: "{{ prometheus_alert_runbook_base }}#persistentvolumenearfull"
+      # AWX CR-vs-running-state divergence (dmfdeploy/dmfdeploy#424). NOT a
+      # spec-vs-spec check: the CR's spec.web_replicas/task_replicas
+      # agreeing with the Deployment's spec.replicas only proves a desired
+      # value was applied, not that anything is actually up. A wedged
+      # operator can leave both specs equal at a stale value and never
+      # diverge on that axis, which is exactly the blind spot a spec-vs-spec
+      # alert would have. The condition that actually means "AWX should be
+      # up and is not": the CR asks for a non-zero replica count AND the
+      # Deployment has zero replicas AVAILABLE. kube_deployment_status_
+      # replicas_available is a stock kube-state-metrics Deployment metric
+      # (no CustomResourceState needed on that side); only the CR side needs
+      # the awx.ansible.com/AWX CustomResourceState config (values.yml.j2).
+      # Scale-to-zero sleep is correctly silent under this condition: the CR
+      # asks for 0 replicas then, so the first half of the AND never holds.
+      #
+      # NOT a bare `for:` on the raw divergence expression. Prometheus
+      # resets a `for:` timer the instant a condition evaluates false for a
+      # single sample — and the failure mode this covers IS a retry loop
+      # (dmfdeploy#424 live evidence: runner_on_failed -> "Reconciler error"
+      # -> retry, cache-miss lines at ~6s cadence throughout). A single
+      # in-between success mid-retry would silently reset a bare-for timer
+      # and re-arm the full debounce on every cycle, so an operator stuck
+      # retrying forever would never page — silence during real instability,
+      # the worst outcome for exactly this alert. Instead this averages a
+      # 0/1 divergence signal over a trailing window via a promql subquery
+      # and thresholds on the fraction: a signal that PERSISTS OR REPEATS
+      # keeps crossing the ratio even through brief single-sample
+      # recoveries; see prometheus_alert_awx_cr_divergence_* in defaults/
+      # main.yml for the window/resolution/ratio/for values and their
+      # individual justifications.
+      - alert: AWXReplicaDivergence
+        expr: >-
+          avg_over_time(
+            (
+              label_replace(
+                (awx_cr_web_replicas{namespace="{{ prometheus_alert_awx_namespace }}", name="{{ prometheus_alert_awx_instance_name }}"} > bool 0)
+                * on(namespace)
+                (kube_deployment_status_replicas_available{namespace="{{ prometheus_alert_awx_namespace }}", deployment="{{ prometheus_alert_awx_instance_name }}-web"} == bool 0),
+                "component", "web", "", ""
+              )
+              or
+              label_replace(
+                (awx_cr_task_replicas{namespace="{{ prometheus_alert_awx_namespace }}", name="{{ prometheus_alert_awx_instance_name }}"} > bool 0)
+                * on(namespace)
+                (kube_deployment_status_replicas_available{namespace="{{ prometheus_alert_awx_namespace }}", deployment="{{ prometheus_alert_awx_instance_name }}-task"} == bool 0),
+                "component", "task", "", ""
+              )
+            )[{{ prometheus_alert_awx_cr_divergence_window }}:{{ prometheus_alert_awx_cr_divergence_resolution }}]
+          ) > {{ prometheus_alert_awx_cr_divergence_ratio }}
+        for: {{ prometheus_alert_awx_cr_divergence_for }}
+        labels:
+          severity: warning
+          category: workload
+        annotations:
+          summary: AWX {% raw %}{{ $labels.component }}{% endraw %} wants replicas but none are Available
+          description: >-
+            The AWX CR is requesting a non-zero
+            {% raw %}{{ $labels.component }}{% endraw %}_replicas count while
+            the {% raw %}{{ $labels.component }}{% endraw %} Deployment has
+            had zero Available replicas for most of the last
+            {{ prometheus_alert_awx_cr_divergence_window }} — the
+            awx-operator reconcile loop is stuck or repeatedly retrying and
+            failing. Scale-to-zero sleep does not trigger this: the CR asks
+            for 0 replicas then.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#awxreplicadivergence"
 
   - name: dmf-runaway-workload
     rules:

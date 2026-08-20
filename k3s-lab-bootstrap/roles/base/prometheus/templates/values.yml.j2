@@ -58,6 +58,53 @@ kube-state-metrics:
   # requests-only, no limits.
   resources:
 {{ prometheus_kube_state_metrics_resources | to_nice_yaml(indent=2) | indent(4, true) }}
+  # dmfdeploy/dmfdeploy#424: expose the AWX CR's *requested* replica counts
+  # as metrics so the AWXReplicaDivergence alert (templates/rules/
+  # alerts.yaml.j2) can compare "what the CR wants" against "what's actually
+  # Available" (kube_deployment_status_replicas_available — a stock
+  # kube-state-metrics Deployment metric, needs no CRS config of its own).
+  # Verified supported by the pinned chart: prometheus_helm_chart_version
+  # 25.8.0 depends on kube-state-metrics "5.15.*" (Chart.yaml), which is
+  # appVersion 2.10.0 — customResourceState.enabled/.config and
+  # rbac.extraRules both exist in that chart's values.yaml. AWX CRD
+  # (ansible/awx-operator 2.19.1, config/crd/bases/awx.ansible.com_awxs.yaml)
+  # confirms group awx.ansible.com, kind AWX, version v1beta1, plural awxs,
+  # and spec.web_replicas/spec.task_replicas as integer/int32.
+  customResourceState:
+    enabled: true
+    config:
+      kind: CustomResourceStateMetrics
+      spec:
+        resources:
+          - groupVersionKind:
+              group: awx.ansible.com
+              kind: "AWX"
+              version: "v1beta1"
+            labelsFromPath:
+              name: [metadata, name]
+              namespace: [metadata, namespace]
+            metricNamePrefix: awx_cr
+            metrics:
+              - name: web_replicas
+                help: "Desired web replica count declared in the AWX CR's spec.web_replicas."
+                each:
+                  type: Gauge
+                  gauge:
+                    path: [spec, web_replicas]
+              - name: task_replicas
+                help: "Desired task replica count declared in the AWX CR's spec.task_replicas."
+                each:
+                  type: Gauge
+                  gauge:
+                    path: [spec, task_replicas]
+  rbac:
+    # list/watch only — the alert only ever reads the CR's replica counts,
+    # never patches it (that stays awx-autoscale's job, roles/stack/operator/
+    # awx-autoscale/tasks/main.yml, with its own narrower namespaced Role).
+    extraRules:
+      - apiGroups: ["awx.ansible.com"]
+        resources: ["awxs"]
+        verbs: ["list", "watch"]
 
 prometheus-node-exporter:
   enabled: true

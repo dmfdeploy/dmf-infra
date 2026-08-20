@@ -123,6 +123,37 @@ prometheus_alert_cpu_over_request_crit_ratio: 3.0
 # not saturation signals, so a single short debounce covers all three.
 prometheus_alert_ingestion_drop_for: 2m
 
+# AWX CR-vs-running-state divergence (dmfdeploy/dmfdeploy#424). Namespace/
+# instance name mirror roles/stack/operator/awx defaults so this role does
+# not hard-require that role to run first in every playbook that includes
+# prometheus alone — same fallback pattern as awx-autoscale's own defaults.
+prometheus_alert_awx_namespace: "{{ awx_namespace | default('awx') }}"
+prometheus_alert_awx_instance_name: "{{ awx_instance_name | default('awx') }}"
+# Trailing window the divergence ratio below is averaged over, via a promql
+# subquery (not a bare `for:` — see the alert's own comment in alerts.yaml.j2
+# for why a bare for: silently resets on every retry). ~2x the worst measured
+# HEALTHY reconcile (dmfdeploy#424 live evidence: CR patched asleep
+# 13:09:19Z, first success 13:17:53Z, settled 13:19:14Z — ~10 minutes,
+# including one failure+retry cycle) so a single normal reconcile can't push
+# the ratio above threshold on its own.
+prometheus_alert_awx_cr_divergence_window: 20m
+# Subquery resolution — must stay finer than the window above (a coarser
+# resolution undersamples avg_over_time and can miss short recoveries or
+# short divergences entirely). Matches the scrape/eval interval used
+# elsewhere in this suite.
+prometheus_alert_awx_cr_divergence_resolution: 1m
+# Fraction of the window that must show divergence for the alert to fire.
+# Below 1.0 on purpose: tolerates a one- or two-sample recovery blip inside
+# the window (a retry cycle's own brief successes) without resetting,
+# while still requiring the window be genuinely mostly-bad rather than a
+# single glitch.
+prometheus_alert_awx_cr_divergence_ratio: 0.7
+# Debounce on the already-smoothed ratio crossing the threshold above, not
+# on the raw per-sample divergence — the ratio doesn't drop to zero on one
+# sample, so this can't reproduce the resettable-timer bug a bare for: on
+# the raw expression would have.
+prometheus_alert_awx_cr_divergence_for: 1m
+
 # Static blackbox probe lanes (dmfdeploy/dmfdeploy#166 WP-D) — the four probe
 # lanes from plan D5 that have NO NetBox object (ADR-0038 covers platform
 # apps via dmf-promsd; these are infrastructure anchors below/outside that
