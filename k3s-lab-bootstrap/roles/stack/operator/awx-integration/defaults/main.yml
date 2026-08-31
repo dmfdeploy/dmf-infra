@@ -349,7 +349,24 @@ awx_catalog_projects:
     # change, no existing tag's meaning altered — every EXISTING
     # registration's JT contract is intact, and every non-topology launch
     # is a byte-for-byte no-op.
-    scm_branch: "v0.4.7"
+    # JT contract audit: `git -C ../dmf-runbooks diff v0.4.7..v0.4.8 --
+    # '*/defaults/*'` — EMPTY. No role default changed, so no new role var
+    # exists to be promoted to an extra_var. Full `--stat` (13 files): the
+    # six launch-*/teardown-*.yml playbooks (+21 each), roles/l3_run_guard/
+    # tasks/_emit_milestone.yml (new) and _assert_reserved_vars.yml,
+    # tests/l3-control-flow.yml (a forgery-refusal scenario), .github/
+    # workflows/ci.yml, the three agent files, VERSION. The +21 in every
+    # playbook is the SAME shape six times: `include_role ... tasks_from:
+    # _emit_milestone` with `vars: l3_milestone_token: <hardcoded literal>`
+    # from the closed vocabulary (preflight-passed, provisioning,
+    # configuring, tearing-down, finalising). Those are play-internal task
+    # vars set to constants, NOT extra_vars — nothing new is expected from
+    # AWX. No playbook FILE was added or renamed, so no job-template
+    # registration moves. l3_milestone_token is now RESERVED in
+    # _assert_reserved_vars.yml, which means AWX passing it as an extra_var
+    # would be REFUSED rather than honoured — the surface narrowed, it did
+    # not widen. Every existing registration's JT contract is intact.
+    scm_branch: "v0.4.8"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
