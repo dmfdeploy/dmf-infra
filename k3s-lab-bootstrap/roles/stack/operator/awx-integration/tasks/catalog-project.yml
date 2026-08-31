@@ -58,52 +58,15 @@
       {{ (_catalog_project_lookup.json.results | default([]) | first | default({})).id
          | default(_catalog_project_created.json.id) }}
 
-- name: "Update AWX project SCM: {{ catalog_project.name }}"
-  ansible.builtin.uri:
-    url: "{{ awx_integration_api_base }}/projects/{{ _catalog_project_id }}/"
-    method: PATCH
-    url_username: "{{ awx_integration_admin_user }}"
-    url_password: "{{ awx_integration_admin_password }}"
-    force_basic_auth: true
-    body_format: json
-    body:
-      scm_url: "{{ catalog_project.scm_url }}"
-      scm_branch: "{{ catalog_project.scm_branch | default('main') }}"
-      scm_update_on_launch: true
-      credential: "{{ awx_integration_scm_cred_id }}"
-      scm_delete_on_update: true
-      custom_virtualenv: ""
-    status_code: 200
-  until: >-
-    _gate_uri_result_24 is success
-    or (_gate_uri_result_24.status | default(0) >= 400 and _gate_uri_result_24.status | default(0) < 500)
-  retries: "{{ _gate_uri_retry | default(6) }}"
-  delay: "{{ _gate_uri_delay | default(5) }}"
-  register: _gate_uri_result_24
-  when: _catalog_project_lookup.json.count | int > 0
-  no_log: "{{ not awx_integration_debug | bool }}"
-
-- name: "Set GIT_SSL_NO_VERIFY and ANSIBLE_ROLES_PATH for AWX project: {{ catalog_project.name }}"
-  ansible.builtin.uri:
-    url: "{{ awx_integration_api_base }}/projects/{{ _catalog_project_id }}/"
-    method: PATCH
-    url_username: "{{ awx_integration_admin_user }}"
-    url_password: "{{ awx_integration_admin_password }}"
-    force_basic_auth: true
-    body_format: json
-    body:
-      environment_vars:
-        GIT_SSL_NO_VERIFY: "true"
-        ANSIBLE_ROLES_PATH: "{{ catalog_project.roles_path }}"
-    status_code: [200, 400]
-  until: >-
-    _catalog_project_env_set is success
-    or (_catalog_project_env_set.status | default(0) >= 400 and _catalog_project_env_set.status | default(0) < 500)
-  retries: "{{ _gate_uri_retry | default(6) }}"
-  delay: "{{ _gate_uri_delay | default(5) }}"
-  register: _catalog_project_env_set
-  no_log: "{{ not awx_integration_debug | bool }}"
-
+# ORDERING IS LOAD-BEARING (review finding, 2026-08-31): the Forgejo mirror
+# gate below runs BEFORE the project is repointed. It used to run after.
+# The PATCH sets scm_branch AND scm_update_on_launch: true together, so
+# between repointing and the gate there was a window in which any launched
+# job triggered an SCM update against a tag that had not reached the mirror
+# yet, and failed - before the gate built to prevent exactly that could run.
+# Verify the ref is mirrored, THEN repoint. These tasks read only
+# catalog_project.scm_url / .scm_branch from defaults, never AWX state, so
+# they are safe to run this early.
 - name: "Derive Forgejo mirror repo + pinned ref: {{ catalog_project.name }}"
   ansible.builtin.set_fact:
     _catalog_project_forgejo_repo: "{{ catalog_project.scm_url | basename | regex_replace('\\.git$', '') }}"
@@ -160,6 +123,52 @@
       in-cluster Forgejo pull-mirror (~1h interval). Manual remedy: POST
       {{ awx_integration_forgejo_api_base }}/repos/{{ awx_integration_forgejo_user }}/{{ _catalog_project_forgejo_repo }}/mirror-sync
       then re-run this play once that returns.
+
+- name: "Update AWX project SCM: {{ catalog_project.name }}"
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ _catalog_project_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      scm_url: "{{ catalog_project.scm_url }}"
+      scm_branch: "{{ catalog_project.scm_branch | default('main') }}"
+      scm_update_on_launch: true
+      credential: "{{ awx_integration_scm_cred_id }}"
+      scm_delete_on_update: true
+      custom_virtualenv: ""
+    status_code: 200
+  until: >-
+    _gate_uri_result_24 is success
+    or (_gate_uri_result_24.status | default(0) >= 400 and _gate_uri_result_24.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _gate_uri_result_24
+  when: _catalog_project_lookup.json.count | int > 0
+  no_log: "{{ not awx_integration_debug | bool }}"
+
+- name: "Set GIT_SSL_NO_VERIFY and ANSIBLE_ROLES_PATH for AWX project: {{ catalog_project.name }}"
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/projects/{{ _catalog_project_id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      environment_vars:
+        GIT_SSL_NO_VERIFY: "true"
+        ANSIBLE_ROLES_PATH: "{{ catalog_project.roles_path }}"
+    status_code: [200, 400]
+  until: >-
+    _catalog_project_env_set is success
+    or (_catalog_project_env_set.status | default(0) >= 400 and _catalog_project_env_set.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: _catalog_project_env_set
+  no_log: "{{ not awx_integration_debug | bool }}"
 
 - name: "Trigger AWX project sync: {{ catalog_project.name }}"
   ansible.builtin.uri:
