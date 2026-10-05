@@ -1,5 +1,7 @@
 # k3s Infrastructure Lab
 
+[![CI](https://github.com/dmfdeploy/dmf-infra/actions/workflows/ci.yml/badge.svg)](https://github.com/dmfdeploy/dmf-infra/actions/workflows/ci.yml)
+
 A fully automated k3s (lightweight Kubernetes) lab infrastructure using Ansible. This project
 provisions a 3-node high-availability cluster on Debian 12 nodes with environment-selected
 ingress, Longhorn distributed storage, and a complete monitoring and automation stack.
