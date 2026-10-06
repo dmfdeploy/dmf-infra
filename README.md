@@ -1,10 +1,13 @@
-# k3s Infrastructure Lab
+# dmf-infra
 
 [![CI](https://github.com/dmfdeploy/dmf-infra/actions/workflows/ci.yml/badge.svg)](https://github.com/dmfdeploy/dmf-infra/actions/workflows/ci.yml)
 
-A fully automated k3s (lightweight Kubernetes) lab infrastructure using Ansible. This project
-provisions a 3-node high-availability cluster on Debian 12 nodes with environment-selected
-ingress, Longhorn distributed storage, and a complete monitoring and automation stack.
+Generic Ansible playbooks and roles for the **DMF Platform**'s k3s infrastructure
+layer and its cross-cutting services: identity, secrets, inventory, monitoring and
+automation. The v0.1 release profile is a single ARM64 node (`sandbox-single-node`).
+The roles also carry a three-node lab layout with Longhorn storage; v0.1 does not
+claim it as high availability (see the platform's
+[thesis](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/THESIS.md)).
 
 > **New to the project vocabulary?** See the [DMF Glossary](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/GLOSSARY.md) for project-coined terms (umbrella, component repo, provider, …).
 
@@ -13,7 +16,7 @@ ingress, Longhorn distributed storage, and a complete monitoring and automation 
 > This is a lightweight lab environment with minimal resource allocation:
 > - **Storage**: Most PVCs are 1Gi (Grafana, Loki, PostgreSQL). Prometheus uses 5Gi.
 > - **Prometheus retention**: 6 hours / 2GB (WAL needs additional ~300MB headroom)
-> - **Longhorn replicas**: 2 (minimum for redundancy on a 3-node cluster)
+> - **Longhorn replicas**: 2 on the three-node lab layout
 >
 > For production use, increase storage sizes and retention periods accordingly.
 
