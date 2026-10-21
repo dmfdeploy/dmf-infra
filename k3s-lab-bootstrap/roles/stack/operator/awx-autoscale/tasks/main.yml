@@ -11,7 +11,7 @@
 # at {{ awx_autoscale_eso_bearer_token_remote_key }} BEFORE this role runs.
 # Minting is owned by bootstrap-secrets seed-bao (not 693-awx-integration).
 #
-# Design authority: umbrella docs/plans/DMF AWX On-Demand Scale-to-Zero Plan 2026-06-18.md §B.
+# Design authority: umbrella https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20AWX%20On-Demand%20Scale-to-Zero%20Plan%202026-06-18.md §B.
 
 # ── Opt-in gate ──────────────────────────────────────────────────────────
 

@@ -43,8 +43,8 @@ Read these first:
 - <repos>/dmf-env/inventories/hetzner-arm/group_vars/all/eso.yml
 - <repos>/dmf-env/bin/export-openbao-vars.sh
 - <repos>/dmfdeploy/docs/architecture/DMF Platform Plan.md
-- <repos>/dmfdeploy/docs/plans/DMF Secret Ownership and OpenBao Migration Plan.md
-- <repos>/dmfdeploy/docs/plans/DMF Deployment Workflow and Manifest Plan.md
+- https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Secret%20Ownership%20and%20OpenBao%20Migration%20Plan.md
+- https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Deployment%20Workflow%20and%20Manifest%20Plan.md
 
 Current diagnosis from review:
 The earlier assumption that OpenBao 2.5.2 has a root-token permission bug is

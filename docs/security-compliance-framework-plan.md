@@ -390,7 +390,7 @@ closer to mandatory.
   explicitly-named modes (OSS self-host, managed `dmfdeploy.io`,
   flypack), each with its own regulatory posture and binding
   architectural constraints. This plan's framework applies to all three
-  modes; the [Pre-Release Compliance Readiness Plan](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/plans/DMF%20Pre-Release%20Compliance%20Readiness%20Plan%202026-05-11.md)
+  modes; the [Pre-Release Compliance Readiness Plan](https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Pre-Release%20Compliance%20Readiness%20Plan%202026-05-11.md)
   enumerates per-mode gates.**
 - Will customer or production personal data be stored, or only lab identities and logs?
   Mode-dependent: Mode A (OSS) — operator's own choice; Mode B (managed) —
@@ -425,7 +425,7 @@ implement and *which frameworks* they map to. It does not describe *when
 each mode is allowed to go live*.
 
 The companion document
-[`docs/plans/DMF Pre-Release Compliance Readiness Plan 2026-05-11.md`](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/plans/DMF%20Pre-Release%20Compliance%20Readiness%20Plan%202026-05-11.md)
+[`docs/plans/DMF Pre-Release Compliance Readiness Plan 2026-05-11.md`](https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Pre-Release%20Compliance%20Readiness%20Plan%202026-05-11.md)
 defines three tiered gates corresponding to the three deployment modes
 proposed in ADR-0020:
 

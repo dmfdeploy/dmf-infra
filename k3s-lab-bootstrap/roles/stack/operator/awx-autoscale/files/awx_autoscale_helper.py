@@ -4,7 +4,7 @@
 Deployed as a ConfigMap-mounted script in a python:3-slim container.
 Exposes POST /ensure-awake (bearer-token auth) and a background idle-reaper.
 
-Design authority: umbrella docs/plans/DMF AWX On-Demand Scale-to-Zero Plan 2026-06-18.md §B.
+Design authority: umbrella https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20AWX%20On-Demand%20Scale-to-Zero%20Plan%202026-06-18.md §B.
 
 All k8s API calls use the mounted ServiceAccount token + ca.crt via urllib.
 All AWX API calls use a bearer token from a mounted Secret via urllib.

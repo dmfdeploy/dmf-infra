@@ -2,7 +2,9 @@
 # Read-only audit of live admin identities vs role defaults.
 #
 # Per the 2026-05-14 audit plan (DMF App Admin Account Drift Audit and
-# Realignment Plan): for each app with a local admin account, query the
+# Realignment Plan,
+# https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20App%20Admin%20Account%20Drift%20Audit%20and%20Realignment%20Plan%202026-05-14.md):
+# for each app with a local admin account, query the
 # live cluster for the actual admin username, compare against the role
 # default, and report drift.
 #

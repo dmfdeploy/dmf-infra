@@ -111,7 +111,7 @@ awx_integration_netbox_catalog_token: "{{ vault_netbox_catalog_token | default('
 awx_integration_netbox_purge_token: "{{ vault_netbox_purge_token | default('', true) }}"
 # NetBox schema generation in v4.5.0 can take several minutes due to drf-spectacular
 # filterset warnings. The 600s timeout covers this, and caching avoids re-fetching
-# on subsequent syncs. See: docs/plans/AWX NetBox Inventory Sync Fix 2026-05-04.md
+# on subsequent syncs. See: https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/AWX%20NetBox%20Inventory%20Sync%20Fix%202026-05-04.md
 awx_integration_netbox_timeout: 600
 awx_integration_netbox_cache: true
 awx_integration_netbox_cache_timeout: 3600

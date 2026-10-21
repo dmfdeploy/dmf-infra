@@ -14,7 +14,7 @@
 # References:
 #   - ADR-0012: configure-stage-distinct-from-provision (lifecycle stages)
 #   - ADR-0014: awx-project-layout
-#   - Source: docs/plans/DMF Move 1 Path A Reset 2026-05-12.md §"Real remaining work — P8" (historical)
+#   - Source: https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Move%201%20Path%20A%20Reset%202026-05-12.md §"Real remaining work — P8" (historical)
 
 - name: "Catalog drift detection (lifecycle: operate)"
   hosts: device_roles_k3s-control-plane[0]

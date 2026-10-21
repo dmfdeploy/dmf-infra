@@ -7,7 +7,7 @@ Build context for the shared AWX EE image consumed by:
 - AWX-spawned media catalog launchers (`media-*` JTs)
 
 Per [ADR-0025](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0025-ansible-in-cluster-pods-and-catalog-helm.md)
-and the [convergence plan](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/plans/DMF%20Cluster-Internal%20Ansible%20Execution%20and%20Catalog%20Helm%20Pivot%20Plan%202026-05-19.md).
+and the [convergence plan](https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Cluster-Internal%20Ansible%20Execution%20and%20Catalog%20Helm%20Pivot%20Plan%202026-05-19.md).
 
 ## Image flow
 
@@ -180,8 +180,8 @@ is the load-bearing consumer, so the EE belongs in dmf-infra.
 ## See also
 
 - [ADR-0025](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/decisions/0025-ansible-in-cluster-pods-and-catalog-helm.md)
-- [Convergence plan §5 Lane A](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/plans/DMF%20Cluster-Internal%20Ansible%20Execution%20and%20Catalog%20Helm%20Pivot%20Plan%202026-05-19.md)
-- [Public registry plan §3.2 + §11](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/plans/DMF%20Public%20Container%20Registry%20Publishing%20Plan%202026-05-19.md)
-- [Runner-pod plan (Lane C)](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/plans/DMF%20In-Cluster%20Ansible%20Runner%20Pod%20Implementation%20Plan%202026-05-14.md)
+- [Convergence plan §5 Lane A](https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Cluster-Internal%20Ansible%20Execution%20and%20Catalog%20Helm%20Pivot%20Plan%202026-05-19.md)
+- [Public registry plan §3.2 + §11](https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Public%20Container%20Registry%20Publishing%20Plan%202026-05-19.md)
+- [Runner-pod plan (Lane C)](https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20In-Cluster%20Ansible%20Runner%20Pod%20Implementation%20Plan%202026-05-14.md)
 - ADR-0007 (secrets never in argv)
 - ADR-0010 (`bin/run-playbook.sh` is the sanctioned ansible entry)
