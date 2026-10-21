@@ -363,11 +363,14 @@ groups:
             {% raw %}{{ $labels.component }}{% endraw %}_replicas count while
             the {% raw %}{{ $labels.component }}{% endraw %} Deployment has
             had zero Available replicas for most of the last
-            {{ prometheus_alert_awx_cr_divergence_window }} — the
-            awx-operator reconcile loop is stuck or repeatedly retrying and
-            failing. Scale-to-zero sleep does not trigger this: the CR asks
-            for 0 replicas then.
-          runbook_url: "{{ prometheus_alert_runbook_base }}#awxreplicadivergence"
+            {{ prometheus_alert_awx_cr_divergence_window }}. The usual cause
+            is a wake that landed while the awx-operator was finishing a
+            sleep reconcile: the operator then scaled the Deployments back to
+            zero (dmfdeploy/dmfdeploy#540). Restarting the awx-operator
+            controller manager makes the Deployments follow the CR again.
+            Scale-to-zero sleep does not trigger this: the CR asks for 0
+            replicas then.
+          runbook_url: "{{ prometheus_alert_awx_cr_divergence_runbook_url }}"
 
   - name: dmf-runaway-workload
     rules:
