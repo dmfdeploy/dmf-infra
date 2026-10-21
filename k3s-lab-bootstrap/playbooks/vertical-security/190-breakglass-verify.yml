@@ -13,5 +13,5 @@
           STUB: 51-authentik-breakglass-verify.yml has not yet been implemented.
           Intended checks:
           - API login as seeded break-glass admin returns 200 BEFORE OIDC
-          See DMF Orchestrator and Renumbering Plan 2026-04-22.md §2.2
+          See https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Orchestrator%20and%20Renumbering%20Plan%202026-04-22.md §2.2
           for the full intent of this playbook.

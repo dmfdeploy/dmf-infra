@@ -23,7 +23,7 @@ awx_instance_name: awx
 # Existing envs that bootstrapped with the prior default (i.e. the
 # operator's username) MUST override this in env inventory before
 # re-running this role, or plan a one-time live migration. See
-# docs/plans/DMF Per-App Identity Feasibility Survey 2026-05-24.md §5
+# https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20Per-App%20Identity%20Feasibility%20Survey%202026-05-24.md §5
 # item 1 for the migration path.
 awx_admin_user: awx-break-glass
 # ADR-0024/0028 canonical break-glass email: per-app, per-env synthetic.
