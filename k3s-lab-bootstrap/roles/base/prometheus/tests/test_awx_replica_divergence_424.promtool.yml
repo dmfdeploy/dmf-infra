@@ -142,10 +142,14 @@ tests:
               description: >-
                 The AWX CR is requesting a non-zero web_replicas count while
                 the web Deployment has had zero Available replicas for most
-                of the last 20m — the awx-operator reconcile loop is stuck
-                or repeatedly retrying and failing. Scale-to-zero sleep does
-                not trigger this: the CR asks for 0 replicas then.
-              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#awxreplicadivergence"
+                of the last 20m. The usual cause is a wake that landed while
+                the awx-operator was finishing a sleep reconcile: the operator
+                then scaled the Deployments back to zero
+                (dmfdeploy/dmfdeploy#540). Restarting the awx-operator
+                controller manager makes the Deployments follow the CR again.
+                Scale-to-zero sleep does not trigger this: the CR asks for 0
+                replicas then.
+              runbook_url: "https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/runbooks/awx-operator-restart.md"
 
   # ── (c) flapping divergence, sustained overall — must fire ─────────────
   # dmfdeploy/dmfdeploy#424 gate finding (claude1): the first version of
@@ -197,10 +201,14 @@ tests:
               description: >-
                 The AWX CR is requesting a non-zero web_replicas count while
                 the web Deployment has had zero Available replicas for most
-                of the last 20m — the awx-operator reconcile loop is stuck
-                or repeatedly retrying and failing. Scale-to-zero sleep does
-                not trigger this: the CR asks for 0 replicas then.
-              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#awxreplicadivergence"
+                of the last 20m. The usual cause is a wake that landed while
+                the awx-operator was finishing a sleep reconcile: the operator
+                then scaled the Deployments back to zero
+                (dmfdeploy/dmfdeploy#540). Restarting the awx-operator
+                controller manager makes the Deployments follow the CR again.
+                Scale-to-zero sleep does not trigger this: the CR asks for 0
+                replicas then.
+              runbook_url: "https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/runbooks/awx-operator-restart.md"
 
   # ── (d) duplicate kube-state-metrics targets — must evaluate cleanly ────
   # Same divergence shape as case (b) (~20m continuous, web only), except
@@ -252,7 +260,106 @@ tests:
               description: >-
                 The AWX CR is requesting a non-zero web_replicas count while
                 the web Deployment has had zero Available replicas for most
-                of the last 20m — the awx-operator reconcile loop is stuck
-                or repeatedly retrying and failing. Scale-to-zero sleep does
-                not trigger this: the CR asks for 0 replicas then.
-              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#awxreplicadivergence"
+                of the last 20m. The usual cause is a wake that landed while
+                the awx-operator was finishing a sleep reconcile: the operator
+                then scaled the Deployments back to zero
+                (dmfdeploy/dmfdeploy#540). Restarting the awx-operator
+                controller manager makes the Deployments follow the CR again.
+                Scale-to-zero sleep does not trigger this: the CR asks for 0
+                replicas then.
+              runbook_url: "https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/runbooks/awx-operator-restart.md"
+
+  # ── (e) the #540 wake race — must fire ──────────────────────────────────
+  # A healthy awake lead-in, then the CR stays awake (replicas 1) while the
+  # operator's late sleep write leaves both Deployments at zero Available
+  # and nothing recovers them. 61 samples (t=0..60): Deployments go to 0 at
+  # t=10 and stay there. eval_time 50m is well past the 20m window plus the
+  # 1m `for:` (ratio ~1.0 by then), so this is not a boundary check.
+  - interval: 1m
+    input_series:
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: "1x60"
+      - series: 'awx_cr_task_replicas{namespace="awx", name="awx"}'
+        values: "1x60"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-web"}'
+        values: "1x9 0x51"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-task"}'
+        values: "1x9 0x51"
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: AWXReplicaDivergence
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: workload
+              component: web
+              namespace: awx
+            exp_annotations:
+              summary: "AWX web wants replicas but none are Available"
+              description: >-
+                The AWX CR is requesting a non-zero web_replicas count while
+                the web Deployment has had zero Available replicas for most
+                of the last 20m. The usual cause is a wake that landed while
+                the awx-operator was finishing a sleep reconcile: the operator
+                then scaled the Deployments back to zero
+                (dmfdeploy/dmfdeploy#540). Restarting the awx-operator
+                controller manager makes the Deployments follow the CR again.
+                Scale-to-zero sleep does not trigger this: the CR asks for 0
+                replicas then.
+              runbook_url: "https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/runbooks/awx-operator-restart.md"
+          - exp_labels:
+              severity: warning
+              category: workload
+              component: task
+              namespace: awx
+            exp_annotations:
+              summary: "AWX task wants replicas but none are Available"
+              description: >-
+                The AWX CR is requesting a non-zero task_replicas count while
+                the task Deployment has had zero Available replicas for most
+                of the last 20m. The usual cause is a wake that landed while
+                the awx-operator was finishing a sleep reconcile: the operator
+                then scaled the Deployments back to zero
+                (dmfdeploy/dmfdeploy#540). Restarting the awx-operator
+                controller manager makes the Deployments follow the CR again.
+                Scale-to-zero sleep does not trigger this: the CR asks for 0
+                replicas then.
+              runbook_url: "https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/runbooks/awx-operator-restart.md"
+
+  # ── (f) normal sleep — must NOT fire ────────────────────────────────────
+  # Awake lead-in, then the helper sleeps AWX: the CR goes to 0 first and the
+  # Deployments follow to 0 Available. The CR side of the AND is 0 from t=10,
+  # so the divergence signal never holds. Checked long after the sleep.
+  - interval: 1m
+    input_series:
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: "1x9 0x51"
+      - series: 'awx_cr_task_replicas{namespace="awx", name="awx"}'
+        values: "1x9 0x51"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-web"}'
+        values: "1x9 0x51"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-task"}'
+        values: "1x9 0x51"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AWXReplicaDivergence
+        exp_alerts: []
+      - eval_time: 50m
+        alertname: AWXReplicaDivergence
+        exp_alerts: []
+
+  # ── (g) normal awake — must NOT fire ────────────────────────────────────
+  - interval: 1m
+    input_series:
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: "1x60"
+      - series: 'awx_cr_task_replicas{namespace="awx", name="awx"}'
+        values: "1x60"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-web"}'
+        values: "1x60"
+      - series: 'kube_deployment_status_replicas_available{namespace="awx", deployment="awx-task"}'
+        values: "1x60"
+    alert_rule_test:
+      - eval_time: 50m
+        alertname: AWXReplicaDivergence
+        exp_alerts: []
