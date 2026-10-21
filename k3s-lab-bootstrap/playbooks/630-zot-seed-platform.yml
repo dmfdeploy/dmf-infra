@@ -87,6 +87,13 @@
 # selects only the env's architecture from GHCR's image manifest indices.
 # Chart artifacts are copied without arch selection.
 #
+# Index-preserving images (`all_platforms: true`): an image whose consumers
+# reference the source's INDEX digest (nmos-crosspoint, dmfdeploy/dmfdeploy#629)
+# is copied with `--all --preserve-digests` instead: every manifest in the
+# index is copied and skopeo fails rather than change a digest, so the digest
+# in Zot is the digest that was tested. Its presence gate HEADs that digest,
+# not the tag, so a new pin is seeded without zot_seed_force.
+#
 # References:
 #   ADR-0025                                       — Catalog Helm + EE-as-runtime + Stage 4b
 #   ADR-0033                                       — zot-svc scoped machine-write account (this play uses it)
@@ -197,14 +204,23 @@
     nmos_cpp_seed_chart_version: "{{ nmos_cpp_chart_version | default('0.1.2') }}"
     nmos_cpp_seed_chart_digest: "{{ nmos_cpp_chart_digest | default('sha256:fb52f88ab3bf140a361e8b9cba27a0220405e10cf769d5acf7ac171418fee03e') }}"
 
-    # nmos-crosspoint image/chart (published to GHCR, issue #108). The IMAGE is
-    # mirrored by tag (by design — matches nmos-cpp; the catalog image digest is
-    # informational/verification metadata, NOT an enforcement input here). The
-    # CHART is digest-pinned below.
-    nmos_crosspoint_image_tag: "{{ nmos_crosspoint_tag | default('0.1.1') }}"
+    # nmos-crosspoint image/chart (dmfdeploy/dmfdeploy#629). The IMAGE is the
+    # MXL-capable controller fork Gemini2350/nmos-crosspoint_v3 at commit
+    # fa31061c04a7a74773cd8c859850d05ff2b056ec, mirrored from the fork's own
+    # published image by its INDEX digest, every manifest included, digest
+    # preserved (all_platforms below). dmf-media's chart 0.2.0 references
+    # zot.../dmf/nmos-crosspoint@<this digest>, and dmf-media's IS-05 A/B
+    # crosspoint slice tested exactly this digest. The tag is a label only.
+    # Keep the digest equal to dmf-media charts/nmos-crosspoint image.digest.
+    # The old 3dmedium line (dmfdeploy-built, GHCR tag 0.1.1) is retired.
+    nmos_crosspoint_image_tag: "{{ nmos_crosspoint_tag | default('fa31061') }}"
+    nmos_crosspoint_image_digest: "{{ nmos_crosspoint_digest | default('sha256:6255ec93f743adf238a1136f67465f764c45d58e4b4684e95eacf48304dd09f3') }}"
     nmos_crosspoint_seed_chart_name: "{{ nmos_crosspoint_chart_name | default('nmos-crosspoint') }}"
-    nmos_crosspoint_seed_chart_version: "{{ nmos_crosspoint_chart_version | default('0.1.1') }}"
-    nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('sha256:c4bad3fb15f3015e0ab742de3b68719ff13c590ea28b465ca08ffac13fc55f62') }}"
+    # Chart 0.2.0 is the chart that references the image by digest. Its OCI
+    # digest exists only once it is published to GHCR; until it is filled in
+    # here, the "every chart is digest-pinned" assert below stops this play.
+    nmos_crosspoint_seed_chart_version: "{{ nmos_crosspoint_chart_version | default('0.2.0') }}"
+    nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('') }}"
 
     # MXL fabrics-demo chart + image (dmfdeploy/dmfdeploy#17). The IMAGE is
     # digest-pinned; the chart defaults pull it from Zot at
@@ -274,7 +290,12 @@
         tag: "{{ nmos_cpp_node_image_tag }}"
         zot_repo: "{{ zot_registry_host }}/dmf/nmos-cpp-node"
       - name: nmos-crosspoint
+        # The fork's published image index, DIGEST-PINNED and copied whole
+        # (all_platforms) so Zot holds the tested index digest (#629).
         tag: "{{ nmos_crosspoint_image_tag }}"
+        source_repo: "docker.io/gemini2350/nmos-crosspoint_v3"
+        source_digest: "{{ nmos_crosspoint_image_digest }}"
+        all_platforms: true
         zot_repo: "{{ zot_registry_host }}/dmf/nmos-crosspoint"
       - name: dmf-promsd
         tag: "{{ dmf_promsd_image_tag }}"
@@ -340,10 +361,27 @@
           - zot_seed_charts is defined
           - zot_seed_charts | length > 0
           - dmf_seed_arch in ['arm64', 'amd64']
+          - zot_seed_images | selectattr('all_platforms', 'defined') | selectattr('all_platforms')
+            | rejectattr('source_digest', 'defined') | list | length == 0
         fail_msg: >-
           zot_registry_host + zot_seed_images + zot_seed_charts + a valid
-          dmf_architecture (arm64|amd64) must all be defined. See playbook
-          vars + the env's group_vars/all/main.yml.
+          dmf_architecture (arm64|amd64) must all be defined, and every
+          all_platforms image needs a source_digest. See playbook vars + the
+          env's group_vars/all/main.yml.
+
+    - name: Assert every seeded chart is digest-pinned
+      # A chart copied by version alone could change under the same version.
+      # An empty digest also marks a chart bumped before its GHCR publish
+      # (e.g. nmos-crosspoint 0.2.0, dmfdeploy/dmfdeploy#629): fill in the
+      # published digest, then run this play.
+      ansible.builtin.assert:
+        that:
+          - zot_seed_charts | rejectattr('digest', 'match', '^sha256:[0-9a-f]{64}$') | list | length == 0
+        fail_msg: >-
+          Chart(s) without a sha256 digest pin:
+          {{ zot_seed_charts | rejectattr('digest', 'match', '^sha256:[0-9a-f]{64}$')
+             | map(attribute='name') | join(', ') }}.
+          Set the *_chart_digest from the chart's GHCR publish.
 
     - name: Ensure skopeo is installed on the control node
       # skopeo is daemon-free (no Docker/containerd dependency) and is the
@@ -418,7 +456,9 @@
         # ── Per-image: HEAD precheck → copy if absent ────────────────────
         - name: Probe each image's current presence in Zot
           ansible.builtin.uri:
-            url: "https://{{ zot_registry_host }}/v2/{{ item.zot_repo | regex_replace('^' ~ zot_registry_host ~ '/', '') }}/manifests/{{ item.tag }}"
+            # all_platforms images are checked by the pinned index digest
+            # (identical in Zot, see the header); the rest by tag.
+            url: "https://{{ zot_registry_host }}/v2/{{ item.zot_repo | regex_replace('^' ~ zot_registry_host ~ '/', '') }}/manifests/{{ item.source_digest if (item.all_platforms | default(false)) else item.tag }}"
             method: HEAD
             url_username: "{{ _zot_user }}"
             url_password: "{{ _zot_pass }}"
@@ -460,17 +500,17 @@
           # --dest-compress=false: don't re-compress layers we're just
           # mirroring; speeds the upload + avoids unnecessary CPU on
           # the node.
+          # all_platforms: --all --preserve-digests copies the whole index
+          # unchanged (see the header) instead of selecting one arch.
           ansible.builtin.command:
-            argv:
-              - skopeo
-              - copy
-              - "--dest-tls-verify={{ zot_dest_tls_verify }}"
-              - "--override-arch={{ dmf_seed_arch }}"
-              - "--override-os=linux"
-              - "--retry-times=5"
-              - "--dest-authfile={{ _zot_authfile.path }}"
-              - "docker://{{ item.source_repo | default('ghcr.io/' ~ ghcr_namespace ~ '/' ~ item.name) }}{{ ('@' ~ item.source_digest) if (item.source_digest is defined) else (':' ~ item.tag) }}"
-              - "docker://{{ item.zot_repo }}:{{ item.tag }}"
+            argv: >-
+              {{ ['skopeo', 'copy', '--dest-tls-verify=' ~ zot_dest_tls_verify]
+                 + (['--all', '--preserve-digests'] if (item.all_platforms | default(false))
+                    else ['--override-arch=' ~ dmf_seed_arch, '--override-os=linux'])
+                 + ['--retry-times=5', '--dest-authfile=' ~ _zot_authfile.path,
+                    'docker://' ~ (item.source_repo | default('ghcr.io/' ~ ghcr_namespace ~ '/' ~ item.name))
+                    ~ (('@' ~ item.source_digest) if (item.source_digest is defined) else (':' ~ item.tag)),
+                    'docker://' ~ item.zot_repo ~ ':' ~ item.tag] }}
           loop: "{{ _zot_images_to_seed }}"
           loop_control:
             label: "{{ item.name }}:{{ item.tag }} → {{ item.zot_repo }}"
