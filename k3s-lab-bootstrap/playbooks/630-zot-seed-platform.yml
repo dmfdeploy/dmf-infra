@@ -216,11 +216,11 @@
     nmos_crosspoint_image_tag: "{{ nmos_crosspoint_tag | default('fa31061') }}"
     nmos_crosspoint_image_digest: "{{ nmos_crosspoint_digest | default('sha256:6255ec93f743adf238a1136f67465f764c45d58e4b4684e95eacf48304dd09f3') }}"
     nmos_crosspoint_seed_chart_name: "{{ nmos_crosspoint_chart_name | default('nmos-crosspoint') }}"
-    # Chart 0.2.0 is the chart that references the image by digest. Its OCI
-    # digest exists only once it is published to GHCR; until it is filled in
-    # here, the "every chart is digest-pinned" assert below stops this play.
+    # Chart 0.2.0 is the chart that references the image by digest. The digest
+    # below is its OCI digest as published to GHCR (2026-10-22). Keep it equal
+    # to nmos_crosspoint_chart_digest in the awx-integration role defaults.
     nmos_crosspoint_seed_chart_version: "{{ nmos_crosspoint_chart_version | default('0.2.0') }}"
-    nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('') }}"
+    nmos_crosspoint_seed_chart_digest: "{{ nmos_crosspoint_chart_digest | default('sha256:951dfa035e4f33ad6169520c6a6f76bd8d63abb8026f0843f7b1592474472a5d') }}"
 
     # MXL fabrics-demo chart + image (dmfdeploy/dmfdeploy#17). The IMAGE is
     # digest-pinned; the chart defaults pull it from Zot at
