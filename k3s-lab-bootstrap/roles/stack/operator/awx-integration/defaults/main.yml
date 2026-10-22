@@ -366,7 +366,52 @@ awx_catalog_projects:
     # _assert_reserved_vars.yml, which means AWX passing it as an extra_var
     # would be REFUSED rather than honoured — the surface narrowed, it did
     # not widen. Every existing registration's JT contract is intact.
-    scm_branch: "v0.4.8"
+        #
+    # v0.4.8 -> v0.4.9 (umbrella #332 and #474, 2026-10-22): closes two
+    # ways a caller could forge or split the DMF_L3_OUTCOME and
+    # DMF_L3_SWITCH_OUTCOME markers the console reads. #332 adds
+    # roles/l3_run_guard/tasks/outcome_guard.yml as tasks[0] of the launch,
+    # teardown and rollback playbooks, ahead of the outer block. It refuses
+    # a run that supplies l3_outcome_token, l3_outcome_kv,
+    # l3_pre_mutation_marker_emitted, l3_mutation_started,
+    # l3_expected_refusal or l3_rollback_terminal_reached. #474 renders the
+    # switch play's caller-supplied kv values through a new l3_marker_value
+    # filter and tightens receiver_instance to a one-line Helm release name
+    # (`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`, at most 53 characters).
+    # JT contract audit: `git -C ../dmf-runbooks diff v0.4.8..v0.4.9 --
+    # '*/defaults/*'` — EMPTY (zero output). No role default changed, so no
+    # role var exists to be promoted to an extra_var. Full `--stat` (49
+    # files): the six launch-*/teardown-*.yml playbooks plus
+    # rollback-run.yml (+9 each, the same outcome_guard include_role as
+    # tasks[0]), switch-mxl-fabrics-demo.yml (marker rendering and the
+    # receiver_instance assert), 20-odd l3_run_guard task and filter files,
+    # outcome_guard.yml and _emit_outcome_refused_literal.yml (new), tests,
+    # CI, docs and VERSION. No playbook FILE was added, renamed or removed,
+    # so every playbook named by a registration below still exists at the
+    # same path. The switch playbook's documented extra_vars header
+    # (topology_params/receiver_instance/source_instance/reason) changed
+    # only in a comment about marker sanitising, not in the contract.
+    # Evaluating the new refusals against what actually reaches AWX:
+    # (1) None of the six reserved names appears in any JT extra_vars
+    # above or below (grep of this file: no match). (2) dmf-cms sends only
+    # workload_slug, l3_request_id, l3_preflight_verdict, l3_override,
+    # l3_override_reason, topology_params (main.py
+    # _build_launch_extra_vars and its L3 envelope), l3_run_id,
+    # l3_rollback_reason (rollback), and topology_params/receiver_instance/
+    # source_instance/reason (switch_source.py _build_extra_vars). None of
+    # those is one of the six names (grep of dmf-cms/src: no match outside
+    # tests). So a payload accepted at v0.4.8 is still accepted. (3)
+    # receiver_instance is the catalog entry key of a topology-shaped
+    # instance, which the launcher writes from the Helm release name. The
+    # console does not itself check the charset, so a catalog key that is
+    # not a lowercase DNS-1123 name of at most 53 characters would now be
+    # refused with detail=switch-receiver-instance-missing. That narrows
+    # the surface and is the intended effect. Conclusion: no job-template
+    # registration changed and no extra_vars surface changed; the re-pin
+    # is a delivery bump. Chart version is unchanged, so 630 is not needed
+    # on this account, but the Forgejo mirror must be synced to v0.4.9 and
+    # playbook 693 run after merge to move the AWX project pin.
+    scm_branch: "v0.4.9"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
