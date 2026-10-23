@@ -2311,6 +2311,214 @@
          | default(awx_control_node_ssh_cred_created.json.id) }}
   run_once: true
 
+# dmfdeploy/dmfdeploy#310: NetBox tokens for catalog launcher JTs live in AWX
+# custom credentials (encrypted at rest, "$encrypted$" on every API read), not in
+# JT extra_vars. Defaults: awx_integration_netbox_token_credentials. Credential
+# type inputs/injectors cannot change once a credential uses the type, so the
+# type is create-if-missing only; the credential's secret is PATCHed every run
+# so a rotated token in OpenBao reaches AWX.
+- name: Assert NetBox catalog tokens are available for AWX credentials
+  ansible.builtin.assert:
+    that:
+      - lookup('vars', item.token_var, default='') | length > 0
+    fail_msg: >-
+      {{ item.var_name }} is empty. Run the netbox-sot play (691) so the token is
+      minted into OpenBao, then re-run this play.
+    quiet: true
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    label: "{{ item.credential_name }}"
+  run_once: true
+  no_log: true
+
+- name: Lookup NetBox token credential types
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credential_types/?name={{ item.type_name | urlencode }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_netbox_cred_type_lookup is success
+    or (awx_netbox_cred_type_lookup.status | default(0) >= 400 and awx_netbox_cred_type_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    label: "{{ item.type_name }}"
+  register: awx_netbox_cred_type_lookup
+  run_once: true
+
+- name: Assert each NetBox token credential type exists at most once
+  ansible.builtin.assert:
+    that:
+      - awx_netbox_cred_type_lookup.results[loop_index0].json.count | int <= 1
+    fail_msg: "More than one AWX credential type is named {{ item.type_name }}."
+    quiet: true
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    index_var: loop_index0
+    label: "{{ item.type_name }}"
+  run_once: true
+
+- name: Create NetBox token credential types (if missing)
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credential_types/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ item.type_name }}"
+      description: "{{ item.description }}"
+      kind: cloud
+      inputs:
+        fields:
+          - id: token
+            type: string
+            label: "{{ item.field_label }}"
+            secret: true
+        required:
+          - token
+      injectors:
+        # AWX renders {{ token }} at job run time; the inner literal is
+        # built in a Jinja expression so Ansible does not template it here.
+        extra_vars: "{{ {item.var_name: '{{ token }}'} }}"
+    status_code: 201
+  until: >-
+    awx_netbox_cred_type_created is success
+    or (awx_netbox_cred_type_created.status | default(0) >= 400 and awx_netbox_cred_type_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    index_var: loop_index0
+    label: "{{ item.type_name }}"
+  when: awx_netbox_cred_type_lookup.results[loop_index0].json.count | int == 0
+  register: awx_netbox_cred_type_created
+  run_once: true
+
+- name: Set NetBox token credential type ids
+  ansible.builtin.set_fact:
+    awx_netbox_cred_type_ids: >-
+      {{ awx_netbox_cred_type_ids | default({}) | combine({
+           item.type_name: (awx_netbox_cred_type_lookup.results[loop_index0].json.results | first | default({})).id
+             | default(awx_netbox_cred_type_created.results[loop_index0].json.id)
+         }) }}
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    index_var: loop_index0
+    label: "{{ item.type_name }}"
+  run_once: true
+
+- name: Lookup NetBox token credentials
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/?name={{ item.credential_name | urlencode }}&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_netbox_cred_lookup is success
+    or (awx_netbox_cred_lookup.status | default(0) >= 400 and awx_netbox_cred_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    label: "{{ item.credential_name }}"
+  register: awx_netbox_cred_lookup
+  run_once: true
+
+- name: Assert each NetBox token credential exists at most once with the expected type
+  ansible.builtin.assert:
+    that:
+      - awx_netbox_cred_lookup.results[loop_index0].json.count | int <= 1
+      - >-
+        awx_netbox_cred_lookup.results[loop_index0].json.count | int == 0
+        or (awx_netbox_cred_lookup.results[loop_index0].json.results[0].credential_type | int)
+        == (awx_netbox_cred_type_ids[item.type_name] | int)
+    fail_msg: >-
+      AWX credential {{ item.credential_name }} is duplicated or does not use the
+      credential type {{ item.type_name }}. Fix it in AWX, then re-run this play.
+    quiet: true
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    index_var: loop_index0
+    label: "{{ item.credential_name }}"
+  run_once: true
+
+- name: Create NetBox token credentials (if missing)
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      name: "{{ item.credential_name }}"
+      description: "{{ item.description }}"
+      organization: "{{ awx_integration_org_id }}"
+      credential_type: "{{ awx_netbox_cred_type_ids[item.type_name] }}"
+      inputs:
+        token: "{{ lookup('vars', item.token_var) }}"
+    status_code: 201
+  until: >-
+    awx_netbox_cred_created is success
+    or (awx_netbox_cred_created.status | default(0) >= 400 and awx_netbox_cred_created.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    index_var: loop_index0
+    label: "{{ item.credential_name }}"
+  when: awx_netbox_cred_lookup.results[loop_index0].json.count | int == 0
+  register: awx_netbox_cred_created
+  run_once: true
+  no_log: true
+
+- name: Update existing NetBox token credentials (rotation)
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/{{ (awx_netbox_cred_lookup.results[loop_index0].json.results | first).id }}/"
+    method: PATCH
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      inputs:
+        token: "{{ lookup('vars', item.token_var) }}"
+    status_code: 200
+  until: >-
+    awx_netbox_cred_updated is success
+    or (awx_netbox_cred_updated.status | default(0) >= 400 and awx_netbox_cred_updated.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    index_var: loop_index0
+    label: "{{ item.credential_name }}"
+  when: awx_netbox_cred_lookup.results[loop_index0].json.count | int > 0
+  register: awx_netbox_cred_updated
+  run_once: true
+  no_log: true
+
+- name: Set NetBox token credential ids
+  ansible.builtin.set_fact:
+    awx_netbox_cred_ids: >-
+      {{ awx_netbox_cred_ids | default({}) | combine({
+           item.credential_name: (awx_netbox_cred_lookup.results[loop_index0].json.results | first | default({})).id
+             | default(awx_netbox_cred_created.results[loop_index0].json.id)
+         }) }}
+  loop: "{{ awx_integration_netbox_token_credentials }}"
+  loop_control:
+    index_var: loop_index0
+    label: "{{ item.credential_name }}"
+  run_once: true
+
 - name: Lookup catalog job template IDs by name
   ansible.builtin.uri:
     url: "{{ awx_integration_api_base }}/job_templates/?name={{ jt_item.name | urlencode }}&organization={{ awx_integration_org_id }}"
@@ -2330,6 +2538,9 @@
     label: "{{ jt_item.name }}"
   register: awx_catalog_jt_lookup
   run_once: true
+  # Pre-#310 JTs still carry plaintext vault_netbox_* tokens in extra_vars until
+  # the PATCH below strips them; the GET response would print them.
+  no_log: true
 
 - name: Update extra_vars for existing catalog job templates
   ansible.builtin.uri:
@@ -2419,6 +2630,80 @@
   when:
     - awx_catalog_jt_lookup.results is defined
     - awx_catalog_jt_lookup.results[loop_index0].json.results | length > 0
+
+# dmfdeploy/dmfdeploy#310: attach each catalog JT's NetBox token credential(s).
+# The "Update extra_vars" PATCH earlier in this play replaces extra_vars with the
+# token-free default, so a plaintext token left on a pre-#310 JT is stripped on
+# the same run that attaches the credential. A 400 can also mean a wrong
+# same-type credential or a type conflict, so the next two tasks read the JT's
+# credentials back and assert the desired id is attached.
+- name: Attach NetBox token credentials to catalog job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ jt_id }}/credentials/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      id: "{{ awx_netbox_cred_ids[item.1] }}"
+    status_code: [201, 204, 400]
+  until: >-
+    awx_netbox_cred_attach is success
+    or (awx_netbox_cred_attach.status | default(0) >= 400 and awx_netbox_cred_attach.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_netbox_cred_attach
+  vars:
+    jt_id: >-
+      {{ (awx_catalog_jt_lookup.results
+          | selectattr('jt_item.name', 'eq', item.0.name)
+          | map(attribute='json.results') | first | first).id }}
+  loop: "{{ awx_catalog_job_templates | subelements('extra_credentials', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} <- {{ item.1 }}"
+  run_once: true
+  no_log: true
+
+- name: Read back credentials attached to catalog job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ jt_id }}/credentials/?page_size=200"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_netbox_cred_attached is success
+    or (awx_netbox_cred_attached.status | default(0) >= 400 and awx_netbox_cred_attached.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_netbox_cred_attached
+  vars:
+    jt_id: >-
+      {{ (awx_catalog_jt_lookup.results
+          | selectattr('jt_item.name', 'eq', item.0.name)
+          | map(attribute='json.results') | first | first).id }}
+  loop: "{{ awx_catalog_job_templates | subelements('extra_credentials', skip_missing=True) }}"
+  loop_control:
+    label: "{{ item.0.name }} <- {{ item.1 }}"
+  run_once: true
+
+- name: Assert the NetBox token credentials are attached to catalog job templates
+  ansible.builtin.assert:
+    that:
+      - (awx_netbox_cred_ids[item.1] | int) in (item_attached.json.results | map(attribute='id') | map('int') | list)
+    fail_msg: >-
+      Credential {{ item.1 }} is not attached to job template {{ item.0.name }}
+      (the attach returned {{ awx_netbox_cred_attach.results[loop_index0].status | default('unknown') }}).
+    quiet: true
+  vars:
+    item_attached: "{{ awx_netbox_cred_attached.results[loop_index0] }}"
+  loop: "{{ awx_catalog_job_templates | subelements('extra_credentials', skip_missing=True) }}"
+  loop_control:
+    index_var: loop_index0
+    label: "{{ item.0.name }} <- {{ item.1 }}"
+  run_once: true
 
 # ---------------------------------------------------------------------------
 # Infra job templates (dmfdeploy/dmfdeploy#166 WP-F): monitoring-apply lane.
