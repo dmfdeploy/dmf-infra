@@ -1,5 +1,7 @@
 # LibreNMS Deployment Journey
 
+> **Status: historical record.** This document captures past work and may not match the current tree.
+
 This document captures the steps and fixes needed to run LibreNMS at the
 `/librenms` subpath in this lab, and why each change was required.
 
