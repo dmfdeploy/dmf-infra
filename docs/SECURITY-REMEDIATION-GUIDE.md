@@ -27,7 +27,7 @@ OpenBao is initialized with Shamir key shares. The default threshold is 3 of 5.
 You need:
 
 - Access to the control node of the cluster, with a working kubeconfig.
-- The `bao` command-line tool.
+- The `bao` command-line tool, only if you unseal from your own machine.
 - At least three key shares from your own custody locations.
 
 ### Procedure
@@ -41,26 +41,43 @@ You need:
    ssh <user>@<control-node>
    ```
 
-3. Forward the OpenBao service port:
+3. Unseal from inside the OpenBao pod. The pod already sets `BAO_ADDR` to
+   `https://127.0.0.1:8200` and `BAO_CACERT` to the certificate it serves, so
+   the `bao` tool verifies TLS with no extra flags. Run the command three times and
+   enter one share at each prompt:
 
    ```bash
-   kubectl port-forward -n openbao svc/openbao 8200:8200 &
+   sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+     -n openbao exec -it openbao-0 -- bao operator unseal
    ```
 
-4. Unseal with the `bao` CLI. Run the command three times and enter one share
-   each time:
+   The share goes in at the prompt, so it never appears in the command line
+   or the shell history.
+
+4. Confirm the result:
 
    ```bash
-   bao operator unseal
-   ```
-
-5. Confirm the result:
-
-   ```bash
-   bao status
+   sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+     -n openbao exec openbao-0 -- bao status
    ```
 
    The output shows `Sealed: false` when the unseal succeeded.
+
+To run the `bao` tool from your own machine instead, port-forward the service
+and trust the self-signed certificate from the `openbao-tls` secret, which
+cert-manager issues for `127.0.0.1` and the service DNS names:
+
+```bash
+kubectl -n openbao get secret openbao-tls \
+  -o jsonpath='{.data.tls\.crt}' | base64 -d > <ca-file>
+kubectl -n openbao port-forward svc/openbao 8200:8200 &
+export BAO_ADDR=https://127.0.0.1:8200
+export BAO_CACERT=<ca-file>
+bao operator unseal
+bao status
+```
+
+Never turn off certificate verification for these commands.
 
 ### What to avoid
 
