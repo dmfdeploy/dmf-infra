@@ -35,8 +35,11 @@ before Ansible starts:
 
 ```bash
 cd ../dmf-env
-bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/site.yml
+bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/bootstrap-sandbox-provision-pre-seed.yml
 ```
+
+That is the first step of the v0.1 single-node sequence. For every step in
+order, see [Deploy the Cluster](#5-deploy-the-cluster).
 
 The repo layout follows the **EBU DMF Reference Architecture V2.0** (2026-04-15).
 It has six horizontal layers (Infrastructure, Host Platform, Container Platform, Media
