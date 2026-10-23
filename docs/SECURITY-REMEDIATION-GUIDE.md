@@ -20,7 +20,14 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
 
 ## Emergency unseal
 
-OpenBao is initialized with Shamir key shares. The default threshold is 3 of 5.
+OpenBao is initialized with Shamir key shares. The OpenBao role sets the count
+and the threshold with `openbao_shamir_shares` and `openbao_shamir_threshold`:
+
+- The three-node lab layout uses the default, 5 shares with a threshold of 3.
+- The v0.1 single-node sandbox profile uses 1 share with a threshold of 1. Its
+  one share is in the automation file that OpenBao init writes on your machine.
+
+In the steps below, *threshold* means the threshold your environment uses.
 
 ### Before you start
 
@@ -28,11 +35,11 @@ You need:
 
 - Access to the control node of the cluster, with a working kubeconfig.
 - The `bao` command-line tool, only if you unseal from your own machine.
-- At least three key shares from your own custody locations.
+- As many key shares as your threshold, from your own custody locations.
 
 ### Procedure
 
-1. Retrieve three key shares from your custody locations. Do not paste them
+1. Retrieve as many key shares as your threshold from your custody locations. Do not paste them
    into a shared terminal log or a chat.
 
 2. Open a shell on the control node:
@@ -43,8 +50,8 @@ You need:
 
 3. Unseal from inside the OpenBao pod. The pod already sets `BAO_ADDR` to
    `https://127.0.0.1:8200` and `BAO_CACERT` to the certificate it serves, so
-   the `bao` tool verifies TLS with no extra flags. Run the command three times and
-   enter one share at each prompt:
+   the `bao` tool verifies TLS with no extra flags. Run the command as many
+   times as your threshold, and enter one share at each prompt:
 
    ```bash
    sudo kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
