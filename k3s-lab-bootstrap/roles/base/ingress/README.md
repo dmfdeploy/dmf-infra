@@ -1,6 +1,6 @@
 # ingress
 
-Environment-selected ingress bootstrap for the DMF platform.
+Environment-selected ingress bootstrap for the dmfdeploy platform.
 
 This role keeps the north-south contract stable while selecting the underlying
 provider path from inventory values:

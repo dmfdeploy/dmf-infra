@@ -89,16 +89,19 @@ profile.
 
 - **One node** for the v0.1 `sandbox-single-node` profile (VM or bare metal):
   - 4+ CPU cores
-  - 8+ GB RAM
-  - 80+ GB disk
-- Tested on Hetzner CAX21 (ARM64 / Ampere Altra) and x86_64 VMs
+  - 16+ GB RAM
+  - 60+ GB disk
+- Tested on a single node with 4 vCPU (ARM64), 16 GB RAM, and 60 GB disk. At
+  idle, the full stack uses about 7 GB RAM and 30 GB disk, so 16 GB RAM and
+  60 GB disk are the minimum.
 - Optional: three such nodes with network connectivity between them, for the
   three-node lab layout
 
 ### Software
 
-- **Debian 12 (Bookworm)** on all nodes, the documented target. The playbooks
-  also handle Debian 13 (Trixie), but they do not check the OS version.
+- **Debian 13 (Trixie)** on all nodes. v0.1 is tested on Debian 13. The
+  playbooks also handle Debian 12 (Bookworm), but they do not check the OS
+  version.
 - **Ansible 2.14+** on your control machine
 - **SSH key-based authentication** to all nodes
 

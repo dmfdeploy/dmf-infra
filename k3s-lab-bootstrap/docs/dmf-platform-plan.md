@@ -1,9 +1,9 @@
-# DMF Platform Plan (v0.1 draft)
+# dmfdeploy platform plan (v0.1 draft)
 
 > **⚠️ HISTORICAL / SUPERSEDED.** Pre-migration planning document kept for
 > provenance. The repository model and release/contribution process described
 > here are **superseded by ADR-0041 (DMF Release and Contribution Model)** and
-> the executed GitHub-canonical publish — the DMF Platform's public repos now
+> the executed GitHub-canonical publish — the dmfdeploy platform's public repos now
 > live under `github.com/dmfdeploy/`. Do not treat the workflow below as current.
 
 **Date:** 2026-04-30  
@@ -14,7 +14,7 @@
 
 ## Vision & Goals
 
-The **DMF Platform** is a unified digital media framework for production broadcast environments. It aims to:
+The **dmfdeploy platform** is a unified digital media framework for production broadcast environments. It aims to:
 
 1. **(i) Credibility & career signal** — Establish expertise in EBU/broadcast digital infrastructure and media function orchestration
 2. **(ii) Working lab platform** — Provide a fully automated, reference k3s infrastructure for testing media workflows
@@ -209,7 +209,7 @@ Until the gate closes, work focuses on falsifying architectural assumptions, not
 
 **Side effect**: Closes April P0 item without extra work.
 
-### Move 3: Commit the DMF Platform Plan (Visibility)
+### Move 3: Commit the dmfdeploy platform plan (Visibility)
 
 **Thesis to validate**: Architecture is visible to outsiders and future-you.
 

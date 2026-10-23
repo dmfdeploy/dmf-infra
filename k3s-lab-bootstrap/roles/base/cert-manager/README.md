@@ -1,6 +1,6 @@
 # cert-manager
 
-**Scope:** TLS certificate issuance for the DMF platform.
+**Scope:** TLS certificate issuance for the dmfdeploy platform.
 
 - Installs cert-manager via Helm (Jetstack repo)
 - Creates a Let's Encrypt ClusterIssuer (HTTP-01 via Traefik)

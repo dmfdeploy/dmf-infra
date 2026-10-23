@@ -1,5 +1,5 @@
 ---
-# Ansible collections required for the DMF Platform.
+# Ansible collections required for the dmfdeploy platform.
 # Install with: ansible-galaxy collection install -r requirements.yml
 collections:
   # Kubernetes modules — used extensively across playbooks (k8s, k8s_info, helm, helm_repository)
