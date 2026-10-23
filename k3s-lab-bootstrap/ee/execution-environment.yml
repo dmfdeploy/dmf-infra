@@ -39,11 +39,11 @@ additional_build_steps:
     - ARG IMAGE_VERSION=0.1.0
     - ARG VCS_REF=unknown
     - LABEL org.opencontainers.image.title="DMF AWX Execution Environment"
-    - LABEL org.opencontainers.image.description="Shared Ansible EE for DMF Platform — used by in-cluster runner pod (bootstrap-configure) and AWX catalog launchers (media-* JTs). See ADR-0025."
+    - LABEL org.opencontainers.image.description="Shared Ansible EE for dmfdeploy platform — used by in-cluster runner pod (bootstrap-configure) and AWX catalog launchers (media-* JTs). See ADR-0025."
     - LABEL org.opencontainers.image.source="https://github.com/dmfdeploy/dmf-infra"
     - LABEL org.opencontainers.image.revision="${VCS_REF}"
     - LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
     - LABEL org.opencontainers.image.licenses="Apache-2.0"
-    - LABEL org.opencontainers.image.vendor="DMF Platform contributors"
+    - LABEL org.opencontainers.image.vendor="dmfdeploy platform contributors"
     - LABEL org.opencontainers.image.base.name="quay.io/ansible/awx-ee:24.6.1"
     - LABEL org.dmfdeploy.ee.lane="A"

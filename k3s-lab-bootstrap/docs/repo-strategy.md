@@ -3,7 +3,7 @@
 > **⚠️ HISTORICAL / SUPERSEDED.** Pre-migration planning document kept for
 > provenance. The repository model and release/contribution process described
 > here are **superseded by ADR-0041 (DMF Release and Contribution Model)** and
-> the executed GitHub-canonical publish — the DMF Platform's public repos now
+> the executed GitHub-canonical publish — the dmfdeploy platform's public repos now
 > live under `github.com/dmfdeploy/`. Do not treat the workflow below as current.
 
 **Status:** Planning — pre-implementation reference  

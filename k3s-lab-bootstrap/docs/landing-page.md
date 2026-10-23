@@ -4,7 +4,7 @@ The landing page provides a static open-source project showcase at the cluster's
 
 ## Features
 
-- **OSS Project Showcase**: Displays cards for every open-source project powering the DMF Platform, with logo, license, description, and link to the project site.
+- **OSS Project Showcase**: Displays cards for every open-source project powering the dmfdeploy platform, with logo, license, description, and link to the project site.
 - **Live Cluster Stats**: CPU, RAM, and Disk meters powered by Prometheus queries, refreshing every 15 seconds.
 - **Static content**: All OSS project data is embedded at deploy time — no Kubernetes API queries needed.
 
@@ -59,7 +59,7 @@ Static assets (e.g. logos) are copied from an assets ConfigMap into `/html/asset
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `landing_page_namespace` | `default` | Namespace for landing page resources |
-| `landing_page_title` | `DMF Platform` | Title displayed on the page |
+| `landing_page_title` | `dmfdeploy platform` | Title displayed on the page |
 | `landing_page_tagline` | `Open Source Infrastructure Lab` | Subtitle under the title |
 | `landing_page_logo_url` | `` (empty) | Logo URL. Set to a path under `/assets/` if you add a logo file to the assets ConfigMap. |
 | `landing_page_repo_url` | `` (empty) | External repository URL for the "clone or fork" link |

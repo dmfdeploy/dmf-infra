@@ -1,6 +1,6 @@
 apiVersion: v2
 name: netbox
-description: DMF platform wrapper for the NetBox SoT. Pins the upstream chart and is rendered with env-specific values produced by the Ansible role `stack/operator/netbox`.
+description: dmfdeploy platform wrapper for the NetBox SoT. Pins the upstream chart and is rendered with env-specific values produced by the Ansible role `stack/operator/netbox`.
 type: application
 version: 0.1.0
 appVersion: "4.5"

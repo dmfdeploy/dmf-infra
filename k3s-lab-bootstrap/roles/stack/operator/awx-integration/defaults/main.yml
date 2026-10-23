@@ -740,7 +740,7 @@ awx_dmf_catalog_ee_memory_request: "512Mi"
 awx_ee_catalog_image: "zot.zot.svc.cluster.local:5000/dmf/awx-ee"
 awx_ee_catalog_tag: "0.1.1"
 awx_ee_catalog_display_name: "DMF AWX EE"
-awx_ee_catalog_description: "Shared Ansible EE for DMF Platform catalog launchers (ADR-0025)"
+awx_ee_catalog_description: "Shared Ansible EE for dmfdeploy platform catalog launchers (ADR-0025)"
 
 # ── NMOS catalog artifacts (ADR-0025, Lane B) ─────────────────────────────
 # Source of truth is GHCR; playbooks/630-zot-seed-platform.yml mirrors these

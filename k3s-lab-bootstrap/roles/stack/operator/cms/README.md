@@ -15,4 +15,4 @@ Order of operations:
 - Then run the CMS role so it can fetch the OIDC credentials and deploy the app.
 
 **Status:** STUB — not yet implemented.
-See `dmfdeploy/docs/architecture/DMF Platform Plan.md` for strategic context.
+See `dmfdeploy/docs/architecture/dmfdeploy-platform-plan.md` for strategic context.

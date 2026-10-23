@@ -1,5 +1,5 @@
 ---
-# Stage 4b — seed cluster-internal Zot with DMF platform images from their
+# Stage 4b — seed cluster-internal Zot with dmfdeploy platform images from their
 # canonical public source (ghcr.io/dmfdeploy/*).
 #
 # Per ADR-0025 + the 2026-05-19 Cluster-Internal Ansible Execution and
@@ -104,7 +104,7 @@
 #   roles/stack/operator/awx-integration/defaults  — awx-ee consumer (catalog JTs)
 #   roles/stack/operator/cms                       — dmf-cms consumer
 
-- name: Stage 4b — seed Zot with DMF platform images from GHCR
+- name: Stage 4b — seed Zot with dmfdeploy platform images from GHCR
   hosts: k3s_control[0]
   gather_facts: false
   become: true

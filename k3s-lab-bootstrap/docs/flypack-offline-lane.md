@@ -1,7 +1,7 @@
 # Flypack Offline Lane — Canonical Spec
 
 Canonical implementation spec for the **flypack** deployment profile, a.k.a. the
-"OB truck" lane. This document supersedes partial specs in `DMF Platform Plan.md`
+"OB truck" lane. This document supersedes partial specs in `dmfdeploy-platform-plan.md`
 (see [Supersedes](#supersedes)) and defines the contract the bootstrap code must
 honour for this profile.
 
@@ -34,14 +34,14 @@ This lane explicitly does **not** cover:
 - Cross-truck federation or synchronization. Each truck is a sovereign island.
 - Pulling NetBox inventory or AWX playbooks from a central hub at runtime.
 - Any form of automatic update, remote management, or outbound telemetry.
-- Truly air-gapped *sites* in the DMF Platform Plan §276–279 sense (indefinite
+- Truly air-gapped *sites* in the dmfdeploy platform plan §276–279 sense (indefinite
   isolation with no physical operator visits). The flypack lane assumes an
   operator visits at least once per year to apply an update pack; anything
   beyond that is a different product.
 
 ## Supersedes
 
-This document supersedes the following claims from `DMF Platform Plan.md`:
+This document supersedes the following claims from `dmfdeploy-platform-plan.md`:
 
 | Superseded claim | Replaced by |
 |---|---|
