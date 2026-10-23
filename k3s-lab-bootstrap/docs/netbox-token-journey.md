@@ -1,5 +1,7 @@
 # NetBox Admin Token Journey (v2 Tokens)
 
+> **Status: historical record.** This document captures past work and may not match the current tree.
+
 This note captures how we stabilized NetBox admin token creation for the
 automation playbooks.
 
