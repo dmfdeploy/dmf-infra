@@ -159,20 +159,44 @@ nano dmf-env/inventories/<env-name>/group_vars/all/main.yml
 
 ### 5. Deploy the Cluster
 
+The v0.1 `sandbox-single-node` profile runs four wrapper playbooks with a seed
+step in between. The `dmf-init` installer container runs the same sequence.
+
 ```bash
 cd ../dmf-env
+B=../dmf-infra/k3s-lab-bootstrap
 
-# Full build: walks every EBU layer and weaves in cross-cutting verticals
-bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/site.yml
+# Provision, pre-seed: host baseline, k3s, cert-manager, Zot, OpenBao, ESO
+bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-provision-pre-seed.yml
 
-# Or invoke a single lifecycle stage:
-bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/lifecycle-provision.yml   # Provision + Configure
-bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/lifecycle-operate.yml     # Operate verify
-bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/lifecycle-finalise.yml    # Teardown
+# Seed boundary: check the seal, unseal only if OpenBao is sealed, then seed
+bin/unseal-openbao.sh <env-name> --status
+bin/unseal-openbao.sh <env-name>
+bin/bootstrap-secrets.sh seed-bao <env-name>
 
-# Or a single layer/vertical playbook:
-bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/playbooks/300-k3s.yml
-bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/playbooks/vertical-security/100-openbao.yml
+# Provision, post-seed: Authentik, NetBox, Forgejo, AWX, console, monitoring
+bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-provision-post-seed.yml
+
+# Configure, then verify
+bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-configure.yml
+bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-verify.yml
+```
+
+The seed boundary sits between the two provision wrappers. Post-seed starts
+with a guard that checks OpenBao for `secret/platform/bootstrap_admin` and
+`secret/platform/k3s/cluster`, and it stops when `seed-bao` hasn't written
+them. The sandbox wrappers import `bootstrap-sandbox-profile.yml`, which
+selects `local-path` storage, single-node ingress and a local CA. They leave
+out Longhorn, private ingress, Headscale and Tailscale, and backup archival.
+
+`site.yml` runs the three-node lab layout: the general pre-seed flow plus
+Longhorn (`playbooks/330-longhorn.yml`, two replicas in the example
+inventory). It isn't the v0.1 path. Use it, or a single layer or vertical
+playbook, only on the three-node layout:
+
+```bash
+bin/run-playbook.sh <env-name> $B/site.yml
+bin/run-playbook.sh <env-name> $B/playbooks/300-k3s.yml
 ```
 
 For the full per-layer playbook list and run order, see
@@ -259,7 +283,8 @@ Edit `<inventory>/group_vars/all/main.yml` in your private `dmf-env` repo:
 cluster_ingress_mode: cloud-native
 external_base_url: "http://dmf.example.com"
 
-# Longhorn replica count
+# Longhorn replica count (three-node layout only; the sandbox profile
+# uses local-path storage and no Longhorn)
 longhorn_default_replica_count: "2"
 
 # Storage sizes (adjust to match your node)
