@@ -33,6 +33,8 @@ jobs:
         run: yamllint .
       - name: ansible-lint
         run: ansible-lint playbooks/ -p
+      - name: no secrets in AWX job-template extra_vars (dmfdeploy/dmfdeploy#310)
+        run: python3 -m unittest discover -s roles/stack/operator/awx-integration/tests -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
