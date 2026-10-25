@@ -69,6 +69,22 @@ write:
 gateway:
   enabled: true
   replicas: 1
+{% if loki_single_node | bool %}
+  # The chart's required anti-affinity can never place a rolling-update pod
+  # beside the old one on a single node, so any values change leaves it Pending
+  # (FailedScheduling). Soft keeps the spread preference. The null drops the
+  # chart's required rule, which Helm would otherwise keep in the merged map.
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution: null
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/component: gateway
+            topologyKey: kubernetes.io/hostname
+{% endif %}
   # umbrella #276: measured request honesty (2026-07-24 sample archive);
   # requests-only, no limits.
   resources:
