@@ -5,14 +5,22 @@ loki_namespace: monitoring
 # materially. See audit-log-retention-policy.md for the retention contract.
 loki_storage_size: 50Gi
 loki_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+# True on the single-node sandbox profile, where Loki shares one node and one
+# disk with the rest of the stack.
+loki_single_node: "{{ (dmf_release_profile | default('')) == 'sandbox-single-node' }}"
 # Default retention (also used as the floor for any stream without an explicit
 # rule). Aligns with operator activity retention in
-# docs/processes/audit-log-retention-policy.md.
-loki_retention: 720h          # 30 days
+# docs/processes/audit-log-retention-policy.md (30 days).
+# Single-node: local-path enforces no quota, so loki_storage_size is only a
+# request and the chunk store can grow until the node hits disk pressure
+# (32G on a 5Gi PVC, umbrella #289). Retention is the effective bound there.
+loki_retention: "{{ '72h' if loki_single_node | bool else '720h' }}"
 # Per-stream retention overrides applied via limits_config.retention_stream
 # below. Security streams (k3s API audit, Authentik audit, app-security) carry
-# a 6-month retention; everything else falls through to loki_retention.
-loki_security_retention: 4380h  # 6 months (≈ 182.5 days)
+# a 6-month retention (4380h, ≈ 182.5 days); everything else falls through to
+# loki_retention. Single-node bounds them too (7 days): an unbounded stream
+# defeats the disk bound above.
+loki_security_retention: "{{ '168h' if loki_single_node | bool else '4380h' }}"
 # umbrella #313: per-stream ingestion caps — below Loki's own 3.0 defaults,
 # protecting the monitoring plane from a single runaway stream (#308's own
 # mxl status-sidecar spinner peaked at ~9 MB/s from ONE stream). Ingestion
