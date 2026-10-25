@@ -26,7 +26,7 @@ object_storage_logicals:
 # NOTE: longhorn-system is INTENTIONALLY excluded from app_backups.
 # Longhorn 1.10.1's BackupTarget requires UPPERCASE Secret keys
 # (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ENDPOINTS).
-# Claude's longhorn-backup-target role creates its own ExternalSecret in
+# The longhorn-backup-target role creates its own ExternalSecret in
 # longhorn-system that re-keys lowercase → uppercase.
 object_storage_consumer_namespaces:
   openbao_snapshots:

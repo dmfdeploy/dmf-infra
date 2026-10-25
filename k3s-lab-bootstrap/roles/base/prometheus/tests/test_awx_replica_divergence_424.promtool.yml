@@ -43,7 +43,7 @@
 #       (namespace) (...)` fix this case verifies.
 #
 # Sample interval is 1m — finer than the 20m avg_over_time window, so the
-# subquery is never undersampled (the trap the work order flagged).
+# subquery is never undersampled.
 # Each case's four (case (d): eight) input series share the same total
 # sample count so no series goes stale/absent partway through the window:
 # every operand in the expr is built from `bool` comparisons specifically
@@ -58,16 +58,16 @@ tests:
   # Mirrors the measured healthy-reconcile-with-retry window: CR patched
   # asleep 13:09:19Z, first success 13:17:53Z, settled 13:19:14Z (~10min).
   #
-  # dmfdeploy/dmfdeploy#424 gate finding (claude1, 2nd round): the prior
-  # version of this case started ALREADY divergent at t=0 — no healthy
-  # lead-in. That let a mutant with NO debounce at all (no avg_over_time,
+  # dmfdeploy/dmfdeploy#424: this case needs a healthy lead-in. A
+  # version that started ALREADY divergent at t=0, with no healthy
+  # lead-in, let a mutant with NO debounce at all (no avg_over_time,
   # no `for:`, fires the instant the raw condition is true) pass the whole
-  # suite: this case's only assertion was ten minutes AFTER the divergence
+  # suite: that case's only assertion was ten minutes AFTER the divergence
   # had already recovered, so nothing was ever checked WHILE divergent. In
   # production the series is always present and healthy before an
   # incident, so a real trailing window starts full of good samples and
   # the ratio climbs slowly — that is the entire reason the windowed
-  # design doesn't over-fire, and this case wasn't modeling it.
+  # design doesn't over-fire, and that case wasn't modeling it.
   #
   # Fixed with a 20-sample healthy lead-in (t=0..19) before the same
   # ~10min divergent stretch (t=20..30, 11 samples), then recovery
@@ -152,7 +152,7 @@ tests:
               runbook_url: "https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/runbooks/awx-operator-restart.md"
 
   # ── (c) flapping divergence, sustained overall — must fire ─────────────
-  # dmfdeploy/dmfdeploy#424 gate finding (claude1): the first version of
+  # dmfdeploy/dmfdeploy#424: a simpler version of
   # this case (one early 2-sample recovery, then 21 CONTINUOUS divergent
   # samples through eval_time) did not discriminate — a mutant rule with a
   # bare `for: 20m` on the raw expression also passed it, because 21
@@ -173,10 +173,9 @@ tests:
   # i in {24,29,34,39} within [20,40]) — comfortably above the 0.7
   # threshold the real design fires on.
   #
-  # Verified against claude1's bare-for mutant (same divergence signal,
+  # Verified against a bare-for mutant (same divergence signal,
   # `for: 20m` on the raw expression, no annotations) at three durations —
   # 10m, 20m, 25m — none matured, all three runs report 0 alerts firing.
-  # See the WORK ORDER B fix-round report for the exact commands/output.
   - interval: 1m
     input_series:
       - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'

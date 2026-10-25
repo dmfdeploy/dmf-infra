@@ -23,7 +23,7 @@
     # (topology_ref targets) live in the same catalog dir and MUST reach the
     # pod's mounted catalog alongside the entries — the console's fail-closed
     # loader refuses a topology deploy whose ref'd file is absent. The
-    # console's own entry loader was gate-verified to skip non-entry files
+    # console's own entry loader was verified to skip non-entry files
     # cleanly, so mounting them is safe.
     - name: Skip file that is neither a catalog entry nor a topology_params doc
       ansible.builtin.debug:

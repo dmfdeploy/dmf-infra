@@ -1051,7 +1051,7 @@
         - _cms_awx_recon_role_id | string | length > 0
       no_log: true
 
-    # Trust-but-verify (codex P1, #122 review): a POST 400 can mean "already
+    # Trust-but-verify (umbrella #122): a POST 400 can mean "already
     # assigned" OR a real malformed/forbidden error, so the grant loop's
     # success is not proof. Re-read the svc user's JobTemplate Execute
     # assignments and assert every catalog launcher is actually present —

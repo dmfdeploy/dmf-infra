@@ -14,7 +14,7 @@ longhorn_backup_target_name: default
 # OpenBao path (underscored — matches Phase 2 seed-bao state)
 longhorn_backup_target_openbao_path: "secret/platform/object-storage/app_backups"
 
-# ClusterSecretStore from qwen-left's object-storage-credentials role
+# ClusterSecretStore from the object-storage-credentials role
 longhorn_backup_target_eso_cluster_secret_store: openbao-app-backups
 
 # Secret name materialized in longhorn-system (UPPERCASE keys, per Longhorn)

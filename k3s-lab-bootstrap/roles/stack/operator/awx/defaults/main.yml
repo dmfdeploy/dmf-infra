@@ -231,7 +231,7 @@ awx_task_resource_requirements:
 #     requests: { cpu: 50m, memory: 256Mi }
 #     limits:   { cpu: 1000m, memory: 768Mi }
 #
-# umbrella dmfdeploy/dmfdeploy#258 round 2 — same UNDEFINED-by-default
+# umbrella dmfdeploy/dmfdeploy#258 — same UNDEFINED-by-default
 # convention: redis/rsyslog/ee sidecars fall through to the awx-operator's
 # OWN internal role defaults (requests-only, no limits — verified against
 # ansible/awx-operator roles/installer/defaults/main.yml: redis 50m/64Mi,

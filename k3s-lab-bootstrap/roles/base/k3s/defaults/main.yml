@@ -53,7 +53,7 @@ k3s_system_reserved_memory: "512Mi"
 # and (b) REPLACE the whole default kubelet hard-eviction map, silently dropping
 # the nodefs/imagefs/inode thresholds. The kubelet default (memory.available<100Mi
 # + disk/inode) still applies. Tuning eviction-hard is a follow-up that must ship
-# the full map and move the install task to command/argv (codex P1, #114).
+# the full map and move the install task to command/argv (umbrella #114).
 k3s_constrained_kubelet_args: >-
   {{
     ['kube-reserved=cpu=' ~ k3s_kube_reserved_cpu ~ ',memory=' ~ k3s_kube_reserved_memory,
