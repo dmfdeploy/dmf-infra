@@ -1,6 +1,6 @@
 # Managed by Ansible — harden role
 [DEFAULT]
-ignoreip = {{ harden_fail2ban_ignoreip }}
+ignoreip = {{ _harden_effective_ignoreip }}
 bantime  = {{ harden_fail2ban_bantime }}
 findtime = {{ harden_fail2ban_findtime }}
 maxretry = {{ harden_fail2ban_maxretry }}
