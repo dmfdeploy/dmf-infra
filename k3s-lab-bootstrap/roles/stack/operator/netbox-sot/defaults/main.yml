@@ -144,18 +144,17 @@ cms_netbox_permissions:
 # narrowly to the same two models this account already writes — no other
 # model, no staff/superuser bit.
 #
-# AMENDMENT 2 (dmfdeploy/dmfdeploy#393 review, 2026-08-14, superseded by
+# AMENDMENT 2 (ADR-0032, 2026-08-14, superseded by
 # Amendment 3 below): tried scoping the model-wide `delete` grant with a
 # NetBox ObjectPermission `constraints` filter (tags__name__startswith:
 # "workload:" on ipam.service, name__startswith: "workload:" on extras.tag)
-# instead of splitting identities. lkirc rejected this TWICE on the same
-# finding: dmf-catalog-svc also keeps unconstrained `add` on extras.tag and
+# instead of splitting identities. That does not hold:
+# dmf-catalog-svc also keeps unconstrained `add` on extras.tag and
 # unconstrained `change` on ipam.service (needed for every other launcher's
 # legitimate create/patch work), so the same token could manufacture its own
 # delete-eligibility — create a workload:<anything> tag, attach it to an
-# unrelated service via `change`, then delete it. Documented as an accepted,
-# not-closed residual risk at the time; the operator's direction was that
-# this needed a real fix, not a documented waiver. See Amendment 3.
+# unrelated service via `change`, then delete it. A documented waiver is
+# not enough for that gap; it needs a real fix. See Amendment 3.
 #
 # AMENDMENT 3 (dmfdeploy/dmfdeploy#347, 2026-08-14): closes the Amendment 2
 # gap by identity separation instead of a shared-token constraint.
@@ -236,23 +235,19 @@ netbox_sot_catalog_retired_permission_names:
 # the token being non-empty (_assert_netbox_token.yml is a structural
 # presence check, never a live NetBox call).
 #
-# codex adversarial round (2026-08-14) on this amendment raised 5 findings
-# (group/permission reconcile is additive-by-declared-list rather than
-# exclusive, an externally-supplied vault_netbox_purge_token is trusted
-# without verifying it actually belongs to this account, the retirement
-# task below matches by permission name only, no per-capability "enabled"
-# gate on the awx-integration OpenBao read). Checked each against the
-# ORIGINAL dmf-catalog-svc provisioning this block was mirrored from
-# line-by-line: every one is a pre-existing characteristic of how EVERY
-# account in this role has always been provisioned (byte-identical
-# group-union idiom, name-only permission reconcile, externally-overridable
-# vault_* token vars, ungated OpenBao reads) — not a new regression this
-# amendment introduces, and none of them undermine the actual property this
-# amendment establishes (no add/change on the delete-capable identity,
-# confirmed correct). Real hardening opportunities for the role as a whole
-# (exclusive group membership, explicit is_superuser/is_staff assertions,
-# per-capability enable gating), out of scope for this fix specifically —
-# flagged as a possible follow-up, not blocking here.
+# Known limits, shared with every account this role provisions: group and
+# permission reconcile is additive-by-declared-list rather than exclusive,
+# an externally-supplied vault_netbox_purge_token is trusted without
+# verifying it actually belongs to this account, the retirement task below
+# matches by permission name only, and there is no per-capability "enabled"
+# gate on the awx-integration OpenBao read. This block mirrors the
+# dmf-catalog-svc provisioning line by line (byte-identical group-union
+# idiom, name-only permission reconcile, externally-overridable vault_*
+# token vars, ungated OpenBao reads), so none of these is new here, and
+# none undermines the property this account exists for: no add/change on
+# the delete-capable identity. Hardening them (exclusive group membership,
+# explicit is_superuser/is_staff assertions, per-capability enable gating)
+# is role-wide follow-up work.
 netbox_sot_catalog_purge_enabled: true
 netbox_sot_catalog_purge_group: "dmf-catalog-purge"
 netbox_sot_catalog_purge_username: "dmf-catalog-purge-svc"

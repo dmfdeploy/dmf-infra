@@ -58,7 +58,7 @@
       {{ (_catalog_project_lookup.json.results | default([]) | first | default({})).id
          | default(_catalog_project_created.json.id) }}
 
-# ORDERING IS LOAD-BEARING (review finding, 2026-08-31): the Forgejo mirror
+# ORDERING IS LOAD-BEARING: the Forgejo mirror
 # gate below runs BEFORE the project is repointed. It used to run after.
 # The PATCH sets scm_branch AND scm_update_on_launch: true together, so
 # between repointing and the gate there was a window in which any launched

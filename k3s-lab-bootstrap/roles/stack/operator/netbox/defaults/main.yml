@@ -86,18 +86,16 @@ netbox_unit_processes_spare: 2
 # our values.yml.j2 previously passed NEITHER through, so the effective
 # request was whatever that upstream preset resolves to (observed: 500m
 # CPU / 1024Mi memory). umbrella dmfdeploy/dmfdeploy#258 platform
-# request-budget audit (J1 gate): two sustained samples on <env>
+# request-budget audit: two sustained samples on <env>
 # (10-min idle + 15-min under a loaded source-pod run, 30 samples each)
 # measured avg 11m/max 63m CPU and avg 211Mi/max 351Mi memory for the main
 # netbox container — the 500m CPU request was the single largest
 # over-declaration on the platform's scheduling claim. netbox-worker is
-# NOT touched by either #258 round (measured 1m CPU / 24Mi memory,
-# already near-idle; the chart DOES expose its own separate worker.
-# resources/worker.resourcesPreset knob, just not one either round's
-# scope named). valkey/postgresql were left alone in round 1 (matching
-# their own chart defaults' 100m/128Mi requests at the time) but ARE
-# trimmed in round 2 — see netbox_postgresql_resources/
-# netbox_valkey_resources below.
+# NOT trimmed by #258 (measured 1m CPU / 24Mi memory, already near-idle;
+# the chart DOES expose its own separate worker.resources/
+# worker.resourcesPreset knob — see netbox_worker_resources).
+# valkey/postgresql carry their own trimmed requests — see
+# netbox_postgresql_resources/netbox_valkey_resources below.
 netbox_resources:
   requests:
     # umbrella #299 WP1: 100m -> 50m. Measured p95 11.5m / max 127m against
@@ -110,7 +108,7 @@ netbox_resources:
     memory: 512Mi
     # Preserved from the chart's former resourcesPreset "medium" — an
     # explicit resources block replaces the preset WHOLESALE, and the
-    # preset also carried ephemeral-storage bounds (codex trim-review P2).
+    # preset also carried ephemeral-storage bounds.
     ephemeral-storage: 50Mi
   limits:
     cpu: 1000m
@@ -124,7 +122,7 @@ netbox_resources:
     ephemeral-storage: 2Gi
 
 # postgresql/valkey subchart resource requests/limits. umbrella
-# dmfdeploy/dmfdeploy#258 round 2 (2026-07-24, data-backed, requests
+# dmfdeploy/dmfdeploy#258 (2026-07-24, data-backed, requests
 # only): both subcharts currently fall through to the bitnami-common
 # `resourcesPreset: "nano"` (verified against the vendored netbox-7.3.0
 # chart's own postgresql/valkey subchart values.yaml + charts/common's

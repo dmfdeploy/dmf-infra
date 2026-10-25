@@ -294,14 +294,14 @@ awx_catalog_projects:
     #
     # v0.4.4 -> v0.4.5 (umbrella #347, Arc 2b): delivers the finalise-purge
     # launcher (playbooks/finalise-purge.yml) — permanent SoT removal of a
-    # finalised workload's residual NetBox catalog records — hardened
-    # through its own adversarial gate round (FIX-A2b.1/GATE-A2b.1: closed
-    # a reserved-var scanning gap that let a caller forge the launcher's
-    # DMF_L3_PURGE_OUTCOME success event against a genuinely dirty NetBox,
-    # added pagination to both the membership and final-read scans, and
-    # tightened C5 quartet type enforcement), plus a CI timeout bump and a
-    # play-scope netbox_api_token mapping fix. This pin IS the delivery
-    # mechanism for the NEW media-finalise-purge JT registered below — it
+    # finalised workload's residual NetBox catalog records — hardened to
+    # close a reserved-var scanning gap that let a caller forge the
+    # launcher's DMF_L3_PURGE_OUTCOME success event against a genuinely
+    # dirty NetBox, add pagination to both the membership and final-read
+    # scans, and tighten C5 quartet type enforcement — plus a CI timeout
+    # bump and a play-scope netbox_api_token mapping fix. This pin IS the
+    # delivery mechanism for the NEW media-finalise-purge JT registered
+    # below — it
     # is inert until the project advances past v0.4.4.
     # JT contract audit (required before this bump, per the note above):
     # `git -C ../dmf-runbooks diff v0.4.4..v0.4.5 -- '*/defaults/*'` —
@@ -322,7 +322,7 @@ awx_catalog_projects:
     # contract-compatible. roles/l3_run_guard/tasks/_assert_reserved_vars.yml
     # DID change (+78 lines): it reserves finalise-purge's own outcome-token
     # names (l3_purge_outcome_token, l3_purge_outcome_kv, _purge_stage) plus
-    # ~20 _purge_* internal facts, and (same fix round, same root scanner
+    # ~20 _purge_* internal facts, and (same root scanner
     # gap) _merged_tags/_workload_tags/netbox_catalog_common_workload_tag_*
     # — every registered JT's own extra_vars keys (netbox_api_url,
     # vault_netbox_catalog_token, l3_chart_version, l3_release,
@@ -465,12 +465,12 @@ awx_catalog_projects:
 # Each entry maps to a thin launcher in dmf-runbooks/playbooks/.
 # The dmf-runbooks project must exist before these are created.
 #
-# umbrella #202 WP3 R3c (codex round-2 P1-9 infra half, ADR-0032): every
+# umbrella #202 (ADR-0032): every
 # media-* entry below carries ONLY netbox_api_url in extra_vars; its NetBox
 # token comes from an attached AWX credential (extra_credentials, #310) —
 # vault_netbox_api_token (the admin token) was swept out of all 8
-# launch/finalise entries (media-rollback-run already never carried it,
-# R2c). The catalog lane is scoped-writer-only end to end now; grep this
+# launch/finalise entries (media-rollback-run never carried it). The
+# catalog lane is scoped-writer-only end to end now; grep this
 # file for "vault_netbox_api_token" to confirm it appears nowhere in
 # awx_catalog_job_templates.
 #
@@ -671,10 +671,10 @@ awx_catalog_job_templates:
       - dmf-netbox-catalog-token
     extra_vars:
       netbox_api_url: "{{ awx_integration_netbox_url }}"
-      # umbrella #202 WP3 R2c (codex round-1 P1-10): vault_netbox_api_token
+      # umbrella #202: vault_netbox_api_token
       # (the admin token) is DELIBERATELY OMITTED here — a rollback never
       # carries the admin token, only the scoped catalog-writer token
-      # (ADR-0032). dmf-runbooks' own defaults/main.yml (R2c-runbooks)
+      # (ADR-0032). dmf-runbooks' own defaults/main.yml
       # correspondingly drops its prior fallback from the catalog token to
       # this one: an absent scoped token now fails closed (a hard assert in
       # l3_run_guard's preflight.yml), rather than silently upgrading to
@@ -726,7 +726,7 @@ awx_catalog_job_templates:
       # gets its own delete-only identity (dmf-catalog-purge-svc), because
       # dmf-catalog-svc's necessary add/change on the same two models made
       # the shared token's delete grant self-manufacturable (create a
-      # workload:<x> tag, attach it, then delete — lkirc, twice). Every
+      # workload:<x> tag, attach it, then delete). Every
       # other media-* entry above is UNCHANGED and still carries
       # vault_netbox_catalog_token. dmf-runbooks/playbooks/finalise-purge.yml
       # was updated in lockstep to read vault_netbox_purge_token instead of

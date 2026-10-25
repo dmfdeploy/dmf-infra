@@ -663,7 +663,7 @@
           dmf.function: l3-launcher
           dmf.component: capacity-preflight
       rules:
-        # umbrella #202 WP3 R2c (codex round-1 P2): "get" verified unused —
+        # umbrella #202: "get" verified unused —
         # l3_run_guard's preflight.yml/capacity.yml only ever LIST nodes/pods
         # cluster-wide (kubernetes.core.k8s_info with no name filter), never
         # a per-resource GET. Least-privilege: list only.
@@ -673,7 +673,7 @@
         - apiGroups: [""]
           resources: ["pods"]
           verbs: ["list"]
-        # umbrella #202 WP3 R3c (codex round-2 P1-1a): preflight.yml's
+        # umbrella #202: preflight.yml's
         # target-namespace reachability check is a NAMED GET on the
         # Namespace object (not a list) — the launcher SA's own namespaced
         # Roles can't see cluster-scoped Namespace objects at all, so this

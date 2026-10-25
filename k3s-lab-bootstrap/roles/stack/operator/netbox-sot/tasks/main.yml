@@ -1358,7 +1358,7 @@
         # a JSON STRING here (perm_constraints_json), then `to_json`'d AGAIN
         # at the point of use below so it lands in the heredoc as a properly
         # quoted/escaped Python string literal that `json.loads()` parses at
-        # runtime — codex review caught that emitting the inner JSON tokens
+        # runtime. Emitting the inner JSON tokens
         # directly (the earlier version of this template) is only an
         # accident of the two languages' literal syntax mostly overlapping:
         # JSON's `true`/`false`/`null` are not valid Python and would
@@ -1501,7 +1501,7 @@
 # otherwise survive untouched forever. Explicit, idempotent delete by name;
 # a no-op once already retired.
 #
-# lkirc review (dmf-infra PR#82): the manage.py cleanup used to be piped
+# The manage.py cleanup used to be piped
 # through `| grep '^REMOVED=' | tail -n 1` inside a plain /bin/sh -c with
 # no pipefail — POSIX sh (and most /bin/sh providers, e.g. dash; this
 # can't just add `set -o pipefail`, a bash/ksh/zsh-only builtin) reports a
