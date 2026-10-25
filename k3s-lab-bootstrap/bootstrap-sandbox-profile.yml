@@ -137,28 +137,7 @@
         - sandbox
         - release-profile
 
-    # Issue #93 — constrained-node worker-pool right-sizing. Proven on an 8 GB
-    # Pi 4 (env oq9y-mnj8): node free RAM ~0 → 2.3 GiB, all bootstrap phases
-    # green. These knobs cap NGINX Unit, Authentik web/worker, and the AWX
-    # operator reconcile loop — the four biggest RAM sinks that auto-size to
-    # CPU count. Gated on dmf_release_profile (not just dmf_awx_profile) because
-    # NetBox and Authentik are not AWX-specific; any sandbox-single-node env
-    # benefits. Lab/cloud never import this prelude → unchanged.
-    # Values are conservative FLOORS — adjust from observed footprint.
-    - name: "Apply constrained-node worker right-sizing (proven on 8 GB Pi 4, issue 93)"
-      ansible.builtin.set_fact:
-        netbox_unit_processes_max: "{{ netbox_unit_processes_max | default(1) }}"
-        netbox_unit_processes_spare: "{{ netbox_unit_processes_spare | default(1) }}"
-        authentik_web_workers: "{{ authentik_web_workers | default(2) }}"
-        authentik_worker_resources: "{{ authentik_worker_resources | default(_authentik_worker_fit) }}"
-        awx_operator_cpu_limit: "{{ awx_operator_cpu_limit | default('500m') }}"
-      vars:
-        _authentik_worker_fit:
-          requests:
-            cpu: 100m
-            memory: 256Mi
-      when: (dmf_release_profile | default('sandbox-single-node')) == 'sandbox-single-node'
-      tags:
-        - always
-        - sandbox
-        - release-profile
+    # Issue #93 worker-pool right-sizing (NGINX Unit, Authentik web/worker, AWX
+    # operator CPU) is not set here. Facts set in this prelude never reach a
+    # play run on its own, which silently dropped the sizing (#281); it lives in
+    # the netbox, authentik and awx role defaults, gated on dmf_release_profile.

@@ -56,7 +56,7 @@
                     cpu: "{{ awx_operator_cpu_request | default('50m') }}"
                   limits:
                     cpu: "{{ awx_operator_cpu_limit }}"
-  when: awx_operator_cpu_limit is defined
+  when: awx_operator_cpu_limit | string | length > 0
 
 - name: Create AWX admin password secret
   kubernetes.core.k8s:

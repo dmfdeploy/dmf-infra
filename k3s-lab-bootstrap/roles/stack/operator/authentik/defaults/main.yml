@@ -13,6 +13,19 @@ authentik_log_level: info
 authentik_server_replicas: 1
 authentik_worker_replicas: 1
 
+# Constrained-node right-sizing (#93): on sandbox-single-node cap the web
+# worker pool and give the worker explicit requests; both otherwise auto-size to
+# CPU count. Empty renders nothing (lab/cloud keep the chart behaviour).
+# Resolved here, not in the sandbox profile prelude, so a standalone play run
+# keeps the sizing (#281).
+authentik_web_workers: "{{ 2 if (dmf_release_profile | default('')) == 'sandbox-single-node' else '' }}"
+authentik_worker_resources: >-
+  {{
+    {'requests': {'cpu': '100m', 'memory': '256Mi'}}
+    if (dmf_release_profile | default('')) == 'sandbox-single-node'
+    else {}
+  }}
+
 authentik_runtime_secret_path: secret/apps/authentik/runtime
 authentik_admin_secret_path: secret/apps/authentik/admin
 authentik_breakglass_secret_path: secret/apps/authentik/breakglass
