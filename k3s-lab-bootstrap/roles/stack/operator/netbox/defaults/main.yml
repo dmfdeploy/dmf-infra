@@ -130,21 +130,29 @@ netbox_resources:
 # ephemeral-storage: 50Mi}, limits {cpu: 150m, memory: 192Mi,
 # ephemeral-storage: 2Gi}) — an explicit `resources:` block REPLACES the
 # preset wholesale (same "medium" -> explicit lesson as netbox_resources
-# above), so every value below except requests.cpu is the nano preset's
-# own value, preserved byte-for-byte, not re-derived.
+# above), so every value below except requests.cpu and limits.cpu is the nano
+# preset's own value, preserved byte-for-byte, not re-derived.
 # valkey: measured avg 12m CPU (near-idle pub/sub cache). postgresql:
 # measured avg 4m CPU, but kept more conservative (50m, not floored to
 # valkey's level) since DB load spikes coincide with app-level bursts
 # (the SAME netbox schema-sync burst that OOMKilled netbox_resources'
 # memory limit above, per its own comment) — CPU only, not memory-risky
 # the way that burst was, but still not floored to the bare measured avg.
+# CPU limits (#314): both containers sat in chronic CFS throttling at a tiny
+# average (postgresql ~30% of periods at ~11m, with a recurring ~48h periodic-
+# job spike to 60-70%; valkey ~8% at ~12m). Bursts exhaust the quota inside a
+# 100ms period while a 10m rate() reads idle, so the limit has to clear the
+# worst-case burst, not the average. Requests stay as calibrated; limits only
+# cap a runaway and do not reserve CPU. Sized from the observed throttle
+# ratios, not a measured burst profile: re-check
+# container_cpu_cfs_throttled_periods_total after rollout.
 netbox_postgresql_resources:
   requests:
     cpu: 50m
     memory: 128Mi
     ephemeral-storage: 50Mi
   limits:
-    cpu: 150m
+    cpu: 500m
     memory: 192Mi
     ephemeral-storage: 2Gi
 
@@ -154,7 +162,7 @@ netbox_valkey_resources:
     memory: 128Mi
     ephemeral-storage: 50Mi
   limits:
-    cpu: 150m
+    cpu: 300m
     memory: 192Mi
     ephemeral-storage: 2Gi
 

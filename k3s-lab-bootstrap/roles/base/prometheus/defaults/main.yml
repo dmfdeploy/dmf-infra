@@ -26,16 +26,20 @@ prometheus_helm_chart_version: "25.8.0"
 # the single constrained node. Trimmed CPU request to 100m (still >2x the
 # measured max spike). Memory request stays 1024Mi — honest against the
 # measured 855Mi avg with headroom for spikes, not blindly copied down.
-# Limits unchanged.
+# Memory limit unchanged.
 prometheus_resources:
   requests:
-    # umbrella #299 WP1: 100m -> 35m. Measured p95 11.5m / max 49m against
-    # the 500m limit below, which is untouched — scrape-storm burst headroom
-    # is unchanged, only the scheduling reservation comes down.
+    # umbrella #299 WP1: 100m -> 35m. Measured p95 11.5m / max 49m; only the
+    # scheduling reservation comes down, burst headroom is the CPU limit below.
     cpu: 35m
     memory: 1024Mi
   limits:
-    cpu: 500m
+    # #314: ~5% of CFS periods throttled at ~10m average, drifting up as the
+    # TSDB grows (compaction and rule-evaluation bursts hit the quota inside a
+    # 100ms period while a 10m rate() reads idle). 500m -> 1000m. A limit does
+    # not reserve CPU. Sized from the throttle ratio, not a measured burst
+    # profile: re-check container_cpu_cfs_throttled_periods_total after rollout.
+    cpu: 1000m
     memory: 1536Mi
 
 # umbrella #276: measured request honesty (2026-07-24 sample archive);
