@@ -114,10 +114,19 @@ cms_lock_file: "{{ cms_lock_file_path | default('/tmp/dmf-cms.lock') }}"
 # Set this in your inventory if using a non-standard socket location.
 cms_docker_host: "{{ cms_docker_socket | default('unix:///var/run/docker.sock') }}"
 
-# Catalog source directory — path to dmf-media/catalog/ on the Ansible
-# controller. Catalog YAML files found here are read into the Helm values
-# and mounted into the dmf-cms pod at /etc/dmf-cms/catalog/.
-cms_catalog_source_dir: "{{ playbook_dir }}/../../../dmf-media/catalog"
+# Catalog source: catalog/ of the dmf-media clone on the Ansible controller,
+# read at `cms_catalog_ref` (origin/main), NOT from the clone's working tree
+# (#288, same class as #119/#135). A clone parked on an old branch silently
+# shipped a pre-topology catalog and the first topology deploy launched a
+# scalar viewer. `git archive origin/main` is deterministic and independent of
+# the checked-out branch (offline-safe: reads the last-fetched ref). The YAML
+# files are read into the Helm values and mounted into the dmf-cms pod at
+# /etc/dmf-cms/catalog/.
+cms_catalog_media_repo: "{{ playbook_dir }}/../../../dmf-media"
+cms_catalog_ref: origin/main
+# Explicit override: gather from this directory (a working tree) instead of the
+# ref, e.g. to preview unmerged catalog content. Empty reads cms_catalog_ref.
+cms_catalog_source_dir: ""
 
 # ── Media Workloads + MXL live-view console wiring (dmfdeploy/dmfdeploy#17) ──
 # The v0.12 console is fail-closed: the Media Workloads page stays dark unless

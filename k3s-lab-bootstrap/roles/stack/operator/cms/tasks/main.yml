@@ -193,16 +193,60 @@
         directory_mode: "0755"
 
     # ── Catalog YAML gathering ─────────────────────────────────────────────────
-    # Read *.yaml/*.yml files from cms_catalog_source_dir, parse each one,
+    # Read *.yaml/*.yml files from the catalog dir, parse each one,
     # and build a dict keyed by basename. The dict is rendered into Helm
     # values as catalog.entries so the ConfigMap template can mount them.
     #
-    # Per-file work is delegated to tasks/read-catalog-file.yml which
-    # slurps + b64decode + from_yaml + merges into _cms_catalog_entries.
+    # The dir is an export of catalog/ at cms_catalog_ref (see defaults), or
+    # cms_catalog_source_dir when set. Per-file work is delegated to
+    # tasks/read-catalog-file.yml which slurps + b64decode + from_yaml +
+    # merges into _cms_catalog_entries.
+
+    - name: Export catalog from the dmf-media ref
+      when: cms_catalog_source_dir | length == 0
+      delegate_to: localhost
+      become: false
+      block:
+        - name: Create catalog export dir
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: dmf-catalog.
+          register: _cms_catalog_export
+          changed_when: false
+
+        # A missing clone or ref is reported by the #105 fail-loud task below,
+        # so a failed archive must not stop the play here.
+        - name: Archive catalog/ at the ref
+          ansible.builtin.command:
+            argv:
+              - git
+              - -C
+              - "{{ cms_catalog_media_repo }}"
+              - archive
+              - --format=tar
+              - "--output={{ _cms_catalog_export.path }}/catalog.tar"
+              - "{{ cms_catalog_ref }}"
+              - catalog
+          register: _cms_catalog_archive
+          changed_when: false
+          failed_when: false
+
+        - name: Unpack the catalog export
+          ansible.builtin.unarchive:
+            src: "{{ _cms_catalog_export.path }}/catalog.tar"
+            dest: "{{ _cms_catalog_export.path }}"
+            remote_src: true
+          changed_when: false
+          when: _cms_catalog_archive.rc == 0
+
+    - name: Resolve the catalog source
+      ansible.builtin.set_fact:
+        _cms_catalog_dir: "{{ cms_catalog_source_dir if cms_catalog_source_dir | length > 0 else _cms_catalog_export.path ~ '/catalog' }}"
+        _cms_catalog_origin: "{{ cms_catalog_source_dir if cms_catalog_source_dir | length > 0 else cms_catalog_ref ~ ' of ' ~ cms_catalog_media_repo }}"
 
     - name: Find catalog YAML files in source dir
       ansible.builtin.find:
-        paths: "{{ cms_catalog_source_dir }}"
+        paths: "{{ _cms_catalog_dir }}"
         patterns:
           - "*.yaml"
           - "*.yml"
@@ -213,7 +257,7 @@
 
     - name: "Stat catalog source dir (detect a missing dmf-media checkout, #105)"
       ansible.builtin.stat:
-        path: "{{ cms_catalog_source_dir }}"
+        path: "{{ _cms_catalog_dir }}"
       register: _cms_catalog_src_stat
       delegate_to: localhost
       become: false
@@ -229,22 +273,30 @@
         loop_var: _cms_catalog_file_item
         label: "{{ _cms_catalog_file_item.path | basename }}"
 
+    # topology_params docs ride along in the mounted catalog but are not
+    # entries; only docs with a `key` count toward the catalog being populated.
+    - name: Count catalog entries
+      ansible.builtin.set_fact:
+        _cms_catalog_entry_count: "{{ _cms_catalog_entries.values() | selectattr('key', 'defined') | list | length }}"
+
     - name: Catalog gather summary
       ansible.builtin.debug:
         msg: >-
-          catalog: gathered {{ _cms_catalog_entries | length }} entries
-          from {{ cms_catalog_source_dir }}
+          catalog: gathered {{ _cms_catalog_entry_count }} entries
+          from {{ _cms_catalog_origin }}
           ({{ _cms_catalog_files.matched | default(0) }} files matched)
 
     - name: "Fail loud when catalog source dir is missing and enablement not set (#105)"
       ansible.builtin.fail:
         msg: >-
-          cms_catalog_source_dir is not a directory: {{ cms_catalog_source_dir }}.
-          This usually means the dmf-media checkout is absent (or the path is
-          mispointed). Proceeding would ship an EMPTY catalog and silently
-          regress a populated one (#105). Fix one of: check out dmf-media at the
-          expected path, set cms_catalog_source_dir, or explicitly set
+          Catalog source is not available: {{ _cms_catalog_origin }}.
+          This usually means the dmf-media clone is absent, or has no
+          {{ cms_catalog_ref }} (git fetch it), or cms_catalog_source_dir is
+          mispointed. Proceeding would ship an EMPTY catalog and silently
+          regress a populated one (#105). Fix one of: clone dmf-media at
+          cms_catalog_media_repo, set cms_catalog_source_dir, or explicitly set
           cms_catalog_enabled=false to intentionally ship no catalog.
+          {{ _cms_catalog_archive.stderr | default('') }}
       when:
         - cms_catalog_enabled is not defined
         - not (_cms_catalog_src_stat.stat.isdir | default(false))
@@ -252,18 +304,18 @@
     - name: "Warn when catalog source dir exists but matched zero files (#105)"
       ansible.builtin.debug:
         msg: >-
-          WARNING: cms_catalog_source_dir exists but yielded no usable catalog
-          entries ({{ cms_catalog_source_dir }}); the catalog will be empty. Add
+          WARNING: the catalog source exists but yielded no usable catalog
+          entries ({{ _cms_catalog_origin }}); the catalog will be empty. Add
           catalog content, or set cms_catalog_enabled=false to make this
           explicit (#105).
       when:
         - cms_catalog_enabled is not defined
         - _cms_catalog_src_stat.stat.isdir | default(false)
-        - (_cms_catalog_entries | length) == 0
+        - _cms_catalog_entry_count | int == 0
 
     - name: Set cms_catalog_enabled based on gathered entries
       ansible.builtin.set_fact:
-        cms_catalog_enabled: "{{ (_cms_catalog_entries | length) > 0 }}"
+        cms_catalog_enabled: "{{ _cms_catalog_entry_count | int > 0 }}"
       when: cms_catalog_enabled is not defined
 
     - name: Template DMF Console Helm values
@@ -304,5 +356,14 @@
         path: "{{ cms_lock_file }}"
         state: absent
       changed_when: false
+      delegate_to: localhost
+      become: false
+
+    - name: Remove catalog export dir
+      ansible.builtin.file:
+        path: "{{ _cms_catalog_export.path }}"
+        state: absent
+      changed_when: false
+      when: _cms_catalog_export.path is defined
       delegate_to: localhost
       become: false
