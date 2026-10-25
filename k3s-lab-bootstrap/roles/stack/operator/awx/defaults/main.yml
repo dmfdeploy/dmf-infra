@@ -8,6 +8,11 @@ awx_helm_repo: https://ansible-community.github.io/awx-operator-helm/
 # Do NOT "pin to 2.19.1" expecting the validated operator — chart 2.19.1 is a
 # different, older artifact.
 awx_operator_version: "3.2.1"
+# CPU limit for the operator's reconcile loop (#93): capped on
+# sandbox-single-node, where it otherwise spikes to the node's CPU count. Empty
+# leaves the operator uncapped (lab/cloud). Resolved here, not in the sandbox
+# profile prelude, so a standalone play run keeps the cap (#281).
+awx_operator_cpu_limit: "{{ '500m' if (dmf_release_profile | default('')) == 'sandbox-single-node' else '' }}"
 
 # AWX instance configuration
 awx_instance_name: awx
