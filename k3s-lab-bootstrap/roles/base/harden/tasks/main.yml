@@ -87,6 +87,18 @@
 
 # ── Fail2ban ──────────────────────────────────────────────────────────────────
 
+- name: Extend ignoreip with the Ansible controller address
+  ansible.builtin.set_fact:
+    _harden_effective_ignoreip: >-
+      {{ harden_fail2ban_ignoreip }}
+      {{ ansible_env.SSH_CONNECTION.split()[0] }}
+  when: ansible_env.SSH_CONNECTION is defined
+
+- name: Use configured ignoreip when controller address is unavailable
+  ansible.builtin.set_fact:
+    _harden_effective_ignoreip: "{{ harden_fail2ban_ignoreip }}"
+  when: ansible_env.SSH_CONNECTION is not defined
+
 - name: Deploy fail2ban jail config
   ansible.builtin.template:
     src: jail.local.j2

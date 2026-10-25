@@ -96,7 +96,7 @@ future work.
 | `harden_reboot_time` | `02:00` | UTC time for unattended-upgrades auto-reboot |
 | `harden_fail2ban_maxretry` | `3` | Failed SSH attempts before ban |
 | `harden_fail2ban_bantime` | `1h` | Ban duration |
-| `harden_fail2ban_ignoreip` | `127.0.0.1/8 ::1` | Space-separated sources fail2ban never bans; add the controller/admin range |
+| `harden_fail2ban_ignoreip` | `127.0.0.1/8 ::1` | Space-separated sources fail2ban never bans; the role appends the Ansible controller's address automatically; add any extra operator CIDRs here |
 
 ## Re-running
 

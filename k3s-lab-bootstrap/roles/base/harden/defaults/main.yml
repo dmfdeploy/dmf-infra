@@ -24,9 +24,10 @@ harden_reboot_time: "02:00"
 harden_fail2ban_maxretry: 3
 harden_fail2ban_bantime: "1h"
 harden_fail2ban_findtime: "10m"
-# Sources fail2ban never bans (space-separated addresses/CIDRs). The env
-# inventory appends the Ansible controller / operator admin range so a bootstrap
-# cannot ban its own control plane. Never put a world-open range here.
+# Sources fail2ban never bans (space-separated addresses/CIDRs). The role
+# appends the Ansible controller's address automatically from SSH_CONNECTION;
+# add operator admin CIDRs here to exempt them as well. Never put a
+# world-open range here.
 harden_fail2ban_ignoreip: "127.0.0.1/8 ::1"
 
 # Optional provider-specific cloud firewall task file.
