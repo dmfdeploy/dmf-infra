@@ -269,8 +269,8 @@ def test_visible_mutation_ages_out_and_reaper_still_sleeps():
     visible events is what a real play produces.
 
     EXPECTED TO FLIP: when the explicit Lease hold lands (the AWX-consumer
-    phase renewing the wake Lease around 693/697/699), this scenario must stop
-    sleeping and this assertion should be inverted, not deleted.
+    phase renewing the wake Lease during playbooks 693, 697 and 699), this
+    scenario must stop sleeping and this assertion should be inverted, not deleted.
     """
     clock = FakeClock(max_sleeps=20)  # 20 minutes, > 2x the 300s grace period
     fixed_event = clock.iso(5)  # one visible mutation, never renewed
