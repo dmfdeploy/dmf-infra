@@ -9,6 +9,11 @@ definition puts a secret-shaped variable into extra_vars. It also fails when
 the role tasks send a job template's extra_vars from anything other than the
 reviewed job-template definitions.
 
+A second check covers optional secret credentials. When an optional value
+is empty, the run must detach the credential from the job templates that
+declare it and delete it, so a value set earlier and later cleared is not
+injected again.
+
 Run from the repo root:  python3 -m unittest discover -s \
   k3s-lab-bootstrap/roles/stack/operator/awx-integration/tests -v
 """
@@ -83,6 +88,93 @@ class NoSecretInExtraVars(unittest.TestCase):
             ]
         }
         self.assertEqual(len(secret_findings(planted)), 3)
+
+
+def _uri_tasks(tasks):
+    """Yield every ansible.builtin.uri task as (task, uri_args)."""
+    for task in tasks:
+        args = task.get("ansible.builtin.uri") if isinstance(task, dict) else None
+        if isinstance(args, dict):
+            yield task, args
+
+
+def inactive_cleanup_findings(defaults, tasks):
+    """Return what is missing for the inactive optional credential cleanup.
+
+    An optional secret credential that a run does not manage (its value is
+    empty) must be detached from the job templates that declare it and then
+    deleted, so a value set earlier and later cleared is not injected again.
+    """
+    found = []
+    optional = [
+        c["credential_name"]
+        for c in defaults.get("awx_integration_netbox_token_credentials") or []
+        if c.get("optional")
+    ]
+    if not optional:
+        return ["no optional credential in awx_integration_netbox_token_credentials; the guard checks nothing"]
+    declared = {
+        name
+        for jt in defaults.get("awx_catalog_job_templates") or []
+        for name in jt.get("extra_credentials") or []
+    }
+    for name in optional:
+        if name not in declared:
+            found.append(f"{name}: optional but no job template declares it, so the detach loop never reaches it")
+
+    selects = [
+        t for t in tasks
+        if isinstance(t, dict)
+        and "_awx_inactive_secret_credential_names" in (t.get("ansible.builtin.set_fact") or {})
+        and "optional" in str(t["ansible.builtin.set_fact"]["_awx_inactive_secret_credential_names"])
+    ]
+    if not selects:
+        found.append("no set_fact derives _awx_inactive_secret_credential_names from the optional entries")
+
+    detach = [
+        t for t, a in _uri_tasks(tasks)
+        if (a.get("body") or {}).get("disassociate") is True
+        and "/credentials/" in str(a.get("url", ""))
+        and "_awx_inactive_cred_ids" in str(t.get("when", ""))
+        and "extra_credentials" in str(t.get("loop", ""))
+    ]
+    if not detach:
+        found.append("no task disassociates the inactive credentials from the job templates that declare them")
+
+    delete = [
+        t for t, a in _uri_tasks(tasks)
+        if str(a.get("method", "")).upper() == "DELETE"
+        and "/credentials/" in str(a.get("url", ""))
+        and "_awx_inactive_cred_ids" in str(t.get("loop", ""))
+    ]
+    if not delete:
+        found.append("no task deletes the inactive credentials")
+
+    asserts = [
+        t for t in tasks
+        if isinstance(t, dict)
+        and "_awx_inactive_secret_credential_names" in str((t.get("ansible.builtin.assert") or {}).get("that", ""))
+    ]
+    if not asserts:
+        found.append("no read-back assert that the inactive credentials are gone")
+    return found
+
+
+class InactiveOptionalCredentialCleanup(unittest.TestCase):
+    def test_role_detaches_and_deletes_inactive_optional_credentials(self):
+        defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
+        tasks = yaml.safe_load((ROLE / "tasks" / "main.yml").read_text())
+        self.assertEqual(inactive_cleanup_findings(defaults, tasks), [])
+
+    def test_guard_detects_missing_cleanup(self):
+        defaults = {
+            "awx_integration_netbox_token_credentials": [
+                {"credential_name": "opt", "optional": True},
+            ],
+            "awx_catalog_job_templates": [{"name": "t", "extra_credentials": []}],
+        }
+        # Nothing declares "opt", and no cleanup task exists.
+        self.assertEqual(len(inactive_cleanup_findings(defaults, [])), 5)
 
 
 if __name__ == "__main__":
