@@ -172,9 +172,9 @@ B=../dmf-infra/k3s-lab-bootstrap
 # Provision, pre-seed: host baseline, k3s, cert-manager, Zot, OpenBao, ESO
 bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-provision-pre-seed.yml
 
-# Seed boundary: check the seal and unseal OpenBao if it is sealed, inside the
-# OpenBao pod with TLS verification on (see docs/SECURITY-REMEDIATION-GUIDE.md,
-# "Emergency unseal"), then seed
+# Seed boundary: check the seal, unseal OpenBao if it is sealed, then seed
+bin/unseal-openbao.sh <env-name> --status
+bin/unseal-openbao.sh <env-name>    # only when --status reports sealed
 bin/bootstrap-secrets.sh seed-bao <env-name>
 
 # Provision, post-seed: Authentik, NetBox, Forgejo, AWX, console, monitoring
@@ -185,10 +185,12 @@ bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-configure.yml
 bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-verify.yml
 ```
 
-The seed boundary sits between the two provision wrappers. To check the seal
-and unseal, follow the in-pod steps in
-[Emergency unseal](docs/SECURITY-REMEDIATION-GUIDE.md#emergency-unseal), which
-keep TLS verification on. Post-seed starts
+The seed boundary sits between the two provision wrappers. The
+`bin/unseal-openbao.sh` wrapper in `dmf-env` checks the seal and unseals. It
+runs `bao` inside the OpenBao pod, verifies the certificate the pod serves, and
+passes key shares on standard input only. To unseal by hand instead, follow the
+in-pod steps in
+[Emergency unseal](docs/SECURITY-REMEDIATION-GUIDE.md#emergency-unseal). Post-seed starts
 with a guard that checks OpenBao for `secret/platform/bootstrap_admin` and
 `secret/platform/k3s/cluster`, and it stops when `seed-bao` hasn't written
 them. The sandbox wrappers import `bootstrap-sandbox-profile.yml`, which
