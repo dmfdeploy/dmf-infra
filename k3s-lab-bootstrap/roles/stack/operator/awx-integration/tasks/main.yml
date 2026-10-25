@@ -2724,6 +2724,169 @@
     label: "{{ item.0.name }} <- {{ item.1 }}"
   run_once: true
 
+# dmfdeploy/dmfdeploy#310: an optional secret credential whose value is now
+# empty (for example the crosspoint admin password, set once and later cleared)
+# must not keep injecting the value it stored earlier. For every optional entry
+# that this run does not manage, detach the credential from the catalog JTs
+# that declare it, delete the credential so the stale secret is not kept, and
+# read both back. Each step is a no-op when the credential is already absent.
+- name: Select the inactive optional secret credentials
+  ansible.builtin.set_fact:
+    _awx_inactive_secret_credential_names: >-
+      {{ awx_integration_netbox_token_credentials
+         | selectattr('optional', 'defined') | selectattr('optional')
+         | map(attribute='credential_name')
+         | difference(_awx_active_secret_credentials | map(attribute='credential_name') | list)
+         | list }}
+  run_once: true
+
+- name: Lookup inactive optional secret credentials
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/?name={{ item | urlencode }}&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_inactive_cred_lookup is success
+    or (awx_inactive_cred_lookup.status | default(0) >= 400 and awx_inactive_cred_lookup.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ _awx_inactive_secret_credential_names }}"
+  register: awx_inactive_cred_lookup
+  run_once: true
+  # The response carries the credential's inputs block.
+  no_log: true
+
+- name: Set inactive optional secret credential ids
+  ansible.builtin.set_fact:
+    _awx_inactive_cred_ids: >-
+      {{ _awx_inactive_cred_ids | default({}) | combine({item.item: (item.json.results | first).id})
+         if (item.json.results | default([]) | length > 0)
+         else (_awx_inactive_cred_ids | default({})) }}
+  loop: "{{ awx_inactive_cred_lookup.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item }}"
+  run_once: true
+
+- name: Detach inactive optional secret credentials from catalog job templates
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ jt_id }}/credentials/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    body:
+      id: "{{ _awx_inactive_cred_ids[item.1] }}"
+      disassociate: true
+    # AWX answers 204 whether or not the credential was attached.
+    status_code: 204
+  until: >-
+    awx_inactive_cred_detach is success
+    or (awx_inactive_cred_detach.status | default(0) >= 400 and awx_inactive_cred_detach.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_inactive_cred_detach
+  vars:
+    jt_id: >-
+      {{ (awx_catalog_jt_lookup.results
+          | selectattr('jt_item.name', 'eq', item.0.name)
+          | map(attribute='json.results') | first | first).id }}
+  loop: "{{ awx_catalog_job_templates | subelements('extra_credentials', skip_missing=True) }}"
+  when: item.1 in (_awx_inactive_cred_ids | default({}))
+  loop_control:
+    label: "{{ item.0.name }} -x {{ item.1 }}"
+  run_once: true
+  no_log: true
+
+- name: Delete inactive optional secret credentials
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/{{ item.value }}/"
+    method: DELETE
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    # 404: already gone between the lookup and this call.
+    status_code: [204, 404]
+  until: >-
+    awx_inactive_cred_delete is success
+    or (awx_inactive_cred_delete.status | default(0) >= 400 and awx_inactive_cred_delete.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_inactive_cred_delete
+  loop: "{{ _awx_inactive_cred_ids | default({}) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  run_once: true
+  changed_when: awx_inactive_cred_delete.status | default(0) == 204
+  no_log: true
+
+- name: Read back inactive optional secret credentials
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/credentials/?name={{ item | urlencode }}&organization={{ awx_integration_org_id }}"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_inactive_cred_readback is success
+    or (awx_inactive_cred_readback.status | default(0) >= 400 and awx_inactive_cred_readback.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  loop: "{{ _awx_inactive_secret_credential_names }}"
+  register: awx_inactive_cred_readback
+  run_once: true
+  no_log: true
+
+- name: Read back catalog job template credentials after the inactive detach
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/job_templates/{{ jt_id }}/credentials/?page_size=200"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_inactive_jt_readback is success
+    or (awx_inactive_jt_readback.status | default(0) >= 400 and awx_inactive_jt_readback.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_inactive_jt_readback
+  vars:
+    jt_id: >-
+      {{ (awx_catalog_jt_lookup.results
+          | selectattr('jt_item.name', 'eq', item.0.name)
+          | map(attribute='json.results') | first | first).id }}
+  loop: "{{ awx_catalog_job_templates | subelements('extra_credentials', skip_missing=True) }}"
+  when: item.1 in _awx_inactive_secret_credential_names
+  loop_control:
+    label: "{{ item.0.name }} -x {{ item.1 }}"
+  run_once: true
+  no_log: true
+
+- name: Assert no inactive optional secret credential is stored or attached
+  ansible.builtin.assert:
+    that:
+      - >-
+        awx_inactive_cred_readback.results
+        | map(attribute='json.count') | map('int') | sum == 0
+      - >-
+        awx_inactive_jt_readback.results
+        | selectattr('json', 'defined')
+        | map(attribute='json.results') | flatten
+        | map(attribute='name')
+        | select('in', _awx_inactive_secret_credential_names)
+        | list | length == 0
+    fail_msg: >-
+      An inactive optional credential ({{ _awx_inactive_secret_credential_names | join(', ') }})
+      is still stored in AWX or attached to a catalog job template. Remove it in
+      AWX, then re-run this play.
+    quiet: true
+  run_once: true
+
 # ---------------------------------------------------------------------------
 # Infra job templates (dmfdeploy/dmfdeploy#166 WP-F): monitoring-apply lane.
 # SSH-to-control-node model (like eso-openbao-health-check): default AWX
