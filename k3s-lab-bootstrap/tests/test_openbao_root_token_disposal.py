@@ -44,6 +44,7 @@ class OpenBaoRootTokenDisposalTests(unittest.TestCase):
         source = OPENBAO_PLAYBOOK.read_text()
 
         self.assertIn("Run OpenBao bootstrap with fresh-root failure disposal", source)
+        self.assertIn("public: true", source)
         self.assertIn("rescue:", source)
         self.assertIn("Unseal OpenBao before failed-init root disposal", source)
         self.assertIn("Revoke fresh-init root token after failed bootstrap", source)
