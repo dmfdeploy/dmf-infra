@@ -48,6 +48,7 @@ class OpenBaoRootTokenDisposalTests(unittest.TestCase):
         self.assertIn("Unseal OpenBao before failed-init root disposal", source)
         self.assertIn("Revoke fresh-init root token after failed bootstrap", source)
         self.assertIn("Assert failed-bootstrap root disposal succeeded", source)
+        self.assertIn("Re-fail after fresh-root cleanup preserves bootstrap evidence", source)
         self.assertLess(
             source.index("Unseal OpenBao before failed-init root disposal"),
             source.index("Revoke fresh-init root token after failed bootstrap"),
