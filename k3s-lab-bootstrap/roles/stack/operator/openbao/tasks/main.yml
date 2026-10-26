@@ -617,21 +617,6 @@
   when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
   no_log: true
 
-- name: Write automation file (shares 1+2+3 and operator creds)
-  ansible.builtin.copy:
-    dest: "{{ openbao_key_path }}.json"
-    mode: "0600"
-    content: "{{ {
-        'unseal_keys_b64': openbao_unseal_keys_b64[0:3],
-        'ops_admin_username': openbao_operator_username,
-        'ops_admin_password': openbao_operator_password,
-        '_notes': (openbao_breakglass_distribution_enabled | bool) | ternary('Automation copy. Holds a quorum of 3 Shamir shares for unattended unseal. If this file is lost, reassemble from any 3 of: JuiceFS share-1, JuiceFS share-2, Keychain share-3, USB share-4, USB share-5.', 'Automation copy and SOLE key custody for this self-recovering (no-distribution) profile: holds the full ' ~ (openbao_shamir_shares | int) ~ '-of-' ~ (openbao_shamir_threshold | int) ~ ' unseal key set. There is no break-glass distribution — if this file is lost, re-init is required.')
-      } | to_nice_json }}"
-  delegate_to: localhost
-  become: false
-  when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)
-  no_log: true
-
 # ---------------------------------------------------------------------------
 # Unseal (needs 3 of 5 shares)
 # ---------------------------------------------------------------------------
