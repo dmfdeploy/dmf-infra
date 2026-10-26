@@ -17,6 +17,10 @@
   connection: local
   vars:
     harden_fail2ban_ignoreip: "127.0.0.1/8 ::1"
+    # A refusal only counts when one of the role's validation tasks made it.
+    harden_validation_tasks:
+      - Refuse a controller address with characters an address cannot hold
+      - Refuse a controller address that is not valid IPv4/IPv6 syntax
     harden_ignoreip_cases:
       - {value: "203.0.113.7", want: "127.0.0.1/8 ::1 203.0.113.7"}
       - {value: "203.0.113.0/24 2001:db8::/32", want: "127.0.0.1/8 ::1 203.0.113.0/24 2001:db8::/32"}
@@ -32,6 +36,30 @@
       - {value: "256.0.0.1", refused: true}
       - {value: "203.0.113.0/33", refused: true}
       - {value: "2001:db8::/129", refused: true}
+      # Not valid IPv6 or IPv4 syntax, though made only of address characters.
+      - {value: "1:", refused: true}
+      - {value: "1::2::3", refused: true}
+      - {value: ":::", refused: true}
+      - {value: "1:2:3:4:5:6:7:8:9", refused: true}
+      - {value: "12345::", refused: true}
+      - {value: "fe80::1%eth0", refused: true}
+      - {value: "192.0.2.256", refused: true}
+      - {value: "192.0.2.1/33", refused: true}
+      - {value: "::/129", refused: true}
+      - {value: "203.0.113.7 1::2::3", refused: true}
+      - {value: "::1", want: "127.0.0.1/8 ::1 ::1"}
+      - {value: "2001:db8::/32", want: "127.0.0.1/8 ::1 2001:db8::/32"}
+      - {value: "::ffff:192.0.2.1", want: "127.0.0.1/8 ::1 ::ffff:192.0.2.1"}
+      - {value: "192.0.2.0/24", want: "127.0.0.1/8 ::1 192.0.2.0/24"}
+      # A /0 prefix exempts a whole address family, whatever the spelling.
+      - {value: "0.0.0.0/0", refused: true}
+      - {value: "::/0", refused: true}
+      - {value: "0:0:0:0:0:0:0:0/0", refused: true}
+      - {value: "192.0.2.1/0", refused: true}
+      - {value: "::/00", refused: true}
+      - {value: "192.0.2.7/32 0.0.0.0/0", refused: true}
+      - {value: "192.0.2.7/32", want: "127.0.0.1/8 ::1 192.0.2.7/32"}
+      - {value: "2001:db8::7/128", want: "127.0.0.1/8 ::1 2001:db8::7/128"}
 
   tasks:
     - name: Run each case through the role's ignoreip tasks
