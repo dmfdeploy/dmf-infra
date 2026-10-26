@@ -5,4 +5,110 @@
   gather_facts: false
   roles:
     - base/cluster-ready
-    - stack/operator/openbao
+  tasks:
+    - name: Run OpenBao bootstrap with fresh-root failure disposal
+      block:
+        - name: Bootstrap OpenBao
+          ansible.builtin.include_role:
+            name: stack/operator/openbao
+      rescue:
+        # A task after `bao operator init` can fail before the role's normal
+        # disposal task.  The init token is intentionally never written to
+        # disk, so dispose it from process memory before this play returns.
+        - name: Recover fresh-init cleanup material from in-memory init output
+          ansible.builtin.set_fact:
+            _openbao_failed_init_root_token: >-
+              {{ openbao_root_token | default((openbao_init_raw.stdout | from_json).root_token | default(''), true) }}
+            _openbao_failed_init_unseal_keys_hex: >-
+              {{ openbao_unseal_keys_hex | default((openbao_init_raw.stdout | from_json).unseal_keys_hex | default([]), true) }}
+          when:
+            - openbao_dispose_root_token | default(true) | bool
+            - openbao_init_raw is defined
+            - openbao_init_raw.changed | default(false)
+          no_log: true
+
+        - name: Check OpenBao seal state before failed-init root disposal
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ openbao_namespace }}"
+              - exec
+              - "{{ openbao_pod }}"
+              - --
+              - bao
+              - status
+              - -format=json
+          register: _openbao_failed_init_status
+          changed_when: false
+          failed_when: false
+          when: _openbao_failed_init_root_token | default('') | length > 0
+          no_log: true
+
+        - name: Unseal OpenBao before failed-init root disposal
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ openbao_namespace }}"
+              - exec
+              - "{{ openbao_pod }}"
+              - --
+              - bao
+              - operator
+              - unseal
+              - "{{ item }}"
+          loop: "{{ _openbao_failed_init_unseal_keys_hex[0:(openbao_shamir_threshold | int)] }}"
+          register: _openbao_failed_init_unseal
+          retries: 3
+          delay: 2
+          until: _openbao_failed_init_unseal.rc == 0
+          when:
+            - _openbao_failed_init_root_token | default('') | length > 0
+            - _openbao_failed_init_status.stdout | default('') | length > 0
+            - (_openbao_failed_init_status.stdout | from_json).sealed | default(true) | bool
+          no_log: true
+
+        - name: Revoke fresh-init root token after failed bootstrap
+          ansible.builtin.shell:
+            cmd: >-
+              printf '%s\n' "$OPENBAO_TOKEN" |
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ openbao_namespace }}
+              exec -i {{ openbao_pod }}
+              -- sh -c '
+              IFS= read -r BAO_TOKEN;
+              export BAO_TOKEN;
+              bao token revoke -self'
+          environment:
+            OPENBAO_TOKEN: "{{ _openbao_failed_init_root_token }}"
+          register: _openbao_failed_init_root_revoke
+          changed_when: _openbao_failed_init_root_revoke.rc == 0
+          failed_when: false
+          retries: 3
+          delay: 2
+          until: _openbao_failed_init_root_revoke.rc == 0
+          when: _openbao_failed_init_root_token | default('') | length > 0
+          no_log: true
+
+        - name: Assert failed-bootstrap root disposal succeeded
+          ansible.builtin.assert:
+            that:
+              - _openbao_failed_init_root_revoke.rc | default(1) == 0
+            fail_msg: >-
+              OpenBao bootstrap failed and its fresh root token could not be
+              revoked. Stop, preserve the failure evidence, and escalate
+              before any retry.
+          when: _openbao_failed_init_root_token | default('') | length > 0
+
+      always:
+        - name: Clear in-memory fresh-root cleanup material
+          ansible.builtin.set_fact:
+            openbao_root_token: ""
+            _openbao_failed_init_root_token: ""
+            _openbao_failed_init_unseal_keys_hex: []
+          no_log: true
