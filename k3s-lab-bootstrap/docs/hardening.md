@@ -96,7 +96,8 @@ future work.
 | `harden_reboot_time` | `02:00` | UTC time for unattended-upgrades auto-reboot |
 | `harden_fail2ban_maxretry` | `3` | Failed SSH attempts before ban |
 | `harden_fail2ban_bantime` | `1h` | Ban duration |
-| `harden_fail2ban_ignoreip` | `127.0.0.1/8 ::1` | Space-separated sources fail2ban never bans; the role appends the Ansible controller's address automatically; add any extra operator CIDRs here |
+| `harden_fail2ban_ignoreip` | `127.0.0.1/8 ::1` | Space-separated sources fail2ban never bans; the role appends the Ansible controller's address; add any extra operator CIDRs here |
+| `harden_fail2ban_controller_address` | `""` | Address or CIDR the controller connects from; empty reads it from the node's SSH session, and the play fails if it cannot |
 
 ## Re-running
 
