@@ -381,6 +381,27 @@
   when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)
   no_log: true
 
+- name: Save root-token-free recovery artifact before share distribution
+  ansible.builtin.copy:
+    dest: "{{ openbao_key_path }}.json"
+    mode: "0600"
+    content: "{{ {
+        'unseal_keys_hex': openbao_unseal_keys_hex,
+        'shamir_threshold': openbao_shamir_threshold,
+        'shamir_shares': openbao_shamir_shares,
+        'ops_admin_username': openbao_operator_username,
+        'ops_admin_password': openbao_operator_password,
+        'policy_reconciler_username': openbao_policy_reconciler_username,
+        'policy_reconciler_password': openbao_policy_reconciler_password,
+        'approle_reconciler_username': openbao_approle_reconciler_username,
+        'approle_reconciler_password': openbao_approle_reconciler_password,
+        '_notes': 'Root-token-free recovery artifact written before share distribution. The final bootstrap record adds AppRole credentials.'
+      } | to_nice_json }}"
+  delegate_to: localhost
+  become: false
+  when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)
+  no_log: true
+
 # ---------------------------------------------------------------------------
 # Write Shamir shares to 5 separate custody locations at init time.
 # Shares 1, 2 → JuiceFS ({{ openbao_juicefs_mount_path }}/…)

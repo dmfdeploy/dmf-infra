@@ -17,6 +17,14 @@ class OpenBaoRootTokenDisposalTests(unittest.TestCase):
         self.assertNotIn('content: "{{ openbao_init_raw.stdout }}"', source)
         self.assertIn("Write automation file (shares 1+2+3 and operator creds)", source)
 
+    def test_sanitized_recovery_artifact_precedes_fallible_distribution(self) -> None:
+        """A failed USB/JuiceFS/Keychain preflight must retain the quorum."""
+        source = OPENBAO_TASKS.read_text()
+
+        recovery = source.index("Save root-token-free recovery artifact before share distribution")
+        distribution = source.index("Assert OPENBAO_A USB is mounted")
+        self.assertLess(recovery, distribution)
+
     def test_rerun_and_convergence_reject_any_root_token_field(self) -> None:
         """Aliases beyond the historical three must fail both safeguards."""
         pattern = "(?i)(root.*token|token.*root)"
