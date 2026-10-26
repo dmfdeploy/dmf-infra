@@ -11,6 +11,7 @@
         - name: Bootstrap OpenBao
           ansible.builtin.include_role:
             name: stack/operator/openbao
+            public: true
       rescue:
         # A task after `bao operator init` can fail before the role's normal
         # disposal task.  The init token is intentionally never written to
