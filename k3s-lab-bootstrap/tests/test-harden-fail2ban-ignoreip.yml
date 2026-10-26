@@ -1,0 +1,42 @@
+---
+# Discrimination test for the fail2ban ignoreip controller address
+# (dmfdeploy/dmfdeploy#142).
+#
+# The controller address is written into jail.local verbatim, so a value
+# carrying a newline could add jail directives. Each case runs the SAME task
+# file the harden role imports (lockstep: if that file drifts, this test
+# breaks) and checks the value is either rendered as given or refused by the
+# validation task, not by some other failure.
+#
+# Run locally:
+#   ansible-playbook tests/test-harden-fail2ban-ignoreip.yml
+
+- name: Discrimination test — fail2ban ignoreip controller address (#142)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    harden_fail2ban_ignoreip: "127.0.0.1/8 ::1"
+    harden_ignoreip_cases:
+      - {value: "203.0.113.7", want: "127.0.0.1/8 ::1 203.0.113.7"}
+      - {value: "203.0.113.0/24 2001:db8::/32", want: "127.0.0.1/8 ::1 203.0.113.0/24 2001:db8::/32"}
+      - {value: "::ffff:198.51.100.7", want: "127.0.0.1/8 ::1 ::ffff:198.51.100.7"}
+      - {value: "", want: "127.0.0.1/8 ::1"}
+      - {value: "203.0.113.7\nbantime = 1s", refused: true}
+      - {value: "203.0.113.7\n", refused: true}
+      - {value: "203.0.113.7\r\nmaxretry = 1000", refused: true}
+      - {value: "203.0.113.7\t198.51.100.1", refused: true}
+      - {value: "203.0.113.7  198.51.100.1", refused: true}
+      - {value: "203.0.113.7 # comment", refused: true}
+      - {value: "controller.example.com", refused: true}
+      - {value: "256.0.0.1", refused: true}
+      - {value: "203.0.113.0/33", refused: true}
+      - {value: "2001:db8::/129", refused: true}
+
+  tasks:
+    - name: Run each case through the role's ignoreip tasks
+      ansible.builtin.include_tasks: _harden-fail2ban-ignoreip-case.yml
+      loop: "{{ harden_ignoreip_cases }}"
+      loop_control:
+        loop_var: harden_case
+        label: "{{ harden_case.value | to_json }}"

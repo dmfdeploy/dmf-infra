@@ -1,0 +1,30 @@
+---
+# One case of test-harden-fail2ban-ignoreip.yml; harden_case is the loop item.
+- name: Case {{ harden_case.value | to_json }} — run the role's ignoreip tasks
+  block:
+    - name: Case {{ harden_case.value | to_json }} — reset the result
+      ansible.builtin.set_fact:
+        _harden_case_refused_by: ""
+        _harden_effective_ignoreip: ""
+
+    - name: Case {{ harden_case.value | to_json }} — include fail2ban_ignoreip.yml (lockstep with the harden role)
+      ansible.builtin.include_tasks: ../roles/base/harden/tasks/fail2ban_ignoreip.yml
+      vars:
+        harden_fail2ban_controller_address: "{{ harden_case.value }}"
+  rescue:
+    - name: Case {{ harden_case.value | to_json }} — record which task refused it
+      ansible.builtin.set_fact:
+        _harden_case_refused_by: "{{ ansible_failed_task.name }}"
+
+- name: Case {{ harden_case.value | to_json }} — assert the outcome
+  ansible.builtin.assert:
+    that: >-
+      (_harden_case_refused_by == 'Refuse a controller address that is not plain addresses or CIDRs')
+      if (harden_case.refused | default(false))
+      else (_harden_case_refused_by == '' and _harden_effective_ignoreip == harden_case.want)
+    fail_msg: >-
+      value={{ harden_case.value | to_json }}
+      expected={{ 'refused by validation' if (harden_case.refused | default(false)) else (harden_case.want | to_json) }}
+      got refused_by={{ _harden_case_refused_by | to_json }}
+      ignoreip={{ _harden_effective_ignoreip | to_json }}
+    success_msg: "ok {{ harden_case.value | to_json }}"
