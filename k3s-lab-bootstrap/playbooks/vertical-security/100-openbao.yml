@@ -105,6 +105,14 @@
               before any retry.
           when: _openbao_failed_init_root_token | default('') | length > 0
 
+        - name: Re-fail after fresh-root cleanup preserves bootstrap evidence
+          ansible.builtin.fail:
+            msg: >-
+              OpenBao bootstrap failed at
+              {{ ansible_failed_task.name | default('an unreported task') }}.
+              Fresh-root cleanup was attempted; inspect the preceding failure
+              and cleanup result before any retry.
+
       always:
         - name: Clear in-memory fresh-root cleanup material
           ansible.builtin.set_fact:
