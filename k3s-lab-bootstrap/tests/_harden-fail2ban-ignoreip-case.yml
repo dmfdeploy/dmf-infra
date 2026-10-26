@@ -19,7 +19,7 @@
 - name: Case {{ harden_case.value | to_json }} — assert the outcome
   ansible.builtin.assert:
     that: >-
-      (_harden_case_refused_by == 'Refuse a controller address that is not plain addresses or CIDRs')
+      (_harden_case_refused_by in harden_validation_tasks)
       if (harden_case.refused | default(false))
       else (_harden_case_refused_by == '' and _harden_effective_ignoreip == harden_case.want)
     fail_msg: >-

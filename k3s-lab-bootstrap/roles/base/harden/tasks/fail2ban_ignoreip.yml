@@ -26,23 +26,67 @@
 
 # The address is written into jail.local verbatim, so anything but plain
 # addresses and CIDRs could add or change jail settings (a newline starts a
-# new directive). \A and \Z anchor the whole string; $ would also match
-# before a trailing newline.
-- name: Refuse a controller address that is not plain addresses or CIDRs
+# new directive). This first check fixes the shape: address characters only,
+# entries separated by single spaces. \A and \Z anchor the whole string; $
+# would also match before a trailing newline.
+- name: Refuse a controller address with characters an address cannot hold
   ansible.builtin.assert:
     that: >-
       _harden_controller_address | length == 0 or
-      _harden_controller_address is regex('\A' ~ _harden_addr_re ~ '( ' ~ _harden_addr_re ~ ')*\Z')
+      _harden_controller_address is regex('\A[0-9A-Fa-f.:/]+( [0-9A-Fa-f.:/]+)*\Z')
     fail_msg: >-
       The controller address {{ _harden_controller_address | to_json }} for
       {{ inventory_hostname }} is not a space-separated list of IPv4/IPv6
       addresses or CIDRs. Check harden_fail2ban_controller_address.
     quiet: true
-  vars:
-    _harden_ipv4_re: '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}'
-    _harden_ipv6_re: '[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){1,7}(:{{ _harden_ipv4_re }})?'
-    _harden_addr_re: >-
-      ({{ _harden_ipv4_re }}(/(3[0-2]|[12]?[0-9]))?|{{ _harden_ipv6_re }}(/(12[0-8]|1[01][0-9]|[1-9]?[0-9]))?)
+
+# The shape check cannot tell valid IPv6 from strings like 1::2::3, so each
+# entry is parsed with Python's ipaddress on the controller (no collection or
+# library needed, and nothing new on the nodes). A zone ID (fe80::1%eth0)
+# names an interface on the controller, which means nothing to fail2ban on
+# the node, so it is refused even though ipaddress accepts it. A /0 prefix
+# covers every address of its family, so exempting it would switch fail2ban
+# off for that family; the parsed prefix length decides, so every spelling
+# (0.0.0.0/0, ::/00, 0:0:0:0:0:0:0:0/0, 192.0.2.1/0) is caught.
+- name: Parse each controller address entry on the controller
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_playbook_python }}"
+      - -I
+      - -c
+      - |
+        import ipaddress, sys
+        bad = []
+        for entry in sys.argv[1].split(" "):
+            try:
+                if "%" in entry:
+                    raise ValueError(entry)
+                if "/" in entry:
+                    if ipaddress.ip_network(entry, strict=False).prefixlen == 0:
+                        raise ValueError(entry)
+                else:
+                    ipaddress.ip_address(entry)
+            except ValueError:
+                bad.append(entry)
+        print(" ".join(bad))
+      - "{{ _harden_controller_address }}"
+  delegate_to: localhost
+  become: false
+  check_mode: false
+  changed_when: false
+  register: harden_controller_address_parse
+  when: _harden_controller_address | length > 0
+
+- name: Refuse a controller address that is not valid IPv4/IPv6 syntax
+  ansible.builtin.assert:
+    that: _harden_controller_address | length == 0 or harden_controller_address_parse.stdout == ''
+    fail_msg: >-
+      The controller address {{ _harden_controller_address | to_json }} for
+      {{ inventory_hostname }} has entries that are not valid IPv4/IPv6
+      addresses or CIDRs, or that cover a whole address family (/0):
+      {{ harden_controller_address_parse.stdout | default('') }}.
+      Check harden_fail2ban_controller_address.
+    quiet: true
 
 # A jail without the controller can ban the run that is configuring it, so
 # stop here rather than render a loopback-only ignoreip.
