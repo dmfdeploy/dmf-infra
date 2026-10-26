@@ -531,24 +531,6 @@
           name: awx
           namespace: awx
 
-- name: Remove legacy AWX controller pod-manager binding from NMOS
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: absent
-    api_version: rbac.authorization.k8s.io/v1
-    kind: RoleBinding
-    name: awx-controller-pod-manager
-    namespace: nmos
-
-- name: Remove legacy AWX controller pod-manager role from NMOS
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: absent
-    api_version: rbac.authorization.k8s.io/v1
-    kind: Role
-    name: awx-job-pod-manager
-    namespace: nmos
-
 # ── MXL catalog namespace + launcher grants (dmfdeploy/dmfdeploy#17) ────────
 # The catalog Container Group keeps running EE pods in the nmos namespace
 # under the nmos-cpp-launcher SA; MXL workloads deploy into the mxl namespace,
@@ -1981,6 +1963,24 @@
       mismatched request here means the L3 capacity preflight is reading
       the wrong number for this single constrained node.
   run_once: true
+
+- name: Remove legacy AWX controller pod-manager binding from NMOS
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    name: awx-controller-pod-manager
+    namespace: nmos
+
+- name: Remove legacy AWX controller pod-manager role from NMOS
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: Role
+    name: awx-job-pod-manager
+    namespace: nmos
 
 - name: Lookup existing catalog job templates
   ansible.builtin.uri:
