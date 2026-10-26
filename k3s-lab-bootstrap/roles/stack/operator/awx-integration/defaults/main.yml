@@ -765,11 +765,12 @@ awx_infra_job_templates:
     ask_variables_on_launch: true
 
 # ── Shared DMF AWX Execution Environment + Container Group (ADR-0025) ──────
-# Per ADR-0025 §8.7(b), media catalog launchers run as AWX EE pods in the
-# target namespace through a dedicated Container Group. The Container Group
-# overrides pod metadata.namespace to `nmos` and uses the `nmos-cpp-launcher`
-# ServiceAccount created by awx-integration tasks.
+# Per ADR-0025 §8.7(b), media catalog launchers run as AWX EE pods in a
+# protected namespace. Function namespaces cannot select this ServiceAccount;
+# their narrowly scoped RoleBindings name it as a cross-namespace subject.
 awx_dmf_catalog_cg_display_name: "DMF Catalog Container Group"
+awx_dmf_catalog_namespace: dmf-catalog
+awx_dmf_catalog_service_account: dmf-catalog-launcher
 
 # Single-node facility: one catalog lifecycle job at a time on the
 # dmf-catalog-cg queue (umbrella #254; console-side lock is dmf-cms#40,
