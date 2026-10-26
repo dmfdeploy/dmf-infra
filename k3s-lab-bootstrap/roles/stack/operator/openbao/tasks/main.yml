@@ -261,6 +261,19 @@
          else {} }}
   no_log: true
 
+- name: Reject retained root-token material in existing break-glass JSON
+  ansible.builtin.assert:
+    that:
+      - >-
+        existing_breakglass | dict2items
+        | selectattr('key', 'search', '(?i)(root.*token|token.*root)')
+        | list | length == 0
+    fail_msg: >-
+      Existing break-glass JSON contains a root-token field. Remove the
+      bootstrap root-token artifact through the documented recovery procedure
+      before re-running OpenBao bootstrap.
+  no_log: true
+
 - name: Preload unseal keys from existing break-glass JSON (rerun path)
   ansible.builtin.set_fact:
     openbao_unseal_keys_hex: "{{ existing_breakglass.unseal_keys_hex | default([]) }}"
@@ -363,16 +376,6 @@
     path: "{{ openbao_key_path | dirname }}"
     state: directory
     mode: "0700"
-  delegate_to: localhost
-  become: false
-  when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)
-  no_log: true
-
-- name: Save Shamir keys to local file
-  ansible.builtin.copy:
-    content: "{{ openbao_init_raw.stdout }}"
-    dest: "{{ openbao_key_path }}.json"
-    mode: "0600"
   delegate_to: localhost
   become: false
   when: openbao_init_raw is defined and openbao_init_raw.changed | default(false)

@@ -305,9 +305,10 @@
       ansible.builtin.assert:
         that:
           - openbao_dispose_root_token | default(true) | bool
-          - _bootstrap_convergence_breakglass.root_token is not defined
-          - _bootstrap_convergence_breakglass.initial_root_token is not defined
-          - _bootstrap_convergence_breakglass.openbao_root_token is not defined
+          - >-
+            _bootstrap_convergence_breakglass | dict2items
+            | selectattr('key', 'search', '(?i)(root.*token|token.*root)')
+            | list | length == 0
         fail_msg: >-
           ADR-0028 D2 convergence failed: root token material is still retained
           or root-token disposal is disabled. Revoke/remove bootstrap root
