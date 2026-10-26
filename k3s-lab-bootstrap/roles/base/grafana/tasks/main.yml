@@ -88,15 +88,14 @@
     name: grafana
     repo_url: "{{ grafana_helm_repo }}"
 
-# Two provider-keyed ConfigMaps (dmf + system) in one multi-doc template
-# (dmfdeploy/dmfdeploy#166 WP-G).
+# Two provider-keyed ConfigMaps (dmf + system) in one multi-doc template.
 - name: Create dashboard ConfigMaps (dmf + system folders)
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
     template: configmap-dashboards.yml.j2
 
-# Pre-WP-G envs carried a single 'custom' provider fed by this ConfigMap;
+# Older envs carried a single 'custom' provider fed by this ConfigMap;
 # it is unreferenced after the provider split — remove so the lab-era
 # "Kubernetes" folder cannot resurface.
 - name: Remove legacy custom dashboards ConfigMap

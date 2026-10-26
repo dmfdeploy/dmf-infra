@@ -19,7 +19,7 @@
       ansible.builtin.set_fact:
         _cms_catalog_parsed: "{{ _cms_catalog_slurp.content | b64decode | from_yaml }}"
 
-    # umbrella #201 WP3a runtime contract: topology_params instance files
+    # Runtime contract (umbrella #201): topology_params instance files
     # (topology_ref targets) live in the same catalog dir and MUST reach the
     # pod's mounted catalog alongside the entries — the console's fail-closed
     # loader refuses a topology deploy whose ref'd file is absent. The

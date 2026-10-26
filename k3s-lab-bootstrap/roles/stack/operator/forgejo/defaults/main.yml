@@ -97,7 +97,7 @@ forgejo_resources:
     cpu: 25m
     memory: 192Mi
 
-# umbrella #299 WP1: the chart's own initContainers default is cpu 100m
+# The chart's own initContainers default is cpu 100m
 # (charts/forgejo/values.yaml initContainers.resources), and the scheduler
 # charges a pod max(sum(app), max(init)) — so those inits, not the 25m app
 # container, were setting forgejo's entire 100m pod request. The three that

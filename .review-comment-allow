@@ -3,3 +3,8 @@
 # Entries go away as the lines they cover change; add one only for a mention
 # that is not review history.
 bin/working-model-digest.sh:codex/qwen don't run hooks  # names the agents this hook cannot reach; not review history
+k3s-lab-bootstrap/roles/base/grafana/files/dmf-are-we-ok.json:(dmfdeploy/dmfdeploy#166 WP-E)  # JSON __comment string in a dashboard file (data, not a comment); editing it changes the dashboard file
+k3s-lab-bootstrap/roles/base/grafana/files/dmf-platform-services.json:WP-G / Amendment A §2  # JSON __comment string in a dashboard file (data, not a comment); editing it changes the dashboard file
+k3s-lab-bootstrap/roles/stack/operator/awx-integration/defaults/main.yml:umbrella #201 WP4b, spec §6.2  # AWX job template description string (data, not a comment); editing it changes the registered template
+k3s-lab-bootstrap/roles/stack/operator/awx-integration/tasks/main.yml:silently defeat the umbrella dmfdeploy/dmfdeploy#202 WP0 ee_reserve  # assert fail_msg string (data, not a comment); editing it changes the message
+k3s-lab-bootstrap/roles/stack/operator/awx-integration/tasks/main.yml:dmfdeploy/dmfdeploy#202 WP0 ee_reserve contract  # assert fail_msg string (data, not a comment); editing it changes the message

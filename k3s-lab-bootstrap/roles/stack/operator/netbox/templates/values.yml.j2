@@ -154,7 +154,7 @@ netbox:
   resources:
 {{ netbox_resources | to_nice_yaml(indent=2) | indent(4, true) }}
 
-  # umbrella #299 WP1: the init-dirs init container, previously left on the
+  # The init-dirs init container, previously left on the
   # chart's `nano` resourcesPreset at cpu 100m. Passes the FULL resources
   # object — an explicit block replaces the preset wholesale.
   init:
@@ -167,7 +167,7 @@ netbox:
     resources:
 {{ netbox_worker_resources | to_nice_yaml(indent=2) | indent(6, true) }}
 
-    # umbrella #299 WP1: the wait-for-backend init container, previously
+    # The wait-for-backend init container, previously
     # left on the chart's `nano` resourcesPreset at cpu 100m — which set
     # this pod's whole request over a 10m app container. Full object, same
     # preset-replacement reason as above.

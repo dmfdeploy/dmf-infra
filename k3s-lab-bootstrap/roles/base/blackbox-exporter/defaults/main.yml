@@ -10,7 +10,7 @@ blackbox_fullname_override: blackbox
 # Blackbox probe modules — must match the NetBox choice set
 # (dmf_blackbox_probe_modules). Six modules cover the DMF probe lanes.
 blackbox_modules:
-  # In-cluster DNS health lane (dmfdeploy/dmfdeploy#166 WP-D): the probe
+  # In-cluster DNS health lane (dmfdeploy/dmfdeploy#166): the probe
   # TARGET is the DNS server (CoreDNS), which resolves query_name below.
   dns:
     prober: dns
@@ -69,7 +69,7 @@ blackbox_allow_icmp: true
 # runs multiple prober goroutines, but well under Prometheus.
 blackbox_resources:
   requests:
-    # umbrella #299 WP1: 50m -> 10m. Measured p95 1.0m / max 1.1m — the
+    # 50m -> 10m. Measured p95 1.0m / max 1.1m — the
     # prober goroutines are almost entirely I/O wait. The 100m limit below
     # is untouched, so a probe fan-out can still burst 10x its request.
     cpu: 10m

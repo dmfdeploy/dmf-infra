@@ -200,7 +200,7 @@ awx_catalog_projects:
     # `main` — JT registrations (awx_catalog_job_templates below) are
     # audited against ONE specific playbook-contract snapshot; letting
     # the project float on main while the JTs are registration-frozen is
-    # exactly the mechanism that let #277's drift (a WP3 var rename the
+    # exactly the mechanism that let #277's drift (a var rename the
     # JTs never picked up) escape silently. Bump this tag deliberately,
     # in lock-step with the next JT contract audit — never let it drift
     # back to `main`.
@@ -477,10 +477,10 @@ awx_catalog_projects:
 # umbrella #277 audit (2026-07-24, release-alignment PR): every entry below
 # re-verified against its target playbook's ACTUAL var contract in
 # dmf-runbooks origin/main — #277's live incident (job 165) was exactly a
-# JT registration drifted silently out of step with a WP3-era playbook
+# JT registration drifted silently out of step with a playbook
 # rename. Findings: media-launch-nmos-cpp/-crosspoint were pinning chart
 # version via a var name (nmos_cpp_chart_version/crosspoint_chart_version)
-# neither playbook has read since the WP3 R6a single-source rename to
+# neither playbook has read since the single-source rename to
 # l3_chart_version — both fixed (renamed the extra_vars KEY, not the
 # awx-integration var it reads from). media-launch-mxl-videotestsrc/
 # -videotest-view were passing the dead mxl_release alias instead of
@@ -507,7 +507,7 @@ awx_catalog_job_templates:
       # Pin the chart version the launcher pulls from Zot (overrides the
       # launcher's hardcoded default, which lags behind chart bumps without a
       # Forgejo republish). 0.1.2 adds the registry query-ws :81 Service port.
-      # umbrella #277: the WP3 R6a single-source rename means
+      # umbrella #277: the single-source rename means
       # launch-nmos-cpp.yml's OWN var is l3_chart_version, not
       # nmos_cpp_chart_version — this JT used to pass the latter, which the
       # playbook never reads at all (a silently inert extra_var; every
@@ -547,7 +547,7 @@ awx_catalog_job_templates:
       # launcher's hardcoded default, which lags chart bumps without a Forgejo
       # republish). 0.1.1 carries the wss mixed-content fix (image + chart).
       # umbrella #277: same drift class as media-launch-nmos-cpp — the
-      # playbook's own var is l3_chart_version (WP3 R6a rename), not
+      # playbook's own var is l3_chart_version (single-source rename), not
       # crosspoint_chart_version, which launch-nmos-crosspoint.yml never
       # reads at all. Verified against dmf-runbooks origin/main.
       l3_chart_version: "{{ nmos_crosspoint_chart_version }}"
@@ -570,13 +570,13 @@ awx_catalog_job_templates:
       - dmf-netbox-catalog-token
     extra_vars:
       mxl_role: source
-      # umbrella #277: WP3 R6a single-sourced identity to l3_release/
+      # umbrella #277: identity is single-sourced to l3_release/
       # l3_catalog_key — launch-mxl-fabrics-demo.yml's own mxl_release is
       # now a COSMETIC alias derived FROM l3_release (mxl_release: "{{
       # l3_release }}" in the playbook's own vars:), so an extra_var here
       # named mxl_release would silently do nothing for identity (it has
       # NO effect on which release/NetBox record actually gets mutated —
-      # verified against dmf-runbooks origin/main + its own R6b comment).
+      # verified against dmf-runbooks origin/main + its own comment).
       # This was the live #277 bug for the SIBLING view JT below (identity
       # fell back to this playbook's own default, mxl-videotestsrc, while
       # mxl_role=view applied — an in-place role flip of the wrong
@@ -733,7 +733,7 @@ awx_catalog_job_templates:
       # vault_netbox_catalog_token (its own header already anticipated this
       # kind of per-launcher token isolation).
 
-# ── Infra job templates (dmfdeploy/dmfdeploy#166 WP-F) ─────────────────────
+# ── Infra job templates (dmfdeploy/dmfdeploy#166) ─────────────────────────
 # Monitoring-apply lane: runs dmf-infra playbooks against hosts:k3s_control
 # over SSH — the same execution model as eso-openbao-health-check, NOT the
 # media catalog lane. These JTs therefore use AWX's default execution queue
@@ -778,7 +778,7 @@ awx_dmf_catalog_cg_display_name: "DMF Catalog Container Group"
 awx_dmf_catalog_cg_max_concurrent_jobs: 1
 
 # These are the EE job pod's scheduling claims on the single constrained
-# node — the L3 capacity preflight (umbrella dmfdeploy/dmfdeploy#202 WP0)
+# node — the L3 capacity preflight (umbrella dmfdeploy/dmfdeploy#202)
 # reads them as its ee_reserve; absent/zero requests would make the
 # preflight fall back to a blind configured floor (L3 plan §3.2(b)).
 # Requests only, no limits. The pre-apply assert in tasks/main.yml only

@@ -43,11 +43,11 @@
         - sandbox
         - release-profile
 
-    # WP1S Phase 3 — AWX single-node fit. Gated on the AWX profile (not just
+    # AWX single-node fit. Gated on the AWX profile (not just
     # "sandbox") so the gate is load-bearing: an env that overrides
     # dmf_awx_profile away from single-node-low-concurrency gets lab sizing.
-    # Values are conservative FLOORS — Phase C adjusts them once from the
-    # observed footprint of the first real catalog-loop rollout (feeds WP5).
+    # Values are conservative FLOORS — Adjust them once from the
+    # observed footprint of the first real catalog-loop rollout.
     # Lab/cloud never import this prelude, so their AWX CR is untouched.
     - name: Apply AWX single-node-low-concurrency fit overrides
       ansible.builtin.set_fact:
@@ -105,7 +105,7 @@
         _awx_fit_task:
           requests: {cpu: 150m, memory: 1Gi}
           limits: {cpu: 1500m, memory: 2Gi}
-        # umbrella #299 WP1: cpu request 50m -> 25m. Measured p95 2.6m /
+        # cpu request 50m -> 25m. Measured p95 2.6m /
         # max 21.7m against the 1000m limit below, which is untouched —
         # migration/vacuum bursts keep their full headroom. Memory request
         # and both limits unchanged.

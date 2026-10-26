@@ -1,7 +1,7 @@
 ---
 # ---------------------------------------------------------------------------
 # playbooks/321-local-ca-trust.yml
-# Local-CA lane (dmf_tls_mode == 'local-ca', e.g. sandbox-single-node / WP1S):
+# Local-CA lane (dmf_tls_mode == 'local-ca', e.g. sandbox-single-node):
 # wire the name resolution + trust that the cloud lane gets for free from
 # public DNS + a publicly-trusted ACME cert. Three pieces:
 #
