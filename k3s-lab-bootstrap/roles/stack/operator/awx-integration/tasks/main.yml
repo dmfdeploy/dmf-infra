@@ -642,7 +642,7 @@
           name: mxl-view
           namespace: mxl
 
-# ── L3 launcher capacity-preflight read RBAC (umbrella #202 WP3) ───────────
+# ── L3 launcher capacity-preflight read RBAC (umbrella #202) ───────────
 # The L3 launcher first-play (dmf-runbooks roles/l3_run_guard) recomputes
 # node allocatable + all-namespace pod requests IN-CLUSTER, scheduler-
 # accurate, before every catalog deploy/rollback — the launcher SA's
@@ -2100,7 +2100,7 @@
 # end operator directly; (2) dmf-cms's console-side deploy endpoint is the
 # only launcher-facing caller and validates + injects exactly one key,
 # workload_slug, nothing else; (3) this flag is a hard prerequisite for the
-# v0.2b WP3a topology_params seam (umbrella dmfdeploy/dmfdeploy#201, which
+# v0.2b topology_params seam (umbrella dmfdeploy/dmfdeploy#201, which
 # already carries a spec-gap comment naming this PR) — there is no path to
 # that work without it.
 - name: Reconcile ask_variables_on_launch on existing catalog job templates (#239)
@@ -2888,7 +2888,7 @@
   run_once: true
 
 # ---------------------------------------------------------------------------
-# Infra job templates (dmfdeploy/dmfdeploy#166 WP-F): monitoring-apply lane.
+# Infra job templates (dmfdeploy/dmfdeploy#166): monitoring-apply lane.
 # SSH-to-control-node model (like eso-openbao-health-check): default AWX
 # execution queue + awx-control-node-ssh Machine credential. Deliberately NO
 # dmf-catalog-cg attach — that Container Group pins pods to the nmos

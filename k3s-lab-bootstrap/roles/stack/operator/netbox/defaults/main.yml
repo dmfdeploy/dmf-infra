@@ -100,7 +100,7 @@ netbox_unit_processes_spare: "{{ 1 if (dmf_release_profile | default('')) == 'sa
 # netbox_postgresql_resources/netbox_valkey_resources below.
 netbox_resources:
   requests:
-    # umbrella #299 WP1: 100m -> 50m. Measured p95 11.5m / max 127m against
+    # 100m -> 50m. Measured p95 11.5m / max 127m against
     # the 1000m limit below, which is untouched — only the scheduling
     # reservation comes down, the burst headroom is unchanged. Trimmed in
     # lockstep with netbox_init_resources: the scheduler charges a pod
@@ -178,7 +178,7 @@ netbox_worker_resources:
     cpu: 10m
     memory: 256Mi
 
-# umbrella #299 WP1: the two INIT containers the chart renders had never
+# The two INIT containers the chart renders had never
 # been wired to a role knob at all, so both silently fell through to the
 # bitnami-common `resourcesPreset: "nano"` — cpu 100m each. Since the
 # scheduler charges a pod max(sum(app), max(init)), that 100m was setting

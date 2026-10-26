@@ -224,7 +224,7 @@ awx_task_resource_requirements:
     cpu: 1000m
     memory: 2048Mi
 
-# Single-node sandbox fit (WP1S Phase 3, dmf_awx_profile ==
+# Single-node sandbox fit (dmf_awx_profile ==
 # single-node-low-concurrency). Both UNDEFINED by default so the lab/cloud
 # rendered CR is unchanged; the sandbox profile prelude
 # (bootstrap-sandbox-profile.yml) sets them only when the fit profile is

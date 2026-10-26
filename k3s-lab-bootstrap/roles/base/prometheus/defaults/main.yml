@@ -29,7 +29,7 @@ prometheus_helm_chart_version: "25.8.0"
 # Memory limit unchanged.
 prometheus_resources:
   requests:
-    # umbrella #299 WP1: 100m -> 35m. Measured p95 11.5m / max 49m; only the
+    # 100m -> 35m. Measured p95 11.5m / max 49m; only the
     # scheduling reservation comes down, burst headroom is the CPU limit below.
     cpu: 35m
     memory: 1024Mi
@@ -161,7 +161,7 @@ prometheus_alert_awx_cr_divergence_for: 1m
 # brings the Deployments back in line with the CR (dmfdeploy/dmfdeploy#540).
 prometheus_alert_awx_cr_divergence_runbook_url: "https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/runbooks/awx-operator-restart.md"
 
-# Static blackbox probe lanes (dmfdeploy/dmfdeploy#166 WP-D) — the four probe
+# Static blackbox probe lanes (dmfdeploy/dmfdeploy#166) — the four probe
 # lanes from plan D5 that have NO NetBox object (ADR-0038 covers platform
 # apps via dmf-promsd; these are infrastructure anchors below/outside that
 # model). Rendered into the `dmf-static-probes` job in scrape_configs.yml.j2;

@@ -6,7 +6,7 @@
 #
 # Purpose: precompute the signals the are-we-ok verdict pane and the alert
 # suite consume, so dashboard queries stay cheap on a saturated node and
-# alert expressions stay stable (plan §5 WP-B).
+# alert expressions stay stable (plan §5).
 #
 # Cross-env caveat (plan §2b): the rpi:* thermal/fan series exist only on
 # bare-metal Pi nodes — on VM/cloud envs node-exporter exposes no hwmon/

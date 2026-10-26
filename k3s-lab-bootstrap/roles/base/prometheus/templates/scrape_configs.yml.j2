@@ -9,7 +9,7 @@
      2. `netbox-scrape` / `netbox-probe` / `netbox-snmp` http_sd jobs appended
         at the end — the ADR-0038 NetBox-driven SD lanes via dmf-promsd.
      3. `dmf-static-probes` appended last — static blackbox lanes for
-        non-NetBox infrastructure anchors (dmfdeploy/dmfdeploy#166 WP-D),
+        non-NetBox infrastructure anchors (dmfdeploy/dmfdeploy#166),
         driven by prometheus_static_probe_targets in defaults.
    Helm replaces lists wholesale — there's no partial-merge for scrape_configs
    — so vendoring is the cleanest way to patch/extend entries while
@@ -353,7 +353,7 @@
         - source_labels:
           - __param_target
           target_label: instance
-{# dmf-static-probes (dmfdeploy/dmfdeploy#166 WP-D): blackbox lanes for
+{# dmf-static-probes (dmfdeploy/dmfdeploy#166): blackbox lanes for
    anchors with no NetBox object (internet/DNS/ingress/sd-pipeline; plan D5).
    Per-target `module` label is relabeled to __param_module so one job mixes
    icmp/dns/tcp/http probes; module/lane/probe_name remain as target labels

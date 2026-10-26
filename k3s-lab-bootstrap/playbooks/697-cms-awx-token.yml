@@ -36,8 +36,8 @@
     # "Reconcile catalog launcher Execute grants" block and
     # dmfdeploy/dmfdeploy#122.
     #
-    # umbrella #201 WP4b: added the `switch` verb proactively for
-    # media-switch-source (the WP4/WP5 SwitchSourceCommand actuator's own
+    # The `switch` verb is granted proactively for
+    # media-switch-source (the SwitchSourceCommand actuator's own
     # JT) — closing the exact class of gap umbrella #279 named: a job
     # template AWX can launch but the console's own credential grant never
     # covers fails as a mystery 404 in production, not at build time.

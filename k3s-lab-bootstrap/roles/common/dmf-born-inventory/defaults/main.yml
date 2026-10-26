@@ -149,7 +149,7 @@ dmf_born_inventory_apps:
     exposure: public
     oidc_client_id: dmf-cms
 
-# ── Monitoring stamping on ipam.Service (WP7) ─────────────────────────────
+# ── Monitoring stamping on ipam.Service ─────────────────────────────
 # Born-inventory stamps monitoring tags + probe_module custom field on each
 # registered L6 app service so the dmf-promsd adapter can discover them via
 # NetBox-SD.

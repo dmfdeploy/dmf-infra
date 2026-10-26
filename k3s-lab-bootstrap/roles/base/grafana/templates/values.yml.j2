@@ -68,7 +68,7 @@ datasources:
         url: http://loki-gateway.{{ grafana_namespace }}.svc.cluster.local
         access: proxy
 
-# Dashboard providers (dmfdeploy/dmfdeploy#166 WP-G / Amendment A): the chart
+# Dashboard providers (dmfdeploy/dmfdeploy#166): the chart
 # keys external-ConfigMap dashboards PER PROVIDER (dashboardsConfigMaps.<name>
 # mounted at /var/lib/grafana/dashboards/<name>) — two provider/ConfigMap
 # pairs, no sidecar. `foldersFromFilesStructure` is a sidecar-provider knob

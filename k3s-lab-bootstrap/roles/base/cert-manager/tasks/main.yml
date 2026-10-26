@@ -268,8 +268,8 @@
 # ---------------------------------------------------------------------------
 # Local CA lane (dmf_tls_mode == 'local-ca'): no public DNS + ACME. Build a
 # self-signed root CA and issue the cluster default cert from it, then point
-# Traefik's default TLSStore at it. Used by the sandbox-single-node profile
-# (WP1S): host-based apps share one apex+wildcard default cert on the collapsed
+# Traefik's default TLSStore at it. Used by the sandbox-single-node profile,
+# where host-based apps share one apex+wildcard default cert on the collapsed
 # single Traefik, and in-cluster OIDC consumers trust the same CA. The cloud/lab
 # ACME tasks above are gated on cert_manager_acme_email; this assert enforces
 # the two branches stay mutually exclusive (both would otherwise manage the same

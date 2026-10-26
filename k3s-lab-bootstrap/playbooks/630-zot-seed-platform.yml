@@ -230,7 +230,7 @@
     # 0.4.2 pacing-fix build (umbrella dmfdeploy/dmfdeploy#308) — same tag,
     # new digest, now a BuildKit MANIFEST LIST (the original was
     # single-manifest); see zot_seed_images below for the mirror-side detail.
-    # 0.4.0 (umbrella dmfdeploy/dmfdeploy#201 WP2, dmf-media#21) adds the
+    # 0.4.0 (dmf-media#21) adds the
     # topology parameterisation + selection-gated supervisor (per-source
     # flow.id/pattern/sourceId, active-source gate) — digest from the GHCR
     # publish of the merged chart. 0.3.1 (dmfdeploy/dmfdeploy#258, dmf-media#19) was the

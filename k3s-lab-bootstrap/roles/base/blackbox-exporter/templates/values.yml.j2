@@ -10,7 +10,7 @@ resources:
 
 # Mirrors the chart's default hardened securityContext, adding only NET_RAW
 # when the icmp lanes are enabled (chart default drops ALL, which breaks the
-# icmp prober with no error at deploy time — dmfdeploy/dmfdeploy#166 WP-D).
+# icmp prober with no error at deploy time).
 securityContext:
   runAsUser: 1000
   runAsGroup: 1000

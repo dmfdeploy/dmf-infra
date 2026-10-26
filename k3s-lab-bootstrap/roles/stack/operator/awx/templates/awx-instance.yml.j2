@@ -197,7 +197,7 @@ spec:
 # When/if this is revisited, write a new task in awx-integration that PATCHes
 # the InstanceGroup directly via the AWX API. Do NOT re-enable this fragment.
 #
-# SAME BLIND SPOT — job concurrency (WP1S Phase 3, single-node fit):
+# SAME BLIND SPOT — job concurrency (single-node fit):
 # `max_concurrent_jobs` and `max_forks` are fields on the InstanceGroup /
 # ContainerGroup, NOT AWX Django settings — so they CANNOT be set via
 # extra_settings (SCHEDULE_MAX_JOBS / DEFAULT_EXECUTION_QUEUE_MAX_CONCURRENT_JOBS

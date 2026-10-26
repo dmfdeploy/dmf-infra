@@ -53,7 +53,7 @@ cert_manager_openbao_ip_addresses:
 cert_manager_openbao_wait_retries: 60
 cert_manager_openbao_wait_delay: 5
 
-# --- Local CA lane (dmf_tls_mode == 'local-ca'; sandbox-single-node / WP1S) ---
+# --- Local CA lane (dmf_tls_mode == 'local-ca'; sandbox-single-node) ---
 # When there is no public DNS + ACME (offline / sandbox), build a self-signed
 # root CA in-cluster and issue the Traefik default cert from it. A single
 # apex + wildcard cert in the default TLSStore covers every host-based app on
