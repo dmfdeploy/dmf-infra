@@ -381,7 +381,20 @@
       or an explicit awx_integration_admin_password.
   no_log: true
 
-- name: Ensure NMOS namespace exists for AWX catalog launcher pods
+- name: Ensure protected catalog launcher namespace exists
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ awx_dmf_catalog_namespace }}"
+        labels:
+          dmf.layer: "5"
+          dmf.component: catalog-launcher
+
+- name: Ensure NMOS namespace exists for catalog workloads
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
@@ -394,7 +407,7 @@
           dmf.layer: "5"
           dmf.function: nmos-cpp
 
-- name: Ensure NMOS AWX launcher service account exists
+- name: Ensure protected AWX launcher service account exists
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
@@ -402,12 +415,12 @@
       apiVersion: v1
       kind: ServiceAccount
       metadata:
-        name: nmos-cpp-launcher
-        namespace: nmos
+        name: "{{ awx_dmf_catalog_service_account }}"
+        namespace: "{{ awx_dmf_catalog_namespace }}"
         labels:
-          app.kubernetes.io/name: nmos-cpp
+          app.kubernetes.io/name: dmf-catalog-launcher
           app.kubernetes.io/component: awx-launcher
-          dmf.function: nmos-cpp
+          dmf.component: catalog-launcher
 
 - name: Ensure NMOS AWX launcher Role exists
   kubernetes.core.k8s:
@@ -466,10 +479,10 @@
         name: nmos-cpp-launcher
       subjects:
         - kind: ServiceAccount
-          name: nmos-cpp-launcher
-          namespace: nmos
+          name: "{{ awx_dmf_catalog_service_account }}"
+          namespace: "{{ awx_dmf_catalog_namespace }}"
 
-- name: Ensure AWX controller can create EE pods in nmos namespace
+- name: Ensure AWX controller can create EE pods in protected namespace
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
@@ -478,9 +491,9 @@
       kind: Role
       metadata:
         name: awx-job-pod-manager
-        namespace: nmos
+        namespace: "{{ awx_dmf_catalog_namespace }}"
         labels:
-          dmf.function: nmos-cpp
+          dmf.component: catalog-launcher
           adr: "0025"
       rules:
         - apiGroups: [""]
@@ -496,7 +509,7 @@
           resources: ["pods/attach"]
           verbs: ["create"]
 
-- name: Bind awx controller SA to awx-job-pod-manager role in nmos
+- name: Bind AWX controller SA to pod-manager role in protected namespace
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
@@ -505,9 +518,9 @@
       kind: RoleBinding
       metadata:
         name: awx-controller-pod-manager
-        namespace: nmos
+        namespace: "{{ awx_dmf_catalog_namespace }}"
         labels:
-          dmf.function: nmos-cpp
+          dmf.component: catalog-launcher
           adr: "0025"
       roleRef:
         apiGroup: rbac.authorization.k8s.io
@@ -517,6 +530,24 @@
         - kind: ServiceAccount
           name: awx
           namespace: awx
+
+- name: Remove legacy AWX controller pod-manager binding from NMOS
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    name: awx-controller-pod-manager
+    namespace: nmos
+
+- name: Remove legacy AWX controller pod-manager role from NMOS
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: Role
+    name: awx-job-pod-manager
+    namespace: nmos
 
 # ── MXL catalog namespace + launcher grants (dmfdeploy/dmfdeploy#17) ────────
 # The catalog Container Group keeps running EE pods in the nmos namespace
@@ -598,8 +629,8 @@
         name: mxl-launcher
       subjects:
         - kind: ServiceAccount
-          name: nmos-cpp-launcher
-          namespace: nmos
+          name: "{{ awx_dmf_catalog_service_account }}"
+          namespace: "{{ awx_dmf_catalog_namespace }}"
 
 - name: Ensure MXL status-sidecar node-reader ClusterRole exists
   kubernetes.core.k8s:
@@ -700,8 +731,8 @@
         name: dmf-l3-preflight-reader
       subjects:
         - kind: ServiceAccount
-          name: nmos-cpp-launcher
-          namespace: nmos
+          name: "{{ awx_dmf_catalog_service_account }}"
+          namespace: "{{ awx_dmf_catalog_namespace }}"
 
 - name: Ingress readiness gate — Traefik + AWX
   ansible.builtin.include_role:
@@ -1788,9 +1819,9 @@
       apiVersion: v1
       kind: Pod
       metadata:
-        namespace: nmos
+        namespace: "{{ awx_dmf_catalog_namespace }}"
       spec:
-        serviceAccountName: nmos-cpp-launcher
+        serviceAccountName: "{{ awx_dmf_catalog_service_account }}"
         automountServiceAccountToken: true
         containers:
           - name: worker
