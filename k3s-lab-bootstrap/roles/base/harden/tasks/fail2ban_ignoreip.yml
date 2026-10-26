@@ -1,0 +1,61 @@
+---
+- name: Note whether Ansible runs on the node itself
+  ansible.builtin.set_fact:
+    _harden_connection_is_local: "{{ (ansible_connection | default('ssh')) == 'local' }}"
+
+# The play gathers facts under become, and sudo resets the environment, so
+# ansible_env lacks SSH_CONNECTION whenever Ansible connects as a non-root
+# user (the local-CA profiles). Read it as the connecting user instead.
+- name: Read the controller address from the SSH session
+  ansible.builtin.command: printenv SSH_CONNECTION
+  become: false
+  check_mode: false
+  register: harden_ssh_connection
+  changed_when: false
+  failed_when: harden_ssh_connection.rc not in [0, 1]
+  when:
+    - harden_fail2ban_controller_address | length == 0
+    - not _harden_connection_is_local
+
+- name: Resolve the controller address fail2ban must never ban
+  ansible.builtin.set_fact:
+    _harden_controller_address: >-
+      {{ harden_fail2ban_controller_address
+         if harden_fail2ban_controller_address | length > 0
+         else (harden_ssh_connection.stdout | default('')).split() | first | default('') }}
+
+# The address is written into jail.local verbatim, so anything but plain
+# addresses and CIDRs could add or change jail settings (a newline starts a
+# new directive). \A and \Z anchor the whole string; $ would also match
+# before a trailing newline.
+- name: Refuse a controller address that is not plain addresses or CIDRs
+  ansible.builtin.assert:
+    that: >-
+      _harden_controller_address | length == 0 or
+      _harden_controller_address is regex('\A' ~ _harden_addr_re ~ '( ' ~ _harden_addr_re ~ ')*\Z')
+    fail_msg: >-
+      The controller address {{ _harden_controller_address | to_json }} for
+      {{ inventory_hostname }} is not a space-separated list of IPv4/IPv6
+      addresses or CIDRs. Check harden_fail2ban_controller_address.
+    quiet: true
+  vars:
+    _harden_ipv4_re: '(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}'
+    _harden_ipv6_re: '[0-9A-Fa-f]{0,4}(:[0-9A-Fa-f]{0,4}){1,7}(:{{ _harden_ipv4_re }})?'
+    _harden_addr_re: >-
+      ({{ _harden_ipv4_re }}(/(3[0-2]|[12]?[0-9]))?|{{ _harden_ipv6_re }}(/(12[0-8]|1[01][0-9]|[1-9]?[0-9]))?)
+
+# A jail without the controller can ban the run that is configuring it, so
+# stop here rather than render a loopback-only ignoreip.
+- name: Require the controller address for a remote connection
+  ansible.builtin.assert:
+    that: _harden_connection_is_local or _harden_controller_address | length > 0
+    fail_msg: >-
+      Cannot find the Ansible controller's address on {{ inventory_hostname }}
+      (SSH_CONNECTION is unset), so fail2ban could ban the controller. Set
+      harden_fail2ban_controller_address in the inventory to the address or
+      CIDR the controller connects from.
+    quiet: true
+
+- name: Combine the configured sources with the controller address
+  ansible.builtin.set_fact:
+    _harden_effective_ignoreip: "{{ (harden_fail2ban_ignoreip ~ ' ' ~ _harden_controller_address) | trim }}"

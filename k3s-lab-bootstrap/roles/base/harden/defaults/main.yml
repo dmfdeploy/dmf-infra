@@ -28,7 +28,8 @@ harden_fail2ban_findtime: "10m"
 # appends the Ansible controller's address; add operator admin CIDRs here to
 # exempt them as well. Never put a world-open range here.
 harden_fail2ban_ignoreip: "127.0.0.1/8 ::1"
-# Address or CIDR the Ansible controller connects from. Empty means the role
+# Address or CIDR the Ansible controller connects from (several may be given,
+# space-separated; the play refuses anything else). Empty means the role
 # reads it from the node's SSH session (SSH_CONNECTION). Set it when the
 # controller reaches nodes through a gateway, or when SSH_CONNECTION is not
 # available; the play fails rather than leave the controller bannable.
