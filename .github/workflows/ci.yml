@@ -23,7 +23,7 @@ jobs:
       - name: Install ansible tooling
         run: |
           python3 -m pip install --user --upgrade pip
-          python3 -m pip install --user ansible ansible-lint yamllint
+          python3 -m pip install --user ansible ansible-lint yamllint pytest
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - uses: azure/setup-helm@fe7b79cd5ee1e45176fcad797de68ecaf3ca4814  # v4.2.0
       - name: Install collections
@@ -35,6 +35,8 @@ jobs:
         run: ansible-lint playbooks/ -p
       - name: no secrets in AWX job-template extra_vars (dmfdeploy/dmfdeploy#310)
         run: python3 -m unittest discover -s roles/stack/operator/awx-integration/tests -v
+      - name: AWX autoscale helper regression tests (dmfdeploy/dmfdeploy#396)
+        run: python3 -m pytest roles/stack/operator/awx-autoscale/tests -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
