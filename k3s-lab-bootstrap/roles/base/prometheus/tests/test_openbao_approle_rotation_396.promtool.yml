@@ -1,0 +1,118 @@
+# Rule tests for dmf-promsd's bounded OpenBao AppRole lifecycle metrics.
+# Render alerts.yaml.j2 as described in test_awx_replica_divergence_424.promtool.yml.
+rule_files:
+  - rendered_alerts.yml
+  - ../files/rules/recording.yaml
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_approle_secret_id_expires_at_seconds{role="external-secrets",target="external-secrets"}'
+        values: "30000x20"
+      - series: 'dmf_openbao_approle_secret_id_ttl_seconds{role="external-secrets",target="external-secrets"}'
+        values: "90000x20"
+      - series: 'dmf_openbao_approle_rotation_metadata_available{target="external-secrets"}'
+        values: "1x20"
+    promql_expr_test:
+      - expr: dmf:openbao_approle_rotation_due
+        eval_time: 1m
+        exp_samples:
+          - labels: 'dmf:openbao_approle_rotation_due{role="external-secrets",target="external-secrets"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: OpenBaoAppRoleRotationDue
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              category: security
+              role: external-secrets
+              target: external-secrets
+            exp_annotations:
+              summary: OpenBao AppRole rotation due
+              description: At least two thirds of the active SecretID lifetime has elapsed.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
+
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_approle_rotation_metadata_available{target="external-secrets"}'
+        values: "1x1620"
+      - series: 'dmf_openbao_approle_rotation_latest_run_timestamp_seconds{role="external-secrets",target="external-secrets",kind="manual",outcome="success"}'
+        values: "1x1620"
+      - series: 'dmf_openbao_approle_rotation_last_scheduled_success_seconds{role="external-secrets",target="external-secrets"}'
+        values: "1x1620"
+    alert_rule_test:
+      - eval_time: 27h
+        alertname: OpenBaoAppRoleScheduledRotationHeartbeatMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: security
+              role: external-secrets
+              target: external-secrets
+            exp_annotations:
+              summary: Scheduled rotation heartbeat missing
+              description: No successful scheduled rotation is recorded within 26 hours. Manual runs do not reset this schedule heartbeat.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
+
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_approle_secret_id_expires_at_seconds{role="external-secrets",target="external-secrets"}'
+        values: "518400x20"
+      - series: 'dmf_openbao_approle_secret_id_ttl_seconds{role="external-secrets",target="external-secrets"}'
+        values: "2592000x20"
+      - series: 'dmf_openbao_approle_rotation_metadata_available{target="external-secrets"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: OpenBaoAppRoleSecretIDExpiryWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: security
+              role: external-secrets
+              target: external-secrets
+            exp_annotations:
+              summary: OpenBao AppRole SecretID nearing expiry
+              description: Less than 25% but at least 10% of the active SecretID lifetime remains.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
+
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_approle_secret_id_expires_at_seconds{role="external-secrets",target="external-secrets"}'
+        values: "100000x10"
+      - series: 'dmf_openbao_approle_secret_id_ttl_seconds{role="external-secrets",target="external-secrets"}'
+        values: "2592000x10"
+      - series: 'dmf_openbao_approle_rotation_metadata_available{target="external-secrets"}'
+        values: "1x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: OpenBaoAppRoleSecretIDExpiryCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: security
+              role: external-secrets
+              target: external-secrets
+            exp_annotations:
+              summary: OpenBao AppRole SecretID near expiry
+              description: Less than 10% of the active SecretID lifetime remains.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
+
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_approle_rotation_metadata_available{target="external-secrets"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: OpenBaoAppRoleScheduledRotationHeartbeatMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: security
+              target: external-secrets
+            exp_annotations:
+              summary: Scheduled rotation heartbeat missing
+              description: No successful scheduled rotation is recorded within 26 hours. Manual runs do not reset this schedule heartbeat.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation

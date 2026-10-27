@@ -353,6 +353,15 @@
         - source_labels:
           - __param_target
           target_label: instance
+      # The observer endpoint contains bounded lifecycle signals only; its
+      # OpenBao credentials and metadata stay inside dmf-promsd.
+      - job_name: dmf-promsd-approle-rotation
+        scrape_interval: 60s
+        scrape_timeout: 10s
+        metrics_path: /metrics
+        static_configs:
+        - targets:
+          - dmf-promsd.monitoring.svc.cluster.local:8000
 {# dmf-static-probes (dmfdeploy/dmfdeploy#166): blackbox lanes for
    anchors with no NetBox object (internet/DNS/ingress/sd-pipeline; plan D5).
    Per-target `module` label is relabeled to __param_module so one job mixes
