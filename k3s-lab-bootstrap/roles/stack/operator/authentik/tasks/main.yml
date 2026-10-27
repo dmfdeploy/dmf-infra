@@ -1,4 +1,14 @@
 ---
+- name: Reject Forgejo subject changes until a supported migration is available
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ role_path }}/scripts/validate_forgejo_oidc_subject_mode.py"
+      - "{{ authentik_forgejo_oidc_sub_mode | default('user_username') }}"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
 - name: Validate Authentik input facts
   ansible.builtin.assert:
     that:

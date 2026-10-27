@@ -35,6 +35,8 @@ jobs:
         run: ansible-lint playbooks/ -p
       - name: no secrets in AWX job-template extra_vars (dmfdeploy/dmfdeploy#310)
         run: python3 -m unittest discover -s roles/stack/operator/awx-integration/tests -v
+      - name: Forgejo Authentik contributor policy regression tests (dmfdeploy/dmfdeploy#15)
+        run: python3 tests/test-forgejo-contributor-policy.py
       - name: ansible syntax-check
         run: |
           shopt -s nullglob

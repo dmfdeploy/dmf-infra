@@ -5,6 +5,16 @@
   gather_facts: false
 
   pre_tasks:
+    - name: Reject Forgejo subject changes before accessing secrets
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/../../roles/stack/operator/authentik/scripts/validate_forgejo_oidc_subject_mode.py"
+          - "{{ authentik_forgejo_oidc_sub_mode | default('user_username') }}"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+
     - name: Establish OpenBao operator session
       ansible.builtin.include_role:
         name: common/openbao-session

@@ -17,8 +17,9 @@ write access, organisation ownership, or instance administration. Maintainers
 grant those separately through Forgejo organisations, teams, and protected
 branch review rules.
 
-Forgejo uses Authentik's UUID-backed OIDC subject as the external user ID and
-`userid` as its username source. OAuth account linking is disabled, so a
+Forgejo uses Authentik's username-backed OIDC subject to preserve existing
+external user IDs; UUID migration is deferred behind a fail-closed guard. It
+uses `userid` as its username source. OAuth account linking is disabled, so a
 matching email address cannot merge a new external identity into an existing
 account. Local registration and generic OpenID signup are disabled while OAuth
 auto-registration remains enabled for the Authentik source. Authentik's
@@ -28,6 +29,17 @@ The evidence chain for a contribution is the Authentik subject and group
 decision, the Forgejo account and repository events, and the pull-request
 review and protected-branch history. Granting a team or repository permission
 is a separate, attributable action after the account is provisioned.
+
+### OIDC subject migration gate
+
+Existing accounts use Authentik's username as the OIDC subject. The Authentik
+provider therefore stays at `user_username`, preserving existing Forgejo
+logins. The role rejects a request to select `user_uuid`; it does not edit
+Forgejo identity records. The guard remains until a supported, backed-up
+migration for every identity field used by the deployed Forgejo version has
+been implemented and tested. An account inventory and one-to-one UUID mapping
+must then be reviewed before changing the subject. Do not recover by matching
+email or creating a second account.
 
 ## Design
 

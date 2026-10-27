@@ -40,8 +40,10 @@ forgejo_ingress_annotations:
 # §3.4 + §5 item 2 (2026-05-24): decoupling the local admin from the
 # operator's Authentik username crystallises the slogan (C4 — no routine
 # break-glass) and mirrors the AWX rename (ADR-0028 follow-on step 2,
-# dmf-infra c426dc0). Forgejo's UUID-backed OIDC subject and disabled account
-# linking prevent external identities from attaching to this local account.
+# dmf-infra c426dc0). The current OIDC subject mode remains username-backed
+# to preserve existing users; disabled account linking prevents external
+# identities from attaching to this local account. UUID migration is deferred
+# until a tested, supported migration exists.
 #
 # The literal `forgejo-break-glass` is also referenced by
 # roles/stack/operator/forgejo-bootstrap/tasks/main.yml candidate-2 and
