@@ -467,7 +467,7 @@
       apiVersion: rbac.authorization.k8s.io/v1
       kind: RoleBinding
       metadata:
-        name: nmos-cpp-launcher
+        name: dmf-catalog-launcher
         namespace: nmos
         labels:
           app.kubernetes.io/name: nmos-cpp
@@ -481,6 +481,11 @@
         - kind: ServiceAccount
           name: "{{ awx_dmf_catalog_service_account }}"
           namespace: "{{ awx_dmf_catalog_namespace }}"
+
+# Keep the legacy nmos-cpp-launcher RoleBinding (same name as the Role) in
+# place during migration. AWX jobs already running in the old namespace still
+# use that identity until their EE pods terminate. The separately named grant
+# above allows new protected-namespace jobs to start without mutating it.
 
 - name: Ensure AWX controller can create EE pods in protected namespace
   kubernetes.core.k8s:
@@ -600,7 +605,7 @@
       apiVersion: rbac.authorization.k8s.io/v1
       kind: RoleBinding
       metadata:
-        name: mxl-launcher
+        name: dmf-catalog-launcher
         namespace: mxl
         labels:
           app.kubernetes.io/component: awx-launcher
@@ -613,6 +618,9 @@
         - kind: ServiceAccount
           name: "{{ awx_dmf_catalog_service_account }}"
           namespace: "{{ awx_dmf_catalog_namespace }}"
+
+# Keep the existing mxl-launcher RoleBinding in place until legacy EE pods in
+# nmos have drained; a distinct binding prevents an in-place subject change.
 
 - name: Ensure MXL status-sidecar node-reader ClusterRole exists
   kubernetes.core.k8s:
@@ -703,7 +711,7 @@
       apiVersion: rbac.authorization.k8s.io/v1
       kind: ClusterRoleBinding
       metadata:
-        name: dmf-l3-preflight-reader
+        name: dmf-l3-preflight-reader-catalog
         labels:
           dmf.function: l3-launcher
           dmf.component: capacity-preflight
@@ -715,6 +723,9 @@
         - kind: ServiceAccount
           name: "{{ awx_dmf_catalog_service_account }}"
           namespace: "{{ awx_dmf_catalog_namespace }}"
+
+# The original ClusterRoleBinding remains until the same legacy-pod drain
+# gate as the function-namespace grants below.
 
 - name: Ingress readiness gate — Traefik + AWX
   ansible.builtin.include_role:
@@ -1963,6 +1974,54 @@
       mismatched request here means the L3 capacity preflight is reading
       the wrong number for this single constrained node.
   run_once: true
+
+- name: Check for legacy NMOS catalog EE pods before removing old grants
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: nmos
+  register: awx_catalog_legacy_nmos_pods
+
+- name: Assert legacy catalog EE pods have drained from NMOS
+  ansible.builtin.assert:
+    that:
+      - >-
+        (awx_catalog_legacy_nmos_pods.resources | default([])
+        | selectattr('spec.serviceAccountName', 'defined')
+        | selectattr('spec.serviceAccountName', 'equalto', 'nmos-cpp-launcher')
+        | list | length) == 0
+    fail_msg: >-
+      Legacy catalog EE pods still use the nmos-cpp-launcher ServiceAccount.
+      Their NMOS and MXL RoleBindings are being retained; rerun this play after
+      those jobs finish to complete cleanup.
+  run_once: true
+
+- name: Remove legacy NMOS launcher binding after old EE pods drain
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    name: nmos-cpp-launcher
+    namespace: nmos
+
+- name: Remove legacy MXL launcher binding after old EE pods drain
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: RoleBinding
+    name: mxl-launcher
+    namespace: mxl
+
+- name: Remove legacy L3 preflight ClusterRoleBinding after old EE pods drain
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: rbac.authorization.k8s.io/v1
+    kind: ClusterRoleBinding
+    name: dmf-l3-preflight-reader
 
 - name: Remove legacy AWX controller pod-manager binding from NMOS
   kubernetes.core.k8s:
