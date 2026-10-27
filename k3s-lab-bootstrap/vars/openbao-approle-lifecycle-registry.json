@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "runtime_targets": {
+    "external-secrets": {
+      "approle_name": "external-secrets",
+      "secret_id_ttl": "720h",
+      "rotation_due_fraction": 0.6666666667,
+      "warning_remaining_fraction": 0.25,
+      "critical_remaining_fraction": 0.1,
+      "destinations": [
+        {
+          "kind": "kubernetes_secret_key",
+          "namespace": "external-secrets",
+          "name": "openbao-approle",
+          "key": "id"
+        }
+      ],
+      "readiness_gates": [
+        {
+          "kind": "ClusterSecretStore",
+          "name": "openbao",
+          "condition": "Ready=True",
+          "status": "existing_check"
+        }
+      ]
+    },
+    "object-storage-openbao-snapshots": {
+      "approle_name": "object-storage-openbao-snapshots",
+      "logical_name": "openbao_snapshots",
+      "secret_id_ttl": "8760h",
+      "rotation_due_fraction": 0.6666666667,
+      "warning_remaining_fraction": 0.25,
+      "critical_remaining_fraction": 0.1,
+      "destinations": [
+        {
+        "kind": "openbao_kv2_record",
+        "path": "secret/data/platform/eso-bindings/object-storage-openbao-snapshots",
+        "key": "secret_id"
+        },
+        {
+          "kind": "kubernetes_secret_key",
+          "namespace": "external-secrets",
+          "name": "openbao-snapshots-openbao-approle",
+          "key": "id"
+        }
+      ],
+      "readiness_gates": [
+        {
+          "kind": "ClusterSecretStore",
+          "name": "openbao-openbao-snapshots",
+          "condition": "Ready=True",
+          "status": "existing_check"
+        },
+        {
+          "kind": "ExternalSecret",
+          "namespaces_from": "object_storage_consumer_namespaces.openbao_snapshots",
+          "name_pattern": "s3-creds-openbao-snapshots",
+          "condition": "Ready=True",
+          "status": "required_rotation_gate",
+          "evidence_gap": "current role applies these resources but does not wait for Ready"
+        }
+      ]
+    },
+    "object-storage-app-backups": {
+      "approle_name": "object-storage-app-backups",
+      "logical_name": "app_backups",
+      "secret_id_ttl": "8760h",
+      "rotation_due_fraction": 0.6666666667,
+      "warning_remaining_fraction": 0.25,
+      "critical_remaining_fraction": 0.1,
+      "destinations": [
+        {
+        "kind": "openbao_kv2_record",
+        "path": "secret/data/platform/eso-bindings/object-storage-app-backups",
+        "key": "secret_id"
+        },
+        {
+          "kind": "kubernetes_secret_key",
+          "namespace": "external-secrets",
+          "name": "app-backups-openbao-approle",
+          "key": "id"
+        }
+      ],
+      "readiness_gates": [
+        {
+          "kind": "ClusterSecretStore",
+          "name": "openbao-app-backups",
+          "condition": "Ready=True",
+          "status": "existing_check"
+        },
+        {
+          "kind": "ExternalSecret",
+          "namespaces_from": "object_storage_consumer_namespaces.app_backups",
+          "name_pattern": "s3-creds-app-backups",
+          "condition": "Ready=True",
+          "status": "required_rotation_gate",
+          "evidence_gap": "current role applies these resources but does not wait for Ready"
+        },
+        {
+          "kind": "KubernetesSecret",
+          "namespace": "longhorn-system",
+          "name": "longhorn-s3-creds",
+          "required_key": "AWS_ACCESS_KEY_ID",
+          "status": "existing_check"
+        }
+      ]
+    }
+  },
+  "dispositions": {
+    "born-inventory-netbox-reader": {
+      "approle_name": "born-inventory-netbox-reader",
+      "secret_id_ttl": "720h",
+      "disposition": "setup_only",
+      "continuous_rotation": false,
+      "continuous_expiry_monitoring": false,
+      "fresh_issuance_per_invocation": true,
+      "entrypoints": [
+        "bootstrap-configure.yml",
+        "bootstrap-sandbox-configure.yml",
+        "playbooks/694-born-inventory.yml",
+        "playbooks/lifecycle/test-layer6.yml"
+      ]
+    }
+  }
+}
