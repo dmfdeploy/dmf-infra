@@ -26,6 +26,94 @@
           metadata:
             name: "{{ cms_namespace }}"
 
+    - name: Create dedicated setup request namespace
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: "{{ cms_setup_request_namespace }}"
+            labels:
+              pod-security.kubernetes.io/enforce: restricted
+              pod-security.kubernetes.io/warn: restricted
+
+    - name: Deny pod ingress and egress in the setup request namespace
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: networking.k8s.io/v1
+          kind: NetworkPolicy
+          metadata:
+            name: default-deny
+            namespace: "{{ cms_setup_request_namespace }}"
+          spec:
+            podSelector: {}
+            policyTypes:
+              - Ingress
+              - Egress
+
+    - name: Create dedicated DMF Console setup request ServiceAccount
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: "{{ cms_service_account_name }}"
+            namespace: "{{ cms_namespace }}"
+          automountServiceAccountToken: true
+
+    - name: Grant DMF Console create and get access to setup request ConfigMaps only
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: Role
+          metadata:
+            name: "{{ cms_setup_request_role_name }}"
+            namespace: "{{ cms_setup_request_namespace }}"
+          rules:
+            - apiGroups: [""]
+              resources: ["configmaps"]
+              verbs: ["create", "get"]
+
+    - name: Bind DMF Console ServiceAccount to setup request ConfigMap access
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: RoleBinding
+          metadata:
+            name: "{{ cms_setup_request_role_name }}"
+            namespace: "{{ cms_setup_request_namespace }}"
+          subjects:
+            - kind: ServiceAccount
+              name: "{{ cms_service_account_name }}"
+              namespace: "{{ cms_namespace }}"
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: Role
+            name: "{{ cms_setup_request_role_name }}"
+
+    - name: Read the current kube-system Namespace UID for DMF Console setup requests
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Namespace
+        name: kube-system
+      register: _cms_kube_system_namespace
+      changed_when: false
+
+    - name: Set the current cluster UID for DMF Console setup requests
+      ansible.builtin.set_fact:
+        _cms_kube_system_uid: "{{ _cms_kube_system_namespace.resources[0].metadata.uid | default('') }}"
+
     - name: Read existing DMF Console runtime Secret
       kubernetes.core.k8s_info:
         kubeconfig: /etc/rancher/k3s/k3s.yaml

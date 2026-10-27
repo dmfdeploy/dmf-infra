@@ -995,6 +995,65 @@
     - _policy_reconciler_login_raw is defined
     - _policy_reconciler_login_raw.stdout | default('') | length > 0
 
+- name: Render exact-path AppRole rotation observer policy
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - "cat > /tmp/{{ openbao_approle_rotation_observer_policy_name }}.hcl"
+    stdin: "{{ lookup('template', 'approle-rotation-observer-policy.hcl.j2') }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Apply exact-path AppRole rotation observer policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_approle_rotation_observer_policy_name }}
+      /tmp/{{ openbao_approle_rotation_observer_policy_name }}.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Bind dmf-promsd observer ServiceAccount to its metadata-only policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/kubernetes/role/{{ openbao_approle_rotation_observer_auth_role }}
+      bound_service_account_names={{ openbao_approle_rotation_observer_service_account }}
+      bound_service_account_namespaces={{ openbao_approle_rotation_observer_namespace }}
+      audience={{ openbao_approle_rotation_observer_audience }}
+      token_policies={{ openbao_approle_rotation_observer_policy_name }}
+      token_ttl={{ openbao_approle_rotation_observer_token_ttl }}
+      token_max_ttl={{ openbao_approle_rotation_observer_token_ttl }}'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
 - name: Verify approle-reconciler login on rerun path
   ansible.builtin.shell:
     cmd: >-

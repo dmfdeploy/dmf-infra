@@ -9,6 +9,51 @@
       metadata:
         name: "{{ dmf_promsd_namespace }}"
 
+- name: Create dedicated dmf-promsd OpenBao observer ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ dmf_promsd_openbao_service_account }}"
+        namespace: "{{ dmf_promsd_namespace }}"
+      automountServiceAccountToken: false
+
+- name: Read the OpenBao public TLS certificate for observer trust
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ dmf_promsd_openbao_tls_secret_name }}"
+    namespace: "{{ dmf_promsd_openbao_tls_namespace }}"
+  register: _dmf_promsd_openbao_tls_secret
+  no_log: true
+
+- name: Assert the OpenBao public TLS certificate is available
+  ansible.builtin.assert:
+    that:
+      - _dmf_promsd_openbao_tls_secret.resources | length > 0
+      - _dmf_promsd_openbao_tls_secret.resources[0].data['tls.crt'] | default('') | length > 0
+    fail_msg: >-
+      dmf-promsd requires the public tls.crt from the OpenBao TLS Secret to
+      verify the OpenBao API connection.
+  no_log: true
+
+- name: Copy only the OpenBao public TLS certificate to a monitoring ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ dmf_promsd_openbao_ca_configmap_name }}"
+        namespace: "{{ dmf_promsd_namespace }}"
+      data:
+        ca.crt: "{{ _dmf_promsd_openbao_tls_secret.resources[0].data['tls.crt'] | b64decode }}"
+
 # ── ESO ExternalSecret: NetBox promsd_api_token ────────────────────────
 - name: Create dmf-promsd NetBox ExternalSecret
   kubernetes.core.k8s:
@@ -57,7 +102,11 @@
           metadata:
             labels:
               app: dmf-promsd
+            annotations:
+              checksum/openbao-ca: "{{ _dmf_promsd_openbao_tls_secret.resources[0].data['tls.crt'] | hash('sha256') }}"
           spec:
+            serviceAccountName: "{{ dmf_promsd_openbao_service_account }}"
+            automountServiceAccountToken: false
             securityContext:
               runAsUser: 1000
               runAsGroup: 1000
@@ -69,6 +118,13 @@
                 ports:
                   - containerPort: 8000
                     protocol: TCP
+                volumeMounts:
+                  - name: openbao-ca
+                    mountPath: "{{ dmf_promsd_openbao_ca_mount_path }}"
+                    readOnly: true
+                  - name: openbao-token
+                    mountPath: "{{ dmf_promsd_openbao_jwt_mount_path }}"
+                    readOnly: true
                 env:
                   - name: NETBOX_URL
                     value: "{{ dmf_promsd_netbox_url }}"
@@ -81,6 +137,18 @@
                     value: "{{ dmf_promsd_netbox_validate_certs | string | lower }}"
                   - name: CACHE_TTL_SECONDS
                     value: "{{ dmf_promsd_cache_ttl_seconds | string }}"
+                  - name: OPENBAO_ADDR
+                    value: "{{ dmf_promsd_openbao_address }}"
+                  - name: OPENBAO_K8S_AUTH_MOUNT
+                    value: "{{ dmf_promsd_openbao_auth_mount }}"
+                  - name: OPENBAO_K8S_ROLE
+                    value: "{{ dmf_promsd_openbao_auth_role }}"
+                  - name: OPENBAO_OBSERVER_INTERVAL_SECONDS
+                    value: "{{ dmf_promsd_openbao_observer_interval_seconds | string }}"
+                  - name: OPENBAO_CA_FILE
+                    value: "{{ dmf_promsd_openbao_ca_file }}"
+                  - name: OPENBAO_SA_JWT_FILE
+                    value: "{{ dmf_promsd_openbao_jwt_file }}"
                 livenessProbe:
                   httpGet:
                     path: "{{ dmf_promsd_liveness_path }}"
@@ -100,6 +168,20 @@
                   limits:
                     cpu: "{{ dmf_promsd_resources.limits.cpu }}"
                     memory: "{{ dmf_promsd_resources.limits.memory }}"
+            volumes:
+              - name: openbao-ca
+                configMap:
+                  name: "{{ dmf_promsd_openbao_ca_configmap_name }}"
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              - name: openbao-token
+                projected:
+                  sources:
+                    - serviceAccountToken:
+                        audience: "{{ dmf_promsd_openbao_token_audience }}"
+                        expirationSeconds: "{{ dmf_promsd_openbao_token_expiration_seconds | int }}"
+                        path: token
 
 # ── Service ────────────────────────────────────────────────────────────
 - name: Expose dmf-promsd Service

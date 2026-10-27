@@ -95,6 +95,14 @@ openbao_born_inventory_setup_issuer_service_account: born-inventory-setup-issuer
 openbao_born_inventory_setup_issuer_auth_role: born-inventory-setup-issuer
 openbao_born_inventory_setup_issuer_token_ttl: "15m"
 
+# Read-only identity for dmf-promsd's AppRole lifecycle metadata observer.
+openbao_approle_rotation_observer_policy_name: approle-rotation-observer
+openbao_approle_rotation_observer_service_account: dmf-promsd-openbao-observer
+openbao_approle_rotation_observer_namespace: monitoring
+openbao_approle_rotation_observer_auth_role: dmf-promsd-observer
+openbao_approle_rotation_observer_audience: dmf-openbao-observer
+openbao_approle_rotation_observer_token_ttl: "5m"
+
 # PKI config
 openbao_pki_path: pki
 openbao_pki_max_lease_ttl: "87600h"  # 10 years for root CA

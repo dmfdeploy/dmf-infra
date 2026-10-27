@@ -31,6 +31,7 @@ The record contains:
 | `expires_at` | integer | SecretID expiry time in Unix seconds. |
 | `ttl_seconds` | integer | SecretID TTL in seconds. |
 | `last_successful_rotation_at` | integer or null | Most recent completed rotation time. |
+| `last_scheduled_success_at` | integer or null | Most recent successful scheduled sweep for this target; independent of the latest manual or failed run. |
 | `last_failure_at` | integer or null | Most recent failed run time. |
 | `last_failure_reason_code` | string or null | Bounded reason code; paired with `last_failure_at`. |
 | `latest_run_kind` | `scheduled` or `manual` | Origin of the latest logical run. |
@@ -46,6 +47,12 @@ populated. The accepted reason codes are `create_failed`, `lookup_failed`,
 `delivery_failed`, `readiness_failed`, `cleanup_failed`, `metadata_failed`,
 `lease_conflict`, and `invalid_state`. An unknown code is exported as
 `unknown`; free-form exception text is never stored in this field.
+
+`last_scheduled_success_at` starts as null. Only a successful scheduled run
+updates it, after every required issuance, delivery, readiness, cleanup, and
+metadata check for that target has passed. A manual run or any failed run
+preserves its prior value. This separate timestamp lets monitoring detect a
+stalled schedule even when manual runs continue to succeed.
 
 The observer has read capability only on
 `secret/data/platform/approle-rotation/*`. It reads configured target paths

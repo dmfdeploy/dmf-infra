@@ -1,0 +1,6 @@
+{% for target in openbao_approle_lifecycle_registry.runtime_targets | dict2items %}
+path "secret/data/platform/approle-rotation/{{ target.key }}" {
+  capabilities = ["read"]
+}
+
+{% endfor %}
