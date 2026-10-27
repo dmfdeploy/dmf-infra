@@ -13,9 +13,11 @@
 # attempting a re-bootstrap of an existing env whose admin accounts may
 # have been touched out-of-band.
 #
-# No write paths. No secrets in argv. No passwords echoed — the queries
-# below only list usernames (gitea admin user list, Django
-# is_superuser filter, htpasswd field 1, group-membership names).
+# No write paths. No secrets in argv. The Forgejo CLI user listing includes
+# email addresses; its registered output is protected with no_log and passed
+# only to a helper that discards profile fields. No identity values are
+# printed by that audit. The CLI does not expose source IDs or external-login
+# keys, so the report marks local/OIDC binding inventory as incomplete.
 #
 # Run:
 #   bin/run-playbook.sh <env> \
@@ -51,6 +53,7 @@
       - "{{ zot_admin_user | default('admin') }}"
       - "{{ zot_service_user | default('zot-svc') }}"
     audit_expected_authentik: akadmin  # role hardcodes
+    audit_expected_forgejo_service: "{{ forgejo_svc_user | default('forgejo-svc') }}"
     # LibreNMS is intentionally skipped — not deployed on lab clusters yet
     # per the 2026-05-14 audit; revisit when the monitoring vertical ships.
 
@@ -104,8 +107,9 @@
              and (_audit_awx_web_desired.stdout | default('') | trim | int(-1)) == 0 }}
 
     # ────────────────────────────────────────────────────────────────
-    # Per-app queries (read-only). Each pre-filters output to one
-    # username per line so downstream parsing is just stdout_lines.
+    # Per-app queries (read-only). The Forgejo user table includes emails;
+    # its register is no_log and is passed only to a helper that discards
+    # profile fields before reporting aggregate inventory.
     # ────────────────────────────────────────────────────────────────
     - name: Query AWX live superusers
       ansible.builtin.shell:
@@ -121,18 +125,55 @@
       failed_when: false
       when: not _audit_awx_asleep | bool
 
-    - name: Query Forgejo live admin users
+    - name: Query Forgejo live user inventory
       ansible.builtin.shell:
         cmd: >-
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n forgejo
           exec deploy/forgejo
           -- sh -c '
-          /usr/local/bin/gitea admin user list --admin
-          --config /data/gitea/conf/app.ini | awk "NR>1 {print \$2}"'
+          /usr/local/bin/gitea admin user list
+          --config /data/gitea/conf/app.ini'
       register: _audit_forgejo_users
       changed_when: false
       failed_when: false
+      no_log: true
+
+    - name: Query Authentik Forgejo ops-admin usernames
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n authentik
+          exec deploy/authentik-server
+          -- ak shell -c
+          "from authentik.core.models import Group;
+          g=Group.objects.filter(name='ops-admin').first();
+          assert g is not None, 'required ops-admin group missing';
+          print('\\n'.join(u.username for u in (g.users.all() if g else []) if u.is_active))"
+      register: _audit_forgejo_ops_admins
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Parse and audit Forgejo identities without exposing profile fields
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/audit_forgejo_identities.py"
+        stdin: >-
+          {{ {
+            'users_output': _audit_forgejo_users.stdout | default(''),
+            'users_rc': _audit_forgejo_users.rc | default(-1),
+            'ops_admins_rc': _audit_forgejo_ops_admins.rc | default(-1),
+            'ops_admin_usernames': _audit_forgejo_ops_admins.stdout_lines | default([]),
+            'break_glass_username': audit_expected_forgejo,
+            'service_username': audit_expected_forgejo_service
+          } | to_json }}
+      register: _audit_forgejo_identity_report
+      delegate_to: localhost
+      changed_when: false
+      failed_when: false
+      no_log: true
 
     - name: Query NetBox live superusers
       ansible.builtin.shell:
@@ -207,21 +248,24 @@
       when: not _audit_awx_asleep | bool
 
     - name: Audit Forgejo
-      ansible.builtin.debug:
-        msg: |-
-          forgejo:
-            expected: {{ audit_expected_forgejo }}
-            live:     {{ _audit_forgejo_users.stdout_lines | default([]) }}
-            rc:       {{ _audit_forgejo_users.rc | default(-1) }}
+      ansible.builtin.set_fact:
+        _audit_forgejo_identity_result: "{{ _audit_forgejo_identity_report.stdout | default('{}') | from_json }}"
+      no_log: true
 
-    - name: Assert Forgejo no drift
+    - name: Report sanitized Forgejo identity inventory
+      ansible.builtin.debug:
+        msg: >-
+          Forgejo identities: {{ _audit_forgejo_identity_result.inventory }};
+          findings: {{ _audit_forgejo_identity_result.findings }}.
+
+    - name: Assert Forgejo identity policy
       ansible.builtin.assert:
         that:
-          - _audit_forgejo_users.rc | default(-1) == 0
-          - audit_expected_forgejo in (_audit_forgejo_users.stdout_lines | default([]))
+          - _audit_forgejo_identity_report.rc | default(-1) == 0
+          - _audit_forgejo_identity_result.passed | default(false) | bool
         fail_msg: >-
-          Forgejo drift: expected admin '{{ audit_expected_forgejo }}' not in
-          live list {{ _audit_forgejo_users.stdout_lines | default([]) }}.
+          Forgejo identity audit failed. Review the sanitized findings above;
+          usernames, emails, and raw identity values are intentionally withheld.
 
     - name: Audit NetBox
       ansible.builtin.debug:
