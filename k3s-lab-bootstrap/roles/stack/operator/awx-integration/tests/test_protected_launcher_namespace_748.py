@@ -38,6 +38,27 @@ class ProtectedLauncherNamespaceTests(unittest.TestCase):
         self.assertGreater(cleanup, readback)
         self.assertGreater(cleanup, assertion)
 
+    def test_legacy_function_bindings_are_not_retargeted_in_place(self):
+        """Parallel grants preserve RBAC for already-running legacy EE pods."""
+        source = (ROLE / "tasks" / "main.yml").read_text()
+
+        nmos_binding = source.index(
+            "- name: Ensure NMOS AWX launcher RoleBinding exists"
+        )
+        nmos_binding_end = source.index(
+            "# Keep the legacy nmos-cpp-launcher RoleBinding", nmos_binding
+        )
+        mxl_binding = source.index("- name: Bind catalog launcher SA into mxl")
+        mxl_binding_end = source.index(
+            "# Keep the existing mxl-launcher RoleBinding", mxl_binding
+        )
+
+        self.assertIn("name: dmf-catalog-launcher", source[nmos_binding:nmos_binding_end])
+        self.assertIn("name: dmf-catalog-launcher", source[mxl_binding:mxl_binding_end])
+        self.assertIn("Assert legacy catalog EE pods have drained from NMOS", source)
+        self.assertIn("name: nmos-cpp-launcher\n    namespace: nmos", source)
+        self.assertIn("name: mxl-launcher\n    namespace: mxl", source)
+
 
 if __name__ == "__main__":
     unittest.main()
