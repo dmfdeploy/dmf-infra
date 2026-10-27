@@ -13,6 +13,17 @@
 # pwm-fan series, these rules simply produce no samples, and every consumer
 # must treat absence as "n/a", not "bad".
 groups:
+  - name: dmf-openbao-approle-recording
+    rules:
+      # A target is due once two thirds of its current SecretID lifetime has
+      # elapsed. This is based on active credential expiry, not write time.
+      - record: dmf:openbao_approle_rotation_due
+        expr: >-
+          ((dmf_openbao_approle_secret_id_expires_at_seconds - time())
+           <= bool (dmf_openbao_approle_secret_id_ttl_seconds / 3))
+          and on(target)
+          (dmf_openbao_approle_rotation_metadata_available == 1)
+
   - name: dmf-node-recording
     rules:
       # Load normalized by core count — the plan's saturation signal is
