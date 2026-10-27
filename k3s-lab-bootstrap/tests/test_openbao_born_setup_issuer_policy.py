@@ -11,6 +11,10 @@ POLICY_TEMPLATE = (
     / "roles/stack/operator/openbao/templates/born-inventory-setup-issuer-policy.hcl.j2"
 )
 ROLE = "born-inventory-netbox-reader"
+OPENBAO_TASKS = ROOT / "roles/stack/operator/openbao/tasks/main.yml"
+INVENTORY_TASKS = ROOT / "roles/common/dmf-born-inventory/tasks/main.yml"
+SETUP_TASKS = ROOT / "roles/common/dmf-born-inventory/tasks/setup_only_credential.yml"
+BREAKGLASS_VERIFIER = ROOT / "playbooks/verify-bootstrap-convergence.yml"
 
 
 def parse_policy(text):
@@ -131,6 +135,44 @@ class BornSetupIssuerPolicyTests(unittest.TestCase):
             "update",
             {"secret_id_ttl": "1h"},
         ))
+
+    def test_fresh_setup_authentication_uses_the_fixed_service_identity_and_audience(self):
+        defaults = (ROOT / "roles/stack/operator/openbao/defaults/main.yml").read_text()
+        tasks = OPENBAO_TASKS.read_text()
+        self.assertIn("openbao_born_inventory_setup_issuer_audience: dmf-openbao-setup-issuer", defaults)
+        self.assertIn("audience={{ openbao_born_inventory_setup_issuer_audience }}", tasks)
+        self.assertIn("token_ttl={{ openbao_born_inventory_setup_issuer_token_ttl }}", tasks)
+
+    def test_setup_consumer_requires_claim_then_mints_bounded_id_and_destroys_accessor(self):
+        tasks = SETUP_TASKS.read_text()
+        inventory = INVENTORY_TASKS.read_text()
+        self.assertIn("consume_setup_request.py", tasks)
+        self.assertLess(tasks.index("Validate and atomically claim the setup request"),
+                        tasks.index("Request a short-lived audience-bound issuer JWT"))
+        self.assertIn("custom-secret-id", tasks)
+        self.assertIn("ttl=1h num_uses=1", tasks)
+        self.assertIn("secret-id-accessor/destroy", tasks)
+        self.assertIn("always:", tasks)
+        self.assertIn("Recover the SecretID accessor if issuance returned an incomplete response", tasks)
+        self.assertIn("secret-id/lookup", tasks)
+        self.assertIn("Clear setup credential material from Ansible facts", tasks)
+        self.assertLess(tasks.index("Recover the SecretID accessor"), tasks.index("Revoke the consumed born-inventory SecretID accessor"))
+        self.assertNotIn("_dmf_born_inventory_openbao_secret_id", inventory)
+        self.assertNotIn("auth/approle/role/{{ openbao_born_inventory_role_name }}/secret-id'", OPENBAO_TASKS.read_text())
+
+    def test_missing_setup_issuer_fails_with_privileged_migration_guidance(self):
+        tasks = SETUP_TASKS.read_text()
+        self.assertIn("Require the setup issuer ServiceAccount and TokenRequest to be available", tasks)
+        self.assertIn("Require the setup issuer Kubernetes auth role to be provisioned", tasks)
+        self.assertGreaterEqual(tasks.count("reviewed privileged setup-issuer migration"), 2)
+        self.assertIn("the consumed receipt cannot", tasks)
+
+    def test_cached_secret_id_is_neither_required_nor_retained(self):
+        tasks = OPENBAO_TASKS.read_text()
+        verifier = BREAKGLASS_VERIFIER.read_text()
+        self.assertNotIn("born_inventory_secret_id:", tasks)
+        self.assertNotIn("- born_inventory_secret_id", verifier)
+        self.assertIn("Reject any cached setup-only born-inventory SecretID", verifier)
 
 
 if __name__ == "__main__":

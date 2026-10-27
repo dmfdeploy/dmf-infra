@@ -5,16 +5,14 @@
       - dmf_born_inventory_enabled | bool
       - groups['k3s'] | default([]) | length > 0
       - dmf_born_inventory_netbox_api_base | length > 0
-      - >-
-        (dmf_born_inventory_netbox_admin_token | default('') | length > 0)
-        or
-        (dmf_born_inventory_openbao_breakglass_file | default('') | length > 0)
+      - dmf_env_id | default('') | trim | length > 0
+      - dmf_born_inventory_netbox_admin_token | default('') | length == 0
+      - lookup('env', 'DMF_SETUP_REQUEST_ID') | trim | length > 0
     fail_msg: >-
-      born-inventory needs k3s hosts and a NetBox API base. Provide either a
-      direct NetBox admin token or an OpenBao break-glass file with the
-      born-inventory AppRole credentials. Run the NetBox SoT bootstrap stage
-      first so it can seed the NetBox admin token into the in-cluster OpenBao
-      runtime secret.
+      born-inventory setup requires the canonical DMF environment id, k3s and
+      NetBox runtime, and a fresh authenticated setup request. In the DMF
+      Console create a born-inventory setup request and pass its request id to
+      the configure run; after failure or interruption, create a new request.
 
 - name: Check OpenBao break-glass JSON exists on operator host
   ansible.builtin.stat:
@@ -24,15 +22,14 @@
   become: false
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
-- name: Assert OpenBao break-glass JSON exists for AppRole login
+- name: Assert OpenBao break-glass JSON exists for the public AppRole role id
   ansible.builtin.assert:
     that:
       - _dmf_born_inventory_breakglass_stat.stat.exists | default(false)
     fail_msg: >-
       Missing OpenBao break-glass JSON at
       {{ dmf_born_inventory_openbao_breakglass_file }}. The born-inventory
-      AppRole credentials are stored there by the OpenBao bootstrap role.
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+      AppRole role id is required; no cached SecretID is accepted.
 
 - name: Load OpenBao break-glass JSON from operator host
   ansible.builtin.set_fact:
@@ -42,90 +39,26 @@
   no_log: true
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
-- name: Extract OpenBao AppRole credentials for born-inventory reads
+- name: Extract public OpenBao AppRole role id for born-inventory reads
   ansible.builtin.set_fact:
     _dmf_born_inventory_openbao_role_id: >-
       {{
         _dmf_born_inventory_breakglass[dmf_born_inventory_openbao_approle_role_id_key]
         | default('')
       }}
-    _dmf_born_inventory_openbao_secret_id: >-
-      {{
-        _dmf_born_inventory_breakglass[dmf_born_inventory_openbao_approle_secret_id_key]
-        | default('')
-      }}
   no_log: true
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
-- name: Assert OpenBao AppRole credentials are available for born-inventory
+- name: Assert OpenBao AppRole role id is available for born-inventory
   ansible.builtin.assert:
     that:
       - _dmf_born_inventory_openbao_role_id | length > 0
-      - _dmf_born_inventory_openbao_secret_id | length > 0
     fail_msg: >-
-      No AppRole credentials found in {{ dmf_born_inventory_openbao_breakglass_file }}.
-      born-inventory now uses a dedicated OpenBao AppRole with a narrow
-      read-only policy on the NetBox runtime secret.
+      No AppRole role id found in {{ dmf_born_inventory_openbao_breakglass_file }}.
+      A cached born-inventory SecretID is not accepted by this setup path.
   no_log: true
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
-- name: Discover OpenBao pod for born-inventory reads
-  kubernetes.core.k8s_info:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    api_version: v1
-    kind: Pod
-    namespace: "{{ dmf_born_inventory_openbao_namespace }}"
-    label_selectors:
-      - "{{ dmf_born_inventory_openbao_pod_label_selector }}"
-  register: _dmf_born_inventory_openbao_pod_info
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
-
-- name: Assert OpenBao pod exists for born-inventory
-  ansible.builtin.assert:
-    that:
-      - _dmf_born_inventory_openbao_pod_info.resources | length > 0
-    fail_msg: >-
-      Could not find an OpenBao pod in namespace
-      {{ dmf_born_inventory_openbao_namespace }} with selector
-      {{ dmf_born_inventory_openbao_pod_label_selector }}.
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
-
-- name: Set OpenBao pod fact for born-inventory
-  ansible.builtin.set_fact:
-    _dmf_born_inventory_openbao_pod: "{{ _dmf_born_inventory_openbao_pod_info.resources[0].metadata.name }}"
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
-
-- name: Log into OpenBao with born-inventory AppRole
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ dmf_born_inventory_openbao_namespace }}"
-      - exec
-      - "{{ _dmf_born_inventory_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - >-
-        bao write -format=json auth/approle/login
-        role_id=$OPENBAO_ROLE_ID
-        secret_id=$OPENBAO_SECRET_ID
-  register: _dmf_born_inventory_openbao_login_raw
-  changed_when: false
-  environment:
-    BAO_ADDR: https://127.0.0.1:8200
-    OPENBAO_ROLE_ID: "{{ _dmf_born_inventory_openbao_role_id }}"
-    OPENBAO_SECRET_ID: "{{ _dmf_born_inventory_openbao_secret_id }}"
-  no_log: true
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
-
-- name: Extract OpenBao client token for born-inventory
-  ansible.builtin.set_fact:
-    _dmf_born_inventory_openbao_client_token: "{{ (_dmf_born_inventory_openbao_login_raw.stdout | from_json).auth.client_token }}"
-  no_log: true
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
+- name: Issue and consume the setup-only born-inventory credential
+  ansible.builtin.include_tasks: setup_only_credential.yml
 
 - name: Read NetBox runtime secret from OpenBao
   ansible.builtin.shell:
@@ -145,7 +78,6 @@
     BAO_ADDR: https://127.0.0.1:8200
     OPENBAO_TOKEN: "{{ _dmf_born_inventory_openbao_client_token }}"
   no_log: true
-  when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
 - name: Log NetBox admin token read result
   ansible.builtin.debug:

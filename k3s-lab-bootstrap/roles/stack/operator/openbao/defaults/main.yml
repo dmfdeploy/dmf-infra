@@ -93,6 +93,7 @@ openbao_born_inventory_token_max_ttl: "4h"
 openbao_born_inventory_setup_issuer_policy_name: born-inventory-setup-issuer
 openbao_born_inventory_setup_issuer_service_account: born-inventory-setup-issuer
 openbao_born_inventory_setup_issuer_auth_role: born-inventory-setup-issuer
+openbao_born_inventory_setup_issuer_audience: dmf-openbao-setup-issuer
 openbao_born_inventory_setup_issuer_token_ttl: "15m"
 
 # Read-only identity for dmf-promsd's AppRole lifecycle metadata observer.

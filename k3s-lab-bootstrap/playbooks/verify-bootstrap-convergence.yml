@@ -173,7 +173,6 @@
       - eso_role_id
       - eso_secret_id
       - born_inventory_role_id
-      - born_inventory_secret_id
       - shamir_threshold
       - shamir_shares
 
@@ -327,6 +326,16 @@
       loop: "{{ verify_bootstrap_convergence_required_breakglass_scalars }}"
       loop_control:
         label: "{{ item }}"
+      no_log: true
+
+    - name: Reject any cached setup-only born-inventory SecretID
+      ansible.builtin.assert:
+        that:
+          - _bootstrap_convergence_breakglass.born_inventory_secret_id is not defined
+        fail_msg: >-
+          A cached born-inventory SecretID is still present in break-glass JSON.
+          Re-run the OpenBao role to remove it; setup inventory now requires a
+          fresh one-use credential issued from an authenticated receipt.
       no_log: true
 
     # ------------------------------------------------------------------
