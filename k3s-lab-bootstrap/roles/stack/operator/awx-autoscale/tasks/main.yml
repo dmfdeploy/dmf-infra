@@ -7,8 +7,9 @@
 # Deploys: ServiceAccount + Role/RoleBinding + ESO ExternalSecret +
 #          ConfigMap (helper script) + Deployment + Service + NetworkPolicy.
 #
-# PREREQUISITE: the bearer token for /ensure-awake must be minted in OpenBao
-# at {{ awx_autoscale_eso_bearer_token_remote_key }} BEFORE this role runs.
+# PREREQUISITE: the bearer token for /ensure-awake and /job-hold must be
+# minted in OpenBao at {{ awx_autoscale_eso_bearer_token_remote_key }} BEFORE
+# this role runs.
 # Minting is owned by bootstrap-secrets seed-bao (not 693-awx-integration).
 #
 # Design authority: umbrella https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20AWX%20On-Demand%20Scale-to-Zero%20Plan%202026-06-18.md §B.
@@ -43,6 +44,18 @@
           helper where nothing reaches it. Keep awx_autoscale_listen_port at
           8080 (or change the k8s literals in this role's tasks/main.yml in the
           same edit).
+
+    - name: Validate awx-autoscale Lease names and bounded durations
+      ansible.builtin.assert:
+        that:
+          - awx_autoscale_lease_name | length > 0
+          - awx_autoscale_job_hold_lease_name | length > 0
+          - awx_autoscale_lease_name != awx_autoscale_job_hold_lease_name
+          - awx_autoscale_job_hold_max_seconds | int > 0
+          - awx_autoscale_reaper_claim_seconds | int >= 200
+        fail_msg: >-
+          awx-autoscale needs distinct named wake/job-hold Leases and positive
+          per-renewal duration and a reaper-claim duration of at least 200s.
 
     # ── ServiceAccount ─────────────────────────────────────────────────
     - name: Create awx-autoscale ServiceAccount
@@ -95,7 +108,17 @@
               verbs: ["get", "list"]
             - apiGroups: ["coordination.k8s.io"]
               resources: ["leases"]
-              verbs: ["get", "create", "update"]
+              resourceNames:
+                - "{{ awx_autoscale_lease_name }}"
+                - "{{ awx_autoscale_job_hold_lease_name }}"
+              verbs: ["get", "update"]
+            # Kubernetes RBAC cannot scope create on a collection endpoint by
+            # resourceNames. Keep the existing namespace-local create needed
+            # for the wake Lease's self-healing path; helper code only creates
+            # its two configured Lease names.
+            - apiGroups: ["coordination.k8s.io"]
+              resources: ["leases"]
+              verbs: ["create"]
 
     - name: Create awx-autoscale RoleBinding
       kubernetes.core.k8s:
@@ -275,6 +298,12 @@
                         value: "{{ awx_autoscale_task_replicas | string }}"
                       - name: AWX_AUTOSCALE_LEASE_NAME
                         value: "{{ awx_autoscale_lease_name }}"
+                      - name: AWX_AUTOSCALE_JOB_HOLD_LEASE_NAME
+                        value: "{{ awx_autoscale_job_hold_lease_name }}"
+                      - name: AWX_AUTOSCALE_JOB_HOLD_MAX_SECONDS
+                        value: "{{ awx_autoscale_job_hold_max_seconds | string }}"
+                      - name: AWX_AUTOSCALE_REAPER_CLAIM_SECONDS
+                        value: "{{ awx_autoscale_reaper_claim_seconds | string }}"
                     volumeMounts:
                       - name: helper-script
                         mountPath: /opt/awx-autoscale
@@ -337,6 +366,9 @@
                 protocol: TCP
 
     # ── NetworkPolicy ─────────────────────────────────────────────────
+    # Keep the current CMS-only ingress. A future rotation trigger must use a
+    # protected runtime namespace and its own exact pod selector / port-8080
+    # allow rule; it must not impersonate the CMS label.
     - name: Create awx-autoscale default-deny ingress NetworkPolicy
       kubernetes.core.k8s:
         kubeconfig: "{{ awx_autoscale_kubeconfig }}"

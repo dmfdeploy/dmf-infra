@@ -144,6 +144,8 @@ def test_t1_post_ready_write_shrinks_to_grace_floor():
     clock = FakeClock()
     start = clock.now
     lease_api = FakeLeaseApi()
+    coordination = mock.MagicMock()
+    coordination.claim_for_wake.return_value = ("acquired", "wake-claim")
 
     def fake_wait_ready(timeout):
         clock.sleep(25)  # readiness arrives 25s after acquire
@@ -151,12 +153,15 @@ def test_t1_post_ready_write_shrinks_to_grace_floor():
 
     with mock.patch.object(helper, "time", clock), \
             mock.patch.object(helper, "_k8s_request", lease_api), \
+            mock.patch.object(helper, "_job_hold", coordination), \
             mock.patch.object(helper, "patch_awx_awake", return_value=None), \
             mock.patch.object(helper, "wait_awx_ready", side_effect=fake_wait_ready), \
             mock.patch.object(helper, "audit") as audit_mock:
         result = helper.do_ensure_awake()
 
     assert result["ok"] is True
+    assert coordination.claim_for_wake.call_count == 2
+    assert coordination.release_coordination_claim.call_count == 2
 
     persisted = lease_api.annotation()
     expected = start + 25 + helper.GRACE_PERIOD
@@ -247,6 +252,8 @@ def _run_reaper_312(clock, lease_min_awake):
     """
     lease = mock.MagicMock()
     lease.get_min_awake_until.return_value = lease_min_awake
+    job_hold = mock.MagicMock()
+    job_hold.is_job_hold_active.return_value = False
 
     work_calls = []
     activity_calls = []
@@ -261,6 +268,7 @@ def _run_reaper_312(clock, lease_min_awake):
 
     with mock.patch.object(helper, "time", clock), \
             mock.patch.object(helper, "_lease", lease), \
+            mock.patch.object(helper, "_job_hold", job_hold), \
             mock.patch.object(helper, "query_awx_work", side_effect=_record_work), \
             mock.patch.object(helper, "query_awx_activity", side_effect=_record_activity), \
             mock.patch.object(helper, "audit") as audit_mock:
