@@ -28,6 +28,17 @@ entries:
         dmf_role: ops-operator
 
   - model: authentik_core.group
+    id: dmf-group-forgejo-contributor
+    state: present
+    identifiers:
+      name: forgejo-contributor
+    attrs:
+      name: forgejo-contributor
+      is_superuser: false
+      attributes:
+        dmf_role: forgejo-contributor
+
+  - model: authentik_core.group
     id: dmf-group-viewer
     state: present
     identifiers:
