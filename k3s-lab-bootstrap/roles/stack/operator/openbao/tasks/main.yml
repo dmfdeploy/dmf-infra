@@ -9,6 +9,20 @@
 #   - kubeconfig: /etc/rancher/k3s/k3s.yaml for all k8s modules
 # ---------------------------------------------------------------------------
 
+- name: Load the finite-TTL AppRole lifecycle registry
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../../../../vars/openbao-approle-lifecycle-registry.json"
+    name: openbao_approle_lifecycle_registry
+
+- name: Assert OpenBao AppRole names match the lifecycle registry
+  ansible.builtin.assert:
+    that:
+      - openbao_eso_role_name == openbao_approle_lifecycle_registry.runtime_targets['external-secrets'].approle_name
+      - openbao_born_inventory_role_name == openbao_approle_lifecycle_registry.dispositions['born-inventory-netbox-reader'].approle_name
+    fail_msg: >-
+      AppRole role names must match vars/openbao-approle-lifecycle-registry.json;
+      update the disposition or runtime target before changing a name.
+
 - name: Create OpenBao namespace
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
@@ -1232,7 +1246,7 @@
       export BAO_TOKEN;
       bao write auth/approle/role/{{ openbao_eso_role_name }}
       token_policies=eso-reader
-      secret_id_ttl={{ openbao_eso_approle_secret_id_ttl }}
+      secret_id_ttl={{openbao_approle_lifecycle_registry.runtime_targets['external-secrets'].secret_id_ttl}}
       token_ttl=1h token_max_ttl=4h'
   environment:
     OPENBAO_TOKEN: "{{ openbao_root_token }}"
@@ -1361,7 +1375,7 @@
       export BAO_TOKEN;
       bao write auth/approle/role/{{ openbao_born_inventory_role_name }}
       token_policies={{ openbao_born_inventory_policy_name }}
-      secret_id_ttl={{ openbao_born_inventory_approle_secret_id_ttl }}
+      secret_id_ttl={{openbao_approle_lifecycle_registry.dispositions['born-inventory-netbox-reader'].secret_id_ttl}}
       token_ttl={{ openbao_born_inventory_token_ttl }}
       token_max_ttl={{ openbao_born_inventory_token_max_ttl }}'
   environment:

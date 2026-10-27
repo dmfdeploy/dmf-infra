@@ -39,6 +39,8 @@ jobs:
         run: python3 tests/test-forgejo-contributor-policy.py
       - name: Forgejo admin identity audit fixture tests (dmfdeploy/dmfdeploy#15)
         run: python3 -m unittest discover -s tests -p 'test_audit_forgejo_identities.py' -v
+      - name: OpenBao AppRole lifecycle registry and setup issuer tests (dmfdeploy/dmfdeploy#11, #396)
+        run: python3 -m unittest discover -s tests -p 'test_openbao_*.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
