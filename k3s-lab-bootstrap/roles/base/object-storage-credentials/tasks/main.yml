@@ -23,6 +23,27 @@
 #   Policy name     = object-storage-{{ logical_dashed }}-reader
 #   Binding name    = object-storage-{{ logical_dashed }}
 
+- name: Load the finite-TTL AppRole lifecycle registry
+  ansible.builtin.include_vars:
+    file: "{{ role_path }}/../../../vars/openbao-approle-lifecycle-registry.json"
+    name: openbao_approle_lifecycle_registry
+
+- name: Assert object-storage AppRoles match the lifecycle registry
+  ansible.builtin.assert:
+    that:
+      - >-
+        object_storage_logicals | map('regex_replace', '_', '-') | list | sort
+        ==
+        openbao_approle_lifecycle_registry.runtime_targets
+        | dict2items
+        | selectattr('value.logical_name', 'defined')
+        | map(attribute='value.logical_name')
+        | map('regex_replace', '_', '-')
+        | list | sort
+    fail_msg: >-
+      object_storage_logicals must match the generated runtime targets in
+      vars/openbao-approle-lifecycle-registry.json.
+
 # ── Step 1: Establish OpenBao sessions (two identities) ─────────────────────
 
 - name: Establish OpenBao policy-reconciler session (for sys/policies/acl writes)
@@ -217,7 +238,7 @@
       -- sh -c '
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
-      bao write auth/approle/role/object-storage-{{ item.logical_item.logical_dashed }} token_policies=object-storage-{{ item.logical_item.logical_dashed }}-reader secret_id_ttl={{ openbao_approle_secret_id_ttl }} token_ttl={{ openbao_approle_token_ttl }} token_max_ttl={{ openbao_approle_token_max_ttl }}'
+      bao write auth/approle/role/object-storage-{{ item.logical_item.logical_dashed }} token_policies=object-storage-{{ item.logical_item.logical_dashed }}-reader secret_id_ttl={{openbao_approle_lifecycle_registry.runtime_targets['object-storage-' ~ item.logical_item.logical_dashed].secret_id_ttl}} token_ttl={{ openbao_approle_token_ttl }} token_max_ttl={{ openbao_approle_token_max_ttl }}'
   loop: "{{ _os_approle_roleid_checks.results }}"
   loop_control:
     loop_var: item
