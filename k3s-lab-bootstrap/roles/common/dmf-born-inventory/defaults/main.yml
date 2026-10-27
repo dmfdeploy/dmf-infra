@@ -66,7 +66,6 @@ dmf_born_inventory_tag_name: "dmf-day0"
 dmf_born_inventory_openbao_namespace: openbao
 dmf_born_inventory_openbao_pod_label_selector: "app.kubernetes.io/name=openbao"
 dmf_born_inventory_openbao_approle_role_id_key: born_inventory_role_id
-dmf_born_inventory_openbao_approle_secret_id_key: born_inventory_secret_id
 dmf_born_inventory_openbao_breakglass_file: >-
   {{
     eso_openbao_breakglass_file

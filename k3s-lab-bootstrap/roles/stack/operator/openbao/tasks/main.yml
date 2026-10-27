@@ -330,7 +330,6 @@
     openbao_eso_role_id: "{{ existing_breakglass.get('eso_role_id') }}"
     openbao_eso_secret_id: "{{ existing_breakglass.get('eso_secret_id') }}"
     openbao_born_inventory_role_id: "{{ existing_breakglass.get('born_inventory_role_id') }}"
-    openbao_born_inventory_secret_id: "{{ existing_breakglass.get('born_inventory_secret_id') }}"
   when:
     - existing_breakglass.get('eso_role_id') is not none
   no_log: true
@@ -917,6 +916,7 @@
       bound_service_account_names={{ openbao_born_inventory_setup_issuer_service_account }}
       bound_service_account_namespaces={{ openbao_namespace }}
       token_policies={{ openbao_born_inventory_setup_issuer_policy_name }}
+      audience={{ openbao_born_inventory_setup_issuer_audience }}
       token_ttl={{ openbao_born_inventory_setup_issuer_token_ttl }}
       token_max_ttl={{ openbao_born_inventory_setup_issuer_token_ttl }}'
   environment:
@@ -1463,34 +1463,12 @@
     - openbao_init_raw is defined
     - openbao_init_raw.changed | default(false)
 
-- name: Generate born-inventory AppRole secret_id
-  ansible.builtin.shell:
-    cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao write -format=json -force auth/approle/role/{{ openbao_born_inventory_role_name }}/secret-id'
-  environment:
-    OPENBAO_TOKEN: "{{ openbao_root_token }}"
-  register: born_inventory_secret_id_raw
-  no_log: true
-  when:
-    - openbao_init_raw is defined
-    - openbao_init_raw.changed | default(false)
-
-- name: Extract born-inventory role_id and secret_id from init output
+- name: Extract born-inventory role_id from init output
   ansible.builtin.set_fact:
     openbao_born_inventory_role_id: "{{ (born_inventory_role_id_raw.stdout | from_json).data.role_id }}"
-    openbao_born_inventory_secret_id: "{{ (born_inventory_secret_id_raw.stdout | from_json).data.secret_id }}"
   when:
     - born_inventory_role_id_raw is defined
     - born_inventory_role_id_raw.stdout is defined
-    - born_inventory_secret_id_raw is defined
-    - born_inventory_secret_id_raw.stdout is defined
   no_log: true
 
 # ---------------------------------------------------------------------------
@@ -1736,7 +1714,6 @@
       eso_role_id: "{{ openbao_eso_role_id | default(existing_breakglass.eso_role_id | default('')) }}"
       eso_secret_id: "{{ openbao_eso_secret_id | default(existing_breakglass.eso_secret_id | default('')) }}"
       born_inventory_role_id: "{{ openbao_born_inventory_role_id | default(existing_breakglass.born_inventory_role_id | default('')) }}"
-      born_inventory_secret_id: "{{ openbao_born_inventory_secret_id | default(existing_breakglass.born_inventory_secret_id | default('')) }}"
       shamir_threshold: "{{ openbao_shamir_threshold }}"
       shamir_shares: "{{ openbao_shamir_shares }}"
       ops_admin_username: "{{ openbao_operator_username }}"
