@@ -25,6 +25,105 @@
 #   (kept over the plan's KubeNodeNotReady/DiskNearFull aliases to avoid
 #   churn; HostDiskNearFull below covers node filesystems separately).
 groups:
+  - name: dmf-openbao-approle-rotation
+    rules:
+      - alert: OpenBaoAppRoleObserverDown
+        expr: up{job="dmf-promsd-approle-rotation"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: OpenBao AppRole lifecycle observer is unavailable
+          description: >-
+            Prometheus cannot scrape the dmf-promsd lifecycle observer for 5m.
+            Rotation metadata freshness and expiry alerts cannot be evaluated.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+      - alert: OpenBaoAppRoleMetadataUnavailable
+        expr: dmf_openbao_approle_rotation_metadata_available == 0
+        for: 10m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: OpenBao rotation metadata unavailable
+          description: >-
+            The observer has no current valid metadata for this configured
+            runtime target. Cached expiry and run-state series are withheld.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+      - alert: OpenBaoAppRoleRotationDue
+        expr: dmf:openbao_approle_rotation_due == 1
+        for: 15m
+        labels:
+          severity: info
+          category: security
+        annotations:
+          summary: OpenBao AppRole rotation due
+          description: >-
+            At least two thirds of the active SecretID lifetime has elapsed.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+      - alert: OpenBaoAppRoleSecretIDExpiryWarning
+        expr: >-
+          (((dmf_openbao_approle_secret_id_expires_at_seconds - time())
+            / dmf_openbao_approle_secret_id_ttl_seconds) < 0.25)
+          and
+          (((dmf_openbao_approle_secret_id_expires_at_seconds - time())
+            / dmf_openbao_approle_secret_id_ttl_seconds) >= 0.10)
+          and on(target) (dmf_openbao_approle_rotation_metadata_available == 1)
+        for: 15m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: OpenBao AppRole SecretID nearing expiry
+          description: >-
+            Less than 25% but at least 10% of the active SecretID lifetime
+            remains.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+      - alert: OpenBaoAppRoleSecretIDExpiryCritical
+        expr: >-
+          (((dmf_openbao_approle_secret_id_expires_at_seconds - time())
+            / dmf_openbao_approle_secret_id_ttl_seconds) < 0.10)
+          and on(target) (dmf_openbao_approle_rotation_metadata_available == 1)
+        for: 5m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: OpenBao AppRole SecretID near expiry
+          description: >-
+            Less than 10% of the active SecretID lifetime remains.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+      - alert: OpenBaoAppRoleRotationLatestRunFailed
+        expr: dmf_openbao_approle_rotation_latest_run_timestamp_seconds{outcome="failure"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: Latest OpenBao rotation run failed
+          description: >-
+            The latest recorded rotation attempt failed. The timestamp and
+            failure reason remain bounded metadata; no credential data is exposed.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+      - alert: OpenBaoAppRoleScheduledRotationHeartbeatMissing
+        expr: >-
+          ((time() - dmf_openbao_approle_rotation_last_scheduled_success_seconds) > 93600)
+          or on(target)
+          ((dmf_openbao_approle_rotation_metadata_available == 1)
+           unless on(target)
+           dmf_openbao_approle_rotation_last_scheduled_success_seconds)
+        for: 15m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: Scheduled rotation heartbeat missing
+          description: >-
+            No successful scheduled rotation is recorded within 26 hours.
+            Manual runs do not reset this schedule heartbeat.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+
   - name: dmf-watchdog
     rules:
       # Dead-man's switch: fires constantly. Two independent consumers, which

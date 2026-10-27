@@ -44,9 +44,8 @@ object_storage_consumer_namespaces:
 object_storage_managed_consumer_namespaces:
   - openbao-system
 
-# OpenBao AppRole TTLs. Long-lived because backup CronJobs depend on
-# these creds; rotation is operator-initiated, not reconcile-driven.
-openbao_approle_secret_id_ttl: "8760h"
+# OpenBao AppRole token TTLs. SecretID TTL is authoritative in
+# vars/openbao-approle-lifecycle-registry.json.
 openbao_approle_token_ttl: "1h"
 openbao_approle_token_max_ttl: "24h"
 

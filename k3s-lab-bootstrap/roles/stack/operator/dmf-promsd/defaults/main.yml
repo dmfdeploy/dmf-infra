@@ -31,6 +31,24 @@ dmf_promsd_eso_refresh_interval: 1h
 dmf_promsd_cluster_secret_store_name: "{{ eso_cluster_secret_store_name | default('openbao') }}"
 dmf_promsd_external_secret_api_version: "{{ eso_crd_api_version | default('external-secrets.io/v1') }}"
 
+# OpenBao observer endpoint and TLS trust. The server uses a self-signed
+# certificate in the openbao namespace; only its public tls.crt is copied to
+# this namespace, never the Secret or private key.
+dmf_promsd_openbao_address: "https://openbao.{{ openbao_namespace | default('openbao') }}.svc.cluster.local:8200"
+dmf_promsd_openbao_auth_mount: kubernetes
+dmf_promsd_openbao_auth_role: dmf-promsd-observer
+dmf_promsd_openbao_observer_interval_seconds: 60
+dmf_promsd_openbao_service_account: dmf-promsd-openbao-observer
+dmf_promsd_openbao_token_audience: dmf-openbao-observer
+dmf_promsd_openbao_token_expiration_seconds: 600
+dmf_promsd_openbao_jwt_mount_path: /var/run/openbao-token
+dmf_promsd_openbao_jwt_file: "{{ dmf_promsd_openbao_jwt_mount_path }}/token"
+dmf_promsd_openbao_tls_namespace: "{{ openbao_namespace | default('openbao') }}"
+dmf_promsd_openbao_tls_secret_name: "{{ openbao_tls_secret_name | default('openbao-tls') }}"
+dmf_promsd_openbao_ca_configmap_name: dmf-promsd-openbao-ca
+dmf_promsd_openbao_ca_mount_path: /var/run/openbao-ca
+dmf_promsd_openbao_ca_file: "{{ dmf_promsd_openbao_ca_mount_path }}/ca.crt"
+
 # Sandbox-sized resources — lightweight FastAPI adapter, no TSDB.
 # Sized between alertmanager (20m/64Mi) and promtail (100m/128Mi).
 dmf_promsd_resources:

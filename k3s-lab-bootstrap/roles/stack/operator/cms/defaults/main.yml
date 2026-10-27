@@ -1,6 +1,10 @@
 ---
 cms_namespace: dmf-cms
 cms_release_name: dmf-cms
+cms_service_account_name: dmf-cms-setup-requests
+cms_setup_request_namespace: dmf-setup-requests
+cms_setup_request_role_name: dmf-cms-setup-request-writer
+cms_setup_request_action: born-inventory-secretid-issue
 cms_chart_source_path: "{{ playbook_dir }}/../../../dmf-cms/charts/dmf-cms"
 cms_chart_stage_path: /tmp/dmf-cms-chart
 cms_chart_values_path: /tmp/dmf-cms-values.yml

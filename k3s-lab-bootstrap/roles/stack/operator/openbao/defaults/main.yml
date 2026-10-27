@@ -79,18 +79,29 @@ openbao_engines:
 # ESO AppRole — the role ESO will use to authenticate
 openbao_eso_role_name: external-secrets
 
-# ESO AppRole secret_id TTL. 720h = 30 days. Each 40-openbao.yml run
-# mints a fresh secret_id; the TTL governs how long stale secret_ids
-# remain valid if a run is missed. 0 means never-expire (unsafe).
-openbao_eso_approle_secret_id_ttl: "720h"
-
 # born-inventory AppRole — narrow read-only access to the NetBox runtime
 # secret. This replaces direct root-token reads in the born-inventory role.
 openbao_born_inventory_role_name: born-inventory-netbox-reader
 openbao_born_inventory_policy_name: born-inventory-netbox-runtime-reader
-openbao_born_inventory_approle_secret_id_ttl: "720h"
 openbao_born_inventory_token_ttl: "1h"
 openbao_born_inventory_token_max_ttl: "4h"
+
+# Setup-only issuer for fresh born-inventory NetBox reads. The dedicated
+# Kubernetes-auth role can assign only caller-supplied IDs that expire within
+# one hour and permit one login. This does not alter the existing AppRole
+# defaults or its currently cached consumer credential.
+openbao_born_inventory_setup_issuer_policy_name: born-inventory-setup-issuer
+openbao_born_inventory_setup_issuer_service_account: born-inventory-setup-issuer
+openbao_born_inventory_setup_issuer_auth_role: born-inventory-setup-issuer
+openbao_born_inventory_setup_issuer_token_ttl: "15m"
+
+# Read-only identity for dmf-promsd's AppRole lifecycle metadata observer.
+openbao_approle_rotation_observer_policy_name: approle-rotation-observer
+openbao_approle_rotation_observer_service_account: dmf-promsd-openbao-observer
+openbao_approle_rotation_observer_namespace: monitoring
+openbao_approle_rotation_observer_auth_role: dmf-promsd-observer
+openbao_approle_rotation_observer_audience: dmf-openbao-observer
+openbao_approle_rotation_observer_token_ttl: "5m"
 
 # PKI config
 openbao_pki_path: pki

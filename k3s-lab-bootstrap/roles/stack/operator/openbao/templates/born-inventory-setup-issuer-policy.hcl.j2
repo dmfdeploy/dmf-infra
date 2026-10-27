@@ -1,0 +1,25 @@
+path "auth/approle/role/{{ openbao_born_inventory_role_name }}/custom-secret-id" {
+  capabilities = ["update"]
+  required_parameters = ["secret_id", "ttl", "num_uses"]
+  allowed_parameters = {
+    "secret_id" = []
+    "ttl" = ["1h"]
+    "num_uses" = ["1"]
+  }
+}
+
+path "auth/approle/role/{{ openbao_born_inventory_role_name }}/secret-id/lookup" {
+  capabilities = ["update"]
+  required_parameters = ["secret_id"]
+  allowed_parameters = {
+    "secret_id" = []
+  }
+}
+
+path "auth/approle/role/{{ openbao_born_inventory_role_name }}/secret-id-accessor/destroy" {
+  capabilities = ["update"]
+  required_parameters = ["secret_id_accessor"]
+  allowed_parameters = {
+    "secret_id_accessor" = []
+  }
+}

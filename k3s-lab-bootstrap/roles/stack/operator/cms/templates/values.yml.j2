@@ -8,6 +8,12 @@ service:
   type: ClusterIP
   port: 8000
 
+serviceAccountName: {{ cms_service_account_name | to_json }}
+
+setupRequests:
+  envId: {{ dmf_env_id | default('') | to_json }}
+  clusterUid: {{ _cms_kube_system_uid | default('') | to_json }}
+
 podAnnotations:
   checksum/runtime-secret: {{ _cms_runtime_secret_data_merged | to_nice_json | hash('sha256') }}
 
