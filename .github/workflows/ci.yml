@@ -37,6 +37,8 @@ jobs:
         run: python3 -m unittest discover -s roles/stack/operator/awx-integration/tests -v
       - name: Forgejo Authentik contributor policy regression tests (dmfdeploy/dmfdeploy#15)
         run: python3 tests/test-forgejo-contributor-policy.py
+      - name: Forgejo admin identity audit fixture tests (dmfdeploy/dmfdeploy#15)
+        run: python3 -m unittest discover -s tests -p 'test_audit_forgejo_identities.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
