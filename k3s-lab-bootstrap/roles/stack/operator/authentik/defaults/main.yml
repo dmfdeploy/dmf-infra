@@ -63,6 +63,11 @@ authentik_oidc_access_code_validity: minutes=1
 authentik_oidc_access_token_validity: minutes=15
 authentik_oidc_refresh_token_validity: hours=8
 
+# Keep the existing Forgejo subject until a supported migration for every
+# Forgejo identity field has been implemented and verified. The role's guard
+# currently rejects user_uuid (see docs/forgejo.md).
+authentik_forgejo_oidc_sub_mode: user_username
+
 authentik_cluster_secret_store_name: "{{ eso_cluster_secret_store_name | default('openbao') }}"
 authentik_external_secret_api_version: "{{ eso_crd_api_version | default('external-secrets.io/v1') }}"
 authentik_external_secret_refresh_interval: 1h
