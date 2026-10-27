@@ -92,6 +92,15 @@ openbao_born_inventory_approle_secret_id_ttl: "720h"
 openbao_born_inventory_token_ttl: "1h"
 openbao_born_inventory_token_max_ttl: "4h"
 
+# Setup-only issuer for fresh born-inventory NetBox reads. The dedicated
+# Kubernetes-auth role can assign only caller-supplied IDs that expire within
+# one hour and permit one login. This does not alter the existing AppRole
+# defaults or its currently cached consumer credential.
+openbao_born_inventory_setup_issuer_policy_name: born-inventory-setup-issuer
+openbao_born_inventory_setup_issuer_service_account: born-inventory-setup-issuer
+openbao_born_inventory_setup_issuer_auth_role: born-inventory-setup-issuer
+openbao_born_inventory_setup_issuer_token_ttl: "15m"
+
 # PKI config
 openbao_pki_path: pki
 openbao_pki_max_lease_ttl: "87600h"  # 10 years for root CA

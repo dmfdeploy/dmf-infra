@@ -828,6 +828,91 @@
     - openbao_init_raw.changed | default(false)
 
 # ---------------------------------------------------------------------------
+# Setup-only born-inventory issuer identity (fresh init only)
+# This does not change the existing born-inventory AppRole or its cached ID.
+# The authenticated dispatcher and 694 consumer integration are a paired
+# follow-on; direct playbook callers remain unchanged in this bootstrap slice.
+# ---------------------------------------------------------------------------
+
+- name: Create born-inventory setup issuer ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ openbao_born_inventory_setup_issuer_service_account }}"
+        namespace: "{{ openbao_namespace }}"
+      automountServiceAccountToken: false
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Render born-inventory setup issuer policy in OpenBao pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - "cat > /tmp/{{ openbao_born_inventory_setup_issuer_policy_name }}.hcl"
+    stdin: "{{ lookup('template', 'born-inventory-setup-issuer-policy.hcl.j2') }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Apply born-inventory setup issuer policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_born_inventory_setup_issuer_policy_name }}
+      /tmp/{{ openbao_born_inventory_setup_issuer_policy_name }}.hcl'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Bind born-inventory setup issuer ServiceAccount to bounded policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/kubernetes/role/{{ openbao_born_inventory_setup_issuer_auth_role }}
+      bound_service_account_names={{ openbao_born_inventory_setup_issuer_service_account }}
+      bound_service_account_namespaces={{ openbao_namespace }}
+      token_policies={{ openbao_born_inventory_setup_issuer_policy_name }}
+      token_ttl={{ openbao_born_inventory_setup_issuer_token_ttl }}
+      token_max_ttl={{ openbao_born_inventory_setup_issuer_token_ttl }}'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+# ---------------------------------------------------------------------------
 # Policy apply token selection — fresh init vs rerun
 # Fresh init: use root token. Rerun: use policy-reconciler client token.
 # ---------------------------------------------------------------------------
