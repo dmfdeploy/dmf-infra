@@ -16,16 +16,16 @@ a mutation happens to be visible, but it cannot establish that 693 is running:
     most of its entries are invisible here. Granting awx-svc system auditor to
     close that gap is explicitly rejected.
 
-So a long play CAN still age past the grace period and get slept — whether it
-does depends on whether awx-svc happens to keep seeing fresh entries, which
-nothing guarantees (test_sustained_visible_mutations_delay_the_sleep pins the
-case where it does keep seeing them, and the sleep is duly delayed). Pausing
-the autoscaler remains the operator workaround. The real fix is an explicit
-renewable hold on the wake Lease, taken by the AWX-consumer phase itself and
-released in an always/finally path — tracked as its own issue.
+Without a renewable job hold, a long play can still age past the grace period
+and get slept. Whether the activity stream delays that depends on whether
+awx-svc happens to keep seeing fresh entries, which nothing guarantees
+(test_sustained_visible_mutations_delay_the_sleep pins the case where it does).
+The caller-owned `/job-hold` endpoint now provides the bounded hold; the
+consumer must acquire it after waking AWX, renew it while the job runs, and
+release it during cleanup.
 
-test_visible_mutation_ages_out_and_reaper_still_sleeps below is the honest
-anchor for that limitation, and is expected to FLIP when the Lease hold lands.
+test_visible_mutation_ages_out_and_reaper_still_sleeps below covers an idle
+AWX with no caller-owned hold. The new no-op job test covers the held case.
 
 What this change IS: directionally fail-safe supplementary evidence. It can
 only ever EXTEND the wake window, never shorten it. A degraded outcome either
@@ -236,10 +236,15 @@ def _run_reaper(clock, urlopen_side_effect, lease=None):
     """
     lease = lease or mock.MagicMock()
     lease.get_min_awake_until.return_value = 0.0
+    job_hold = mock.MagicMock()
+    job_hold.is_job_hold_active.return_value = False
+    job_hold.claim_for_reaper.return_value = (True, "test-reaper")
+    job_hold.release_reaper_claim.return_value = True
     slept = []
 
     with mock.patch.object(helper, "time", clock), \
             mock.patch.object(helper, "_lease", lease), \
+            mock.patch.object(helper, "_job_hold", job_hold), \
             mock.patch.object(helper, "_read_secret", return_value="tok"), \
             mock.patch.object(helper, "patch_awx_asleep",
                               side_effect=lambda: slept.append(clock.now)), \
@@ -268,9 +273,8 @@ def test_visible_mutation_ages_out_and_reaper_still_sleeps():
     That asserted a world that cannot happen: a finite, non-renewing set of
     visible events is what a real play produces.
 
-    EXPECTED TO FLIP: when the explicit Lease hold lands (the AWX-consumer
-    phase renewing the wake Lease during playbooks 693, 697 and 699), this
-    scenario must stop sleeping and this assertion should be inverted, not deleted.
+    This test intentionally has no caller-owned hold, so it confirms that an
+    idle AWX still sleeps after the grace period.
     """
     clock = FakeClock(max_sleeps=20)  # 20 minutes, > 2x the 300s grace period
     fixed_event = clock.iso(5)  # one visible mutation, never renewed
@@ -280,11 +284,7 @@ def test_visible_mutation_ages_out_and_reaper_still_sleeps():
         _route(lambda: _jobs(0), lambda: _activity(fixed_event)),
     )
 
-    assert slept, (
-        "documents the KNOWN GAP: one visible mutation ages out and the "
-        "reaper sleeps AWX mid-play. If this now fails, the Lease hold has "
-        "landed — invert the assertion rather than removing the test."
-    )
+    assert slept, "AWX with no caller-owned job hold should sleep after grace"
 
 
 def test_sustained_visible_mutations_delay_the_sleep():

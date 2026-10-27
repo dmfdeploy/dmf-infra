@@ -2,7 +2,8 @@
 """awx-autoscale helper — stdlib-only on-demand scale-to-zero for AWX.
 
 Deployed as a ConfigMap-mounted script in a python:3-slim container.
-Exposes POST /ensure-awake (bearer-token auth) and a background idle-reaper.
+Exposes bearer-authenticated POST /ensure-awake and /job-hold endpoints, plus
+a background idle-reaper.
 
 Design authority: umbrella https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e973b10e0b52deef290981ceac9bcf5bd/docs/plans/DMF%20AWX%20On-Demand%20Scale-to-Zero%20Plan%202026-06-18.md §B.
 
@@ -14,9 +15,11 @@ No pip dependencies — stdlib only.
 from __future__ import annotations
 
 import hmac
+import hashlib
 import json
 import logging
 import os
+import re
 import ssl
 import sys
 import threading
@@ -50,6 +53,22 @@ REAPER_POLL_INTERVAL = int(os.environ.get("AWX_AUTOSCALE_REAPER_POLL_INTERVAL", 
 WEB_REPLICAS = int(os.environ.get("AWX_AUTOSCALE_WEB_REPLICAS", "1"))
 TASK_REPLICAS = int(os.environ.get("AWX_AUTOSCALE_TASK_REPLICAS", "1"))
 LEASE_NAME = os.environ.get("AWX_AUTOSCALE_LEASE_NAME", "awx-autoscale-wake")
+JOB_HOLD_LEASE_NAME = os.environ.get(
+    "AWX_AUTOSCALE_JOB_HOLD_LEASE_NAME", "awx-autoscale-job-hold")
+JOB_HOLD_MAX_SECONDS = int(
+    os.environ.get("AWX_AUTOSCALE_JOB_HOLD_MAX_SECONDS", "900"))
+# A claim starts when its CAS write succeeds. After that, wake-floor CAS can
+# take at most five GET/PUT rounds (100s); the reaper's final floor read,
+# sleep CR + two Deployment patches, and last-sleep annotation write are
+# bounded at 60s. With 10s requests, 200s leaves at least 90s margin even
+# accounting for the final 10s claim-acquire request.
+COORDINATION_CLAIM_MIN_SECONDS = 200
+REAPER_CLAIM_SECONDS = int(
+    os.environ.get("AWX_AUTOSCALE_REAPER_CLAIM_SECONDS", "200"))
+if JOB_HOLD_MAX_SECONDS < 1 or REAPER_CLAIM_SECONDS < COORDINATION_CLAIM_MIN_SECONDS:
+    raise ValueError(
+        "AWX job-hold duration must be positive and reaper claim duration "
+        f"must be at least {COORDINATION_CLAIM_MIN_SECONDS}s")
 
 # Paths — mounted volumes
 SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
@@ -63,6 +82,7 @@ K8S_API = "https://kubernetes.default.svc"
 # Annotation key for min_awake_until on the Lease object
 LEASE_MIN_AWAKE_ANNOTATION = "awx-autoscale.dmf/min-awake-until"
 LEASE_LAST_SLEEP_ANNOTATION = "awx-autoscale.dmf/last-sleep-at"
+JOB_HOLD_RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 # ---------------------------------------------------------------------------
 # Logging — JSON audit log to stdout
@@ -351,6 +371,336 @@ class LeaseManager:
 
 
 _lease = LeaseManager()
+
+
+# ---------------------------------------------------------------------------
+# Job-scoped hold — keep AWX available while a caller-owned job is running
+# ---------------------------------------------------------------------------
+
+_job_hold_lock = threading.Lock()
+
+
+class JobHoldLeaseManager:
+    """Manage one bounded, renewable hold on AWX availability.
+
+    The Lease is separate from the short wake Lease. Its holderIdentity is a
+    digest of the authenticated bearer principal plus the caller's run id, and
+    leaseDurationSeconds bounds each renewal. The idle reaper checks this
+    Lease before deciding to sleep.
+    """
+
+    def _lease_path(self) -> str:
+        return (
+            f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases/"
+            f"{JOB_HOLD_LEASE_NAME}")
+
+    def _collection_path(self) -> str:
+        return f"/apis/coordination.k8s.io/v1/namespaces/{NAMESPACE}/leases"
+
+    def get(self) -> dict | None:
+        try:
+            return _k8s_request("GET", self._lease_path())
+        except HTTPError as e:
+            if e.code == 404:
+                return None
+            raise
+
+    @staticmethod
+    def _holder(principal_id: str, run_id: str) -> str:
+        if not isinstance(principal_id, str) or not principal_id:
+            raise ValueError("authenticated caller principal is required")
+        if not isinstance(run_id, str) or not JOB_HOLD_RUN_ID_RE.fullmatch(run_id):
+            raise ValueError("run_id must be 1-128 safe ASCII identifier characters")
+        # The bearer token authenticates the principal. run_id distinguishes
+        # its individual run; it is not a credential or proof of identity.
+        # Store only a digest, never either clear-text value, in the Lease.
+        owner = f"{principal_id}\0{run_id}".encode("utf-8")
+        return "awx-job-" + hashlib.sha256(owner).hexdigest()
+
+    @staticmethod
+    def _valid_duration(duration_seconds: Any) -> bool:
+        return (
+            isinstance(duration_seconds, int)
+            and not isinstance(duration_seconds, bool)
+            and 1 <= duration_seconds <= JOB_HOLD_MAX_SECONDS)
+
+    @staticmethod
+    def _expires_at(lease: dict) -> float | None:
+        """Return the Lease deadline, or None when no holder/deadline exists."""
+        spec = lease.get("spec") or {}
+        if not spec.get("holderIdentity"):
+            return None
+        renew_time = spec.get("renewTime")
+        duration = spec.get("leaseDurationSeconds")
+        if not isinstance(renew_time, str):
+            return float("inf")
+        if isinstance(duration, bool) or not isinstance(duration, int):
+            return float("inf")
+        try:
+            stamp = datetime.fromisoformat(renew_time.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                return float("inf")
+            return stamp.timestamp() + max(0, duration)
+        except (ValueError, OverflowError):
+            # Malformed occupied Leases fail open: do not sleep AWX when the
+            # helper cannot establish that a hold has expired.
+            return float("inf")
+
+    def is_active(self, lease: dict | None = None) -> bool:
+        """Whether any unexpired owner holds the Lease; malformed holds fail open."""
+        if lease is None:
+            lease = self.get()
+        if lease is None:
+            return False
+        expires_at = self._expires_at(lease)
+        return expires_at is not None and expires_at > time.time()
+
+    def is_job_hold_active(self, lease: dict | None = None) -> bool:
+        """Whether an unexpired job owner holds AWX awake."""
+        if lease is None:
+            lease = self.get()
+        if not self.is_active(lease):
+            return False
+        holder = (lease.get("spec") or {}).get("holderIdentity", "")
+        return holder.startswith("awx-job-")
+
+    @staticmethod
+    def _lease_body(holder: str, duration_seconds: int, now: float,
+                    existing: dict | None = None) -> dict:
+        stamp = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+        if existing is None:
+            return {
+                "apiVersion": "coordination.k8s.io/v1",
+                "kind": "Lease",
+                "metadata": {"name": JOB_HOLD_LEASE_NAME, "namespace": NAMESPACE},
+                "spec": {
+                    "holderIdentity": holder,
+                    "leaseDurationSeconds": duration_seconds,
+                    "acquireTime": stamp,
+                    "renewTime": stamp,
+                },
+            }
+        body = json.loads(json.dumps(existing))
+        spec = body.setdefault("spec", {})
+        spec["holderIdentity"] = holder
+        spec["leaseDurationSeconds"] = duration_seconds
+        spec.setdefault("acquireTime", stamp)
+        spec["renewTime"] = stamp
+        return body
+
+    def _write(self, body: dict, existing: dict | None) -> dict:
+        if existing is None:
+            return _k8s_request("POST", self._collection_path(), body=body)
+        return _k8s_request("PUT", self._lease_path(), body=body)
+
+    def acquire(self, run_id: str, duration_seconds: Any,
+                principal_id: str) -> tuple[bool, str]:
+        """Acquire or idempotently renew this run's hold, with CAS retries."""
+        try:
+            holder = self._holder(principal_id, run_id)
+        except ValueError as e:
+            return False, str(e)
+        if not self._valid_duration(duration_seconds):
+            return False, f"duration_seconds must be between 1 and {JOB_HOLD_MAX_SECONDS}"
+
+        # Serialize acquisition against the reaper's final claim/sleep. Use
+        # the full launch-readiness predicate: ping can remain green briefly
+        # after the reaper has patched AWX down to zero replicas.
+        with _job_hold_lock:
+            snapshot = check_launch_ready_snapshot()
+            if snapshot.get("all_ready") is not True:
+                return False, "AWX is not ready; call /ensure-awake before acquiring a hold"
+            return self._acquire_locked(holder, duration_seconds)
+
+    def _acquire_locked(self, holder: str, duration_seconds: int) -> tuple[bool, str]:
+        for _attempt in range(5):
+            existing = self.get()
+            now = time.time()
+            active = self.is_active(existing)
+            existing_holder = (existing or {}).get("spec", {}).get("holderIdentity", "")
+            if active and existing_holder != holder:
+                return False, "another run holds AWX awake"
+            body = self._lease_body(holder, duration_seconds, now, existing)
+            if existing is None:
+                body["spec"]["acquireTime"] = datetime.fromtimestamp(
+                    now, tz=timezone.utc).isoformat()
+            else:
+                same_active_holder = active and existing_holder == holder
+                body.setdefault("spec", {})["acquireTime"] = (
+                    ((existing.get("spec") or {}).get("acquireTime")
+                     if same_active_holder else None)
+                    or datetime.fromtimestamp(now, tz=timezone.utc).isoformat())
+            try:
+                self._write(body, existing)
+                audit("job_hold_acquired", action="acquire-or-renew")
+                return True, "hold active"
+            except HTTPError as e:
+                if e.code in (409, 404):
+                    continue
+                raise
+        audit("job_hold_cas_exhausted", action="acquire")
+        return False, "hold lease changed concurrently; retry"
+
+    def renew(self, run_id: str, duration_seconds: Any,
+              principal_id: str) -> tuple[bool, str]:
+        """Renew only an unexpired hold owned by this run id."""
+        try:
+            holder = self._holder(principal_id, run_id)
+        except ValueError as e:
+            return False, str(e)
+        if not self._valid_duration(duration_seconds):
+            return False, f"duration_seconds must be between 1 and {JOB_HOLD_MAX_SECONDS}"
+
+        with _job_hold_lock:
+            for _attempt in range(5):
+                existing = self.get()
+                if not self.is_active(existing) or (
+                        (existing or {}).get("spec", {}).get("holderIdentity") != holder):
+                    return False, "no active hold owned by this run"
+                body = self._lease_body(holder, duration_seconds, time.time(), existing)
+                try:
+                    self._write(body, existing)
+                    audit("job_hold_renewed")
+                    return True, "hold renewed"
+                except HTTPError as e:
+                    if e.code in (409, 404):
+                        continue
+                    raise
+        audit("job_hold_cas_exhausted", action="renew")
+        return False, "hold lease changed concurrently; retry"
+
+    def release(self, run_id: str, principal_id: str) -> tuple[bool, str]:
+        """Release only this run's hold; an absent hold is idempotent success."""
+        try:
+            holder = self._holder(principal_id, run_id)
+        except ValueError as e:
+            return False, str(e)
+
+        with _job_hold_lock:
+            for _attempt in range(5):
+                existing = self.get()
+                if existing is None:
+                    return True, "hold already absent"
+                existing_holder = (existing.get("spec") or {}).get("holderIdentity", "")
+                if not existing_holder:
+                    return True, "hold already released"
+                if existing_holder != holder:
+                    return False, "no hold owned by this run"
+                body = json.loads(json.dumps(existing))
+                spec = body.setdefault("spec", {})
+                spec["holderIdentity"] = ""
+                spec["leaseDurationSeconds"] = 0
+                spec["renewTime"] = datetime.fromtimestamp(
+                    time.time(), tz=timezone.utc).isoformat()
+                try:
+                    self._write(body, existing)
+                    audit("job_hold_released")
+                    return True, "hold released"
+                except HTTPError as e:
+                    if e.code in (409, 404):
+                        continue
+                    raise
+        audit("job_hold_cas_exhausted", action="release")
+        return False, "hold lease changed concurrently; retry"
+
+    def claim_for_reaper(self) -> tuple[bool, str]:
+        """CAS-claim the same Lease before the reaper sleeps AWX.
+
+        This is the distributed exclusion point shared by all helper pods. A
+        live job hold or another reaper claim blocks sleep. The short expiry
+        lets another helper recover if the reaper crashes.
+        """
+        holder = "awx-reaper-{}-{}".format(
+            os.environ.get("HOSTNAME", "helper"), os.getpid())
+        with _job_hold_lock:
+            for _attempt in range(5):
+                existing = self.get()
+                if self.is_active(existing):
+                    return False, "another owner holds the coordination Lease"
+                now = time.time()
+                body = self._lease_body(holder, REAPER_CLAIM_SECONDS, now, existing)
+                if existing is not None:
+                    body.setdefault("spec", {})["acquireTime"] = (
+                        datetime.fromtimestamp(now, tz=timezone.utc).isoformat())
+                try:
+                    self._write(body, existing)
+                    audit("reaper_claim_acquired")
+                    return True, holder
+                except HTTPError as e:
+                    if e.code in (409, 404):
+                        continue
+                    raise
+        audit("job_hold_cas_exhausted", action="reaper-claim")
+        return False, "coordination Lease changed concurrently; retry"
+
+    def claim_for_wake(self) -> tuple[str, str]:
+        """Claim the shared Lease while publishing a wake floor.
+
+        The wake-floor write is short. Releasing this claim before the AWX
+        readiness wait lets a later reaper inspect the new floor and defer.
+        Existing job holds are not stolen; the caller gets a retryable result.
+        """
+        holder = "awx-wake-{}-{}-{}".format(
+            os.environ.get("HOSTNAME", "helper"), os.getpid(),
+            threading.current_thread().name)
+        with _job_hold_lock:
+            for _attempt in range(5):
+                existing = self.get()
+                if self.is_active(existing):
+                    active_holder = (existing.get("spec") or {}).get(
+                        "holderIdentity", "")
+                    if active_holder.startswith("awx-job-"):
+                        return "job-hold", active_holder
+                    # The short distributed claim is intentionally nonblocking
+                    # for request latency. The caller can retry after this
+                    # bounded owner-checked operation completes.
+                    audit("wake_claim_busy")
+                    return "busy", active_holder
+                now = time.time()
+                body = self._lease_body(holder, REAPER_CLAIM_SECONDS,
+                                        now, existing)
+                if existing is not None:
+                    body.setdefault("spec", {})["acquireTime"] = (
+                        datetime.fromtimestamp(now, tz=timezone.utc).isoformat())
+                try:
+                    self._write(body, existing)
+                    audit("wake_claim_acquired")
+                    return "acquired", holder
+                except HTTPError as e:
+                    if e.code in (409, 404):
+                        continue
+                    raise
+        audit("wake_claim_unavailable")
+        return "busy", ""
+
+    def release_coordination_claim(self, holder: str) -> bool:
+        """Clear only the reaper/waker claim acquired by this helper process."""
+        with _job_hold_lock:
+            for _attempt in range(5):
+                existing = self.get()
+                if existing is None:
+                    return True
+                if (existing.get("spec") or {}).get("holderIdentity") != holder:
+                    return False
+                body = json.loads(json.dumps(existing))
+                spec = body.setdefault("spec", {})
+                spec["holderIdentity"] = ""
+                spec["leaseDurationSeconds"] = 0
+                spec["renewTime"] = datetime.fromtimestamp(
+                    time.time(), tz=timezone.utc).isoformat()
+                try:
+                    self._write(body, existing)
+                    audit("coordination_claim_released")
+                    return True
+                except HTTPError as e:
+                    if e.code in (409, 404):
+                        continue
+                    raise
+        audit("job_hold_cas_exhausted", action="reaper-release")
+        return False
+
+
+_job_hold = JobHoldLeaseManager()
 
 
 # ---------------------------------------------------------------------------
@@ -1028,10 +1378,30 @@ def do_ensure_awake() -> dict[str, Any]:
     holder_id = f"awx-autoscale-{os.getpid()}-{threading.current_thread().name}"
     new_min_awake = time.time() + MAX_STARTUP_WAIT
 
-    # Acquire in-process lock for the CAS attempt.
+    # Acquire the shared coordination Lease while publishing the wake floor.
+    # The reaper uses this same Lease for its final sleep claim, so it either
+    # observes our new floor or wins first and makes us wait before publishing.
     with _wake_lock:
-        _lease_data, acquired = _lease.create_or_update(
-            new_min_awake, holder_id)
+        coordination, coordination_owner = _job_hold.claim_for_wake()
+        if coordination == "acquired":
+            try:
+                _lease_data, acquired = _lease.create_or_update(
+                    new_min_awake, holder_id)
+            finally:
+                _job_hold.release_coordination_claim(coordination_owner)
+
+    if coordination == "job-hold":
+        # A caller job has already established that AWX must remain up. Do
+        # not replace its hold or alter the wake floor; preserve the existing
+        # readiness contract without holding the local single-flight lock.
+        audit("ensure_awake_job_hold", holder=coordination_owner)
+        ready = wait_awx_ready(MAX_STARTUP_WAIT)
+        if ready:
+            return {"ok": True, "detail": "awake (protected by active job hold)"}
+        return {"ok": False,
+                "detail": f"timeout waiting for active job hold owner {coordination_owner}"}
+    if coordination != "acquired":
+        return {"ok": False, "detail": "coordination Lease busy; retry"}
 
     if acquired:
         # We are the holder — patch CR + wait.
@@ -1056,8 +1426,17 @@ def do_ensure_awake() -> dict[str, Any]:
             # be rewritten by its own holder (create_or_update's owner-only
             # guard applies identically with the flag set).
             requested_min_awake = time.time() + GRACE_PERIOD
-            persisted_lease, _ = _lease.create_or_update(
-                requested_min_awake, holder_id, allow_owner_shrink=True)
+            coordination, coordination_owner = _job_hold.claim_for_wake()
+            if coordination == "job-hold":
+                # The active hold now supersedes the wake grace floor.
+                return {"ok": True, "detail": "awake (protected by active job hold)"}
+            if coordination != "acquired":
+                return {"ok": False, "detail": "coordination Lease busy; retry"}
+            try:
+                persisted_lease, _ = _lease.create_or_update(
+                    requested_min_awake, holder_id, allow_owner_shrink=True)
+            finally:
+                _job_hold.release_coordination_claim(coordination_owner)
             persisted_min_awake = LeaseManager._annotation_min_awake(persisted_lease)
             audit("ensure_awake_ready",
                   min_awake_until=persisted_min_awake,
@@ -1082,12 +1461,51 @@ def do_ensure_awake() -> dict[str, Any]:
             "detail": f"timeout waiting for holder {lease_holder}"}
 
 
+def handle_job_hold_request(payload: Any,
+                            principal_id: str | None = None
+                            ) -> tuple[int, dict[str, Any]]:
+    """Validate and execute one authenticated job-hold operation."""
+    if not isinstance(payload, dict):
+        return 400, {"ok": False, "detail": "request body must be an object"}
+    action = payload.get("action")
+    run_id = payload.get("run_id")
+    if not isinstance(action, str) or action not in {"acquire", "renew", "release"}:
+        return 400, {"ok": False, "detail": "action must be acquire, renew, or release"}
+    if not isinstance(run_id, str):
+        return 400, {"ok": False, "detail": "run_id is required"}
+    if not isinstance(principal_id, str) or not principal_id:
+        return 401, {"ok": False, "detail": "authenticated caller required"}
+    duration = payload.get("duration_seconds")
+    if action != "release" and not _job_hold._valid_duration(duration):
+        return 400, {
+            "ok": False,
+            "detail": f"duration_seconds must be between 1 and {JOB_HOLD_MAX_SECONDS}",
+        }
+    try:
+        if action == "acquire":
+            ok, detail = _job_hold.acquire(run_id, duration, principal_id)
+        elif action == "renew":
+            ok, detail = _job_hold.renew(run_id, duration, principal_id)
+        else:
+            ok, detail = _job_hold.release(run_id, principal_id)
+    except (HTTPError, URLError, OSError) as e:
+        audit("job_hold_backend_error", status=getattr(e, "code", "unavailable"))
+        return 503, {"ok": False, "detail": "hold backend unavailable"}
+    if ok:
+        return 200, {"ok": True, "detail": detail}
+    if detail == "AWX is not ready; call /ensure-awake before acquiring a hold":
+        return 503, {"ok": False, "detail": detail}
+    if "duration_seconds" in detail or "run_id" in detail:
+        return 400, {"ok": False, "detail": detail}
+    return 409, {"ok": False, "detail": detail}
+
+
 # ---------------------------------------------------------------------------
 # HTTP server
 # ---------------------------------------------------------------------------
 
 class HelperHandler(BaseHTTPRequestHandler):
-    """Minimal HTTP handler for /ensure-awake, /healthz, /readyz, /awx-status.
+    """HTTP handler for wake, job-hold, and helper health endpoints.
 
     Probe semantics (CRITICAL — probes NEVER depend on AWX state):
       /healthz  — liveness: process-local only (no k8s API, no AWX API).
@@ -1099,6 +1517,7 @@ class HelperHandler(BaseHTTPRequestHandler):
     """
 
     def _check_bearer(self) -> bool:
+        self._authenticated_principal = None
         auth = self.headers.get("Authorization", "")
         if not auth.startswith("Bearer "):
             return False
@@ -1108,7 +1527,14 @@ class HelperHandler(BaseHTTPRequestHandler):
         except OSError:
             logger.error("bearer token file unreadable")
             return False
-        return hmac.compare_digest(token, expected)
+        if not hmac.compare_digest(token, expected):
+            return False
+        # The deployment currently has one mounted bearer credential. Its
+        # digest is an opaque service-principal id for Lease ownership; it is
+        # never emitted to logs or returned by the endpoint.
+        self._authenticated_principal = hashlib.sha256(
+            expected.encode("utf-8")).hexdigest()
+        return True
 
     def _send_json(self, code: int, body: dict) -> None:
         payload = json.dumps(body, separators=(",", ":")).encode()
@@ -1142,7 +1568,7 @@ class HelperHandler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path != "/ensure-awake":
+        if self.path not in {"/ensure-awake", "/job-hold"}:
             self._send_json(404, {"error": "not found"})
             return
 
@@ -1151,8 +1577,23 @@ class HelperHandler(BaseHTTPRequestHandler):
             self._send_json(401, {"error": "unauthorized"})
             return
 
-        result = do_ensure_awake()
-        code = 200 if result["ok"] else 503
+        if self.path == "/ensure-awake":
+            result = do_ensure_awake()
+            code = 200 if result["ok"] else 503
+            self._send_json(code, result)
+            return
+
+        try:
+            raw_length = self.headers.get("Content-Length", "")
+            length = int(raw_length)
+            if not 0 < length <= 4096:
+                raise ValueError("request body size must be 1-4096 bytes")
+            payload = json.loads(self.rfile.read(length))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+            self._send_json(400, {"ok": False, "detail": "invalid JSON request body"})
+            return
+        code, result = handle_job_hold_request(
+            payload, self._authenticated_principal)
         self._send_json(code, result)
 
     def log_message(self, fmt: str, *args: Any) -> None:
@@ -1191,6 +1632,11 @@ def idle_reaper_loop() -> None:
         time.sleep(REAPER_POLL_INTERVAL)
         try:
             now = time.time()
+            with _job_hold_lock:
+                if _job_hold.is_job_hold_active():
+                    audit("reaper_job_hold_active")
+                    idle_since = None
+                    continue
             min_awake = _lease.get_min_awake_until()
 
             # Within the wake lease window — don't even check.
@@ -1275,10 +1721,33 @@ def idle_reaper_loop() -> None:
 
             idle_duration = now - idle_since
             if idle_duration >= GRACE_PERIOD:
-                audit("reaper_sleep_trigger",
-                      idle_seconds=round(idle_duration, 1),
-                      grace_period=GRACE_PERIOD)
-                patch_awx_asleep()
+                # Claim the same Lease with CAS before sleeping. This is the
+                # distributed exclusion point across rolling-update overlap
+                # and multiple helper pods; a local lock alone is not enough.
+                claimed, owner = _job_hold.claim_for_reaper()
+                if not claimed:
+                    audit("reaper_sleep_deferred",
+                          idle_seconds=round(idle_duration, 1),
+                          grace_period=GRACE_PERIOD)
+                    idle_since = None
+                    continue
+                try:
+                    # /ensure-awake writes a separate Lease. Re-read its
+                    # floor only after this distributed claim, so a waker
+                    # that won the claim first cannot race this final sleep.
+                    current_min_awake = _lease.get_min_awake_until()
+                    if current_min_awake > time.time():
+                        audit("reaper_sleep_deferred",
+                              reason="wake-floor-renewed",
+                              min_awake_until=current_min_awake)
+                        idle_since = None
+                        continue
+                    audit("reaper_sleep_trigger",
+                          idle_seconds=round(idle_duration, 1),
+                          grace_period=GRACE_PERIOD)
+                    patch_awx_asleep()
+                finally:
+                    _job_hold.release_coordination_claim(owner)
                 idle_since = None
             else:
                 audit("reaper_idle_waiting",

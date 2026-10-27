@@ -2,9 +2,9 @@
 # awx-autoscale: on-demand scale-to-zero helper for AWX.
 #
 # Deploys a stdlib-only Python helper (ConfigMap-mounted) that exposes
-# POST /ensure-awake for dmf-cms to wake AWX before launching jobs, plus
-# a background idle-reaper that sleeps AWX when no work is active and the
-# grace period has elapsed.
+# POST /ensure-awake for dmf-cms to wake AWX before launching jobs, an
+# authenticated /job-hold endpoint for bounded caller-owned availability, and
+# a background idle-reaper that sleeps AWX when no work or hold is active.
 #
 # Opt-in: only deploys when dmf_awx_autoscale_enabled is true.
 # Cloud/lab lanes leave this false and keep replicas at 1.
@@ -69,6 +69,15 @@ awx_autoscale_listen_port: 8080
 
 # ── Lease ────────────────────────────────────────────────────────────────
 awx_autoscale_lease_name: awx-autoscale-wake
+awx_autoscale_job_hold_lease_name: awx-autoscale-job-hold
+
+# Maximum duration of one job-hold lease renewal. Callers renew while their
+# AWX job is active; a crashed caller loses its hold after this interval.
+awx_autoscale_job_hold_max_seconds: 900
+
+# Short distributed claim used by a reaper while it commits AWX to sleep.
+# It exceeds the bounded Kubernetes API write path and expires after a crash.
+awx_autoscale_reaper_claim_seconds: 200
 
 # ── AWX API ──────────────────────────────────────────────────────────────
 # In-cluster AWX API URL (svc DNS, plain HTTP per ADR-0023).
