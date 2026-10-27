@@ -9,6 +9,26 @@
 Forgejo is served behind Traefik on its own host, typically
 `https://forgejo.<cluster-domain>/`, using a standard Kubernetes `Ingress`.
 
+## Authentik access and contributor identity
+
+The Authentik Forgejo application is bound to `forgejo-contributor` and
+`ops-admin`. Membership grants login eligibility; it does not grant repository
+write access, organisation ownership, or instance administration. Maintainers
+grant those separately through Forgejo organisations, teams, and protected
+branch review rules.
+
+Forgejo uses Authentik's UUID-backed OIDC subject as the external user ID and
+`userid` as its username source. OAuth account linking is disabled, so a
+matching email address cannot merge a new external identity into an existing
+account. Local registration and generic OpenID signup are disabled while OAuth
+auto-registration remains enabled for the Authentik source. Authentik's
+application binding is the eligibility gate for that source.
+
+The evidence chain for a contribution is the Authentik subject and group
+decision, the Forgejo account and repository events, and the pull-request
+review and protected-branch history. Granting a team or repository permission
+is a separate, attributable action after the account is provisioned.
+
 ## Design
 
 - The upstream Forgejo Helm chart is vendored under `charts/forgejo/`.

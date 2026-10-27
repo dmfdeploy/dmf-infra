@@ -52,6 +52,8 @@ gitea:
     email: {{ forgejo_admin_email | to_json }}
     passwordMode: keepUpdated
   config:
+    service:
+      DISABLE_REGISTRATION: {{ 'true' if forgejo_disable_local_registration | bool else 'false' }}
     server:
       ROOT_URL: {{ forgejo_root_url | to_json }}
       DOMAIN: {{ forgejo_external_host | to_json }}
@@ -61,7 +63,7 @@ gitea:
       OFFLINE_MODE: false
     openid:
       ENABLE_OPENID_SIGNIN: true
-      ENABLE_OPENID_SIGNUP: true
+      ENABLE_OPENID_SIGNUP: {{ 'true' if forgejo_enable_openid_signup | bool else 'false' }}
     oauth2_client:
       ENABLE_AUTO_REGISTRATION: {{ 'true' if forgejo_oauth_enable_auto_registration | bool else 'false' }}
       ACCOUNT_LINKING: {{ forgejo_oauth_account_linking | to_json }}

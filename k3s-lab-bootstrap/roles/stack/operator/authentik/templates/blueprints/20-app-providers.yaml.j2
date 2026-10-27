@@ -62,7 +62,7 @@ entries:
       issuer_mode: global
       signing_key: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
       pkce_required: true
-      sub_mode: user_username
+      sub_mode: user_uuid
       property_mappings:
         - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-openid"]]
         - !Find [authentik_core.propertymapping, [managed, "goauthentik.io/providers/oauth2/scope-email"]]
@@ -81,6 +81,31 @@ entries:
       meta_launch_url: {{ (_forgejo_base_url ~ '/') | to_json }}
       meta_description: DMF Git repository management
       open_in_new_tab: true
+      policy_engine_mode: any
+
+  # Authentik applications with no bindings allow every authenticated user.
+  # These two direct group bindings make Forgejo access explicit and fail closed.
+  - model: authentik_policies.policybinding
+    id: app-forgejo-forgejo-contributor-binding
+    state: present
+    identifiers:
+      target: !KeyOf app-forgejo
+      order: 0
+    attrs:
+      target: !KeyOf app-forgejo
+      group: !Find [authentik_core.group, [name, forgejo-contributor]]
+      order: 0
+
+  - model: authentik_policies.policybinding
+    id: app-forgejo-ops-admin-binding
+    state: present
+    identifiers:
+      target: !KeyOf app-forgejo
+      order: 1
+    attrs:
+      target: !KeyOf app-forgejo
+      group: !Find [authentik_core.group, [name, ops-admin]]
+      order: 1
 
   # ── AWX ──────────────────────────────────────────────────────────────────
 

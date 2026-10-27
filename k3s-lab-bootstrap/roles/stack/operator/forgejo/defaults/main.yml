@@ -40,9 +40,8 @@ forgejo_ingress_annotations:
 # §3.4 + §5 item 2 (2026-05-24): decoupling the local admin from the
 # operator's Authentik username crystallises the slogan (C4 — no routine
 # break-glass) and mirrors the AWX rename (ADR-0028 follow-on step 2,
-# dmf-infra c426dc0). Forgejo's `account_linking: auto` + `username_source:
-# userid` already prevents shadow accounts on OIDC login, so the rename
-# is symbolic + structural cleanup.
+# dmf-infra c426dc0). Forgejo's UUID-backed OIDC subject and disabled account
+# linking prevent external identities from attaching to this local account.
 #
 # The literal `forgejo-break-glass` is also referenced by
 # roles/stack/operator/forgejo-bootstrap/tasks/main.yml candidate-2 and
@@ -54,10 +53,10 @@ forgejo_ingress_annotations:
 # migration. See survey §5 item 2.
 forgejo_admin_username: forgejo-break-glass
 # ADR-0024/0028 canonical break-glass email: per-app, per-env synthetic.
-# Must NOT fall back to vault_bootstrap_admin_email (operator email) —
-# Forgejo's OAuth2 account_linking=auto merges the operator's OIDC sign-in
-# into this break-glass User row on email collision (observed live on
-# zy9q-1015 prior to the 2026-05-28 remediation). bootstrap-secrets.sh
+# Must NOT fall back to vault_bootstrap_admin_email (operator email). Before
+# automatic OAuth account linking was disabled, a matching operator email
+# could attach the operator's OIDC sign-in to this break-glass User row
+# (observed before the 2026-05-28 remediation). bootstrap-secrets.sh
 # seed-bao writes the same pattern to secret/apps/forgejo/admin.email.
 forgejo_admin_email: "{{ vault_forgejo_admin_email | default('forgejo-' ~ (dmf_env_id | default('local')) ~ '@' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
 forgejo_admin_password: "{{ vault_forgejo_admin_password | default(vault_bootstrap_admin_password | mandatory) }}"
@@ -68,12 +67,14 @@ forgejo_oauth_secret_name: forgejo-oauth
 forgejo_oauth_auto_discover_url: >-
   https://{{ authentik_host }}/application/o/forgejo/.well-known/openid-configuration
 forgejo_oauth_enable_auto_registration: true
-forgejo_oauth_account_linking: auto
+forgejo_oauth_account_linking: disabled
 forgejo_oauth_username_source: userid
 forgejo_oauth_update_avatar: true
 forgejo_oauth_openid_scopes: "openid email profile groups"
 forgejo_oauth_groups_claim_name: groups
 forgejo_oauth_admin_group: ops-admin
+forgejo_disable_local_registration: true
+forgejo_enable_openid_signup: false
 
 forgejo_wait_retries: 120
 forgejo_wait_delay: 5
