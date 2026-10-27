@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "target": "external-secrets",
+  "approle_name": "external-secrets",
+  "target_version": 3,
+  "secret_id_accessor": "fixture-accessor-not-a-credential",
+  "issued_at": 1700000000,
+  "expires_at": 1702592000,
+  "ttl_seconds": 2592000,
+  "last_successful_rotation_at": 1700000000,
+  "last_failure_at": null,
+  "last_failure_reason_code": null,
+  "latest_run_kind": "scheduled",
+  "latest_run_outcome": "success",
+  "latest_run_at": 1700000000,
+  "actor": "fixture-system-actor",
+  "role": "approle-rotation-scheduler",
+  "request_id": "fixture-request-0001",
+  "reason": "fixture-pre-expiry-rotation"
+}
