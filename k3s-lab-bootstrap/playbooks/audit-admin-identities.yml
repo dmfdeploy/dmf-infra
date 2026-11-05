@@ -53,6 +53,33 @@
       - "{{ zot_admin_user | default('admin') }}"
       - "{{ zot_service_user | default('zot-svc') }}"
     audit_expected_authentik: akadmin  # role hardcodes
+    # The authentik role also adds its local break-glass user to
+    # `authentik Admins` (roles/stack/operator/authentik/README.md:19,
+    # defaults/main.yml:89). The role adds it even when
+    # authentik_breakglass_is_active is false, but the query lists only
+    # active users, so the audit requires the account only when that flag
+    # is not false.
+    # This play does not load the role or read OpenBao, so the name is the
+    # inventory/fact value when set and otherwise the role default literal;
+    # keep it in sync with that default.
+    audit_expected_authentik_breakglass: >-
+      {{ authentik_breakglass_username | default('break-glass') }}
+    # Privileged identities per app. The audit compares each live privileged
+    # set with this in both directions. Required: the app's expected account
+    # and, for Authentik, the break-glass user the authentik role adds to
+    # `authentik Admins`, when the account is active (a finding when a
+    # required account is absent). Allowed but not
+    # required: the active Authentik ops-admin members, because the AWX and
+    # NetBox SSO mappings (awx_saml_admin_group, netbox_oidc_admin_group)
+    # create their users at first login and the Authentik baseline does not
+    # add them to `authentik Admins`. Any other privileged principal is
+    # reported as an unexpected privileged identity. Service accounts
+    # (forgejo-svc, zot-svc, the console AWX token user) hold no admin rights
+    # and are not approved here.
+    audit_approved_privileged_base:
+      awx: "{{ audit_expected_awx }}"
+      netbox: "{{ audit_expected_netbox }}"
+      authentik: "{{ audit_expected_authentik }}"
     audit_expected_forgejo_service: "{{ forgejo_svc_user | default('forgejo-svc') }}"
     # LibreNMS is intentionally skipped — not deployed on lab clusters yet
     # per the 2026-05-14 audit; revisit when the monitoring vertical ships.
@@ -118,8 +145,8 @@
           -n awx
           exec deploy/awx-web
           -- awx-manage shell_plus -c
-          "from django.contrib.auth import get_user_model; U=get_user_model();
-          print('\\n'.join(u.username for u in U.objects.filter(is_superuser=True, is_active=True)))"
+          "import json; from django.contrib.auth import get_user_model; U=get_user_model();
+          print('DMF_AWX_SUPERUSERS=' + json.dumps([u.username for u in U.objects.filter(is_superuser=True, is_active=True)]))"
       register: _audit_awx_users
       changed_when: false
       failed_when: false
@@ -146,15 +173,19 @@
           -n authentik
           exec deploy/authentik-server
           -- ak shell -c
-          "from authentik.core.models import Group;
+          "import json; from authentik.core.models import Group;
           g=Group.objects.filter(name='ops-admin').first();
           assert g is not None, 'required ops-admin group missing';
-          print('\\n'.join(u.username for u in (g.users.all() if g else []) if u.is_active))"
+          print('DMF_OPS_ADMINS=' + json.dumps([u.username for u in g.users.all() if u.is_active]))"
       register: _audit_forgejo_ops_admins
       changed_when: false
       failed_when: false
       no_log: true
 
+    # The ak shell output carries startup noise, so the helper reads only the
+    # single DMF_OPS_ADMINS= line and fails closed when it is missing. This
+    # task runs on the operator workstation: become is off there, because the
+    # play-level become would make the local run try sudo.
     - name: Parse and audit Forgejo identities without exposing profile fields
       ansible.builtin.command:
         argv:
@@ -165,12 +196,13 @@
             'users_output': _audit_forgejo_users.stdout | default(''),
             'users_rc': _audit_forgejo_users.rc | default(-1),
             'ops_admins_rc': _audit_forgejo_ops_admins.rc | default(-1),
-            'ops_admin_usernames': _audit_forgejo_ops_admins.stdout_lines | default([]),
+            'ops_admins_output': _audit_forgejo_ops_admins.stdout | default(''),
             'break_glass_username': audit_expected_forgejo,
             'service_username': audit_expected_forgejo_service
           } | to_json }}
       register: _audit_forgejo_identity_report
       delegate_to: localhost
+      become: false
       changed_when: false
       failed_when: false
       no_log: true
@@ -182,8 +214,8 @@
           -n netbox
           exec deploy/netbox
           -- python /opt/netbox/netbox/manage.py shell -c
-          "from users.models import User;
-          print('\\n'.join(u.username for u in User.objects.filter(is_superuser=True, is_active=True)))"
+          "import json; from users.models import User;
+          print('DMF_NETBOX_SUPERUSERS=' + json.dumps([u.username for u in User.objects.filter(is_superuser=True, is_active=True)]))"
       register: _audit_netbox_users
       changed_when: false
       failed_when: false
@@ -207,16 +239,72 @@
           -n authentik
           exec deploy/authentik-server
           -- ak shell -c
-          "from authentik.core.models import Group;
+          "import json; from authentik.core.models import Group;
           g=Group.objects.filter(name='authentik Admins').first();
-          print('\\n'.join(u.username for u in (g.users.all() if g else []) if u.is_active))"
+          assert g is not None, 'required authentik Admins group missing';
+          print('DMF_AUTHENTIK_ADMINS=' + json.dumps([u.username for u in g.users.all() if u.is_active]))"
       register: _audit_authentik_users
       changed_when: false
       failed_when: false
 
+    # AWX, NetBox and Authentik Admins results are compared with their
+    # approved sets by the same helper that validates the ops-admin payload:
+    # required accounts must be present, any unapproved account is reported,
+    # and ops-admin members are allowed but not required. Shell output
+    # carries startup noise, so only each query's sentinel JSON line is read
+    # and a missing, repeated or malformed line fails the audit. This task
+    # runs on the operator workstation, so become is off.
+    - name: Parse and audit privileged identity sets
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/files/audit_forgejo_identities.py"
+        stdin: >-
+          {{ {
+            'check': 'privileged',
+            'ops_admins_rc': _audit_forgejo_ops_admins.rc | default(-1),
+            'ops_admins_output': _audit_forgejo_ops_admins.stdout | default(''),
+            'awx': {
+              'skipped': _audit_awx_asleep | bool,
+              'expected': audit_approved_privileged_base.awx | trim,
+              'rc': _audit_awx_users.rc | default(-1),
+              'output': _audit_awx_users.stdout | default('')
+            },
+            'netbox': {
+              'expected': audit_approved_privileged_base.netbox | trim,
+              'rc': _audit_netbox_users.rc | default(-1),
+              'output': _audit_netbox_users.stdout | default('')
+            },
+            'authentik': {
+              'expected': audit_approved_privileged_base.authentik | trim,
+              'also_expected': [audit_expected_authentik_breakglass | trim]
+                if (authentik_breakglass_is_active | default(true) | bool) else [],
+              'rc': _audit_authentik_users.rc | default(-1),
+              'output': _audit_authentik_users.stdout | default('')
+            }
+          } | to_json }}
+      register: _audit_privileged_report
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Read privileged identity audit result
+      ansible.builtin.set_fact:
+        _audit_privileged_result: "{{ _audit_privileged_report.stdout | default('{}') | from_json }}"
+      no_log: true
+
+    - name: Report privileged identity findings
+      ansible.builtin.debug:
+        msg: >-
+          Privileged identity audit: passed={{ _audit_privileged_result.passed | default(false) }};
+          findings: {{ _audit_privileged_result.findings | default([]) }}.
+
     # ────────────────────────────────────────────────────────────────
     # Per-app debug + assert. Each block prints the comparison and
-    # asserts no-drift (expected username appears in live list).
+    # asserts no-drift (every required account is privileged and no
+    # unapproved account is).
     # ────────────────────────────────────────────────────────────────
     - name: Audit AWX (scaled-to-zero — superuser drift NOT checked this run)
       ansible.builtin.debug:
@@ -233,18 +321,17 @@
         msg: |-
           awx:
             expected: {{ audit_expected_awx }}
-            live:     {{ _audit_awx_users.stdout_lines | default([]) }}
             rc:       {{ _audit_awx_users.rc | default(-1) }}
       when: not _audit_awx_asleep | bool
 
     - name: Assert AWX no drift
       ansible.builtin.assert:
         that:
-          - _audit_awx_users.rc | default(-1) == 0
-          - audit_expected_awx in (_audit_awx_users.stdout_lines | default([]))
+          - _audit_privileged_report.rc | default(-1) == 0
+          - _audit_privileged_result.passed | default(false) | bool
         fail_msg: >-
-          AWX drift: expected superuser '{{ audit_expected_awx }}' not in
-          live list {{ _audit_awx_users.stdout_lines | default([]) }}.
+          Privileged identity audit failed (AWX check in this run). Findings:
+          {{ _audit_privileged_result.findings | default([]) }}.
       when: not _audit_awx_asleep | bool
 
     - name: Audit Forgejo
@@ -272,17 +359,16 @@
         msg: |-
           netbox:
             expected: {{ audit_expected_netbox }}
-            live:     {{ _audit_netbox_users.stdout_lines | default([]) }}
             rc:       {{ _audit_netbox_users.rc | default(-1) }}
 
     - name: Assert NetBox no drift
       ansible.builtin.assert:
         that:
-          - _audit_netbox_users.rc | default(-1) == 0
-          - audit_expected_netbox in (_audit_netbox_users.stdout_lines | default([]))
+          - _audit_privileged_report.rc | default(-1) == 0
+          - _audit_privileged_result.passed | default(false) | bool
         fail_msg: >-
-          NetBox drift: expected superuser '{{ audit_expected_netbox }}' not in
-          live list {{ _audit_netbox_users.stdout_lines | default([]) }}.
+          Privileged identity audit failed (NetBox check in this run). Findings:
+          {{ _audit_privileged_result.findings | default([]) }}.
 
     - name: Audit Zot
       ansible.builtin.debug:
@@ -306,17 +392,16 @@
         msg: |-
           authentik:
             expected: {{ audit_expected_authentik }}
-            live:     {{ _audit_authentik_users.stdout_lines | default([]) }}
             rc:       {{ _audit_authentik_users.rc | default(-1) }}
 
     - name: Assert Authentik no drift
       ansible.builtin.assert:
         that:
-          - _audit_authentik_users.rc | default(-1) == 0
-          - audit_expected_authentik in (_audit_authentik_users.stdout_lines | default([]))
+          - _audit_privileged_report.rc | default(-1) == 0
+          - _audit_privileged_result.passed | default(false) | bool
         fail_msg: >-
-          Authentik drift: expected admin '{{ audit_expected_authentik }}' not in
-          'authentik Admins' group membership {{ _audit_authentik_users.stdout_lines | default([]) }}.
+          Privileged identity audit failed (Authentik Admins check in this
+          run). Findings: {{ _audit_privileged_result.findings | default([]) }}.
 
     # ────────────────────────────────────────────────────────────────
     # Summary
