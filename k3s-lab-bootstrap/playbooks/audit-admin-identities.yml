@@ -68,14 +68,16 @@
     # set with this in both directions. Required: the app's expected account
     # and, for Authentik, the break-glass user the authentik role adds to
     # `authentik Admins`, when the account is active (a finding when a
-    # required account is absent). Allowed but not
-    # required: the active Authentik ops-admin members, because the AWX and
-    # NetBox SSO mappings (awx_saml_admin_group, netbox_oidc_admin_group)
-    # create their users at first login and the Authentik baseline does not
-    # add them to `authentik Admins`. Any other privileged principal is
-    # reported as an unexpected privileged identity. Service accounts
-    # (forgejo-svc, zot-svc, the console AWX token user) hold no admin rights
-    # and are not approved here.
+    # required account is absent). Allowed but not required, in AWX and
+    # NetBox only: the active Authentik ops-admin members, because the SSO
+    # mappings (awx_saml_admin_group, netbox_oidc_admin_group) grant
+    # superuser to that group and create its users at first login. The
+    # Authentik baseline keeps the ops user out of `authentik Admins`
+    # (blueprints/15-ops-user-webauthn.yaml.j2:69), so an ops-admin member
+    # there is reported. Any other privileged principal is reported as an
+    # unexpected privileged identity. Service accounts (forgejo-svc,
+    # zot-svc, the console AWX token user) hold no admin rights and are not
+    # approved here.
     audit_approved_privileged_base:
       awx: "{{ audit_expected_awx }}"
       netbox: "{{ audit_expected_netbox }}"
@@ -250,7 +252,9 @@
     # AWX, NetBox and Authentik Admins results are compared with their
     # approved sets by the same helper that validates the ops-admin payload:
     # required accounts must be present, any unapproved account is reported,
-    # and ops-admin members are allowed but not required. Shell output
+    # and ops-admin members are allowed but not required for AWX and NetBox
+    # only. Authentik Admins must hold exactly its own approved identities.
+    # Shell output
     # carries startup noise, so only each query's sentinel JSON line is read
     # and a missing, repeated or malformed line fails the audit. This task
     # runs on the operator workstation, so become is off.

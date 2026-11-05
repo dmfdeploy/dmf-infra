@@ -19,9 +19,17 @@ USER_LIST_HEADER = ["ID", "Username", "Email", "IsActive", "IsAdmin", "2FA"]
 OPS_ADMINS_PREFIX = "DMF_OPS_ADMINS="
 # Privileged-identity queries for the other apps use the same framing.
 PRIVILEGED_APPS = {
-    "awx": {"prefix": "DMF_AWX_SUPERUSERS=", "label": "AWX superusers"},
-    "netbox": {"prefix": "DMF_NETBOX_SUPERUSERS=", "label": "NetBox superusers"},
-    "authentik": {"prefix": "DMF_AUTHENTIK_ADMINS=", "label": "Authentik Admins group"},
+    "awx": {"prefix": "DMF_AWX_SUPERUSERS=", "label": "AWX superusers", "ops_admins_allowed": True},
+    "netbox": {
+        "prefix": "DMF_NETBOX_SUPERUSERS=",
+        "label": "NetBox superusers",
+        "ops_admins_allowed": True,
+    },
+    "authentik": {
+        "prefix": "DMF_AUTHENTIK_ADMINS=",
+        "label": "Authentik Admins group",
+        "ops_admins_allowed": False,
+    },
 }
 
 
@@ -106,10 +114,11 @@ def audit_privileged(payload: Any) -> dict[str, Any]:
     privileged. Required identities are the app's ``expected`` account and
     any ``also_expected`` names, such as the Authentik break-glass user that
     the authentik role adds to ``authentik Admins``. Active ``ops-admin``
-    members are allowed but not required: the AWX and NetBox SSO mappings
-    create their users at first login, and the Authentik baseline does not
-    add them to ``authentik Admins``. Any query failure or malformed payload
-    fails the audit closed. Privileged usernames are named in findings on
+    members are allowed but not required in AWX and NetBox only: their SSO
+    mappings grant superuser to that group and create the users at first
+    login. The Authentik baseline keeps the ops user out of ``authentik
+    Admins``, so there an ops-admin member is an unexpected identity like any
+    other. Any query failure or malformed payload fails the audit closed. Privileged usernames are named in findings on
     purpose; the audit exists to point at them.
     """
     if not isinstance(payload, dict):
@@ -145,7 +154,8 @@ def audit_privileged(payload: Any) -> dict[str, Any]:
         for name in required:
             if name not in live:
                 findings.append(f"{spec['label']}: expected identity '{name}' is not privileged or is missing")
-        for name in sorted(live - ops_admins - set(required)):
+        allowed = set(required) | (ops_admins if spec["ops_admins_allowed"] else set())
+        for name in sorted(live - allowed):
             findings.append(f"{spec['label']}: unexpected privileged identity '{name}'")
 
     return {"passed": not findings, "findings": findings, "inventory": {}}
