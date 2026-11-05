@@ -190,13 +190,24 @@ class PrivilegedIdentityTests(unittest.TestCase):
         self.assertTrue(result["passed"])
         self.assertEqual(result["findings"], [])
 
-    def test_ops_admin_members_are_approved_in_every_app(self):
+    def test_ops_admin_members_are_approved_in_awx_and_netbox(self):
         result = audit_module.audit_privileged(privileged_payload(
             awx=["awx-break-glass", "operator-user"],
             netbox=["netbox-break-glass", "operator-user"],
-            authentik=["akadmin", "operator-user"],
         ))
         self.assertTrue(result["passed"], result["findings"])
+
+    def test_ops_admin_member_in_authentik_admins_is_a_finding(self):
+        # The baseline keeps the ops user out of `authentik Admins`
+        # (blueprints/15-ops-user-webauthn.yaml.j2:69).
+        result = audit_module.audit_privileged(privileged_payload(
+            authentik=["akadmin", "operator-user"],
+        ))
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            result["findings"],
+            ["Authentik Admins group: unexpected privileged identity 'operator-user'"],
+        )
 
     def test_noise_equal_to_expected_name_does_not_satisfy_the_check(self):
         for app, (prefix, expected, label) in APPS.items():
@@ -218,7 +229,7 @@ class PrivilegedIdentityTests(unittest.TestCase):
     def test_authentik_breakglass_user_is_approved_when_listed(self):
         # The authentik role adds its dormant break-glass user to
         # `authentik Admins` on purpose.
-        data = privileged_payload(authentik=["akadmin", "break-glass", "operator-user"])
+        data = privileged_payload(authentik=["akadmin", "break-glass"])
         data["authentik"]["also_expected"] = ["break-glass"]
         result = audit_module.audit_privileged(data)
         self.assertTrue(result["passed"], result["findings"])
@@ -227,7 +238,7 @@ class PrivilegedIdentityTests(unittest.TestCase):
     def test_missing_required_identity_is_a_finding_for_every_app(self):
         for app, (_prefix, expected, label) in APPS.items():
             with self.subTest(app=app):
-                result = audit_module.audit_privileged(privileged_payload(**{app: ["operator-user"]}))
+                result = audit_module.audit_privileged(privileged_payload(**{app: []}))
                 self.assertFalse(result["passed"])
                 self.assertEqual(
                     result["findings"],
@@ -255,7 +266,7 @@ class PrivilegedIdentityTests(unittest.TestCase):
         self.assertEqual(result["findings"], ["Authentik Admins group: unexpected privileged identity 'break-glass'"])
 
     def test_extra_user_beside_breakglass_still_fails_naming_the_extra(self):
-        data = privileged_payload(authentik=["akadmin", "break-glass", "operator-user", "rogue-admin"])
+        data = privileged_payload(authentik=["akadmin", "break-glass", "rogue-admin"])
         data["authentik"]["also_expected"] = ["break-glass"]
         result = audit_module.audit_privileged(data)
         self.assertFalse(result["passed"])
