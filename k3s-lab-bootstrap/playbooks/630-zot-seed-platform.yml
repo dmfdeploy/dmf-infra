@@ -93,6 +93,9 @@
 # after the copy, and the play fails on a mismatch. The copy is gated on that
 # same comparison (not on tag presence), so an old single-platform copy is
 # healed on the next run and a new pin is seeded without zot_seed_force.
+# An all_platforms image needs a source_digest, or index_by_tag for an index
+# whose digest is released per version tag (dmf-cms); the comparison above is
+# that image's guard.
 # Images without the flag (single-manifest sources) keep
 # `--override-arch={{ dmf_seed_arch }} --override-os=linux` and the tag gate.
 # Chart artifacts are copied without arch selection.
@@ -280,24 +283,30 @@
     #             registry.../dmf/awx-ee while dmf-cms lives at
     #             registry.../dmf-cms by historical convention).
     #   all_platforms: mirror the whole index, digest preserved and verified.
-    #             Set it on every image that may be, or become, a
-    #             multi-platform index.
+    #             Set it where every node architecture must pull the same
+    #             attested index.
+    #   source_digest: copy that exact digest. Required for all_platforms
+    #             unless index_by_tag is true.
+    #   index_by_tag: true for an all_platforms image whose index digest is
+    #             released per version tag. The source raw-manifest digest at
+    #             copy time must equal the destination's after the copy.
     zot_seed_images:
       - name: awx-ee
         tag: "{{ awx_ee_image_tag }}"
-        all_platforms: true
         zot_repo: "{{ zot_registry_host }}/dmf/awx-ee"
       - name: dmf-cms
         tag: "{{ dmf_cms_image_tag }}"
+        # One attested two-platform index per version tag, released by
+        # dmf-cms. The digest is not known to this playbook, so the copy
+        # follows the tag; the post-copy digest comparison is the guard.
         all_platforms: true
+        index_by_tag: true
         zot_repo: "{{ zot_registry_host }}/dmf-cms"
       - name: nmos-cpp-registry
         tag: "{{ nmos_cpp_registry_image_tag }}"
-        all_platforms: true
         zot_repo: "{{ zot_registry_host }}/dmf/nmos-cpp-registry"
       - name: nmos-cpp-node
         tag: "{{ nmos_cpp_node_image_tag }}"
-        all_platforms: true
         zot_repo: "{{ zot_registry_host }}/dmf/nmos-cpp-node"
       - name: nmos-crosspoint
         # The fork's published image index, DIGEST-PINNED and copied whole
@@ -309,7 +318,6 @@
         zot_repo: "{{ zot_registry_host }}/dmf/nmos-crosspoint"
       - name: dmf-promsd
         tag: "{{ dmf_promsd_image_tag }}"
-        all_platforms: true
         zot_repo: "{{ zot_registry_host }}/dmf-promsd"
       - name: python
         # python:3.12-slim, arm64 single-manifest, DIGEST-PINNED. Base image for the
@@ -378,10 +386,16 @@
           - zot_seed_charts | length > 0
           - dmf_seed_arch in ['arm64', 'amd64']
           - zot_seed_images | selectattr('all_platforms', 'defined') | rejectattr('all_platforms') | list | length == 0
+          - zot_seed_images | selectattr('index_by_tag', 'defined') | rejectattr('index_by_tag') | list | length == 0
+          - >-
+            zot_seed_images | selectattr('all_platforms', 'defined') | selectattr('all_platforms')
+            | rejectattr('source_digest', 'defined') | rejectattr('index_by_tag', 'defined') | list | length == 0
         fail_msg: >-
           zot_registry_host + zot_seed_images + zot_seed_charts + a valid
-          dmf_architecture (arm64|amd64) must all be defined, and
-          all_platforms may only be set to true. See playbook vars + the
+          dmf_architecture (arm64|amd64) must all be defined,
+          all_platforms and index_by_tag may only be set to true, and every
+          all_platforms image needs a source_digest or index_by_tag. See
+          playbook vars + the
           env's group_vars/all/main.yml.
 
     - name: Assert every seeded chart is digest-pinned
