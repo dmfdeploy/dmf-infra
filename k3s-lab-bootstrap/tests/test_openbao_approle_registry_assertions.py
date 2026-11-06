@@ -1,6 +1,7 @@
 """Run the registry assertion tasks through ansible-playbook with real inventories."""
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -59,7 +60,7 @@ def run_assertions(tasks_path, defaults_path, overrides):
             "ANSIBLE_LOCAL_TEMP": tmp,
             "ANSIBLE_HOME": tmp,
             "ANSIBLE_NOCOLOR": "1",
-            "PATH": "/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin",
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
         }
         proc = subprocess.run(
             ["ansible-playbook", "-i", "localhost,", str(playbook), "-e", f"@{extra}"],
