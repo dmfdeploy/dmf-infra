@@ -1,0 +1,89 @@
+---
+# Mirror one image whole (every platform) and prove the destination holds the
+# source's exact index digest.
+#
+# Why: an index's attestation signs the INDEX digest. `skopeo copy` without
+# --all keeps only one platform, which stores a different manifest, so the
+# attestation no longer verifies and a node of the other architecture cannot
+# pull (dmfdeploy/dmfdeploy#808). The digest is therefore compared on the RAW
+# manifest bytes of both sides: plain `skopeo inspect` resolves an index to a
+# single platform and would hide the difference.
+#
+# Shared by playbooks/630-zot-seed-platform.yml and
+# tests/test-zot-seed-index-mirror.yml (lockstep: if this file drifts, the
+# test breaks).
+#
+# Inputs (set by the includer):
+#   mirror_label       text for messages
+#   mirror_src         skopeo source reference (docker://..., oci:...)
+#   mirror_dst         skopeo destination reference
+#   mirror_src_flags   extra `skopeo inspect` flags for the source (list)
+#   mirror_dst_flags   extra `skopeo inspect` flags for the destination (list)
+#   mirror_copy_flags  flags for `skopeo copy` (list)
+#   mirror_force       copy even when the digests already match (bool)
+# Output:
+#   mirror_changed     true when a copy ran
+#
+# Needs skopeo >= 1.9 (Debian 12): `copy --all`, `--preserve-digests` and
+# `inspect --raw` all predate it. `--multi-arch` is newer and not used.
+
+- name: "Define the raw-manifest digest command ({{ mirror_label }})"
+  # Keep `inspect --raw` and the sha256 in one pipeline with pipefail so a
+  # failed inspect cannot yield the digest of empty input.
+  ansible.builtin.set_fact:
+    _mirror_digest_argv:
+      - bash
+      - -c
+      - |
+        set -o pipefail
+        if command -v sha256sum >/dev/null 2>&1; then sum=sha256sum; else sum='shasum -a 256'; fi
+        skopeo inspect --raw "$@" | $sum | { read -r h _; echo "sha256:$h"; }
+      - _
+
+- name: "Read the source index digest ({{ mirror_label }})"
+  ansible.builtin.command:
+    argv: "{{ _mirror_digest_argv + (mirror_src_flags | default([])) + [mirror_src] }}"
+  register: _mirror_src_digest
+  changed_when: false
+
+- name: "Read the destination index digest ({{ mirror_label }})"
+  # A missing destination is the normal first-run state, so a failure here
+  # means "copy"; the copy below reports any real registry or auth error.
+  ansible.builtin.command:
+    argv: "{{ _mirror_digest_argv + (mirror_dst_flags | default([])) + [mirror_dst] }}"
+  register: _mirror_dst_digest
+  changed_when: false
+  failed_when: false
+
+- name: "Copy the image ({{ mirror_label }})"
+  ansible.builtin.command:
+    argv: >-
+      {{ ['skopeo', 'copy'] + mirror_copy_flags + [mirror_src, mirror_dst] }}
+  register: _mirror_copy
+  when: >-
+    (mirror_force | default(false) | bool)
+    or _mirror_dst_digest.rc != 0
+    or (_mirror_dst_digest.stdout | trim) != (_mirror_src_digest.stdout | trim)
+  changed_when: true
+
+- name: "Read the destination index digest after the copy ({{ mirror_label }})"
+  ansible.builtin.command:
+    argv: "{{ _mirror_digest_argv + (mirror_dst_flags | default([])) + [mirror_dst] }}"
+  register: _mirror_dst_after
+  changed_when: false
+
+- name: "Verify the destination digest equals the source digest ({{ mirror_label }})"
+  ansible.builtin.assert:
+    that:
+      - (_mirror_dst_after.stdout | trim) == (_mirror_src_digest.stdout | trim)
+    fail_msg: >-
+      Digest mismatch for {{ mirror_label }}: source index
+      {{ _mirror_src_digest.stdout | trim }}, destination
+      {{ _mirror_dst_after.stdout | trim }}. The mirror must hold the whole
+      index with its digest unchanged, or the index attestation will not
+      verify and other architectures cannot pull.
+    quiet: true
+
+- name: "Record whether a copy ran ({{ mirror_label }})"
+  ansible.builtin.set_fact:
+    mirror_changed: "{{ _mirror_copy is not skipped }}"

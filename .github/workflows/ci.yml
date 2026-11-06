@@ -48,6 +48,11 @@ jobs:
           done
       - name: harden fail2ban ignoreip validation (dmfdeploy/dmfdeploy#142)
         run: ansible-playbook tests/test-harden-fail2ban-ignoreip.yml
+      - name: whole-index mirror keeps the index digest (dmfdeploy/dmfdeploy#808)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq skopeo
+          ansible-playbook tests/test-zot-seed-index-mirror.yml
       - name: helm-lint charts/
         run: |
           set -eu

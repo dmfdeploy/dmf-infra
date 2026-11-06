@@ -1,0 +1,99 @@
+---
+# Discrimination test for index-preserving mirroring (dmfdeploy/dmfdeploy#808).
+#
+# Builds a two-platform index (amd64 + arm64) as a local OCI layout, then runs
+# the SAME task file as 630-zot-seed-platform.yml against it:
+#   1. whole-index copy        -> destination digest equals source, no failure
+#   2. repeat                  -> no copy (idempotent), digest still equal
+#   3. single-platform copy    -> the digest check FAILS (the #808 defect)
+#
+# Needs skopeo and python3 on the machine; no registry, network or container
+# runtime. It does not exercise Zot or GHCR themselves (auth, TLS, HTTP).
+#
+# Run locally:
+#   ansible-playbook tests/test-zot-seed-index-mirror.yml
+
+- name: Discrimination test — whole-index mirror keeps the index digest (#808)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  tasks:
+    - name: Create a scratch directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: zot-index-test-
+      register: _scratch
+
+    - name: Run the cases
+      block:
+        - name: Build the two-platform source index
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -I
+              - "{{ playbook_dir }}/make_two_platform_index.py"
+              - "{{ _scratch.path }}/src"
+              - v1
+          changed_when: true
+
+        - name: Assert the fixture index lists two platforms
+          ansible.builtin.command:
+            argv: [skopeo, inspect, --raw, "oci:{{ _scratch.path }}/src:v1"]
+          register: _fixture
+          changed_when: false
+
+        - name: Check the fixture
+          ansible.builtin.assert:
+            that:
+              - (_fixture.stdout | from_json).manifests | length == 2
+              - (_fixture.stdout | from_json).manifests | map(attribute='platform.architecture') | sort == ['amd64', 'arm64']
+
+        - name: Case 1 — whole-index copy succeeds and copies
+          ansible.builtin.include_tasks: ../tasks/zot-seed-mirror-index.yml
+          vars:
+            mirror_label: whole-index
+            mirror_src: "oci:{{ _scratch.path }}/src:v1"
+            mirror_dst: "oci:{{ _scratch.path }}/dst:v1"
+            mirror_copy_flags: [--all, --preserve-digests]
+
+        - name: Case 1 — assert a copy ran
+          ansible.builtin.assert:
+            that: mirror_changed | bool
+
+        - name: Case 2 — repeat is idempotent
+          ansible.builtin.include_tasks: ../tasks/zot-seed-mirror-index.yml
+          vars:
+            mirror_label: whole-index-repeat
+            mirror_src: "oci:{{ _scratch.path }}/src:v1"
+            mirror_dst: "oci:{{ _scratch.path }}/dst:v1"
+            mirror_copy_flags: [--all, --preserve-digests]
+
+        - name: Case 2 — assert no copy ran
+          ansible.builtin.assert:
+            that: not (mirror_changed | bool)
+
+        - name: Case 3 — a single-platform copy must fail the digest check
+          block:
+            - name: Mirror one platform only
+              ansible.builtin.include_tasks: ../tasks/zot-seed-mirror-index.yml
+              vars:
+                mirror_label: single-platform
+                mirror_src: "oci:{{ _scratch.path }}/src:v1"
+                mirror_dst: "oci:{{ _scratch.path }}/dst-single:v1"
+                mirror_copy_flags: [--override-arch=arm64, --override-os=linux]
+            - name: Fail if the mismatch went unnoticed
+              ansible.builtin.fail:
+                msg: single-platform copy passed the digest check
+          rescue:
+            - name: Assert the failure was the digest check
+              ansible.builtin.assert:
+                that:
+                  - "'Digest mismatch for single-platform' in ansible_failed_result.msg"
+                quiet: true
+
+      always:
+        - name: Remove the scratch directory
+          ansible.builtin.file:
+            path: "{{ _scratch.path }}"
+            state: absent
