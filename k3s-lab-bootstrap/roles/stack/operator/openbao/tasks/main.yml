@@ -26,16 +26,27 @@
       the value into the secret_id_ttl field of the matching entry and remove
       the inventory variable.
 
-- name: Assert OpenBao AppRole names match the lifecycle registry
+- name: Assert the external-secrets AppRole name matches the lifecycle registry
   ansible.builtin.assert:
     that:
       - openbao_eso_role_name == openbao_approle_lifecycle_registry.runtime_targets['external-secrets'].approle_name
+    fail_msg: >-
+      openbao_eso_role_name is {{ openbao_eso_role_name }}, but
+      runtime_targets.external-secrets.approle_name in
+      vars/openbao-approle-lifecycle-registry.json is
+      {{ openbao_approle_lifecycle_registry.runtime_targets['external-secrets'].approle_name }}.
+      Rename the registry entry, or remove the inventory override.
+
+- name: Assert the born-inventory AppRole name matches the lifecycle registry
+  ansible.builtin.assert:
+    that:
       - openbao_born_inventory_role_name == openbao_approle_lifecycle_registry.dispositions['born-inventory-netbox-reader'].approle_name
     fail_msg: >-
-      openbao_eso_role_name is {{ openbao_eso_role_name }} and
-      openbao_born_inventory_role_name is {{ openbao_born_inventory_role_name }}.
-      The registry in vars/openbao-approle-lifecycle-registry.json must name the
-      same AppRoles. Rename the entry there, or remove the inventory override.
+      openbao_born_inventory_role_name is {{ openbao_born_inventory_role_name }}, but
+      dispositions.born-inventory-netbox-reader.approle_name in
+      vars/openbao-approle-lifecycle-registry.json is
+      {{ openbao_approle_lifecycle_registry.dispositions['born-inventory-netbox-reader'].approle_name }}.
+      Rename the registry entry, or remove the inventory override.
 
 - name: Create OpenBao namespace
   kubernetes.core.k8s:

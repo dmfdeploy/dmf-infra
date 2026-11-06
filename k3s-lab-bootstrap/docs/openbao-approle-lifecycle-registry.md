@@ -15,11 +15,20 @@ no continuous rotation or expiry monitoring.
 
 The roles check their inputs before they create anything. The OpenBao role
 fails if an inventory sets `openbao_eso_approle_secret_id_ttl` or
-`openbao_born_inventory_approle_secret_id_ttl`, or sets an AppRole name that
-differs from the registry. The object-storage role fails if an inventory sets
-`openbao_approle_secret_id_ttl`, or lists a logical with no runtime target.
-The listed logicals may be a subset of the registry. Each failure message names
-the registry field that now holds the value.
+`openbao_born_inventory_approle_secret_id_ttl`. Each message says to move the
+value into `secret_id_ttl` in the registry. The role also fails if
+`openbao_eso_role_name` or `openbao_born_inventory_role_name` differs from the
+`approle_name` of its registry entry. Each of those messages prints the
+configured value and the registry's value, and names the entry.
+
+The object-storage role fails if an inventory sets
+`openbao_approle_secret_id_ttl`; its message says to move the value into
+`secret_id_ttl` of the matching runtime target. It also requires
+`object_storage_logicals` to be non-empty and free of duplicates. Each listed
+logical must equal the `logical_name` of a runtime target, spelled exactly, so a
+dashed alias such as `app-backups` fails. The listed logicals may be a subset of
+the registered ones. The message for an unregistered logical names
+`logical_name` under `runtime_targets`.
 
 Runtime records include every current delivery destination. For the generated
 object-storage roles, the KV v2 ESO binding is retained alongside the

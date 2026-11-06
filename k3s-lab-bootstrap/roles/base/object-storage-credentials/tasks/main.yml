@@ -39,23 +39,34 @@
       secret_id_ttl field of the matching runtime target and remove the
       inventory variable.
 
-- name: Assert every configured logical has a lifecycle registry entry
+- name: Assert object_storage_logicals is a non-empty list without duplicates
+  ansible.builtin.assert:
+    that:
+      - object_storage_logicals | length > 0
+      - object_storage_logicals | unique | length == object_storage_logicals | length
+    fail_msg: >-
+      object_storage_logicals must name at least one logical, each listed once.
+      It is {{ object_storage_logicals }}.
+
+- name: Assert every configured logical is a registered logical_name
   ansible.builtin.assert:
     that:
       - _osc_unregistered_logicals | length == 0
     fail_msg: >-
-      object_storage_logicals names logicals with no runtime target in
-      vars/openbao-approle-lifecycle-registry.json. Add a runtime target for
-      each missing entry, or remove the logical:
-      {{ _osc_unregistered_logicals | join(', ') }}
+      object_storage_logicals names logicals that match no logical_name under
+      runtime_targets in vars/openbao-approle-lifecycle-registry.json. Spelling
+      must match exactly. Add a runtime target with that logical_name, or
+      remove the logical: {{ _osc_unregistered_logicals | join(', ') }}
   vars:
     _osc_unregistered_logicals: >-
       {{
         object_storage_logicals
-        | map('replace', '_', '-')
-        | map('regex_replace', '^', 'object-storage-')
-        | reject('in', openbao_approle_lifecycle_registry.runtime_targets)
-        | list
+        | difference(
+            openbao_approle_lifecycle_registry.runtime_targets.values()
+            | selectattr('logical_name', 'defined')
+            | map(attribute='logical_name')
+            | list
+          )
       }}
 
 # ── Step 1: Establish OpenBao sessions (two identities) ─────────────────────

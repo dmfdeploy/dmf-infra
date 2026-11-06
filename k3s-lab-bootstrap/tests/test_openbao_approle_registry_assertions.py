@@ -87,8 +87,23 @@ class ObjectStorageRegistryAssertionTests(unittest.TestCase):
     def test_unknown_logical_fails_and_names_the_missing_entry(self):
         rc, out = self.run_os(object_storage_logicals=["app_backups", "media_archive"])
         self.assertNotEqual(rc, 0, out)
-        self.assertIn("object-storage-media-archive", out)
-        self.assertNotIn("object-storage-app-backups,", out)
+        self.assertIn("media_archive", out)
+        self.assertIn("logical_name", out)
+
+    def test_dash_alias_of_a_registered_logical_fails(self):
+        rc, out = self.run_os(object_storage_logicals=["app-backups"])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("app-backups", out)
+
+    def test_duplicate_logical_fails(self):
+        rc, out = self.run_os(object_storage_logicals=["app_backups", "app_backups"])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("each listed once", out)
+
+    def test_empty_logicals_fails_with_a_clear_message(self):
+        rc, out = self.run_os(object_storage_logicals=[])
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("at least one logical", out)
 
     def test_removed_ttl_override_fails_with_migration_message(self):
         rc, out = self.run_os(openbao_approle_secret_id_ttl="720h")
@@ -117,11 +132,19 @@ class OpenBaoRegistryAssertionTests(unittest.TestCase):
                 self.assertIn("no longer read", out)
                 self.assertIn("openbao-approle-lifecycle-registry.json", out)
 
-    def test_renamed_role_fails_with_registry_message(self):
+    def test_renamed_eso_role_reports_both_values_and_the_entry(self):
         rc, out = self.run_bao(openbao_eso_role_name="eso-custom")
         self.assertNotEqual(rc, 0, out)
         self.assertIn("eso-custom", out)
-        self.assertIn("Rename the entry there", out)
+        self.assertIn("runtime_targets.external-secrets.approle_name", out)
+        self.assertIn("is external-secrets.", out)
+
+    def test_renamed_born_inventory_role_reports_both_values_and_the_entry(self):
+        rc, out = self.run_bao(openbao_born_inventory_role_name="born-custom")
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("born-custom", out)
+        self.assertIn("dispositions.born-inventory-netbox-reader.approle_name", out)
+        self.assertIn("is born-inventory-netbox-reader.", out)
 
 
 if __name__ == "__main__":
