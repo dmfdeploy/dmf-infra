@@ -8,6 +8,7 @@
   "expires_at": 1702592000,
   "ttl_seconds": 2592000,
   "last_successful_rotation_at": 1700000000,
+  "last_scheduled_success_at": 1700000000,
   "last_failure_at": null,
   "last_failure_reason_code": null,
   "latest_run_kind": "scheduled",
