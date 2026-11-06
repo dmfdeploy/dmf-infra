@@ -27,11 +27,14 @@
 groups:
   - name: dmf-openbao-approle-rotation
     rules:
+      # Severity is info until the metadata writer and the observer identity
+      # exist on every environment (dmfdeploy/dmfdeploy#11). Until then
+      # this alert would fire everywhere. Raise it to critical when both land.
       - alert: OpenBaoAppRoleObserverDown
         expr: up{job="dmf-promsd-approle-rotation"} == 0
         for: 5m
         labels:
-          severity: critical
+          severity: info
           category: security
         annotations:
           summary: OpenBao AppRole lifecycle observer is unavailable
@@ -39,11 +42,14 @@ groups:
             Prometheus cannot scrape the dmf-promsd lifecycle observer for 5m.
             Rotation metadata freshness and expiry alerts cannot be evaluated.
           runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+      # Severity is info until the metadata writer and the observer identity
+      # exist on every environment (dmfdeploy/dmfdeploy#11). Until then
+      # this alert would fire everywhere. Raise it to critical when both land.
       - alert: OpenBaoAppRoleMetadataUnavailable
         expr: dmf_openbao_approle_rotation_metadata_available == 0
         for: 10m
         labels:
-          severity: critical
+          severity: info
           category: security
         annotations:
           summary: OpenBao rotation metadata unavailable

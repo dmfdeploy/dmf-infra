@@ -112,14 +112,7 @@
       "secret_id_ttl": "720h",
       "disposition": "setup_only",
       "continuous_rotation": false,
-      "continuous_expiry_monitoring": false,
-      "fresh_issuance_per_invocation": true,
-      "entrypoints": [
-        "bootstrap-configure.yml",
-        "bootstrap-sandbox-configure.yml",
-        "playbooks/694-born-inventory.yml",
-        "playbooks/lifecycle/test-layer6.yml"
-      ]
+      "continuous_expiry_monitoring": false
     }
   }
 }

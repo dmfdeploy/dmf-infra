@@ -180,7 +180,6 @@ class OpenBaoAppRoleLifecycleRegistryTests(unittest.TestCase):
         self.assertNotIn("born-inventory-netbox-reader", runtime)
         self.assertFalse(disposition["continuous_rotation"])
         self.assertFalse(disposition["continuous_expiry_monitoring"])
-        self.assertTrue(disposition["fresh_issuance_per_invocation"])
 
     def test_object_storage_readiness_gap_is_explicit(self):
         for target in (
