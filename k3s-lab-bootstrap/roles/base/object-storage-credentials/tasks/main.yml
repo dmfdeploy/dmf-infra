@@ -28,21 +28,35 @@
     file: "{{ role_path }}/../../../vars/openbao-approle-lifecycle-registry.json"
     name: openbao_approle_lifecycle_registry
 
-- name: Assert object-storage AppRoles match the lifecycle registry
+- name: Assert no removed SecretID TTL override is set
   ansible.builtin.assert:
     that:
-      - >-
-        object_storage_logicals | map('regex_replace', '_', '-') | list | sort
-        ==
-        openbao_approle_lifecycle_registry.runtime_targets
-        | dict2items
-        | selectattr('value.logical_name', 'defined')
-        | map(attribute='value.logical_name')
-        | map('regex_replace', '_', '-')
-        | list | sort
+      - openbao_approle_secret_id_ttl is not defined
     fail_msg: >-
-      object_storage_logicals must match the generated runtime targets in
-      vars/openbao-approle-lifecycle-registry.json.
+      openbao_approle_secret_id_ttl is no longer read. The SecretID TTL for
+      each object-storage AppRole lives in
+      vars/openbao-approle-lifecycle-registry.json. Move the value into the
+      secret_id_ttl field of the matching runtime target and remove the
+      inventory variable.
+
+- name: Assert every configured logical has a lifecycle registry entry
+  ansible.builtin.assert:
+    that:
+      - _osc_unregistered_logicals | length == 0
+    fail_msg: >-
+      object_storage_logicals names logicals with no runtime target in
+      vars/openbao-approle-lifecycle-registry.json. Add a runtime target for
+      each missing entry, or remove the logical:
+      {{ _osc_unregistered_logicals | join(', ') }}
+  vars:
+    _osc_unregistered_logicals: >-
+      {{
+        object_storage_logicals
+        | map('replace', '_', '-')
+        | map('regex_replace', '^', 'object-storage-')
+        | reject('in', openbao_approle_lifecycle_registry.runtime_targets)
+        | list
+      }}
 
 # ── Step 1: Establish OpenBao sessions (two identities) ─────────────────────
 

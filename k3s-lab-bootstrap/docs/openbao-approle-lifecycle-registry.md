@@ -9,8 +9,17 @@ a finite-TTL write site appears outside the registry.
 
 The registry separates continuously managed targets from explicit
 dispositions. `born-inventory-netbox-reader` is setup-only: it has no rotation
-metadata record and is not an observer target. The setup-only record names the
-checked entrypoints that require a fresh one-use credential on each invocation.
+metadata record and is not an observer target. Its registry entry holds the
+AppRole name, the SecretID TTL, and the flags that mark it as setup-only with
+no continuous rotation or expiry monitoring.
+
+The roles check their inputs before they create anything. The OpenBao role
+fails if an inventory sets `openbao_eso_approle_secret_id_ttl` or
+`openbao_born_inventory_approle_secret_id_ttl`, or sets an AppRole name that
+differs from the registry. The object-storage role fails if an inventory sets
+`openbao_approle_secret_id_ttl`, or lists a logical with no runtime target.
+The listed logicals may be a subset of the registry. Each failure message names
+the registry field that now holds the value.
 
 Runtime records include every current delivery destination. For the generated
 object-storage roles, the KV v2 ESO binding is retained alongside the

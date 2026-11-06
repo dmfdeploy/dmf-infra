@@ -100,22 +100,49 @@ tests:
               description: Less than 10% of the active SecretID lifetime remains.
               runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
 
+  # Null starting value: metadata is available and the heartbeat series is
+  # absent. Neither heartbeat alert fires inside the 26h grace; the
+  # never-recorded alert fires once the grace has passed.
   - interval: 1m
     input_series:
       - series: 'dmf_openbao_approle_rotation_metadata_available{target="external-secrets"}'
-        values: "1x20"
+        values: "1x1700"
     alert_rule_test:
       - eval_time: 16m
         alertname: OpenBaoAppRoleScheduledRotationHeartbeatMissing
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: OpenBaoAppRoleScheduledRotationHeartbeatNeverRecorded
+        exp_alerts: []
+      - eval_time: 25h
+        alertname: OpenBaoAppRoleScheduledRotationHeartbeatNeverRecorded
+        exp_alerts: []
+      - eval_time: 26h30m
+        alertname: OpenBaoAppRoleScheduledRotationHeartbeatNeverRecorded
         exp_alerts:
           - exp_labels:
               severity: critical
               category: security
               target: external-secrets
             exp_annotations:
-              summary: Scheduled rotation heartbeat missing
-              description: No successful scheduled rotation is recorded within 26 hours. Manual runs do not reset this schedule heartbeat.
+              summary: Scheduled rotation heartbeat never recorded
+              description: Rotation metadata has been available for 26 hours with no successful scheduled rotation recorded. Manual runs do not reset this schedule heartbeat.
               runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
+
+  # Within grace: the last scheduled success is 25h old at the evaluation.
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_approle_rotation_metadata_available{target="external-secrets"}'
+        values: "1x1620"
+      - series: 'dmf_openbao_approle_rotation_last_scheduled_success_seconds{role="external-secrets",target="external-secrets"}'
+        values: "0x1620"
+    alert_rule_test:
+      - eval_time: 25h
+        alertname: OpenBaoAppRoleScheduledRotationHeartbeatMissing
+        exp_alerts: []
+      - eval_time: 25h
+        alertname: OpenBaoAppRoleScheduledRotationHeartbeatNeverRecorded
+        exp_alerts: []
 
   # The two availability alerts stay at info until the metadata writer and
   # the observer identity exist on every environment.
