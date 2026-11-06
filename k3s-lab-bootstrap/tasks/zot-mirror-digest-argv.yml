@@ -1,0 +1,17 @@
+---
+# Defines _mirror_digest_argv: the command that prints the sha256 of an image's
+# RAW manifest bytes. Included by zot-seed-mirror-index.yml and
+# zot-seed-mirror-verify.yml so both hash the same way.
+
+- name: "Define the raw-manifest digest command ({{ mirror_label }})"
+  # Keep `inspect --raw` and the sha256 in one pipeline with pipefail so a
+  # failed inspect cannot yield the digest of empty input.
+  ansible.builtin.set_fact:
+    _mirror_digest_argv:
+      - bash
+      - -c
+      - |
+        set -o pipefail
+        if command -v sha256sum >/dev/null 2>&1; then sum=sha256sum; else sum='shasum -a 256'; fi
+        skopeo inspect --raw "$@" | $sum | { read -r h _; echo "sha256:$h"; }
+      - _

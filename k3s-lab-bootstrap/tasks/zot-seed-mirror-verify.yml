@@ -1,0 +1,34 @@
+---
+# Prove the destination holds the source's exact index digest, comparing the
+# RAW manifest bytes of both sides (see zot-seed-mirror-index.yml for why).
+# Fails with "Digest mismatch for <label>".
+#
+# Inputs: mirror_label, mirror_src, mirror_dst, and optionally
+# mirror_src_flags and mirror_dst_flags (lists of `skopeo inspect` flags).
+
+- name: "Define the digest command ({{ mirror_label }})"
+  ansible.builtin.include_tasks: zot-mirror-digest-argv.yml
+
+- name: "Read the source index digest for the check ({{ mirror_label }})"
+  ansible.builtin.command:
+    argv: "{{ _mirror_digest_argv + (mirror_src_flags | default([])) + [mirror_src] }}"
+  register: _mirror_verify_src
+  changed_when: false
+
+- name: "Read the destination index digest for the check ({{ mirror_label }})"
+  ansible.builtin.command:
+    argv: "{{ _mirror_digest_argv + (mirror_dst_flags | default([])) + [mirror_dst] }}"
+  register: _mirror_verify_dst
+  changed_when: false
+
+- name: "Verify the destination digest equals the source digest ({{ mirror_label }})"
+  ansible.builtin.assert:
+    that:
+      - (_mirror_verify_dst.stdout | trim) == (_mirror_verify_src.stdout | trim)
+    fail_msg: >-
+      Digest mismatch for {{ mirror_label }}: source index
+      {{ _mirror_verify_src.stdout | trim }}, destination
+      {{ _mirror_verify_dst.stdout | trim }}. The mirror must hold the whole
+      index with its digest unchanged, or the index attestation will not
+      verify and other architectures cannot pull.
+    quiet: true
