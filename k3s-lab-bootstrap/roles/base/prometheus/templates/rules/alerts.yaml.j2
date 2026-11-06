@@ -27,9 +27,12 @@
 groups:
   - name: dmf-openbao-approle-rotation
     rules:
-      # Severity is info until the metadata writer and the observer identity
-      # exist on every environment (dmfdeploy/dmfdeploy#11). Until then
-      # this alert would fire everywhere. Raise it to critical when both land.
+      # Tests only the Prometheus scrape of the dmf-promsd observer endpoint
+      # (up == 0). It does not report missing metadata: a reachable observer
+      # with no records or no identity scrapes successfully and shows up as
+      # OpenBaoAppRoleMetadataUnavailable. A dmf-promsd build without the
+      # /metrics endpoint fails the scrape, so this alert stays info until the
+      # endpoint is deployed on every environment (dmfdeploy/dmfdeploy#11).
       - alert: OpenBaoAppRoleObserverDown
         expr: up{job="dmf-promsd-approle-rotation"} == 0
         for: 5m
@@ -113,12 +116,7 @@ groups:
             failure reason remain bounded metadata; no credential data is exposed.
           runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
       - alert: OpenBaoAppRoleScheduledRotationHeartbeatMissing
-        expr: >-
-          ((time() - dmf_openbao_approle_rotation_last_scheduled_success_seconds) > 93600)
-          or on(target)
-          ((dmf_openbao_approle_rotation_metadata_available == 1)
-           unless on(target)
-           dmf_openbao_approle_rotation_last_scheduled_success_seconds)
+        expr: (time() - dmf_openbao_approle_rotation_last_scheduled_success_seconds) > 93600
         for: 15m
         labels:
           severity: critical
@@ -128,6 +126,26 @@ groups:
           description: >-
             No successful scheduled rotation is recorded within 26 hours.
             Manual runs do not reset this schedule heartbeat.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
+      # The contract starts last_scheduled_success_at as null, so a new record
+      # has no heartbeat series. The 26h `for` gives the scheduler the same
+      # grace the rule above allows, counted from the first evaluation that
+      # sees available metadata without a heartbeat.
+      - alert: OpenBaoAppRoleScheduledRotationHeartbeatNeverRecorded
+        expr: >-
+          (dmf_openbao_approle_rotation_metadata_available == 1)
+          unless on(target)
+          dmf_openbao_approle_rotation_last_scheduled_success_seconds
+        for: 26h
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: Scheduled rotation heartbeat never recorded
+          description: >-
+            Rotation metadata has been available for 26 hours with no
+            successful scheduled rotation recorded. Manual runs do not reset
+            this schedule heartbeat.
           runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-approle-rotation"
 
   - name: dmf-watchdog

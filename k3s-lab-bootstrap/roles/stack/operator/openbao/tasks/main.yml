@@ -14,14 +14,28 @@
     file: "{{ role_path }}/../../../../vars/openbao-approle-lifecycle-registry.json"
     name: openbao_approle_lifecycle_registry
 
+- name: Assert no removed SecretID TTL override is set
+  ansible.builtin.assert:
+    that:
+      - openbao_eso_approle_secret_id_ttl is not defined
+      - openbao_born_inventory_approle_secret_id_ttl is not defined
+    fail_msg: >-
+      openbao_eso_approle_secret_id_ttl and
+      openbao_born_inventory_approle_secret_id_ttl are no longer read. Each
+      SecretID TTL lives in vars/openbao-approle-lifecycle-registry.json. Move
+      the value into the secret_id_ttl field of the matching entry and remove
+      the inventory variable.
+
 - name: Assert OpenBao AppRole names match the lifecycle registry
   ansible.builtin.assert:
     that:
       - openbao_eso_role_name == openbao_approle_lifecycle_registry.runtime_targets['external-secrets'].approle_name
       - openbao_born_inventory_role_name == openbao_approle_lifecycle_registry.dispositions['born-inventory-netbox-reader'].approle_name
     fail_msg: >-
-      AppRole role names must match vars/openbao-approle-lifecycle-registry.json;
-      update the disposition or runtime target before changing a name.
+      openbao_eso_role_name is {{ openbao_eso_role_name }} and
+      openbao_born_inventory_role_name is {{ openbao_born_inventory_role_name }}.
+      The registry in vars/openbao-approle-lifecycle-registry.json must name the
+      same AppRoles. Rename the entry there, or remove the inventory override.
 
 - name: Create OpenBao namespace
   kubernetes.core.k8s:
