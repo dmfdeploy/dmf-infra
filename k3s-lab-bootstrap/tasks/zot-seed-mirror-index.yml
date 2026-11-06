@@ -6,8 +6,11 @@
 # --all keeps only one platform, which stores a different manifest, so the
 # attestation no longer verifies and a node of the other architecture cannot
 # pull (dmfdeploy/dmfdeploy#808). The digest is therefore compared on the RAW
-# manifest bytes of both sides: plain `skopeo inspect` resolves an index to a
-# single platform and would hide the difference.
+# manifest bytes: plain `skopeo inspect` resolves an index to a single
+# platform and would hide the difference.
+#
+# The task takes typed inputs only and builds every skopeo argument itself,
+# so nothing a caller passes can add, remove or override an option.
 #
 # The digest check is its own file, zot-seed-mirror-verify.yml, so the test
 # can run it alone against a copy made another way.
@@ -17,36 +20,29 @@
 # test breaks).
 #
 # Inputs (set by the includer):
-#   mirror_label       text for messages
-#   mirror_src         skopeo source reference (docker://..., oci:...)
-#   mirror_dst         skopeo destination reference
-#   mirror_src_flags   extra `skopeo inspect` flags for the source (list)
-#   mirror_dst_flags   extra `skopeo inspect` flags for the destination (list)
-#   mirror_copy_extra_flags  extra `skopeo copy` flags, such as destination
-#                      TLS and auth (list, optional). Entries that would undo whole-index copying (platform
-#                      selection, format changes) are rejected before any
-#                      copy. The whole-index flags themselves are fixed
-#                      below and no variable replaces them.
-#   mirror_force       copy even when the digests already match (bool)
+#   mirror_label            text for messages
+#   mirror_src_ref          skopeo source reference (docker://..., oci:...)
+#   mirror_dest_ref         skopeo destination reference
+#   mirror_dest_tls_verify  verify destination TLS (boolean, required)
+#   mirror_dest_authfile    destination auth file path (optional)
+#   mirror_force            copy even when the digests already match (bool, optional)
 # Output:
-#   mirror_changed     true when a copy ran
+#   mirror_changed          true when a copy ran
 #
 # Needs skopeo >= 1.9 (Debian 12): `copy --all`, `--preserve-digests` and
 # `inspect --raw` all predate it. `--multi-arch` is newer and not used.
 
-- name: "Reject copy flags that undo whole-index copying ({{ mirror_label }})"
-  # Runs before any copy: a single-platform copy would overwrite the
-  # destination tag, and the later digest check cannot undo that.
+- name: "Validate the inputs and build the destination arguments ({{ mirror_label }})"
+  # Runs before any read or write of the destination.
+  ansible.builtin.include_tasks: zot-mirror-dest-args.yml
+
+- name: "Validate the source reference ({{ mirror_label }})"
   ansible.builtin.assert:
     that:
-      - >-
-        (mirror_copy_extra_flags | default([]))
-        | select('match', '^(--(override-|multi-arch|platform|format|all=|preserve-digests=|retry-times)|-f$|-a$)')
-        | list | length == 0
-    fail_msg: >-
-      mirror_copy_extra_flags for {{ mirror_label }} may only add destination
-      TLS and auth. Platform selection, format and whole-index flags are fixed
-      by this task: {{ mirror_copy_extra_flags | default([]) }}
+      - mirror_src_ref is string
+      - mirror_src_ref | length > 0
+      - not mirror_src_ref.startswith('-')
+    fail_msg: "mirror_src_ref for {{ mirror_label }} must be a reference."
     quiet: true
 
 - name: "Define the digest command ({{ mirror_label }})"
@@ -54,7 +50,7 @@
 
 - name: "Read the source index digest ({{ mirror_label }})"
   ansible.builtin.command:
-    argv: "{{ _mirror_digest_argv + (mirror_src_flags | default([])) + [mirror_src] }}"
+    argv: "{{ _mirror_digest_argv + [mirror_src_ref] }}"
   register: _mirror_src_digest
   changed_when: false
 
@@ -62,29 +58,29 @@
   # A missing destination is the normal first-run state, so a failure here
   # means "copy"; the copy below reports any real registry or auth error.
   ansible.builtin.command:
-    argv: "{{ _mirror_digest_argv + (mirror_dst_flags | default([])) + [mirror_dst] }}"
-  register: _mirror_dst_digest
+    argv: "{{ _mirror_digest_argv + _mirror_dest_inspect_args + [mirror_dest_ref] }}"
+  register: _mirror_dest_digest
   changed_when: false
   failed_when: false
 
 - name: "Copy the image ({{ mirror_label }})"
-  # The whole-index flags are fixed here, ahead of the extra flags, so no
-  # inventory value can drop them and the test runs the same ones.
   ansible.builtin.command:
     argv: >-
-      {{ ['skopeo', 'copy']
-         + ['--all', '--preserve-digests', '--retry-times=5']
-         + (mirror_copy_extra_flags | default([]))
-         + [mirror_src, mirror_dst] }}
+      {{ ['skopeo', 'copy', '--all', '--preserve-digests', '--retry-times=5']
+         + _mirror_dest_copy_args
+         + [mirror_src_ref, mirror_dest_ref] }}
   register: _mirror_copy
   when: >-
     (mirror_force | default(false) | bool)
-    or _mirror_dst_digest.rc != 0
-    or (_mirror_dst_digest.stdout | trim) != (_mirror_src_digest.stdout | trim)
+    or _mirror_dest_digest.rc != 0
+    or (_mirror_dest_digest.stdout | trim) != (_mirror_src_digest.stdout | trim)
   changed_when: true
 
 - name: "Verify the destination holds the source index ({{ mirror_label }})"
+  # The digest captured before the copy is the only expectation.
   ansible.builtin.include_tasks: zot-seed-mirror-verify.yml
+  vars:
+    mirror_expected_digest: "{{ _mirror_src_digest.stdout | trim }}"
 
 - name: "Record whether a copy ran ({{ mirror_label }})"
   ansible.builtin.set_fact:

@@ -1,33 +1,42 @@
 ---
-# Prove the destination holds the source's exact index digest, comparing the
-# RAW manifest bytes of both sides (see zot-seed-mirror-index.yml for why).
+# Prove the destination holds the index digest captured before the copy,
+# comparing the RAW manifest bytes (see zot-seed-mirror-index.yml for why).
 # Fails with "Digest mismatch for <label>".
 #
-# Inputs: mirror_label, mirror_src, mirror_dst, and optionally
-# mirror_src_flags and mirror_dst_flags (lists of `skopeo inspect` flags).
+# The source is not read again: a tag that moves after the capture must not
+# change what the copy is checked against.
+#
+# Inputs: mirror_label, mirror_expected_digest (sha256:...), mirror_dest_ref,
+# mirror_dest_tls_verify, and optionally mirror_dest_authfile.
+
+- name: "Check the expected digest ({{ mirror_label }})"
+  ansible.builtin.assert:
+    that:
+      - mirror_expected_digest is defined
+      - mirror_expected_digest is string
+      - mirror_expected_digest is match('^sha256:[0-9a-f]{64}$')
+    fail_msg: "mirror_expected_digest for {{ mirror_label }} must be a sha256:<hex> digest."
+    quiet: true
+
+- name: "Validate the destination inputs and build arguments ({{ mirror_label }})"
+  ansible.builtin.include_tasks: zot-mirror-dest-args.yml
 
 - name: "Define the digest command ({{ mirror_label }})"
   ansible.builtin.include_tasks: zot-mirror-digest-argv.yml
 
-- name: "Read the source index digest for the check ({{ mirror_label }})"
-  ansible.builtin.command:
-    argv: "{{ _mirror_digest_argv + (mirror_src_flags | default([])) + [mirror_src] }}"
-  register: _mirror_verify_src
-  changed_when: false
-
 - name: "Read the destination index digest for the check ({{ mirror_label }})"
   ansible.builtin.command:
-    argv: "{{ _mirror_digest_argv + (mirror_dst_flags | default([])) + [mirror_dst] }}"
+    argv: "{{ _mirror_digest_argv + _mirror_dest_inspect_args + [mirror_dest_ref] }}"
   register: _mirror_verify_dst
   changed_when: false
 
-- name: "Verify the destination digest equals the source digest ({{ mirror_label }})"
+- name: "Verify the destination digest equals the expected digest ({{ mirror_label }})"
   ansible.builtin.assert:
     that:
-      - (_mirror_verify_dst.stdout | trim) == (_mirror_verify_src.stdout | trim)
+      - (_mirror_verify_dst.stdout | trim) == mirror_expected_digest
     fail_msg: >-
       Digest mismatch for {{ mirror_label }}: source index
-      {{ _mirror_verify_src.stdout | trim }}, destination
+      {{ mirror_expected_digest }}, destination
       {{ _mirror_verify_dst.stdout | trim }}. The mirror must hold the whole
       index with its digest unchanged, or the index attestation will not
       verify and other architectures cannot pull.
