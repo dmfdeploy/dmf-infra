@@ -5,7 +5,10 @@
 # the SAME task file as 630-zot-seed-platform.yml against it:
 #   1. whole-index copy        -> destination digest equals source, no failure
 #   2. repeat                  -> no copy (idempotent), digest still equal
-#   3. single-platform copy    -> the digest check FAILS (the #808 defect)
+#   3. single-platform copy made directly, then only the digest check
+#                              -> the check FAILS (the #808 defect)
+#   4. a leftover `mirror_copy_flags: []` -> flags still applied
+#   5. an extra flag selecting a platform -> rejected before any copy
 #
 # Needs skopeo and python3 on the machine; no registry, network or container
 # runtime. It does not exercise Zot or GHCR themselves (auth, TLS, HTTP).
@@ -73,13 +76,22 @@
 
         - name: Case 3 — a single-platform copy must fail the digest check
           block:
-            - name: Mirror one platform only
-              ansible.builtin.include_tasks: ../tasks/zot-seed-mirror-index.yml
+            - name: Mirror one platform only, outside the shared task
+              ansible.builtin.command:
+                argv:
+                  - skopeo
+                  - copy
+                  - --override-arch=arm64
+                  - --override-os=linux
+                  - "oci:{{ _scratch.path }}/src:v1"
+                  - "oci:{{ _scratch.path }}/dst-single:v1"
+              changed_when: true
+            - name: Run only the digest check
+              ansible.builtin.include_tasks: ../tasks/zot-seed-mirror-verify.yml
               vars:
                 mirror_label: single-platform
                 mirror_src: "oci:{{ _scratch.path }}/src:v1"
                 mirror_dst: "oci:{{ _scratch.path }}/dst-single:v1"
-                mirror_copy_flags: [--override-arch=arm64, --override-os=linux]
             - name: Fail if the mismatch went unnoticed
               ansible.builtin.fail:
                 msg: single-platform copy passed the digest check
@@ -88,6 +100,47 @@
               ansible.builtin.assert:
                 that:
                   - "'Digest mismatch for single-platform' in ansible_failed_result.msg"
+                quiet: true
+
+        - name: Case 4 — an inventory value for the old override variable changes nothing
+          # mirror_copy_flags no longer exists; a leftover inventory value
+          # must not drop the whole-index flags.
+          ansible.builtin.include_tasks: ../tasks/zot-seed-mirror-index.yml
+          vars:
+            mirror_copy_flags: []
+            mirror_label: inventory-override
+            mirror_src: "oci:{{ _scratch.path }}/src:v1"
+            mirror_dst: "oci:{{ _scratch.path }}/dst-inv:v1"
+
+        - name: Case 4 — assert the copy ran and kept the whole index
+          ansible.builtin.assert:
+            that: mirror_changed | bool
+
+        - name: Case 5 — an extra flag that selects a platform is rejected before any copy
+          block:
+            - name: Mirror with a platform-selecting extra flag
+              ansible.builtin.include_tasks: ../tasks/zot-seed-mirror-index.yml
+              vars:
+                mirror_label: extra-flag
+                mirror_src: "oci:{{ _scratch.path }}/src:v1"
+                mirror_dst: "oci:{{ _scratch.path }}/dst-extra:v1"
+                mirror_copy_extra_flags: [--override-arch=arm64]
+            - name: Fail if the flag was accepted
+              ansible.builtin.fail:
+                msg: platform-selecting extra flag was accepted
+          rescue:
+            - name: Assert the guard rejected it
+              ansible.builtin.assert:
+                that:
+                  - "'may only add destination' in ansible_failed_result.msg"
+                quiet: true
+            - name: Check that nothing was copied
+              ansible.builtin.stat:
+                path: "{{ _scratch.path }}/dst-extra"
+              register: _extra_dst
+            - name: Assert the destination does not exist
+              ansible.builtin.assert:
+                that: not _extra_dst.stat.exists
                 quiet: true
 
       always:
