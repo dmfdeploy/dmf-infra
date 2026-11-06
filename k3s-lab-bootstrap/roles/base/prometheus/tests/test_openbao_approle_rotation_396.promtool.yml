@@ -116,3 +116,35 @@ tests:
               summary: Scheduled rotation heartbeat missing
               description: No successful scheduled rotation is recorded within 26 hours. Manual runs do not reset this schedule heartbeat.
               runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
+
+  # The two availability alerts stay at info until the metadata writer and
+  # the observer identity exist on every environment.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="dmf-promsd-approle-rotation"}'
+        values: "0x10"
+      - series: 'dmf_openbao_approle_rotation_metadata_available{target="external-secrets"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: OpenBaoAppRoleObserverDown
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              category: security
+              job: dmf-promsd-approle-rotation
+            exp_annotations:
+              summary: OpenBao AppRole lifecycle observer is unavailable
+              description: Prometheus cannot scrape the dmf-promsd lifecycle observer for 5m. Rotation metadata freshness and expiry alerts cannot be evaluated.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
+      - eval_time: 15m
+        alertname: OpenBaoAppRoleMetadataUnavailable
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              category: security
+              target: external-secrets
+            exp_annotations:
+              summary: OpenBao rotation metadata unavailable
+              description: The observer has no current valid metadata for this configured runtime target. Cached expiry and run-state series are withheld.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-approle-rotation
