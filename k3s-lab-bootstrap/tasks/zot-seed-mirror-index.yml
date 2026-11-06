@@ -10,7 +10,11 @@
 # platform and would hide the difference.
 #
 # The task takes typed inputs only and builds every skopeo argument itself,
-# so nothing a caller passes can add, remove or override an option.
+# so nothing an includer passes can add, remove or override an option.
+# Ansible extra vars (-e) still outrank the facts this file sets. That's
+# accepted: whoever runs the play with -e already controls the playbook and
+# the registry credentials, so -e is trusted input, not a boundary. The
+# guards here catch mistakes, not a deliberate override.
 #
 # The digest check is its own file, zot-seed-mirror-verify.yml, so the test
 # can run it alone against a copy made another way.
