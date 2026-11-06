@@ -1,0 +1,37 @@
+---
+# Validates the typed destination inputs and defines the skopeo arguments
+# built from them, so the index task and the verify task cannot disagree.
+#
+# Why typed inputs: a caller-supplied flag list lets any value add, remove or
+# override a skopeo option (for example `-a=false` silently undoes `--all`).
+# Every option is built here from a validated value instead.
+#
+# Inputs: mirror_label, mirror_dest_ref, mirror_dest_tls_verify (boolean),
+# and optionally mirror_dest_authfile (non-empty path).
+# Defines: _mirror_dest_inspect_args, _mirror_dest_copy_args (lists).
+
+- name: "Validate the destination inputs ({{ mirror_label }})"
+  ansible.builtin.assert:
+    that:
+      - mirror_dest_ref is string
+      - mirror_dest_ref | length > 0
+      - not mirror_dest_ref.startswith('-')
+      - mirror_dest_tls_verify is defined
+      - mirror_dest_tls_verify is boolean
+      - >-
+        mirror_dest_authfile is not defined
+        or (mirror_dest_authfile is string and mirror_dest_authfile | length > 0)
+    fail_msg: >-
+      Mirror inputs for {{ mirror_label }} are invalid: mirror_dest_ref must be
+      a reference, mirror_dest_tls_verify must be a boolean (not a string), and
+      mirror_dest_authfile, when set, must be a non-empty path.
+    quiet: true
+
+- name: "Build the destination arguments ({{ mirror_label }})"
+  ansible.builtin.set_fact:
+    _mirror_dest_inspect_args: >-
+      {{ ['--tls-verify=' ~ ('true' if mirror_dest_tls_verify else 'false')]
+         + (['--authfile', mirror_dest_authfile] if mirror_dest_authfile is defined else []) }}
+    _mirror_dest_copy_args: >-
+      {{ ['--dest-tls-verify=' ~ ('true' if mirror_dest_tls_verify else 'false')]
+         + (['--dest-authfile', mirror_dest_authfile] if mirror_dest_authfile is defined else []) }}
