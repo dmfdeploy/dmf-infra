@@ -55,7 +55,6 @@
             mirror_label: whole-index
             mirror_src: "oci:{{ _scratch.path }}/src:v1"
             mirror_dst: "oci:{{ _scratch.path }}/dst:v1"
-            mirror_copy_flags: [--all, --preserve-digests]
 
         - name: Case 1 — assert a copy ran
           ansible.builtin.assert:
@@ -67,7 +66,6 @@
             mirror_label: whole-index-repeat
             mirror_src: "oci:{{ _scratch.path }}/src:v1"
             mirror_dst: "oci:{{ _scratch.path }}/dst:v1"
-            mirror_copy_flags: [--all, --preserve-digests]
 
         - name: Case 2 — assert no copy ran
           ansible.builtin.assert:

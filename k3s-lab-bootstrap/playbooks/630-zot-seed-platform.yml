@@ -547,7 +547,7 @@
           changed_when: true
 
         - name: Mirror whole-index images GHCR → Zot and verify the digest
-          # skopeo copy --all --preserve-digests, then source and destination
+          # the shared task copies the whole index, then source and destination
           # raw-manifest sha256 must be equal or the play fails. Idempotent:
           # no copy when the digests already match.
           ansible.builtin.include_tasks: ../tasks/zot-seed-mirror-index.yml
@@ -560,11 +560,8 @@
             mirror_dst_flags:
               - "--tls-verify={{ zot_dest_tls_verify }}"
               - "--authfile={{ _zot_authfile.path }}"
-            mirror_copy_flags:
+            mirror_copy_extra_flags:
               - "--dest-tls-verify={{ zot_dest_tls_verify }}"
-              - --all
-              - --preserve-digests
-              - --retry-times=5
               - "--dest-authfile={{ _zot_authfile.path }}"
             mirror_force: "{{ zot_seed_force | bool }}"
           loop: "{{ zot_seed_images_index }}"

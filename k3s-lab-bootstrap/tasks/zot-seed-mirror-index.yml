@@ -19,7 +19,11 @@
 #   mirror_dst         skopeo destination reference
 #   mirror_src_flags   extra `skopeo inspect` flags for the source (list)
 #   mirror_dst_flags   extra `skopeo inspect` flags for the destination (list)
-#   mirror_copy_flags  flags for `skopeo copy` (list)
+#   mirror_copy_extra_flags  extra `skopeo copy` flags, such as destination
+#                      TLS and auth (list, optional)
+#   mirror_copy_flags  replaces the whole-index flags below. Only the
+#                      test's negative case sets it, to prove the digest
+#                      check catches a single-platform copy. (list, optional)
 #   mirror_force       copy even when the digests already match (bool)
 # Output:
 #   mirror_changed     true when a copy ran
@@ -56,9 +60,13 @@
   failed_when: false
 
 - name: "Copy the image ({{ mirror_label }})"
+  # The whole-index flags live only here, so the test runs the same ones.
   ansible.builtin.command:
     argv: >-
-      {{ ['skopeo', 'copy'] + mirror_copy_flags + [mirror_src, mirror_dst] }}
+      {{ ['skopeo', 'copy']
+         + (mirror_copy_flags | default(['--all', '--preserve-digests', '--retry-times=5']))
+         + (mirror_copy_extra_flags | default([]))
+         + [mirror_src, mirror_dst] }}
   register: _mirror_copy
   when: >-
     (mirror_force | default(false) | bool)
