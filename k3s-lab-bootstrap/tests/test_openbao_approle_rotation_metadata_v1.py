@@ -32,6 +32,7 @@ FIELDS = {
     "expires_at",
     "ttl_seconds",
     "last_successful_rotation_at",
+    "last_scheduled_success_at",
     "last_failure_at",
     "last_failure_reason_code",
     "latest_run_kind",
@@ -59,7 +60,7 @@ def validate_record(record):
             return False
     if record["target_version"] < 1 or record["ttl_seconds"] < 1:
         return False
-    for key in ("last_successful_rotation_at", "last_failure_at"):
+    for key in ("last_successful_rotation_at", "last_scheduled_success_at", "last_failure_at"):
         value = record[key]
         if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value <= 0):
             return False
@@ -111,6 +112,22 @@ class OpenBaoRotationMetadataV1Tests(unittest.TestCase):
         self.assertFalse(validate_record(record))
         record = json.loads(FIXTURE.read_text(encoding="utf-8"))
         record.pop("secret_id_accessor")
+        self.assertFalse(validate_record(record))
+
+    def test_scheduled_success_is_nullable_and_independent_of_latest_run(self):
+        record = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        record["latest_run_kind"] = "manual"
+        record["latest_run_at"] += 1
+        self.assertTrue(validate_record(record))
+        record["latest_run_kind"] = "scheduled"
+        record["latest_run_outcome"] = "failure"
+        record["latest_run_at"] += 1
+        record["last_failure_at"] = record["latest_run_at"]
+        record["last_failure_reason_code"] = "readiness_failed"
+        self.assertTrue(validate_record(record))
+        record["last_scheduled_success_at"] = None
+        self.assertTrue(validate_record(record))
+        record["last_scheduled_success_at"] = 0
         self.assertFalse(validate_record(record))
 
 
