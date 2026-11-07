@@ -9,6 +9,10 @@
   "http": {
     "address": "0.0.0.0",
     "port": "5000",
+    {# Playbook 630 mirrors release indexes digest-for-digest, and the dmf-cms
+       release publishes Docker v2 media types. Zot rejects those unless this
+       mode is on, and --preserve-digests rules out conversion to OCI (#853). #}
+    "compat": ["docker2s2"],
     {% if _auth_enabled %}
     "externalUrl": {{ zot_oidc_external_url | to_json }},
     {% endif %}

@@ -243,6 +243,11 @@
               # reads htpasswd at process start, so the running pod keeps
               # serving the old credentials until manually restarted.
               dmf.example.com/htpasswd-hash: "{{ zot_htpasswd_combined | hash('sha256') }}"
+              # Hash the rendered config.json so a config change rolls the pod
+              # too. Zot reads its config only at process start, and the mounted
+              # Secret refresh does not restart it. The config can hold the OIDC
+              # client secret, so only the hash reaches the annotation (#853).
+              dmf.example.com/config-hash: "{{ zot_config_slurped.content | b64decode | hash('sha256') }}"
           spec:
             securityContext:
               runAsUser: 1000
@@ -358,7 +363,11 @@
   changed_when: true
   when: zot_oidc_enabled | bool
 
-- name: Wait for Zot StatefulSet to be ready
+- name: Wait for Zot StatefulSet rollout to complete
+  # A ready replica alone can still be the old revision right after the update,
+  # so wait until the controller has seen the current generation, the update
+  # revision is the current one, and every desired replica is updated and ready
+  # (the conditions `kubectl rollout status` checks for a StatefulSet; #853).
   kubernetes.core.k8s_info:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     api_version: apps/v1
@@ -368,7 +377,11 @@
   register: zot_sts
   until:
     - zot_sts.resources | length > 0
-    - zot_sts.resources[0].status.readyReplicas | default(0) | int >= 1
+    - zot_sts.resources[0].status.observedGeneration | default(0) | int >= zot_sts.resources[0].metadata.generation | int
+    - zot_sts.resources[0].status.updateRevision | default('') | length > 0
+    - zot_sts.resources[0].status.currentRevision | default('') == zot_sts.resources[0].status.updateRevision | default('')
+    - zot_sts.resources[0].status.updatedReplicas | default(0) | int >= zot_sts.resources[0].spec.replicas | default(1) | int
+    - zot_sts.resources[0].status.readyReplicas | default(0) | int >= zot_sts.resources[0].spec.replicas | default(1) | int
   retries: 60
   delay: 5
 
