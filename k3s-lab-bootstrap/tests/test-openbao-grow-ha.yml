@@ -1,5 +1,5 @@
 ---
-# Test of the migration's refusals (dmfdeploy/dmfdeploy#864 WP3). It runs the real
+# Test of the migration's refusals. It runs the real
 # roles/stack/operator/openbao/tasks/grow-ha.yml against a fake kubectl, a fake
 # bao and a fake kubernetes.core (tests/fixtures/fake-collections), which logs
 # every change to the cluster. Each case must refuse, and the log of changes must
@@ -14,7 +14,7 @@
 #   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections" \
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-grow-ha.yml
 
-- name: Migration test — OpenBao grow-HA refusals (#864 WP3)
+- name: Migration test — OpenBao grow-HA refusals
   hosts: localhost
   gather_facts: false
   connection: local

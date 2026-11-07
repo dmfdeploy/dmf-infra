@@ -1,15 +1,16 @@
 ---
-# Render test for the OpenBao workload (dmfdeploy/dmfdeploy#864 WP3).
+# Render test for the OpenBao workload.
 #
 # One replica: the StatefulSet and the ConfigMap equal the single-replica render
-# that main.yml produced before WP3 (tests/fixtures/openbao-*-single-replica.*).
+# that the templates must still produce
+# (tests/fixtures/openbao-*-single-replica.*).
 # Three replicas: the Raft shape. Imports the SAME templates that workload.yml
 # renders, so a change to a template breaks this test.
 #
 # Run locally:
 #   ansible-playbook tests/test-openbao-ha-render.yml
 
-- name: Render test — OpenBao single replica and Raft cluster (#864 WP3)
+- name: Render test — OpenBao single replica and Raft cluster
   hosts: localhost
   gather_facts: false
   connection: local

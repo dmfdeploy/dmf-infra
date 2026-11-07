@@ -1,5 +1,5 @@
 ---
-# Test of the migration's before and after data read (dmfdeploy/dmfdeploy#864 WP3)
+# Test of the migration's before and after data read
 # against a fake kubectl and a fake bao that follow OpenBao v2.5.2. A missing path
 # reads as absent only when bao prints "No value found at" (command/
 # kv_metadata_get.go lines 149-151). Every other failure stops the play. The read
@@ -10,7 +10,7 @@
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-data-read.yml
 
-- name: Data read test — OpenBao migration read (#864 WP3)
+- name: Data read test — OpenBao migration read
   hosts: localhost
   gather_facts: false
   connection: local
