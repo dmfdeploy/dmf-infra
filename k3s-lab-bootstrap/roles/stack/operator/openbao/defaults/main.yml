@@ -11,9 +11,9 @@ openbao_storage_size: 5Gi
 
 # Replica count. This is a site property: set it in the site inventory.
 #   1  A single OpenBao pod. Supported in the sandbox lane only (ADR-0029, as
-#      amended by the Tier 2 plan WP2). A restart of the pod takes OpenBao
+#      amended by the Tier 2 plan). A restart of the pod takes OpenBao
 #      offline until it is unsealed, and the pod has no peer to take over.
-#      The visible warning that WP2 requires is not built yet.
+#      The visible warning that the Tier 2 plan requires is not built yet.
 #   3  A Raft cluster. Long-lived sites set 3. HA keeps OpenBao serving while
 #      one pod restarts. It does not remove the unseal: a restarted pod is
 #      sealed and needs the threshold of shares before the next pod restarts.

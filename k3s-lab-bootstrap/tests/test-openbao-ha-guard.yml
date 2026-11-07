@@ -1,5 +1,5 @@
 ---
-# Test for the rolling-restart guard's decision (dmfdeploy/dmfdeploy#864 WP3).
+# Test for the rolling-restart guard's decision.
 # Runs roles/stack/operator/openbao/tasks/ha-guard-evaluate.yml, the same file that
 # the guard includes, against fake pod states and fake Autopilot state shaped like
 # OpenBao v2.5.2's (physical/raft/raft_autopilot.go lines 370-397). No cluster is
@@ -8,7 +8,7 @@
 # Run locally:
 #   ansible-playbook tests/test-openbao-ha-guard.yml
 
-- name: Decision test — OpenBao rolling-restart guard (#864 WP3)
+- name: Decision test — OpenBao rolling-restart guard
   hosts: localhost
   gather_facts: false
   connection: local

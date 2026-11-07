@@ -1,13 +1,13 @@
 ---
 # End-to-end test of the rolling-restart guard against a fake kubectl and a fake
-# bao (dmfdeploy/dmfdeploy#864 WP3). It runs roles/stack/operator/openbao/tasks/
+# bao. It runs roles/stack/operator/openbao/tasks/
 # ha-guard.yml, the collect and the assert step, so the Jinja that parses the pod
 # and Autopilot output runs for real. No cluster is contacted.
 #
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-ha-guard-collect.yml
 
-- name: Collect test — OpenBao rolling-restart guard against a fake cluster (#864 WP3)
+- name: Collect test — OpenBao rolling-restart guard against a fake cluster
   hosts: localhost
   gather_facts: false
   connection: local

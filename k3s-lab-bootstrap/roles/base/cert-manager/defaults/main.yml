@@ -48,7 +48,7 @@ cert_manager_openbao_base_dns_names:
   - openbao.openbao
   - openbao.openbao.svc
   - openbao.openbao.svc.cluster.local
-# Raft peers (#864 WP3). Every pod of an HA OpenBao serves this one certificate
+# Raft peers. Every pod of an HA OpenBao serves this one certificate
 # and dials its peers by pod name, so the certificate covers the headless
 # Service and a wildcard for the pod names under it. The Service name is the
 # default of openbao_headless_service_name in the openbao role: keep them in

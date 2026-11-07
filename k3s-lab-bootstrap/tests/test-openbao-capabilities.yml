@@ -1,5 +1,5 @@
 ---
-# Test of the migration's permission preflight (dmfdeploy/dmfdeploy#864 WP3).
+# Test of the migration's permission preflight.
 # capabilities-check.yml reads the guard token's capabilities on the two Raft
 # paths (`bao token capabilities -format=json`, a JSON list, OpenBao v2.5.2
 # command/token_capabilities.go lines 112-115), parses the list, and refuses,
@@ -10,7 +10,7 @@
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-capabilities.yml
 
-- name: Capabilities test — OpenBao migration preflight (#864 WP3)
+- name: Capabilities test — OpenBao migration preflight
   hosts: localhost
   gather_facts: false
   connection: local

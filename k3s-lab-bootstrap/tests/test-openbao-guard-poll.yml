@@ -1,5 +1,5 @@
 ---
-# Test of the bounded wait for voter promotion (dmfdeploy/dmfdeploy#864 WP3).
+# Test of the bounded wait for voter promotion.
 # After the migration adds voters, Autopilot first reports a new server as a
 # non-voter and promotes it later. The fake bao reports the new server as a
 # non-voter for the first FAKE_PROMOTE_AFTER Autopilot reads. The wait must pass
@@ -9,7 +9,7 @@
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-guard-poll.yml
 
-- name: Poll test — OpenBao voter promotion wait (#864 WP3)
+- name: Poll test — OpenBao voter promotion wait
   hosts: localhost
   gather_facts: false
   connection: local
