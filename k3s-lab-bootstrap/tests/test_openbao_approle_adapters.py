@@ -344,10 +344,25 @@ class ReadinessAdapterTests(unittest.TestCase):
         self.assertEqual(verdict.reason_code, adapters.FRESH_AUTHENTICATION_MISSING)
         self.assertEqual([r.ok for r in verdict.results[:-1]], [True, False])
 
-    def test_a_target_with_proof_provided_reports_ordinary_gate_failures(self):
-        entry = {**REGISTRY["runtime_targets"]["external-secrets"], "fresh_authentication_proof": {"status": "provided"}}
-        _, gates = adapters.adapters_for(entry, self.clients)
-        self.assertEqual(adapters.evaluate_target(entry, gates, SINCE).reason_code, "readiness_failed")
+    def test_a_forced_provided_status_with_every_gate_passing_is_still_not_accepted(self):
+        # The validator refuses `provided`, so this test bypasses it on purpose.
+        consumers = INVENTORY["object_storage_consumer_namespaces"]
+        shapes = {
+            "external-secrets": ("openbao", ["authentik"]),
+            "object-storage-openbao-snapshots": ("openbao-openbao-snapshots", consumers["openbao_snapshots"]),
+            "object-storage-app-backups": ("openbao-app-backups", consumers["app_backups"]),
+        }
+        for target, (store, namespaces) in shapes.items():
+            with self.subTest(target):
+                entry = {**REGISTRY["runtime_targets"][target], "fresh_authentication_proof": {"status": "provided"}}
+                self.passing_cluster(entry, store, namespaces)
+                _, gates = adapters.adapters_for(entry, self.clients)
+                verdict = adapters.evaluate_target(entry, gates, SINCE, INVENTORY)
+                self.assertFalse(verdict.ok)
+                self.assertEqual(verdict.reason_code, adapters.FRESH_AUTHENTICATION_MISSING)
+                gate_results = verdict.results[:-1]
+                self.assertEqual(len(gate_results), len(entry["readiness_gates"]))
+                self.assertTrue(all(result.ok for result in gate_results))
 
     def test_the_openbao_snapshots_shape_has_a_store_and_an_external_secret_gate_only(self):
         entry = REGISTRY["runtime_targets"]["object-storage-openbao-snapshots"]
@@ -367,16 +382,6 @@ class ReadinessAdapterTests(unittest.TestCase):
             adapters.evaluate_target(entry, gates, SINCE, INVENTORY).reason_code,
             adapters.FRESH_AUTHENTICATION_MISSING,
         )
-
-    def test_a_target_whose_proof_is_provided_is_accepted_only_after_a_refresh(self):
-        self.kube.objects[("ClusterSecretStore", None, "openbao")] = condition("True")
-        store = self.gate(STORE_GATE)
-        probe = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
-        entry = self.entry("provided")
-        self.kube.lists[("ExternalSecret", "authentik")] = [self.external_secret("authentik-runtime", "True", STALE)]
-        self.assertFalse(adapters.evaluate_target(entry, [store, probe], SINCE).ok)
-        self.kube.lists[("ExternalSecret", "authentik")] = [self.external_secret("authentik-runtime", "True", LATER)]
-        self.assertTrue(adapters.evaluate_target(entry, [store, probe], SINCE).ok)
 
     def test_the_external_secrets_target_declares_a_probe_that_exists_in_the_roles(self):
         entry = REGISTRY["runtime_targets"]["external-secrets"]

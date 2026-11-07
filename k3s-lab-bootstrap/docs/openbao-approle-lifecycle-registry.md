@@ -67,15 +67,17 @@ or a test can run it. It does not read or print a credential.
   and has a `refreshTime` strictly after the delivery. A pass proves a
   successful refresh through the expected store after the delivery. It does
   not prove authentication with the replacement, because ESO may reuse a
-  cached token. That proof belongs to step 3. A target whose registry entry
-  marks `fresh_authentication_proof` as `missing` is therefore never accepted.
-  Every runtime target carries the field, because each one's acceptance rests
-  on a ClusterSecretStore or ExternalSecret refresh, and today all three
+  cached token. That proof belongs to step 3, so no status can make a target
+  accepted until step 3 defines it. Every runtime target carries
+  `fresh_authentication_proof`, because each one's acceptance rests on a
+  ClusterSecretStore or ExternalSecret refresh, and today all three
   (`external-secrets` and both object-storage targets) are `missing`, each
-  with an `evidence_gap`. The validator refuses a runtime target without it.
-  For a target marked `missing`, `evaluate_target` returns not accepted
-  with the reason code `fresh_authentication_proof_missing`, before and
-  whatever the gates return, and it still returns each gate's result.
+  with an `evidence_gap`. The validator accepts only `missing` in this step
+  and refuses a runtime target without the field. `evaluate_target` never
+  accepts a runtime target in this step. It returns the reason code
+  `fresh_authentication_proof_missing` for every runtime target, whatever the
+  status string and whatever the gates return, and it still returns each
+  gate's result.
   The `external-secrets` target names `authentik-runtime` in the `authentik`
   namespace as its ExternalSecret
   (`roles/stack/operator/authentik/tasks/main.yml`, created from the main

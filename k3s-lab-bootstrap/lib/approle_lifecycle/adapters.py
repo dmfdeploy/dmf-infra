@@ -213,8 +213,7 @@ class ClusterSecretStoreGate:
     Client method: `get_object(kind, namespace, name)` returns None or the
     object as a dict. A Ready store may still hold its earlier condition after
     a bad replacement, so this gate is a precondition and never accepts a
-    replacement alone. `evaluate_target` needs a gate that proves acceptance.
-    Like every gate, it fails without a delivery time.
+    replacement alone. Like every gate, it fails without a delivery time.
     """
 
     proves_acceptance = False
@@ -363,29 +362,21 @@ def store_name(entry):
 def evaluate_target(entry, gates, since, inventory=None):
     """Decide whether a target accepted a replacement delivered at `since`.
 
-    A target whose registry entry marks fresh-authentication proof as missing
-    is never accepted, and its reason code is always
-    `fresh_authentication_proof_missing`, before and whatever the gates
-    return. The individual gate results are returned either way. Otherwise
-    every gate must pass and at least one gate must prove that a consumer
-    refreshed through the expected store.
+    In this step, no target is accepted. A refresh through the expected store
+    does not prove that the replacement authenticated, and step 3 of the
+    credential lifecycle plan defines the proof that can. Until then every
+    runtime target gets the reason code `fresh_authentication_proof_missing`,
+    whatever its proof status string and whatever the gates return. The
+    individual gate results are returned either way.
     """
     results = tuple(gate.check(since, inventory) for gate in gates)
-    proof = entry.get("fresh_authentication_proof") or {}
-    if proof.get("status") != "provided":
-        note = GateResult(
-            False,
-            FRESH_AUTHENTICATION_MISSING,
-            "target",
-            "a refresh through the expected store does not prove authentication with the replacement",
-        )
-        return TargetReadiness(False, results + (note,), FRESH_AUTHENTICATION_MISSING)
-    if not any(gate.proves_acceptance for gate in gates):
-        note = _fail("target", "no gate shows that a consumer refreshed after the replacement")
-        return TargetReadiness(False, results + (note,), "readiness_failed")
-    if not all(result.ok for result in results):
-        return TargetReadiness(False, results, "readiness_failed")
-    return TargetReadiness(True, results, "")
+    note = GateResult(
+        False,
+        FRESH_AUTHENTICATION_MISSING,
+        "target",
+        "a refresh through the expected store does not prove authentication with the replacement",
+    )
+    return TargetReadiness(False, results + (note,), FRESH_AUTHENTICATION_MISSING)
 
 
 def adapters_for(entry, clients):

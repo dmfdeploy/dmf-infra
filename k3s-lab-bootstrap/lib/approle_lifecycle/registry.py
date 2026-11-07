@@ -22,10 +22,12 @@ GATE_KINDS = {
 }
 # An ExternalSecret gate names its namespaces in one of these ways.
 EXTERNAL_SECRET_NAMESPACE_FIELDS = ("namespaces_from", "namespace")
-# Only a gate of this kind shows that a consumer used the replacement.
+# Only a gate of this kind shows that a consumer refreshed after a replacement.
 ACCEPTANCE_GATE_KINDS = {"ExternalSecret"}
 DISPOSITION_EVIDENCE = ("issuance_verification", "revocation_verification")
-PROOF_STATUSES = {"missing", "provided"}
+# In this step, no status can make a target accepted. Step 3 of the credential
+# lifecycle plan defines the proof that can add a status here.
+PROOF_STATUSES = {"missing"}
 GATE_STATUSES = {"existing_check", "required_rotation_gate"}
 _TTL = re.compile(r"([1-9][0-9]*)h")
 
@@ -136,9 +138,12 @@ def validate(registry, root=None):
         if (
             not isinstance(proof, dict)
             or proof.get("status") not in PROOF_STATUSES
-            or (proof.get("status") == "missing" and not proof.get("evidence_gap"))
+            or not proof.get("evidence_gap")
         ):
-            errors.append(f"{target}: fresh_authentication_proof needs a status and, when missing, an evidence_gap")
+            errors.append(
+                f"{target}: fresh_authentication_proof needs the status 'missing' and an evidence_gap; "
+                "step 3 of the credential lifecycle plan defines the proof that can change it"
+            )
         for gate in gates:
             kind = gate.get("kind")
             required = GATE_KINDS.get(kind)
