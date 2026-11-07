@@ -150,7 +150,8 @@ The setup issuer's Kubernetes-auth role needs `auth/kubernetes/role/*`, which
 no rerun identity holds: `policy-writer` covers only `sys/policies/acl/*`, and
 ADR-0021 closes `approle-reconciler`. A fresh install writes the role with the
 initial root token. An existing environment gets it through the
-temporary-root procedure of dmfdeploy/dmfdeploy#866 (WP1). A rerun leaves an
+temporary root token from the generate-root procedure, used for that write and
+then revoked (dmfdeploy/dmfdeploy#866). A rerun leaves an
 existing role as it is, and the identity verifier fails when the role is
 missing. The policy itself is written on every pass.
 
