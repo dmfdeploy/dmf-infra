@@ -98,7 +98,8 @@ or a test can run it. It does not read or print a credential.
   bound on what remains holds only when the create response confirmed both
   values exactly, as integers or the exact decimal strings. Every message says
   "unconfirmed" otherwise, and no message renders a value that OpenBao
-  returned. The issuer policy that enforces the bound is step A.2.
+  returned. The issuer policy that enforces the bound is
+  `files/policies/setup-issuer.hcl` in the openbao role.
   Every transport or `use` exception becomes a `SetupOnlyError` with a fixed
   message. An interrupt (`KeyboardInterrupt`, `SystemExit`,
   `GeneratorExit`) becomes a fresh instance of its class with no arguments
@@ -116,19 +117,61 @@ requirements with an evidence path for each, and the `create_site`. The
 validator rejects a disposition without them, and a test fails when a named
 path does not exist.
 
-## What step A.1 delivers and what A.2 does
+## What steps A.1 and A.2a deliver
 
-Step A.1 delivers the library and its tests. Playbook 694 still reads the
-born-inventory SecretID from the persistent break-glass file. In
-`roles/common/dmf-born-inventory/tasks/main.yml`, step A.2 replaces the tasks
-that load and use it: the file check at line 19, the assert at line 27, the
-load at line 37, the extraction at line 45, the assert at line 60, and the
-login at line 98. Step A.2 adds the Kubernetes-auth issuer identity and its
-policy, so it also wires 694 to the setup-only path together with the
-concrete clients, and it removes the break-glass read. Until then a 694
-rerun reuses the old SecretID, and it can run without a receipt. The dmf-cms
-receipt writer and the dmf-init handoff are separate dependencies in other
-repositories.
+Step A.1 delivers the library and its tests. Step A.2a adds the concrete
+clients (`lib/approle_lifecycle/transports.py`), the command line that 694
+runs (`lib/approle_lifecycle/born_inventory_cli.py`), the setup issuer
+identity and policy in the openbao role, the receipt namespace and executor
+RBAC, and the identity verifier probes.
+
+Playbook 694 keeps reading the born-inventory SecretID from the persistent
+break-glass file by default. The variable
+`dmf_born_inventory_receipt_path_enabled` selects the receipt-driven path.
+It is `false` by default. With it off, `roles/common/dmf-born-inventory/tasks/main.yml`
+includes `tasks/openbao-breakglass.yml`, which holds the tasks that were in
+`main.yml` unchanged: the file check, the assert, the load, the extraction,
+the assert, the pod discovery, the login, the client token, the secret read
+and its parse, plus the break-glass input check that used to share the first
+assert. With it on, `main.yml` includes `tasks/openbao-setup-only.yml`
+instead. That path needs the opaque request id in `DMF_SETUP_REQUEST_ID`,
+runs the library through the transports, and never reads the break-glass
+file. It refuses a direct NetBox admin token, because the token would skip the
+receipt. It takes the role id, which is not a secret, from a ConfigMap that the
+openbao role publishes in `dmf-setup-requests`, or from
+`dmf_born_inventory_setup_role_id`, and fails closed when neither exists. Both
+paths wait for live verification, which needs the Kubernetes
+auth reviewer fix. The dmf-cms receipt writer (step A.2b) and the dmf-init
+handoff are separate dependencies in other repositories.
+
+## Writing the issuer role
+
+The setup issuer's Kubernetes-auth role needs `auth/kubernetes/role/*`, which
+no rerun identity holds: `policy-writer` covers only `sys/policies/acl/*`, and
+ADR-0021 closes `approle-reconciler`. A fresh install writes the role with the
+initial root token. An existing environment gets it through the
+temporary-root procedure of dmfdeploy/dmfdeploy#866 (WP1). A rerun leaves an
+existing role as it is, and the identity verifier fails when the role is
+missing. The policy itself is written on every pass.
+
+## Publishing the role id
+
+The openbao role publishes the AppRole role id in the ConfigMap
+`born-inventory-approle` of `dmf-setup-requests` whenever it knows the id: on
+a fresh install, and on a rerun when the break-glass state holds it. A missing,
+null or empty value skips the publication with one message and never fails the
+role. No identity that a rerun uses can read the role id of
+`born-inventory-netbox-reader`: `ops-admin` and `policy-reconciler` have no
+path for it, and ADR-0021 limits `approle-reconciler` to the `object-storage-*`
+roles. No policy is widened for it. On an existing environment whose break-glass
+state lacks the id, set `dmf_born_inventory_setup_role_id` to the current role
+id, or write it to that ConfigMap.
+
+The enabled 694 path looks for the role id before it loads or claims the
+receipt, and fails with a message that names `dmf_born_inventory_setup_role_id`,
+so a missing role id consumes no receipt. A role id that is present but stale
+fails at the AppRole login, after the claim. Fix the role id, then create a new
+receipt and run again.
 
 ## Completeness check
 

@@ -1374,6 +1374,9 @@
     - born_inventory_secret_id_raw.stdout is defined
   no_log: true
 
+- name: Set up the setup-only issuer identity and the receipt namespace
+  ansible.builtin.include_tasks: setup-issuer.yml
+
 # ---------------------------------------------------------------------------
 # Phase 5 — operator userpass retrieval path
 # Grants human operators a narrow read on secret/data/apps/*/admin without

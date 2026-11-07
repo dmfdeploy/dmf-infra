@@ -133,3 +133,23 @@ openbao_approle_reconciler_password_length: 32
 openbao_approle_reconciler_object_storage_logicals:
   - openbao_snapshots
   - app_backups
+
+# Setup-only SecretID issuer (dmfdeploy/dmfdeploy#11, plan step A.2).
+# A Kubernetes-auth identity that mints one-use, one-hour SecretIDs for the
+# born-inventory AppRole. It is not the periodic rotator. The names and the
+# audience are choices of this repo: the plan fixes only the namespace.
+openbao_setup_issuer_service_account: setup-issuer
+openbao_setup_issuer_k8s_role: setup-issuer
+openbao_setup_issuer_policy_name: setup-issuer
+openbao_setup_issuer_audience: openbao
+openbao_setup_issuer_token_ttl: 5m
+openbao_setup_issuer_token_max_ttl: 10m
+
+# Receipt and claim namespace. dmf-infra creates it and grants the executor
+# identity. The executor is a ServiceAccount here so that RBAC can bind it:
+# `get` on ConfigMaps, `create` and `get` on Leases, and no ConfigMap create.
+openbao_setup_requests_namespace: dmf-setup-requests
+openbao_setup_executor_service_account: setup-request-executor
+# The role id is not a secret. This role publishes it here, on a fresh install
+# and on a rerun, for the receipt-driven 694 path to read.
+openbao_born_inventory_role_id_configmap: born-inventory-approle
