@@ -1,0 +1,20 @@
+---
+# Compare the two reads of data-read.yml. The read proves nothing unless at least
+# one path read successfully both times, so an all-absent result fails.
+- name: Assert at least one path read successfully before and after
+  ansible.builtin.assert:
+    that:
+      - _openbao_data_read_before.values() | reject('equalto', 'absent') | list | length > 0
+      - _openbao_data_read_after.values() | reject('equalto', 'absent') | list | length > 0
+    fail_msg: >-
+      No path read successfully before and after. The migration cannot show that
+      the data is unchanged. Add paths that exist to openbao_migration_read_paths.
+
+- name: Assert the data is the same before and after
+  ansible.builtin.assert:
+    that: _openbao_data_read_before == _openbao_data_read_after
+    fail_msg: >-
+      The data differs. Before: {{ _openbao_data_read_before }}.
+      After: {{ _openbao_data_read_after }}. Stop and investigate before any
+      other change.
+    success_msg: The same paths hold the same versions before and after.

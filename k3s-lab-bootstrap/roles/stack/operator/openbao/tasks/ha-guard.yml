@@ -1,0 +1,31 @@
+---
+# Rolling-restart guard. Include it before any step that restarts or drains an
+# OpenBao pod. It refuses (fails the play) unless every pod is unsealed and, on a
+# cluster, the Raft state shows every expected pod as a healthy voter with a
+# failure tolerance of at least 1. A single replica passes when its pod is
+# unsealed.
+#
+# Inputs:
+#   The pods checked are always openbao-0 to openbao-(openbao_replicas - 1). The
+#   guard takes no list of pods, so a caller cannot narrow it.
+#   openbao_guard_token         ops-admin token that can read
+#                               sys/storage/raft/autopilot/state (required on a
+#                               cluster; the guard refuses without it)
+#   openbao_guard_require_peers must stay true on a cluster; false is accepted
+#                               only when openbao_replicas is 1
+#
+# The decision lives in ha-guard-evaluate.yml, which the tests call with fakes.
+- name: Refuse a guard bypass on a cluster
+  ansible.builtin.assert:
+    that: (openbao_guard_require_peers | bool) or (openbao_replicas | int == 1)
+    fail_msg: >-
+      openbao_guard_require_peers is false on a cluster of {{ openbao_replicas }} pods.
+      That setting is accepted only when openbao_replicas is 1. The guard that
+      authorizes a restart cannot be skipped. To look at the seal state alone, run
+      bin/unseal-openbao.sh with --status-all.
+
+- name: Collect OpenBao pod and Raft state
+  ansible.builtin.include_tasks: ha-guard-collect.yml
+
+- name: Refuse unless every OpenBao pod is unsealed and a healthy Raft voter
+  ansible.builtin.include_tasks: ha-guard-assert.yml

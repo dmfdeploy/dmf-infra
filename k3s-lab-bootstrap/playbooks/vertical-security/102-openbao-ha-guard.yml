@@ -1,0 +1,23 @@
+---
+# playbooks/vertical-security/102-openbao-ha-guard.yml
+# Check that every OpenBao pod is unsealed and a healthy Raft voter. Read-only.
+# Run it before a node drain or reboot, and before any other step that restarts
+# an OpenBao pod. It fails with a refusal message when the cluster is not ready
+# for the next restart. See docs/openbao-bootstrap-security-model.md,
+# "High availability and restarts".
+#
+# On a cluster, the check reads the Raft state from Autopilot and needs an
+# ops-admin token in OPENBAO_GUARD_TOKEN. Without it, or when the state cannot be
+# read, the play refuses. Nothing skips the check on a cluster. A single replica
+# passes when its pod is unsealed.
+- name: Check that the OpenBao cluster can take the next restart
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+  tasks:
+    - name: Run the rolling-restart guard
+      ansible.builtin.include_role:
+        name: stack/operator/openbao
+        tasks_from: ha-guard.yml

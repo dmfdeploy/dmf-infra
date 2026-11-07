@@ -1,0 +1,101 @@
+---
+# Collect what the guard decides on: the seal state of every expected pod and,
+# when more than one pod is expected, the Raft state from Autopilot.
+# The expected pod set comes from openbao_replicas and from nothing else. No
+# caller can pass a shorter list, because a guard that checks fewer pods than the
+# cluster has would authorize a restart that it has not looked at.
+- name: Set the pods that the guard checks
+  ansible.builtin.set_fact:
+    _openbao_guard_names: >-
+      {{ range(openbao_replicas | int) | map('string') | map('regex_replace', '^', 'openbao-') | list }}
+
+# Pod 0 keeps the node ID of a single-replica install (openbao_raft_node_id). The
+# other pods use their pod name (templates/statefulset.yml.j2, BAO_RAFT_NODE_ID).
+- name: Map each pod to its Raft node ID
+  ansible.builtin.set_fact:
+    _openbao_guard_expected: >-
+      {%- set out = [] -%}
+      {%- for name in _openbao_guard_names -%}
+      {%- set _ = out.append({'name': name, 'node_id': (openbao_raft_node_id | string) if name == 'openbao-0' else name}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Read the seal state of each OpenBao pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ item }}"
+      - --
+      - bao
+      - status
+      - -format=json
+  loop: "{{ _openbao_guard_names }}"
+  register: _openbao_guard_status
+  changed_when: false
+  # bao status exits 2 while a pod is sealed and 1 when it cannot be reached
+  # (command/status.go). The evaluate task reads the output, so a failed call is
+  # not an error here.
+  failed_when: false
+
+- name: Summarize the pod states
+  ansible.builtin.set_fact:
+    _openbao_guard_pod_states: >-
+      {%- set out = [] -%}
+      {%- for r in _openbao_guard_status.results -%}
+      {%- set parsed = (r.stdout | from_json) if (r.stdout | default('') | length > 0 and r.stdout is search('^\s*\{')) else {} -%}
+      {%- set _ = out.append({'name': r.item, 'reachable': parsed | length > 0, 'initialized': parsed.initialized | default(false), 'sealed': parsed.sealed | default(true)}) -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Pick an unsealed pod to ask for the Raft state
+  ansible.builtin.set_fact:
+    _openbao_guard_asker: >-
+      {{ (_openbao_guard_pod_states | rejectattr('sealed') | selectattr('reachable') | map(attribute='name') | list | first) | default('') }}
+
+# Autopilot state: OpenBao v2.5.2, GET sys/storage/raft/autopilot/state
+# (vault/logical_system_raft.go lines 508-533). The CLI prints the state object
+# (command/operator_raft_autopilot_state.go line 98) with healthy,
+# failure_tolerance, leader, voters and servers keyed by node ID, each with
+# node_type, healthy and last_contact (physical/raft/raft_autopilot.go lines
+# 370-397).
+- name: Read the Raft state from Autopilot
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ _openbao_guard_asker }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao operator raft autopilot state -format=json'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_guard_token }}"
+  register: _openbao_guard_state_raw
+  changed_when: false
+  failed_when: false
+  no_log: true
+  when:
+    - _openbao_guard_names | length > 1
+    - openbao_guard_token | default('') | length > 0
+    - _openbao_guard_asker | length > 0
+
+- name: Record the Raft state
+  ansible.builtin.set_fact:
+    _openbao_guard_state_read: >-
+      {{ _openbao_guard_state_raw is defined
+         and _openbao_guard_state_raw.rc | default(1) == 0
+         and _openbao_guard_state_raw.stdout | default('') | length > 0
+         and _openbao_guard_state_raw.stdout is search('^\s*\{') }}
+    _openbao_guard_state: >-
+      {{ (_openbao_guard_state_raw.stdout | from_json)
+         if (_openbao_guard_state_raw is defined and _openbao_guard_state_raw.rc | default(1) == 0
+             and _openbao_guard_state_raw.stdout | default('') | length > 0
+             and _openbao_guard_state_raw.stdout is search('^\s*\{'))
+         else {} }}
+  no_log: true

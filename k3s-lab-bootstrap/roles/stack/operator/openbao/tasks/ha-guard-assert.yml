@@ -1,0 +1,14 @@
+---
+# Decide and refuse. Runs the evaluate step, then fails when anything blocks the
+# next restart.
+- name: Evaluate the guard facts
+  ansible.builtin.include_tasks: ha-guard-evaluate.yml
+
+- name: Refuse to restart another OpenBao pod
+  ansible.builtin.assert:
+    that: _openbao_guard_problems | length == 0
+    fail_msg: >-
+      Refusing to restart or drain an OpenBao pod: {{ _openbao_guard_problems | join('; ') }}.
+      Unseal every pod with the threshold of shares and wait until every pod is a
+      healthy Raft voter. Then run this step again. Restart one pod at a time.
+    success_msg: Every OpenBao pod is unsealed and healthy. The next pod can restart.

@@ -49,25 +49,12 @@
           no_log: true
 
         - name: Unseal OpenBao before failed-init root disposal
-          ansible.builtin.command:
-            argv:
-              - kubectl
-              - --kubeconfig
-              - /etc/rancher/k3s/k3s.yaml
-              - -n
-              - "{{ openbao_namespace }}"
-              - exec
-              - "{{ openbao_pod }}"
-              - --
-              - bao
-              - operator
-              - unseal
-              - "{{ item }}"
-          loop: "{{ _openbao_failed_init_unseal_keys_hex[0:(openbao_shamir_threshold | int)] }}"
-          register: _openbao_failed_init_unseal
-          retries: 3
-          delay: 2
-          until: _openbao_failed_init_unseal.rc == 0
+          ansible.builtin.include_role:
+            name: stack/operator/openbao
+            tasks_from: unseal-pod.yml
+          vars:
+            openbao_unseal_target: "{{ openbao_pod }}"
+            openbao_unseal_keys_hex: "{{ _openbao_failed_init_unseal_keys_hex }}"
           when:
             - _openbao_failed_init_root_token | default('') | length > 0
             - _openbao_failed_init_status.stdout | default('') | length > 0

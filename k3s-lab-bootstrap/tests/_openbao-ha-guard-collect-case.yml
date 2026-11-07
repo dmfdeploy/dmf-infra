@@ -1,0 +1,30 @@
+---
+# One case of test-openbao-ha-guard-collect.yml. The fake kubectl and bao read the
+# cluster state from environment variables and a per-case state directory. The
+# block's `environment:` sets them for every task of the guard.
+- name: "{{ case.name }} — run the guard with the fake state"
+  block:
+    - name: Run ha-guard.yml (lockstep with the playbooks)
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/ha-guard.yml
+      vars:
+        openbao_guard_token: "{{ case.token | default('placeholder') }}"
+        openbao_replicas: "{{ case.replicas | default(3) }}"
+        openbao_guard_require_peers: "{{ case.require_peers | default(true) }}"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment: "{{ (case.env | default({})) | combine({'FAKE_STATE': _state.path ~ '/' ~ case_index}) }}"
+
+- name: "{{ case.name }} — assert the outcome"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      - case.message is not defined or case.message in _message
+    fail_msg: "{{ case.name }}: expected {{ case.expect }}, got {{ _outcome }}. {{ _message }}"
+    success_msg: "{{ case.name }}: {{ _outcome }}"

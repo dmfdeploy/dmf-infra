@@ -1,0 +1,33 @@
+---
+# Verify a Raft cluster on its own (playbooks/vertical-security/105-openbao-verify-ha.yml).
+# It changes nothing. Run it after a manual recovery of an interrupted migration,
+# or at any time to look at a cluster. It runs the same checks that the migration
+# ends with, in this order:
+#   1. every pod is unsealed and a healthy voter (the guard, waiting up to
+#      openbao_guard_wait_timeout_seconds for Autopilot to promote new servers);
+#   2. the data read: at least one path in openbao_migration_read_paths reads
+#      successfully, and no read fails for a reason other than not found.
+# It has no earlier read to compare with. Compare the versions it prints with the
+# "before" read in the output of the migration run.
+- name: Assert the site runs a Raft cluster
+  ansible.builtin.assert:
+    that: openbao_replicas | int > 1
+    fail_msg: openbao_replicas is {{ openbao_replicas }}. This play verifies a Raft cluster.
+
+- name: Wait for every pod to be a healthy voter
+  ansible.builtin.include_tasks: ha-guard-poll.yml
+
+- name: Load the ops-admin password
+  ansible.builtin.include_tasks: load-shares.yml
+
+- name: Read the data
+  ansible.builtin.include_tasks: data-read.yml
+  vars:
+    openbao_data_read_label: current
+
+- name: Assert at least one path read successfully
+  ansible.builtin.assert:
+    that: _openbao_data_read_current.values() | reject('equalto', 'absent') | list | length > 0
+    fail_msg: >-
+      No path in openbao_migration_read_paths exists. Add paths that exist, then
+      run this play again.

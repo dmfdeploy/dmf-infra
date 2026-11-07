@@ -1,0 +1,74 @@
+---
+# Test of the migration's refusals (dmfdeploy/dmfdeploy#864 WP3). It runs the real
+# roles/stack/operator/openbao/tasks/grow-ha.yml against a fake kubectl, a fake
+# bao and a fake kubernetes.core (tests/fixtures/fake-collections), which logs
+# every change to the cluster. Each case must refuse, and the log of changes must
+# stay empty: every check that can refuse runs before the first change.
+#
+# Cases: a baseline with no existing path; a token that cannot read the Raft
+# paths (and no data read happens before that check); a site that is already a
+# cluster, or that an earlier run left half-migrated (no automatic resume); a
+# sealed pod 0; a certificate that does not cover the Raft peers.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections" \
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-grow-ha.yml
+
+- name: Migration test — OpenBao grow-HA refusals (#864 WP3)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars_files:
+    - ../roles/stack/operator/openbao/defaults/main.yml
+  tasks:
+    # vars_files outranks play vars, so the site values are set as facts.
+    - name: Set the site values for the test
+      ansible.builtin.set_fact:
+        openbao_replicas: 3
+        openbao_shamir_threshold: 1
+        openbao_guard_token: placeholder
+        openbao_operator_password: s3cret-test-password
+        openbao_migration_read_paths: [apps/zot/admin, apps/authentik/breakglass]
+
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-grow-
+      register: _state
+      changed_when: false
+
+    - name: Run the migration cases
+      ansible.builtin.include_tasks: _openbao-grow-ha-case.yml
+      loop:
+        - name: Every configured path is absent
+          env: {FAKE_KV_MODE: absent}
+          message: No path in openbao_migration_read_paths exists
+          expect_kv_read: true
+        - name: The token cannot read the Autopilot state
+          env: {FAKE_CAPS_MISSING: sys/storage/raft/autopilot/state}
+          message: cannot read sys/storage/raft/autopilot/state
+          expect_kv_read: false
+        - name: The token has only the sudo capability
+          env: {FAKE_CAPS_JSON: '["sudo"]'}
+          message: It needs the capability `read`
+          expect_kv_read: false
+        - name: The site is already a cluster
+          sts: cluster
+          message: This play does not
+          expect_kv_read: false
+        - name: An earlier run stopped after it changed the StatefulSet
+          sts: half
+          message: This play does not
+          expect_kv_read: false
+        - name: Pod 0 is sealed
+          env: {FAKE_SEALED: openbao-0}
+          message: openbao-0 is not initialized, unsealed and
+          expect_kv_read: false
+        - name: The certificate does not cover the Raft peers
+          env: {FAKE_SAN: "DNS:openbao"}
+          message: does not cover
+          expect_kv_read: false
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"

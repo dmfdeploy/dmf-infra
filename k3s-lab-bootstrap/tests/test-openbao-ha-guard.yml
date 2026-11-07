@@ -1,0 +1,527 @@
+---
+# Test for the rolling-restart guard's decision (dmfdeploy/dmfdeploy#864 WP3).
+# Runs roles/stack/operator/openbao/tasks/ha-guard-evaluate.yml, the same file that
+# the guard includes, against fake pod states and fake Autopilot state shaped like
+# OpenBao v2.5.2's (physical/raft/raft_autopilot.go lines 370-397). No cluster is
+# contacted.
+#
+# Run locally:
+#   ansible-playbook tests/test-openbao-ha-guard.yml
+
+- name: Decision test — OpenBao rolling-restart guard (#864 WP3)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    openbao_raft_node_id: "1"
+    openbao_guard_max_last_contact_seconds: 10
+    guard_cases:
+      - name: All healthy
+        pods: &id001
+          - name: openbao-0
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-1
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-2
+            reachable: true
+            initialized: true
+            sealed: false
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: pass
+      - name: A pod is sealed
+        pods:
+          - name: openbao-0
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-1
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-2
+            reachable: true
+            initialized: true
+            sealed: true
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: openbao-2 is sealed
+      - name: A pod is unreachable
+        pods:
+          - name: openbao-0
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-1
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-2
+            reachable: false
+            initialized: false
+            sealed: true
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: openbao-2 cannot be reached
+      - name: A pod is not initialized
+        pods:
+          - name: openbao-0
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-1
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-2
+            reachable: true
+            initialized: false
+            sealed: true
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: openbao-2 is not initialized
+      - name: Reachable unsealed pod whose server is unhealthy
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: false
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: openbao-2 is not healthy in Autopilot
+      - name: Cluster reported unhealthy
+        pods: *id001
+        state:
+          healthy: false
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: Autopilot reports the cluster unhealthy
+      - name: Stale last contact
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 1m30.5s
+        state_read: true
+        expect: refuse
+        message: openbao-2 last contact is 1m30.5s
+      - name: Last contact in milliseconds
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 250ms
+        state_read: true
+        expect: pass
+      - name: Last contact missing
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: ''
+        state_read: true
+        expect: refuse
+        message: openbao-2 last contact is unknown
+      - name: Node ID missing from the state
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: openbao-2 (node ID openbao-2) is not in the Raft state
+      - name: A server is not a voter
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: non-voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: openbao-2 is not a voter
+      - name: Failure tolerance is zero
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 0
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: failure tolerance is 0
+      - name: An unexpected server is in the state
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            ghost:
+              id: ghost
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: unexpected server ghost
+      - name: The leader is not an expected pod
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: ghost
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: leader is not one of the expected pods
+      - name: The state could not be read
+        pods: *id001
+        state: {}
+        state_read: false
+        expect: refuse
+        message: OPENBAO_GUARD_TOKEN
+      - name: Seal check only, state not read
+        pods: *id001
+        state: {}
+        state_read: false
+        expect: pass
+        seal_only: true
+      - name: Seal check only still refuses a sealed pod
+        pods:
+          - name: openbao-0
+            reachable: true
+            initialized: true
+            sealed: false
+          - name: openbao-1
+            reachable: true
+            initialized: true
+            sealed: true
+          - name: openbao-2
+            reachable: true
+            initialized: true
+            sealed: false
+        state: {}
+        state_read: false
+        expect: refuse
+        seal_only: true
+        message: openbao-1 is sealed
+      - name: Single pod unsealed
+        pods:
+          - name: openbao-0
+            reachable: true
+            initialized: true
+            sealed: false
+        state: {}
+        state_read: false
+        expect: pass
+      - name: Single pod sealed
+        pods:
+          - name: openbao-0
+            reachable: true
+            initialized: true
+            sealed: true
+        state: {}
+        state_read: false
+        expect: refuse
+        message: openbao-0 is sealed
+
+  tasks:
+    - name: Run every case
+      ansible.builtin.include_tasks: _openbao-ha-guard-case.yml
+      loop: "{{ guard_cases }}"
+      loop_control:
+        loop_var: case
+        label: "{{ case.name }}"

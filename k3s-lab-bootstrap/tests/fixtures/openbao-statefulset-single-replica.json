@@ -1,0 +1,143 @@
+{
+  "apiVersion": "apps/v1",
+  "kind": "StatefulSet",
+  "metadata": {
+    "labels": {
+      "app.kubernetes.io/name": "openbao"
+    },
+    "name": "openbao",
+    "namespace": "openbao"
+  },
+  "spec": {
+    "replicas": 1,
+    "selector": {
+      "matchLabels": {
+        "app.kubernetes.io/name": "openbao"
+      }
+    },
+    "serviceName": "openbao",
+    "template": {
+      "metadata": {
+        "labels": {
+          "app.kubernetes.io/name": "openbao"
+        }
+      },
+      "spec": {
+        "containers": [
+          {
+            "args": [
+              "server",
+              "-config=/etc/openbao/config.hcl"
+            ],
+            "command": [
+              "bao"
+            ],
+            "env": [
+              {
+                "name": "BAO_ADDR",
+                "value": "https://127.0.0.1:8200"
+              },
+              {
+                "name": "BAO_CACERT",
+                "value": "/openbao/config/tls/tls.crt"
+              },
+              {
+                "name": "BAO_LOCAL_ADDRESS",
+                "value": "127.0.0.1"
+              }
+            ],
+            "image": "openbao/openbao:2.5.2",
+            "imagePullPolicy": "IfNotPresent",
+            "livenessProbe": {
+              "initialDelaySeconds": 30,
+              "periodSeconds": 30,
+              "tcpSocket": {
+                "port": 8200
+              }
+            },
+            "name": "openbao",
+            "ports": [
+              {
+                "containerPort": 8200,
+                "name": "api"
+              },
+              {
+                "containerPort": 8201,
+                "name": "cluster"
+              }
+            ],
+            "readinessProbe": {
+              "initialDelaySeconds": 5,
+              "periodSeconds": 10,
+              "tcpSocket": {
+                "port": 8200
+              }
+            },
+            "resources": {
+              "limits": {
+                "cpu": "1",
+                "memory": "1Gi"
+              },
+              "requests": {
+                "cpu": "25m",
+                "memory": "256Mi"
+              }
+            },
+            "volumeMounts": [
+              {
+                "mountPath": "/etc/openbao",
+                "name": "config"
+              },
+              {
+                "mountPath": "/openbao/config/tls",
+                "name": "tls",
+                "readOnly": true
+              },
+              {
+                "mountPath": "/openbao/data",
+                "name": "data"
+              }
+            ]
+          }
+        ],
+        "securityContext": {
+          "fsGroup": 1000,
+          "runAsGroup": 1000,
+          "runAsUser": 1000
+        },
+        "volumes": [
+          {
+            "configMap": {
+              "name": "openbao-config"
+            },
+            "name": "config"
+          },
+          {
+            "name": "tls",
+            "secret": {
+              "secretName": "openbao-tls"
+            }
+          }
+        ]
+      }
+    },
+    "volumeClaimTemplates": [
+      {
+        "metadata": {
+          "name": "data"
+        },
+        "spec": {
+          "accessModes": [
+            "ReadWriteOnce"
+          ],
+          "resources": {
+            "requests": {
+              "storage": "5Gi"
+            }
+          },
+          "storageClassName": "longhorn"
+        }
+      }
+    ]
+  }
+}

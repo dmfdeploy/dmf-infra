@@ -1,0 +1,58 @@
+---
+# One case of test-openbao-data-read.yml.
+- name: "{{ case.name }} — read before, change, read after, compare"
+  block:
+    - name: Read before
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/data-read.yml
+      vars:
+        openbao_data_read_label: before
+        openbao_operator_password: "{{ case.password | default('s3cret-test-password') }}"
+        openbao_migration_read_paths: "{{ case.paths }}"
+
+    - name: Change the fake data between the reads
+      ansible.builtin.copy:
+        content: "{{ case.after_version }}"
+        dest: "{{ _state.path }}/{{ case_index }}/kv-version"
+        mode: "0600"
+      when: case.after_version is defined
+
+    - name: Read after
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/data-read.yml
+      vars:
+        openbao_data_read_label: after
+        openbao_operator_password: "{{ case.password | default('s3cret-test-password') }}"
+        openbao_migration_read_paths: "{{ case.paths }}"
+
+    - name: Compare (lockstep with the migration)
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/data-compare.yml
+
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment:
+    FAKE_STATE: "{{ _state.path }}/{{ case_index }}"
+    FAKE_KV_MODE: "{{ case.kv_mode | default('ok') }}"
+    FAKE_PASSWORD: s3cret-test-password
+
+- name: "{{ case.name }} — read the argument log"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case_index }}/bao-argv.log"
+  register: _argv
+  failed_when: false
+
+- name: "{{ case.name }} — assert the outcome and that no password was an argument"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      - case.message is not defined or case.message in _message
+      - "'s3cret-test-password' not in (_argv.content | default('') | b64decode)"
+      - (case.password | default('s3cret-test-password')) not in (_argv.content | default('') | b64decode)
+      - case.password is defined or _argv.content is not defined or (_argv.content | b64decode) is search('password=-')
+    fail_msg: "{{ case.name }}: expected {{ case.expect }}, got {{ _outcome }}. {{ _message }}"
+    success_msg: "{{ case.name }}: {{ _outcome }}"

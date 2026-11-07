@@ -1,0 +1,76 @@
+---
+# Test of the migration's permission preflight (dmfdeploy/dmfdeploy#864 WP3).
+# capabilities-check.yml reads the guard token's capabilities on the two Raft
+# paths (`bao token capabilities -format=json`, a JSON list, OpenBao v2.5.2
+# command/token_capabilities.go lines 112-115), parses the list, and refuses,
+# naming the policy reconciliation step, unless each path has `read` (or `root`)
+# and no `deny`. `sudo` alone does not authorize a read. The migration runs it before
+# it changes anything.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-capabilities.yml
+
+- name: Capabilities test — OpenBao migration preflight (#864 WP3)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    openbao_namespace: openbao
+    openbao_guard_token: placeholder
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-caps-
+      register: _state
+      changed_when: false
+
+    - name: Run the preflight cases
+      ansible.builtin.include_tasks: _openbao-capabilities-case.yml
+      loop:
+        - name: Token can read both paths
+          missing: ""
+          expect: pass
+        - name: Token cannot read the Autopilot state
+          missing: sys/storage/raft/autopilot/state
+          expect: refuse
+          message: vertical-security/100-openbao.yml
+        - name: Token cannot read the Raft configuration
+          missing: sys/storage/raft/configuration
+          expect: refuse
+          message: vertical-security/100-openbao.yml
+        - name: Token can read neither path
+          missing: sys/storage/raft/configuration sys/storage/raft/autopilot/state
+          expect: refuse
+          message: Nothing has changed
+        - name: Token has read and sudo
+          missing: ""
+          caps: '["read", "sudo"]'
+          expect: pass
+        - name: Token has only sudo, which does not authorize a read
+          missing: ""
+          caps: '["sudo"]'
+          expect: refuse
+          message: It needs the capability `read`
+        - name: Token has read and deny
+          missing: ""
+          caps: '["read", "deny"]'
+          expect: refuse
+          message: cannot read
+        - name: Token is a root token
+          missing: ""
+          caps: '["root"]'
+          expect: pass
+        - name: Token has create but no read
+          missing: ""
+          caps: '["create", "update"]'
+          expect: refuse
+          message: cannot read
+        - name: No token
+          token: ""
+          missing: ""
+          expect: refuse
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"
