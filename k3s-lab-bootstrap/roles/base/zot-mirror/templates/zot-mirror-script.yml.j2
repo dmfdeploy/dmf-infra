@@ -9,50 +9,142 @@ data:
     #!/bin/bash
     set -euo pipefail
 
-    # Zot (HTTP API) → S3 OCI-format mirror.
-    # Pipeline: skopeo sync --src docker --dest dir → aws s3 sync.
+    # Zot (HTTP API) → S3 mirror in skopeo's `dir` layout.
+    # Pipeline: list repositories from /v2/_catalog (one strict request) →
+    # skopeo sync one repository at a time → aws s3 sync.
     # Credentials all from mounted files; never on argv.
-    # Object keys timestamp-prefixed: zot/<timestamp>/<repo>:<tag>/...
+    # Object keys timestamp-prefixed:
+    #   zot/<timestamp>/<registry>/<repo>:<tag>/...
+    # The `dir` layout is skopeo's own format, not an OCI image layout. Each
+    # <repo>:<tag> folder holds manifest.json, a version file and the blobs.
+    # For an image index it also holds one <digest>.manifest.json per platform.
 
     S3_DIR="{{ zot_mirror_s3_creds_mount }}"
     PULL_DIR="/etc/pull-creds"
     SCRATCH="/scratch"
     SOURCE_REGISTRY="{{ zot_mirror_source_registry }}"
+    # The catalog request uses plain HTTP when TLS verification is off (the
+    # in-cluster Zot service speaks HTTP), and HTTPS with verification when on.
+    SOURCE_URL="{{ 'http' if (zot_mirror_source_tls_verify | string | lower) == 'false' else 'https' }}://${SOURCE_REGISTRY}"
     PULL_USER="{{ zot_mirror_pull_creds_username }}"
     TIMESTAMP="$(date -u +'%Y-%m-%dT%H-%M-%SZ')"
 
-    # ---- Build skopeo auth file (docker config.json shape) ------------------
+    # ---- Build the credential files -----------------------------------------
     # skopeo reads $REGISTRY_AUTH_FILE (or --authfile <path>). We write the
     # auth file to scratch with the base64 of "user:password" — never echo
-    # the plaintext to stdout.
+    # the plaintext to stdout. curl reads the same login from a config file
+    # (-K), so the password never appears on a command line.
+    # umask 077 keeps every file in scratch private to this job.
 
+    umask 077
     AUTHFILE="${SCRATCH}/auth.json"
+    CURL_CFG="${SCRATCH}/curl.cfg"
     PULL_PW="$(cat "${PULL_DIR}/password")"
     AUTH_B64="$(printf '%s:%s' "${PULL_USER}" "${PULL_PW}" | base64 -w0)"
     cat > "${AUTHFILE}" <<JSON
     { "auths": { "${SOURCE_REGISTRY}": { "auth": "${AUTH_B64}" } } }
     JSON
+    printf 'user = "%s:%s"\n' "${PULL_USER}" "$(printf '%s' "${PULL_PW}" | sed 's/[\\"]/\\&/g')" > "${CURL_CFG}"
     unset PULL_PW AUTH_B64
-    chmod 0600 "${AUTHFILE}"
+    chmod 0600 "${AUTHFILE}" "${CURL_CFG}"
 
-    # ---- Mirror Zot → local OCI directory -----------------------------------
-    OCI_DIR="${SCRATCH}/oci-mirror"
-    mkdir -p "${OCI_DIR}"
+    # ---- List every repository from the registry catalog --------------------
+    # skopeo sync takes one repository (or image) per run and does not read
+    # /v2/_catalog, so the job lists the repositories itself. It asks for the
+    # whole catalog in one request and checks the answer strictly. Anything it
+    # doesn't recognise stops the job before any sync or upload, so a partial
+    # or misread list never becomes a backup.
 
-    # skopeo sync iterates every repository:tag on the source registry
-    # (uses /v2/_catalog + /v2/<repo>/tags/list) and lays them out as an
-    # OCI directory layout under ${OCI_DIR}.
-    skopeo sync \
-      --authfile "${AUTHFILE}" \
-      --src-tls-verify={{ zot_mirror_source_tls_verify }} \
-      --src docker \
-      --dest dir \
-      "${SOURCE_REGISTRY}" \
-      "${OCI_DIR}"
+    CATALOG_PAGE_SIZE="{{ zot_mirror_catalog_page_size }}"
+
+    # BEGIN catalog-check (the test harness extracts the lines up to END)
+    # check_catalog HEADERS BODY OUT
+    # Reads one catalog response, writes one repository name per line to OUT,
+    # and returns 1 with a message on stderr if anything is wrong:
+    #  - any Link header (field names are case-insensitive). The registry sends
+    #    one when the catalog is longer than the page size, and this job
+    #    doesn't follow pages.
+    #  - a body that isn't exactly {"repositories":[ names ]}. Repository names
+    #    can't contain whitespace, so all whitespace is removed first. Each name
+    #    is a quoted string without quotes, commas or backslashes. An empty
+    #    list fails too.
+    #  - a name outside the repository-name grammar in the OCI Distribution
+    #    Specification ("Pulling manifests"): path components of lowercase
+    #    letters and digits, separated by ".", "_", "__" or hyphens, joined by "/".
+    check_catalog() {
+      local headers="$1" body="$2" out="$3" name
+      local name_re='^[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*(/[a-z0-9]+(([._]|__|-+)[a-z0-9]+)*)*$'
+      if grep -qi '^link[[:space:]]*:' "${headers}"; then
+        echo "Catalog is larger than the page size (${CATALOG_PAGE_SIZE}); raise zot_mirror_catalog_page_size." >&2
+        return 1
+      fi
+      # The added newline makes the last line complete, so sed and read see it.
+      { tr -d '[:space:]' < "${body}"; printf '\n'; } > "${out}.compact"
+      if ! grep -Eq '^\{"repositories":\[("[^",\\]*"(,"[^",\\]*")*)?\]\}$' "${out}.compact"; then
+        echo 'Catalog response is not exactly {"repositories":[...]}; refusing to back up.' >&2
+        return 1
+      fi
+      sed -e 's/^{"repositories":\[//' -e 's/\]}$//' "${out}.compact" \
+        | tr ',' '\n' | tr -d '"' | sed '/^$/d' > "${out}"
+      if [ ! -s "${out}" ]; then
+        echo "Catalog is empty; refusing to upload an empty backup." >&2
+        return 1
+      fi
+      while IFS= read -r name || [ -n "${name}" ]; do
+        if [[ ! "${name}" =~ ${name_re} ]]; then
+          echo "Catalog lists a repository name this job won't pass to skopeo: ${name}" >&2
+          return 1
+        fi
+      done < "${out}"
+    }
+    # END catalog-check
+
+    CATALOG="${SCRATCH}/catalog.txt"
+    CODE="$(curl -sS --max-time 60 -K "${CURL_CFG}" \
+      -D "${SCRATCH}/catalog.headers" -o "${SCRATCH}/catalog.body" \
+      -w '%{http_code}' "${SOURCE_URL}/v2/_catalog?n=${CATALOG_PAGE_SIZE}")"
+    if [ "${CODE}" != "200" ]; then
+      echo "Catalog request returned HTTP ${CODE}; expected 200." >&2
+      exit 1
+    fi
+    check_catalog "${SCRATCH}/catalog.headers" "${SCRATCH}/catalog.body" "${CATALOG}"
+    sort -u "${CATALOG}" -o "${CATALOG}"
+    echo "Catalog lists $(wc -l < "${CATALOG}") repositories."
+    rm -f "${CURL_CFG}"
+
+    # ---- Mirror Zot → local `dir` layout ------------------------------------
+    MIRROR_DIR="${SCRATCH}/dir-mirror"
+    mkdir -p "${MIRROR_DIR}"
+
+    # One skopeo sync run per repository. Each run copies every tag of that
+    # repository.
+    # --scoped puts the full source path in the layout, so same-named
+    # repositories (dmf/charts/nmos-cpp and dmf/nmos-cpp-node, say) can't
+    # overwrite each other: ${MIRROR_DIR}/<registry>/<repo>:<tag>/.
+    # --all copies every platform of an image index, plus the index itself.
+    # Without it, skopeo copies only the platform that matches this container.
+    # --preserve-digests keeps each digest as it is in Zot and fails the copy
+    # if it cannot, so a restore returns the same index digest. Both flags
+    # need skopeo 1.6.0 or later.
+    # A failed repository stops the job (set -e), so a partial mirror is never
+    # uploaded.
+    while IFS= read -r REPO; do
+      echo "Mirroring ${REPO}"
+      skopeo sync \
+        --all \
+        --preserve-digests \
+        --scoped \
+        --authfile "${AUTHFILE}" \
+        --src-tls-verify={{ zot_mirror_source_tls_verify }} \
+        --src docker \
+        --dest dir \
+        "${SOURCE_REGISTRY}/${REPO}" \
+        "${MIRROR_DIR}"
+    done < "${CATALOG}"
 
     rm -f "${AUTHFILE}"
 
-    # ---- Upload OCI dir to B2 via aws s3 sync -------------------------------
+    # ---- Upload the `dir` mirror to B2 via aws s3 sync ----------------------
     BUCKET="$(cat "${S3_DIR}/bucket")"
     ENDPOINT="$(cat "${S3_DIR}/endpoint")"
     REGION="$(cat "${S3_DIR}/region")"
@@ -61,11 +153,11 @@ data:
     AWS_ACCESS_KEY_ID="$(cat "${S3_DIR}/access_key_id")" \
     AWS_SECRET_ACCESS_KEY="$(cat "${S3_DIR}/secret_access_key")" \
     AWS_DEFAULT_REGION="${REGION}" \
-      aws s3 sync "${OCI_DIR}/" \
+      aws s3 sync "${MIRROR_DIR}/" \
         "s3://${BUCKET}/{{ zot_mirror_bucket_prefix }}/${TIMESTAMP}/" \
         --endpoint-url "${ENDPOINT}" \
         --sse AES256
 
     # ---- Cleanup ------------------------------------------------------------
-    rm -rf "${OCI_DIR}"
+    rm -rf "${MIRROR_DIR}"
     echo "Mirror complete: s3://${BUCKET}/{{ zot_mirror_bucket_prefix }}/${TIMESTAMP}/"
