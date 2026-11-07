@@ -43,11 +43,29 @@ cert_manager_openbao_issuer_name: openbao-selfsigned
 cert_manager_openbao_certificate_name: openbao
 cert_manager_openbao_tls_secret_name: openbao-tls
 cert_manager_openbao_common_name: openbao.openbao.svc.cluster.local
-cert_manager_openbao_dns_names:
+cert_manager_openbao_base_dns_names:
   - openbao
   - openbao.openbao
   - openbao.openbao.svc
   - openbao.openbao.svc.cluster.local
+# Raft peers (#864 WP3). Every pod of an HA OpenBao serves this one certificate
+# and dials its peers by pod name, so the certificate covers the headless
+# Service and a wildcard for the pod names under it. The Service name is the
+# default of openbao_headless_service_name in the openbao role: keep them in
+# step. The names appear only when the site sets openbao_replicas above 1,
+# which is a site property in the inventory.
+cert_manager_openbao_headless_service_name: openbao-internal
+cert_manager_openbao_ha_dns_names:
+  - "{{ cert_manager_openbao_headless_service_name }}"
+  - "{{ cert_manager_openbao_headless_service_name }}.openbao"
+  - "{{ cert_manager_openbao_headless_service_name }}.openbao.svc"
+  - "{{ cert_manager_openbao_headless_service_name }}.openbao.svc.cluster.local"
+  - "*.{{ cert_manager_openbao_headless_service_name }}.openbao"
+  - "*.{{ cert_manager_openbao_headless_service_name }}.openbao.svc"
+  - "*.{{ cert_manager_openbao_headless_service_name }}.openbao.svc.cluster.local"
+cert_manager_openbao_dns_names: >-
+  {{ cert_manager_openbao_base_dns_names
+     + (cert_manager_openbao_ha_dns_names if (openbao_replicas | default(1) | int) > 1 else []) }}
 cert_manager_openbao_ip_addresses:
   - 127.0.0.1
 cert_manager_openbao_wait_retries: 60

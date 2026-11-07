@@ -48,6 +48,19 @@ jobs:
             echo "=== syntax-check: $pb ==="
             ansible-playbook "$pb" --syntax-check
           done
+      - name: OpenBao Raft render, guard, unseal and migration tests (dmfdeploy/dmfdeploy#864)
+        run: |
+          ansible-playbook tests/test-openbao-ha-render.yml
+          ansible-playbook tests/test-openbao-ha-guard.yml
+          export PATH="$PWD/tests/fixtures/fake-kubectl:$PATH"
+          export ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections"
+          ansible-playbook tests/test-openbao-ha-guard-collect.yml
+          ansible-playbook tests/test-openbao-guard-poll.yml
+          ansible-playbook tests/test-openbao-unseal.yml
+          ansible-playbook tests/test-openbao-data-read.yml
+          ansible-playbook tests/test-openbao-capabilities.yml
+          ansible-playbook tests/test-openbao-restart-guard.yml
+          ansible-playbook tests/test-openbao-grow-ha.yml
       - name: harden fail2ban ignoreip validation (dmfdeploy/dmfdeploy#142)
         run: ansible-playbook tests/test-harden-fail2ban-ignoreip.yml
       - name: whole-index mirror keeps the index digest (dmfdeploy/dmfdeploy#808)

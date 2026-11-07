@@ -1,0 +1,9 @@
+---
+# Unseal the pods in openbao_unseal_pods (default: every pod, pod 0 first).
+# Needs openbao_unseal_keys_hex. Pod 0 goes first because the other pods of a
+# Raft cluster can only join once pod 0 is unsealed and leads.
+- name: Unseal each OpenBao pod
+  ansible.builtin.include_tasks: unseal-pod.yml
+  loop: "{{ openbao_unseal_pods | default((range(openbao_replicas | int) | map('string') | map('regex_replace', '^', 'openbao-') | list)) }}"
+  loop_control:
+    loop_var: openbao_unseal_target

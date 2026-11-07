@@ -1,0 +1,39 @@
+---
+# One case of test-openbao-restart-guard.yml.
+- name: "{{ case.name }} — run the restart entry point"
+  block:
+    - name: Run restart-pod.yml with an attempted override of the pod list
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/restart-pod.yml
+      vars:
+        openbao_guard_pods: "{{ case.override }}"
+      when: case.override is defined
+    - name: Run restart-pod.yml (the real restart procedure)
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/restart-pod.yml
+      when: case.override is not defined
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment: "{{ case.env | combine({'FAKE_STATE': _state.path ~ '/' ~ case_index}) }}"
+
+- name: "{{ case.name }} — read the argument log"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case_index }}/bao-argv.log"
+  register: _argv
+  failed_when: false
+
+- name: "{{ case.name }} — assert the guard refused after it looked at every pod"
+  ansible.builtin.assert:
+    that:
+      - _outcome == 'refuse'
+      - case.message in _message
+      # The guard asked all three pods, whatever the override said. A missing pod
+      # never reaches bao, so only the pods that exist leave a line.
+      - (_argv.content | default('') | b64decode | split('\n') | select('equalto', 'status -format=json') | list | length) == (3 - (case.env.FAKE_MISSING | default('') | split | length))
+    fail_msg: "{{ case.name }}: outcome {{ _outcome }}, message '{{ _message }}'"
+    success_msg: "{{ case.name }}: refused after it checked every pod"

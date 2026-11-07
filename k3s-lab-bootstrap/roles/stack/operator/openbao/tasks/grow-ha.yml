@@ -1,0 +1,256 @@
+---
+# Grow an installed single-replica OpenBao to a Raft cluster of openbao_replicas
+# pods (playbooks/vertical-security/104-openbao-grow-ha.yml). Keeps the data and
+# the existing shares. Never initializes. Refuses unless the existing pod is
+# unsealed, active and healthy.
+#
+# Before you run it:
+#   1. With openbao_replicas still 1, run vertical-security/100-openbao.yml so
+#      the app-admin-writer policy gives ops-admin the two Raft reads, then take
+#      an ops-admin token for OPENBAO_GUARD_TOKEN.
+#   2. Set openbao_replicas (for example 3) in the site inventory.
+#   3. Run the cert-manager play so the certificate covers the Raft peers, then
+#      the ESO play so the ClusterSecretStore trusts the new certificate. The pod
+#      serves the new certificate only after the step "Recreate pod 0" below.
+#
+# There is no automatic resume. The play runs from a single-replica install only,
+# and every check that can refuse runs before the first change. If the play stops
+# after it changed the StatefulSet, it refuses to run again. Recover by hand as the
+# security model doc describes ("Recover an interrupted migration"): unseal every
+# pod with bin/unseal-openbao.sh, wait until 102-openbao-ha-guard.yml passes, then
+# run 105-openbao-verify-ha.yml.
+
+- name: Assert the site asks for a Raft cluster
+  ansible.builtin.assert:
+    that: openbao_replicas | int > 1
+    fail_msg: >-
+      openbao_replicas is {{ openbao_replicas }}. Set it above 1 in the site
+      inventory (long-lived sites use 3) before you grow the cluster.
+
+- name: Assert the guard token is set
+  ansible.builtin.assert:
+    that: openbao_guard_token | default('') | length > 0
+    fail_msg: >-
+      The checks read the Raft state and need OPENBAO_GUARD_TOKEN, an ops-admin
+      token. Set it and run the play again. Nothing has changed.
+
+- name: Check the guard token can read the Raft paths
+  ansible.builtin.include_tasks: capabilities-check.yml
+
+- name: Read the existing StatefulSet
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    name: openbao
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_grow_sts
+
+- name: Refuse unless this is a single-replica install
+  ansible.builtin.assert:
+    that:
+      - _openbao_grow_sts.resources | length == 1
+      - _openbao_grow_sts.resources[0].spec.serviceName | default('') == 'openbao'
+      - _openbao_grow_sts.resources[0].spec.replicas | default(0) | int == 1
+    fail_msg: >-
+      Expected one OpenBao StatefulSet that is a single replica with the Service
+      `openbao`. This site is not one: either it is already a Raft cluster, or an
+      earlier run stopped after it changed the StatefulSet. This play does not
+      resume. Recover by hand: unseal every pod with bin/unseal-openbao.sh
+      (OPENBAO_POD=<pod>), wait until 102-openbao-ha-guard.yml passes, then run
+      105-openbao-verify-ha.yml. The security model doc has the steps ("Recover an
+      interrupted migration"). Nothing has changed.
+
+- name: Read the state of the existing pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - openbao-0
+      - --
+      - bao
+      - status
+      - -format=json
+  register: _openbao_grow_status
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Refuse unless the existing pod is initialized, unsealed and active
+  ansible.builtin.assert:
+    that:
+      - _openbao_grow_status.stdout | default('') | length > 0
+      - (_openbao_grow_status.stdout | from_json).initialized | default(false) | bool
+      - not ((_openbao_grow_status.stdout | from_json).sealed | default(true) | bool)
+      - (_openbao_grow_status.stdout | from_json).is_self | default(false) | bool
+    fail_msg: >-
+      Refusing to grow OpenBao: openbao-0 is not initialized, unsealed and
+      active. This procedure never initializes. Unseal openbao-0 with the
+      threshold of shares (bin/unseal-openbao.sh), and run this play again.
+      Nothing has changed.
+
+- name: Load the unseal shares and the ops-admin password
+  ansible.builtin.include_tasks: load-shares.yml
+
+- name: Read the TLS secret
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ openbao_tls_secret_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_grow_tls
+  no_log: true
+
+- name: Read the TLS certificate names
+  ansible.builtin.shell:
+    cmd: printf '%s' "$OPENBAO_CRT" | base64 -d | openssl x509 -noout -ext subjectAltName
+  environment:
+    OPENBAO_CRT: "{{ _openbao_grow_tls.resources[0].data['tls.crt'] }}"
+  register: _openbao_grow_san
+  changed_when: false
+  no_log: true
+
+- name: Refuse unless the certificate covers the Raft peers
+  ansible.builtin.assert:
+    that: >-
+      ('*.' ~ openbao_headless_service_name ~ '.' ~ openbao_namespace ~ '.svc.cluster.local')
+      in _openbao_grow_san.stdout
+    fail_msg: >-
+      The OpenBao certificate does not cover
+      *.{{ openbao_headless_service_name }}.{{ openbao_namespace }}.svc.cluster.local.
+      Run the cert-manager play with openbao_replicas set, then run this play
+      again. Nothing has changed.
+
+- name: Read the data before the change
+  ansible.builtin.include_tasks: data-read.yml
+  vars:
+    openbao_data_read_label: before
+
+# The baseline must hold at least one path that exists. Check it here, before the
+# first change, so a site with nothing to compare finds out before the outage.
+- name: Assert the before read found at least one existing path
+  ansible.builtin.assert:
+    that: _openbao_data_read_before.values() | reject('equalto', 'absent') | list | length > 0
+    fail_msg: >-
+      No path in openbao_migration_read_paths exists, so the migration would have
+      nothing to compare before and after. Add paths that exist, then run the play
+      again. Nothing has changed.
+
+# The governing Service of a StatefulSet cannot change in place. Delete the
+# StatefulSet and keep its pod and volume (orphan), then create it again in the
+# Raft shape at one replica.
+# From here on, the play changes the cluster.
+- name: Delete the StatefulSet and keep its pod and volume
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: apps/v1
+    kind: StatefulSet
+    name: openbao
+    namespace: "{{ openbao_namespace }}"
+    delete_options:
+      propagationPolicy: Orphan
+    wait: true
+
+- name: Create the Raft-shaped workload at one replica
+  ansible.builtin.include_tasks: workload.yml
+  vars:
+    openbao_workload_replicas: 1
+
+- name: Read pod 0
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    name: openbao-0
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_grow_pod0_before
+
+# Pod 0 has to restart: it loads the new certificate and the per-pod addresses
+# only at start. It comes back sealed.
+- name: Recreate pod 0
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: v1
+    kind: Pod
+    name: openbao-0
+    namespace: "{{ openbao_namespace }}"
+    wait: true
+
+- name: Wait for the new pod 0 to run
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    name: openbao-0
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_grow_pod0_after
+  until:
+    - _openbao_grow_pod0_after.resources | length > 0
+    - _openbao_grow_pod0_after.resources[0].metadata.uid != _openbao_grow_pod0_before.resources[0].metadata.uid
+    - _openbao_grow_pod0_after.resources[0].status.phase | default('') == 'Running'
+    - _openbao_grow_pod0_after.resources[0].status.containerStatuses | default([]) | selectattr('state.running', 'defined') | list | length > 0
+  retries: 60
+  delay: 5
+
+- name: Unseal pod 0 with the existing shares
+  ansible.builtin.include_tasks: unseal-pod.yml
+  vars:
+    openbao_unseal_target: openbao-0
+
+- name: Wait for pod 0 to lead
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - openbao-0
+      - --
+      - bao
+      - status
+      - -format=json
+  register: _openbao_grow_leader
+  changed_when: false
+  failed_when: false
+  until:
+    - _openbao_grow_leader.stdout | default('') | length > 0
+    - (_openbao_grow_leader.stdout | from_json).is_self | default(false) | bool
+  retries: 30
+  delay: 5
+  no_log: true
+
+- name: Scale the workload to the full replica count
+  ansible.builtin.include_tasks: workload.yml
+
+- name: Unseal the new pods with the existing shares
+  ansible.builtin.include_tasks: unseal-pods.yml
+  vars:
+    openbao_unseal_pods: "{{ range(1, openbao_replicas | int) | map('string') | map('regex_replace', '^', 'openbao-') | list }}"
+
+- name: Wait for every pod to be a healthy voter
+  ansible.builtin.include_tasks: ha-guard-poll.yml
+
+- name: Read the data after the change
+  ansible.builtin.include_tasks: data-read.yml
+  vars:
+    openbao_data_read_label: after
+
+- name: Compare the data before and after
+  ansible.builtin.include_tasks: data-compare.yml
+
+- name: Tell the operator the remaining step
+  ansible.builtin.debug:
+    msg: >-
+      The cluster has {{ openbao_replicas }} pods, all unsealed. The migration used the
+      automation file to unseal. To prove the recovery shares still work, restart one
+      standby pod with 103-openbao-restart-pod.yml and unseal it with the recovery
+      shares (bin/unseal-openbao.sh). Then run 102-openbao-ha-guard.yml.

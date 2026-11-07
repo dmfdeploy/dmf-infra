@@ -1,0 +1,165 @@
+---
+# ---------------------------------------------------------------------------
+# OpenBao workload: ConfigMap, Services, StatefulSet and, for a Raft cluster,
+# the PodDisruptionBudget. Included by main.yml and by the grow-HA playbook.
+# openbao_replicas selects the shape. openbao_workload_replicas, when set,
+# overrides only the replica count (the grow-HA playbook starts at one pod).
+# ---------------------------------------------------------------------------
+
+- name: Create OpenBao config ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: openbao-config
+        namespace: "{{ openbao_namespace }}"
+      data:
+        config.hcl: "{{ lookup('ansible.builtin.template', 'config.hcl.j2') }}"
+
+- name: Wait for OpenBao TLS secret to be present
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ openbao_tls_secret_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: openbao_tls_secret
+  until:
+    - openbao_tls_secret.resources | length > 0
+    - openbao_tls_secret.resources[0].data['tls.crt'] is defined
+    - openbao_tls_secret.resources[0].data['tls.key'] is defined
+  retries: 60
+  delay: 5
+
+- name: Count cluster nodes for the pod anti-affinity rule
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Node
+  register: _openbao_nodes
+  when: openbao_replicas | int > 1
+
+# Preferred spreading always. Required spreading only when every pod can get a
+# node of its own, so a small cluster can still schedule all pods.
+- name: Decide whether pod anti-affinity is required
+  ansible.builtin.set_fact:
+    openbao_anti_affinity_required: "{{ (_openbao_nodes.resources | length) >= (openbao_replicas | int) }}"
+  when: openbao_replicas | int > 1
+
+- name: Create OpenBao StatefulSet
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('ansible.builtin.template', 'statefulset.yml.j2') | from_yaml }}"
+
+- name: Create OpenBao Service
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ openbao_service_name }}"
+        namespace: "{{ openbao_namespace }}"
+        labels:
+          app.kubernetes.io/name: openbao
+      spec:
+        selector:
+          app.kubernetes.io/name: openbao
+        ports:
+          - name: api
+            port: "{{ openbao_service_port }}"
+            targetPort: 8200
+          - name: cluster
+            port: 8201
+            targetPort: 8201
+
+# Governing Service of the StatefulSet. It publishes every pod, ready or not, so
+# the pods can find each other while they are still sealed.
+- name: Create OpenBao headless Service for Raft peers
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ openbao_headless_service_name }}"
+        namespace: "{{ openbao_namespace }}"
+        labels:
+          app.kubernetes.io/name: openbao
+      spec:
+        clusterIP: None
+        publishNotReadyAddresses: true
+        selector:
+          app.kubernetes.io/name: openbao
+        ports:
+          - name: api
+            port: 8200
+            targetPort: 8200
+          - name: cluster
+            port: 8201
+            targetPort: 8201
+  when: openbao_replicas | int > 1
+
+- name: Create OpenBao PodDisruptionBudget
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: openbao
+        namespace: "{{ openbao_namespace }}"
+        labels:
+          app.kubernetes.io/name: openbao
+      spec:
+        maxUnavailable: 1
+        selector:
+          matchLabels:
+            app.kubernetes.io/name: openbao
+  when: openbao_replicas | int > 1
+
+# One replica: the pod is Ready as soon as the port listens, so the StatefulSet
+# status is enough. A Raft cluster: a sealed pod is not Ready (see the readiness
+# probe in statefulset.yml.j2), and a restarted pod is sealed, so wait for the
+# pods to run and leave the seal to the unseal tasks.
+- name: Wait for OpenBao StatefulSet to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    name: openbao
+    namespace: "{{ openbao_namespace }}"
+  register: openbao_sts
+  until:
+    - openbao_sts.resources | length > 0
+    - openbao_sts.resources[0].status.readyReplicas | default(0) | int >= 1
+  retries: 60
+  delay: 5
+  when: openbao_replicas | int == 1
+
+- name: Wait for every OpenBao pod to run
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ openbao_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=openbao"
+  register: _openbao_running_pods
+  until: >-
+    (_openbao_running_pods.resources
+     | selectattr('status.phase', 'equalto', 'Running')
+     | selectattr('status.containerStatuses', 'defined')
+     | map(attribute='status.containerStatuses') | map('first')
+     | selectattr('state.running', 'defined') | list | length)
+    == (openbao_workload_replicas | default(openbao_replicas) | int)
+  retries: 60
+  delay: 5
+  when: openbao_replicas | int > 1

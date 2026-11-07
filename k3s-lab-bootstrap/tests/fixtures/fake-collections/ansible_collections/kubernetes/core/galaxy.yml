@@ -1,0 +1,7 @@
+---
+namespace: kubernetes
+name: core
+version: 0.0.1
+readme: README.md
+authors:
+  - tests

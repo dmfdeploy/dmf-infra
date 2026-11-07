@@ -1,0 +1,49 @@
+---
+# Test of the bounded wait for voter promotion (dmfdeploy/dmfdeploy#864 WP3).
+# After the migration adds voters, Autopilot first reports a new server as a
+# non-voter and promotes it later. The fake bao reports the new server as a
+# non-voter for the first FAKE_PROMOTE_AFTER Autopilot reads. The wait must pass
+# when the promotion comes inside the bound and fail when it comes after it.
+# The test uses a 1 s interval and a 5 s bound, so a case takes a few seconds.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-guard-poll.yml
+
+- name: Poll test — OpenBao voter promotion wait (#864 WP3)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    openbao_namespace: openbao
+    openbao_replicas: 3
+    openbao_raft_node_id: "1"
+    openbao_guard_token: placeholder
+    openbao_guard_require_peers: true
+    openbao_guard_max_last_contact_seconds: 10
+    openbao_guard_wait_timeout_seconds: 5
+    openbao_guard_wait_interval_seconds: 1
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-poll-
+      register: _state
+      changed_when: false
+
+    - name: Run the wait against delayed promotion
+      ansible.builtin.include_tasks: _openbao-guard-poll-case.yml
+      loop:
+        - name: Promotion on the third read, inside the bound
+          promote_after: 2
+          expect: pass
+        - name: Healthy from the start
+          promote_after: 0
+          expect: pass
+        - name: Promotion after the bound
+          promote_after: 50
+          expect: refuse
+          message: openbao-2 is not a voter
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"

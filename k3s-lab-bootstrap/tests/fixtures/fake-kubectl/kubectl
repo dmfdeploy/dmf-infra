@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Fake kubectl for the OpenBao tests (tests/test-openbao-*.yml). It handles one
+# call form: `kubectl [flags] exec [-i] POD -- COMMAND...`. It runs COMMAND here,
+# with the fake bao (tests/fixtures/fake-bao/bao) first on PATH and the pod name
+# in FAKE_POD. Standard input passes through, as it does with `kubectl exec -i`.
+# Any other call fails, so a test notices a new kind of call.
+set -u
+pod=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    exec) shift; break ;;
+    *) shift ;;
+  esac
+done
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -i|-it|-t) shift ;;
+    --) shift; break ;;
+    *) pod="$1"; shift ;;
+  esac
+done
+if [ -z "$pod" ] || [ $# -eq 0 ]; then
+  echo "fake kubectl: unexpected call" >&2
+  exit 1
+fi
+# FAKE_MISSING lists pods that do not exist: a call to one fails as kubectl does.
+case " ${FAKE_MISSING:-} " in
+  *" $pod "*) echo "Error from server (NotFound): pods \"$pod\" not found" >&2; exit 1 ;;
+esac
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export FAKE_POD="$pod"
+export PATH="$here/../fake-bao:$PATH"
+exec "$@"

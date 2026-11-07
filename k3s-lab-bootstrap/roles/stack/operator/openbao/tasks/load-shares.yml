@@ -1,0 +1,26 @@
+---
+# Load the unseal shares and the ops-admin password of the automation file into
+# openbao_unseal_keys_hex and openbao_operator_password. Used by the playbooks that unseal pods outside the role's own run. The file is
+# the one that the openbao role writes at init. It never holds a root token.
+- name: Slurp the break-glass JSON (localhost)
+  ansible.builtin.slurp:
+    src: "{{ openbao_key_path }}.json"
+  register: _openbao_shares_slurp
+  delegate_to: localhost
+  become: false
+  no_log: true
+
+- name: Load the unseal shares
+  ansible.builtin.set_fact:
+    openbao_unseal_keys_hex: "{{ (_openbao_shares_slurp.content | b64decode | from_json).unseal_keys_hex | default([]) }}"
+    openbao_operator_password: "{{ (_openbao_shares_slurp.content | b64decode | from_json).ops_admin_password | default('') }}"
+  no_log: true
+
+- name: Assert there are enough shares to unseal
+  ansible.builtin.assert:
+    that: openbao_unseal_keys_hex | length >= (openbao_shamir_threshold | int)
+    fail_msg: >-
+      The automation file holds {{ openbao_unseal_keys_hex | length }} shares and
+      the threshold is {{ openbao_shamir_threshold }}. Unseal with the recovery
+      shares instead (bin/unseal-openbao.sh).
+  no_log: true

@@ -58,171 +58,8 @@
       metadata:
         name: "{{ openbao_namespace }}"
 
-- name: Create OpenBao config ConfigMap
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    definition:
-      apiVersion: v1
-      kind: ConfigMap
-      metadata:
-        name: openbao-config
-        namespace: "{{ openbao_namespace }}"
-      data:
-        config.hcl: |
-          storage "raft" {
-            path    = "/openbao/data"
-            node_id = "{{ openbao_raft_node_id }}"
-          }
-
-          listener "tcp" {
-            address         = "0.0.0.0:8200"
-            cluster_address = "0.0.0.0:8201"
-            tls_disable     = 0
-            tls_cert_file   = "/openbao/config/tls/tls.crt"
-            tls_key_file    = "/openbao/config/tls/tls.key"
-          }
-
-          api_addr      = "https://{{ openbao_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8200"
-          cluster_addr  = "https://{{ openbao_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8201"
-          disable_mlock = true
-          ui            = true
-
-- name: Wait for OpenBao TLS secret to be present
-  kubernetes.core.k8s_info:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    api_version: v1
-    kind: Secret
-    name: "{{ openbao_tls_secret_name }}"
-    namespace: "{{ openbao_namespace }}"
-  register: openbao_tls_secret
-  until:
-    - openbao_tls_secret.resources | length > 0
-    - openbao_tls_secret.resources[0].data['tls.crt'] is defined
-    - openbao_tls_secret.resources[0].data['tls.key'] is defined
-  retries: 60
-  delay: 5
-
-- name: Create OpenBao StatefulSet
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    definition:
-      apiVersion: apps/v1
-      kind: StatefulSet
-      metadata:
-        name: openbao
-        namespace: "{{ openbao_namespace }}"
-        labels:
-          app.kubernetes.io/name: openbao
-      spec:
-        serviceName: openbao
-        replicas: 1
-        selector:
-          matchLabels:
-            app.kubernetes.io/name: openbao
-        template:
-          metadata:
-            labels:
-              app.kubernetes.io/name: openbao
-          spec:
-            securityContext:
-              runAsUser: 1000
-              runAsGroup: 1000
-              fsGroup: 1000
-            containers:
-              - name: openbao
-                image: "{{ openbao_image }}"
-                imagePullPolicy: IfNotPresent
-                command:
-                  - bao
-                args:
-                  - server
-                  - -config=/etc/openbao/config.hcl
-                ports:
-                  - name: api
-                    containerPort: 8200
-                  - name: cluster
-                    containerPort: 8201
-                env:
-                  - name: BAO_ADDR
-                    value: "https://127.0.0.1:8200"
-                  - name: BAO_CACERT
-                    value: "/openbao/config/tls/tls.crt"
-                  - name: BAO_LOCAL_ADDRESS
-                    value: "127.0.0.1"
-                volumeMounts:
-                  - name: config
-                    mountPath: /etc/openbao
-                  - name: tls
-                    mountPath: /openbao/config/tls
-                    readOnly: true
-                  - name: data
-                    mountPath: /openbao/data
-                readinessProbe:
-                  tcpSocket:
-                    port: 8200
-                  initialDelaySeconds: 5
-                  periodSeconds: 10
-                livenessProbe:
-                  tcpSocket:
-                    port: 8200
-                  initialDelaySeconds: 30
-                  periodSeconds: 30
-                resources: "{{ openbao_resources }}"
-            volumes:
-              - name: config
-                configMap:
-                  name: openbao-config
-              - name: tls
-                secret:
-                  secretName: "{{ openbao_tls_secret_name }}"
-        volumeClaimTemplates:
-          - metadata:
-              name: data
-            spec:
-              accessModes: [ReadWriteOnce]
-              storageClassName: "{{ openbao_storage_class }}"
-              resources:
-                requests:
-                  storage: "{{ openbao_storage_size }}"
-
-- name: Create OpenBao Service
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Service
-      metadata:
-        name: "{{ openbao_service_name }}"
-        namespace: "{{ openbao_namespace }}"
-        labels:
-          app.kubernetes.io/name: openbao
-      spec:
-        selector:
-          app.kubernetes.io/name: openbao
-        ports:
-          - name: api
-            port: "{{ openbao_service_port }}"
-            targetPort: 8200
-          - name: cluster
-            port: 8201
-            targetPort: 8201
-
-- name: Wait for OpenBao StatefulSet to be ready
-  kubernetes.core.k8s_info:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    api_version: apps/v1
-    kind: StatefulSet
-    name: openbao
-    namespace: "{{ openbao_namespace }}"
-  register: openbao_sts
-  until:
-    - openbao_sts.resources | length > 0
-    - openbao_sts.resources[0].status.readyReplicas | default(0) | int >= 1
-  retries: 60
-  delay: 5
+- name: Apply the OpenBao workload
+  ansible.builtin.include_tasks: workload.yml
 
 # ---------------------------------------------------------------------------
 # Discover the pod name for exec calls
@@ -238,9 +75,11 @@
       - "app.kubernetes.io/name=openbao"
   register: openbao_pod_info
 
+# Init and the API writes below run on pod 0 of a Raft cluster. A standby
+# forwards writes to the active node, so pod 0 serves them whichever pod leads.
 - name: Set OpenBao pod name fact
   ansible.builtin.set_fact:
-    openbao_pod: "{{ openbao_pod_info.resources[0].metadata.name }}"
+    openbao_pod: "{{ openbao_pod_info.resources[0].metadata.name if openbao_replicas | int == 1 else 'openbao-0' }}"
 
 # ---------------------------------------------------------------------------
 # Check if already initialized — before password generation to gate fresh-init-only credentials
@@ -657,62 +496,12 @@
   no_log: true
 
 # ---------------------------------------------------------------------------
-# Unseal (needs 3 of 5 shares)
+# Unseal every pod (needs the threshold of shares per pod)
 # ---------------------------------------------------------------------------
 
-- name: Unseal OpenBao — share 1
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ openbao_pod }}"
-      - --
-      - bao
-      - operator
-      - unseal
-      - "{{ openbao_unseal_keys_hex[0] }}"
-  no_log: true
+- name: Unseal every OpenBao pod
+  ansible.builtin.include_tasks: unseal-pods.yml
   when: openbao_unseal_keys_hex is defined
-
-- name: Unseal OpenBao — share 2
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ openbao_pod }}"
-      - --
-      - bao
-      - operator
-      - unseal
-      - "{{ openbao_unseal_keys_hex[1] }}"
-  no_log: true
-  when: openbao_unseal_keys_hex | default([]) | length > 1
-
-- name: Unseal OpenBao — share 3
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ openbao_pod }}"
-      - --
-      - bao
-      - operator
-      - unseal
-      - "{{ openbao_unseal_keys_hex[2] }}"
-  no_log: true
-  when: openbao_unseal_keys_hex | default([]) | length > 2
 
 # ---------------------------------------------------------------------------
 # Mark OpenBao as initialized and unsealed after successful fresh init
@@ -1026,6 +815,16 @@
           capabilities = ["read"]
         }
         path "secret/metadata/platform/k3s/cluster" {
+          capabilities = ["read"]
+        }
+        # The rolling-restart guard and the migration read the Raft state with an
+        # ops-admin token (tasks/ha-guard.yml, tasks/grow-ha.yml). These two reads
+        # show the members and the Autopilot health of each server. They grant no
+        # write and no data read.
+        path "sys/storage/raft/configuration" {
+          capabilities = ["read"]
+        }
+        path "sys/storage/raft/autopilot/state" {
           capabilities = ["read"]
         }
         HCL
@@ -1868,6 +1667,29 @@
 # ---------------------------------------------------------------------------
 # Dispose root token
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# Raft cluster check. A fresh install still holds the init token, which can read
+# the Raft state, so it waits for every pod to be a healthy voter. A rerun has no
+# such token, so it checks the seal state only. That check authorizes no restart:
+# the restart guard (ha-guard.yml) still needs its own token.
+# ---------------------------------------------------------------------------
+
+- name: Wait for the new Raft cluster to have every pod as a healthy voter
+  ansible.builtin.include_tasks: ha-guard-poll.yml
+  vars:
+    openbao_guard_token: "{{ openbao_root_token }}"
+  no_log: true
+  when:
+    - openbao_replicas | int > 1
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Verify every pod of the Raft cluster is unsealed
+  ansible.builtin.include_tasks: seal-check.yml
+  when:
+    - openbao_replicas | int > 1
+    - openbao_init_raw is not defined or not (openbao_init_raw.changed | default(false))
 
 - name: Revoke root token
   ansible.builtin.shell:

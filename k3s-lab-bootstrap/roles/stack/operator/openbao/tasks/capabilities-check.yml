@@ -1,0 +1,50 @@
+---
+# Check that the guard token can read the two Raft paths that the guard and the
+# migration need, before the migration changes anything. `bao token capabilities`
+# calls sys/capabilities-self and prints a JSON list with -format=json
+# (OpenBao v2.5.2, command/token_capabilities.go lines 112-115).
+- name: Read the token's capabilities on the Raft paths
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_caps_pod | default('openbao-0') }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token capabilities -format=json {{ item }}'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_guard_token }}"
+  loop:
+    - sys/storage/raft/configuration
+    - sys/storage/raft/autopilot/state
+  register: _openbao_caps_raw
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+# The capability list is parsed as JSON. A path passes only when the list has
+# `read` (or `root`, which a root token reports) and has no `deny`. `sudo` alone
+# does not pass: it is an extra privilege on root-protected paths and does not
+# authorize a GET (OpenBao v2.5.2 policy documentation, capabilities).
+- name: Work out which paths the token can read
+  ansible.builtin.set_fact:
+    _openbao_caps_unreadable: >-
+      {%- set bad = [] -%}
+      {%- for r in _openbao_caps_raw.results -%}
+      {%- set caps = (r.stdout | from_json) if (r.rc == 0 and r.stdout | default('') is search('^\s*\[')) else [] -%}
+      {%- if 'deny' in caps or not ('read' in caps or 'root' in caps) -%}{%- set _ = bad.append(r.item) -%}{%- endif -%}
+      {%- endfor -%}
+      {{ bad }}
+
+- name: Refuse when the token cannot read both paths
+  ansible.builtin.assert:
+    that: _openbao_caps_unreadable | length == 0
+    fail_msg: >-
+      The token in OPENBAO_GUARD_TOKEN cannot read {{ _openbao_caps_unreadable | join(' and ') }}.
+      It needs the capability `read` on both sys/storage/raft/configuration and
+      sys/storage/raft/autopilot/state. An installed site gets these reads when
+      the OpenBao role reconciles the app-admin-writer policy. With
+      openbao_replicas still 1 in the inventory, run vertical-security/100-openbao.yml,
+      take a new ops-admin token, and run this play again. Nothing has changed.

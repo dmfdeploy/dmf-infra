@@ -1,0 +1,42 @@
+---
+# One case of test-openbao-grow-ha.yml.
+- name: "{{ case.name }} — set up the fake cluster"
+  ansible.builtin.include_tasks: _openbao-grow-ha-setup.yml
+
+- name: "{{ case.name }} — run the migration"
+  block:
+    - name: Run grow-ha.yml (the real procedure)
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/grow-ha.yml
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment: "{{ (case.env | default({})) | combine({'FAKE_STATE': _case_dir, 'FAKE_PASSWORD': 's3cret-test-password'}) }}"
+
+- name: "{{ case.name }} — read the logs"
+  ansible.builtin.slurp:
+    src: "{{ item }}"
+  loop:
+    - "{{ _case_dir }}/bao-argv.log"
+  register: _argv
+  failed_when: false
+
+- name: "{{ case.name }} — look for changes to the cluster"
+  ansible.builtin.stat:
+    path: "{{ _case_dir }}/k8s-mutations.log"
+  register: _mutations
+
+- name: "{{ case.name }} — assert a refusal with no change"
+  ansible.builtin.assert:
+    that:
+      - _outcome == 'refuse'
+      - case.message in _message
+      - not _mutations.stat.exists
+      - (case.expect_kv_read | bool) == ('kv metadata get' in (_argv.results[0].content | default('') | b64decode))
+    fail_msg: "{{ case.name }}: outcome {{ _outcome }}, message '{{ _message }}', changes logged: {{ _mutations.stat.exists }}"
+    success_msg: "{{ case.name }}: refused, no change to the cluster"

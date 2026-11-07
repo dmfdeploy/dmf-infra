@@ -1,0 +1,27 @@
+---
+# One case of test-openbao-guard-poll.yml.
+- name: "{{ case.name }} — wait for a healthy cluster"
+  block:
+    - name: Run ha-guard-poll.yml (lockstep with the migration and the install)
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/ha-guard-poll.yml
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment:
+    FAKE_STATE: "{{ _state.path }}/{{ case_index }}"
+    FAKE_AUTOPILOT: delayed
+    FAKE_PROMOTE_AFTER: "{{ case.promote_after }}"
+
+- name: "{{ case.name }} — assert the outcome"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      - case.message is not defined or case.message in _message
+    fail_msg: "{{ case.name }}: expected {{ case.expect }}, got {{ _outcome }}. {{ _message }}"
+    success_msg: "{{ case.name }}: {{ _outcome }}"

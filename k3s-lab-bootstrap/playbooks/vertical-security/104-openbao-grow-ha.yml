@@ -1,0 +1,23 @@
+---
+# playbooks/vertical-security/104-openbao-grow-ha.yml
+# Grow an installed single-replica OpenBao to a Raft cluster. This is a live
+# change: pod 0 restarts and is sealed until the play unseals it, so OpenBao is
+# offline for that time. Run it only after the rehearsal on a disposable
+# environment and the operator's approval. See
+# docs/openbao-bootstrap-security-model.md, "Grow a single replica to a Raft
+# cluster", for the steps before and after.
+#
+# The play refuses to run unless openbao-0 is initialized, unsealed and active.
+# It never runs `bao operator init`. It reads the same paths before and after and
+# fails when they differ.
+- name: Grow OpenBao from one replica to a Raft cluster
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+  tasks:
+    - name: Grow the cluster
+      ansible.builtin.include_role:
+        name: stack/operator/openbao
+        tasks_from: grow-ha.yml

@@ -171,6 +171,130 @@ threshold quorum readable, protected, and separated. Losing quorum means losing
 the practical ability to regain privileged access if the normal automation
 identities are broken.
 
+### High Availability And Restarts
+
+Long-lived sites run OpenBao as a Raft cluster of three pods. Set
+`openbao_replicas: 3` in the site inventory. The default is `1`, which the
+sandbox lane keeps. A single pod has no peer to take over, so OpenBao is offline
+from the moment that pod restarts until someone unseals it.
+
+A cluster keeps OpenBao serving while one pod restarts. It does not remove the
+unseal. The seal is Shamir, so every restarted pod comes back sealed and needs
+the threshold of shares before the next pod restarts. A rolling upgrade is a
+sequence of restarts, and each one ends with an unseal.
+
+How the cluster is built:
+
+- A StatefulSet of `openbao_replicas` pods. Its update strategy is `OnDelete`,
+  so Kubernetes never restarts a pod on its own. Each restart is a step you run.
+- A headless Service (`openbao-internal`) gives each pod a stable name. Each pod
+  advertises that name and joins its peers with `retry_join` over TLS. The
+  `openbao` Service stays the address that clients use.
+- The certificate that every pod serves covers the headless Service and the pod
+  names under it (`*.openbao-internal.openbao.svc.cluster.local`). The same
+  certificate is the trust anchor for `retry_join`.
+- A pod is ready only when it is initialized and unsealed. A sealed pod leaves
+  the `openbao` Service, and it counts against the PodDisruptionBudget
+  (`maxUnavailable: 1`), so a node drain waits while a pod is sealed.
+- Pod anti-affinity prefers separate nodes. It requires them when the cluster
+  has at least as many nodes as pods.
+- Init runs on pod 0 only. The role then unseals every pod with the threshold of
+  shares, sent on stdin.
+
+To restart pods, for an upgrade or a node drain, restart one pod at a time:
+
+1. Run `vertical-security/102-openbao-ha-guard.yml`. It refuses while any pod is
+   sealed or not a healthy Raft voter.
+2. Run `vertical-security/103-openbao-restart-pod.yml -e openbao_restart_pod_name=openbao-2`.
+   It runs the same guard, restarts that one pod, and stops.
+3. Unseal the restarted pod with the threshold of shares, for example with
+   `OPENBAO_POD=openbao-2 bin/unseal-openbao.sh <env>` from `dmf-env`.
+4. Repeat from step 1 for the next pod. Restart the standby pods first and the
+   pod that leads last.
+
+The guard reads each pod with `bao status`. On a cluster it also reads the Raft
+state from Autopilot (`bao operator raft autopilot state`). It refuses unless
+every expected pod, matched by its Raft node ID, is a voter that Autopilot reports
+as healthy with a recent last contact, Autopilot reports the cluster healthy, and
+the cluster can lose one more voter (a failure tolerance of at least 1). A pod
+that is unsealed and answers locally is not enough: a follower cut off from its
+peers still looks that way. If the state cannot be read, the guard refuses.
+
+The read needs an `ops-admin` token, which you give to the play in
+`OPENBAO_GUARD_TOKEN`. The `app-admin-writer` policy of `ops-admin` grants it two
+reads, on `sys/storage/raft/autopilot/state` and `sys/storage/raft/configuration`.
+Nothing skips the guard on a cluster: `openbao_guard_require_peers` can be `false`
+only when `openbao_replicas` is 1. To look at the seal state alone, run
+`bin/unseal-openbao.sh <env> --status-all`. A single replica has no peers, so the
+guard passes when that pod is unsealed.
+
+Pod 0 keeps the node ID `1` that a single-replica install stores. The other pods
+use their pod name as their node ID.
+
+`bin/upgrade-in-place.sh` in `dmf-env` runs this guard in its stage 1b, after it
+checks that every pod is unsealed and before any stage that can restart a pod. The
+`--skip-unseal-check` flag of that script skips only the seal check of stage 1, not
+the guard.
+
+Run the guard before a node drain or reboot as well. The unattended-upgrades
+reboot schedule in `k3s-lab-bootstrap/docs/hardening.md` does not run it.
+
+#### Grow A Single Replica To A Raft Cluster
+
+`vertical-security/104-openbao-grow-ha.yml` grows an installed single-replica
+site. It keeps the data and the existing shares and never runs `bao operator
+init`. It is a live change: pod 0 restarts and stays sealed until the play
+unseals it. Rehearse it on a disposable environment first, and get the operator's
+approval before you run it on an installed one.
+
+1. With `openbao_replicas` still `1`, run `vertical-security/100-openbao.yml`. It
+   reconciles the `app-admin-writer` policy, so `ops-admin` gets the two Raft
+   reads. Take an `ops-admin` token for `OPENBAO_GUARD_TOKEN`.
+2. Set `openbao_replicas: 3` in the site inventory.
+3. Run the cert-manager play so the certificate covers the Raft peers, then the
+   ESO play so the `ClusterSecretStore` trusts the new certificate.
+4. Run the play with `OPENBAO_GUARD_TOKEN` set. Before it changes anything, it
+   checks that the token can read both Raft paths, that the existing pod is
+   initialized, unsealed and active, and that the certificate covers the peers.
+   It then reads the metadata of the paths in `openbao_migration_read_paths`
+   (version and update time, never a value). It fails if the list is empty, if a
+   read fails for any reason other than a confirmed "not found", or if no path
+   reads successfully, and it checks that before its first change, so a site with
+   nothing to compare finds out before the outage. It recreates the StatefulSet in the Raft shape without
+   deleting the pod or the volume, restarts pod 0, unseals it, scales to three
+   pods, unseals the new pods, and waits for every pod to be a healthy voter
+   (up to `openbao_guard_wait_timeout_seconds`, checking every
+   `openbao_guard_wait_interval_seconds`, because Autopilot promotes a new server
+   after a stabilization period). It then reads the same paths again and fails
+   when they differ.
+5. Prove the recovery shares. Restart one standby pod with
+   `103-openbao-restart-pod.yml` and unseal it with the recovery shares.
+
+The play has no automatic resume. It runs only from a single-replica install, and
+every check that can refuse runs before its first change. After the first change
+it refuses to run again, because the StatefulSet is no longer a single replica.
+
+#### Recover An Interrupted Migration
+
+If the play stops after it changed the StatefulSet, recover by hand:
+
+1. Check what state the pods are in: `bin/unseal-openbao.sh <env> --status-all`.
+2. Unseal every sealed pod with the recovery shares, one pod at a time:
+   `OPENBAO_POD=<pod> bin/unseal-openbao.sh <env>`. If a pod is missing or the
+   StatefulSet is not in the Raft shape (governing Service `openbao-internal`,
+   `openbao_replicas` pods), stop and ask for help before you change anything.
+3. Run `vertical-security/102-openbao-ha-guard.yml` with `OPENBAO_GUARD_TOKEN` set,
+   and repeat until it passes. Autopilot promotes a new server a short time after
+   it joins, so the guard can refuse for a minute or two.
+4. Run `vertical-security/105-openbao-verify-ha.yml`. It checks that every pod is a
+   healthy voter and reads the metadata of the paths in
+   `openbao_migration_read_paths`. It has no earlier read to compare with, so
+   compare the versions it prints with the "before" read in the output of the
+   migration run.
+
+The play unseals with the automation file, as the role does on every rerun. Step
+5 is the check that the ADR-0009 shares still work after the migration.
+
 ### Break-Glass JSON
 
 The file at `{{ openbao_key_path }}.json` is the automation break-glass file. It
@@ -324,7 +448,7 @@ items:
 
 | Scenario | Expected response |
 | --- | --- |
-| OpenBao pod restarts and is sealed | Unseal using automation or a Shamir quorum, then rerun the OpenBao playbook |
+| OpenBao pod restarts and is sealed | Unseal using automation or a Shamir quorum, then rerun the OpenBao playbook. In a Raft cluster, unseal the pod before you restart the next one (see High Availability And Restarts) |
 | ACL policy drift breaks app roles | Rerun `vertical-security/100-openbao.yml`; `policy-reconciler` should reapply policies |
 | `ops-admin` password is lost | Use a privileged recovery procedure to reset it, or rebuild if recovery material is unavailable |
 | `policy-reconciler` password is lost | Use a privileged recovery procedure to restore policy-write access, or rebuild |
