@@ -1,0 +1,29 @@
+---
+# One case of test-openbao-capabilities.yml.
+- name: "{{ case.name }} — run the preflight"
+  block:
+    - name: Run capabilities-check.yml (lockstep with the migration)
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/capabilities-check.yml
+      vars:
+        openbao_guard_token: "{{ case.token | default('placeholder') }}"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment:
+    FAKE_STATE: "{{ _state.path }}/{{ case_index }}"
+    FAKE_CAPS_MISSING: "{{ case.missing }}"
+    FAKE_CAPS_JSON: "{{ case.caps | default('[\"read\"]') }}"
+
+- name: "{{ case.name }} — assert the outcome"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      - case.message is not defined or case.message in _message
+    fail_msg: "{{ case.name }}: expected {{ case.expect }}, got {{ _outcome }}. {{ _message }}"
+    success_msg: "{{ case.name }}: {{ _outcome }}"

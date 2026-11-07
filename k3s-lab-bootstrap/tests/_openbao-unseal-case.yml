@@ -1,0 +1,53 @@
+---
+# One case of test-openbao-unseal.yml.
+- name: "{{ case.name }} — unseal"
+  block:
+    - name: Run unseal-pods.yml (lockstep with the role and the playbooks)
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/unseal-pods.yml
+      vars:
+        openbao_unseal_pods: "{{ case.pods }}"
+        openbao_unseal_keys_hex: "{{ _shares }}"
+        openbao_shamir_threshold: "{{ case.threshold }}"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+  environment:
+    FAKE_STATE: "{{ _state.path }}/{{ case_index }}"
+    FAKE_SEALED: "{{ case.sealed }}"
+    FAKE_THRESHOLD: "{{ case.threshold }}"
+    FAKE_VALID_KEYS: "{{ case.valid_keys | default(_shares | join(' ')) }}"
+
+- name: "{{ case.name }} — read the argument log"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case_index }}/bao-argv.log"
+  register: _argv
+
+- name: "{{ case.name }} — check the outcome and the argument lists"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      # No share is ever an argument of bao.
+      - _shares | select('in', _argv.content | b64decode) | list | length == 0
+      # The positional unseal command is never used.
+      - "'operator unseal' not in (_argv.content | b64decode)"
+      - case.no_unseal_call is not defined or 'sys/unseal' not in (_argv.content | b64decode)
+      - case.expect == 'refuse' or (_argv.content | b64decode) is search('status -format=json')
+    fail_msg: "{{ case.name }}: expected {{ case.expect }}, got {{ _outcome }}. Argument log: {{ _argv.content | b64decode }}"
+    success_msg: "{{ case.name }}: {{ _outcome }}, no share in an argument list"
+
+- name: "{{ case.name }} — check each pod ended unsealed"
+  ansible.builtin.stat:
+    path: "{{ _state.path }}/{{ case_index }}/unsealed-{{ item }}"
+  loop: "{{ case.pods }}"
+  register: _unsealed
+  when: case.expect == 'pass' and case.sealed | length > 0
+
+- name: "{{ case.name }} — assert each sealed pod was unsealed"
+  ansible.builtin.assert:
+    that: _unsealed.results | map(attribute='stat.exists') | list | min
+    fail_msg: "{{ case.name }}: a pod is still sealed"
+  when: case.expect == 'pass' and case.sealed | length > 0

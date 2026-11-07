@@ -1,0 +1,21 @@
+---
+# One poll of ha-guard-poll.yml. It does nothing once an earlier poll passed.
+- name: Collect and evaluate, until healthy
+  when: not (_openbao_guard_poll_done | bool)
+  block:
+    - name: Collect OpenBao pod and Raft state
+      ansible.builtin.include_tasks: ha-guard-collect.yml
+
+    - name: Evaluate the guard facts
+      ansible.builtin.include_tasks: ha-guard-evaluate.yml
+
+    - name: Record a healthy cluster
+      ansible.builtin.set_fact:
+        _openbao_guard_poll_done: "{{ _openbao_guard_problems | length == 0 }}"
+
+    - name: Wait before the next poll
+      ansible.builtin.pause:
+        seconds: "{{ openbao_guard_wait_interval_seconds | int }}"
+      when:
+        - not (_openbao_guard_poll_done | bool)
+        - (_openbao_guard_poll_index | int) < (_openbao_guard_polls_left | int) - 1

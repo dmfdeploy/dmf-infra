@@ -1,0 +1,68 @@
+---
+# Test of the migration's before and after data read (dmfdeploy/dmfdeploy#864 WP3)
+# against a fake kubectl and a fake bao that follow OpenBao v2.5.2. A missing path
+# reads as absent only when bao prints "No value found at" (command/
+# kv_metadata_get.go lines 149-151). Every other failure stops the play. The read
+# must have at least one path, and at least one path must read successfully before
+# and after. The ops-admin password goes to bao on stdin (`password=-`), so it must
+# not appear in any argument list.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-data-read.yml
+
+- name: Data read test — OpenBao migration read (#864 WP3)
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    openbao_namespace: openbao
+    openbao_operator_username: ops-admin
+    openbao_operator_password: s3cret-test-password
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-read-
+      register: _state
+      changed_when: false
+
+    - name: Run the data read cases
+      ansible.builtin.include_tasks: _openbao-data-read-case.yml
+      loop:
+        - name: Same data before and after
+          paths: [apps/zot/admin, apps/authentik/breakglass]
+          expect: pass
+        - name: One path absent, the others the same
+          paths: [apps/zot/admin, apps/gone-missing]
+          expect: pass
+        - name: Permission denied is not an absent path
+          paths: [apps/zot/admin]
+          kv_mode: denied
+          expect: refuse
+          message: for a reason other than not found
+        - name: A transport error is not an absent path
+          paths: [apps/zot/admin]
+          kv_mode: transport
+          expect: refuse
+          message: for a reason other than not found
+        - name: An empty path list
+          paths: []
+          expect: refuse
+          message: openbao_migration_read_paths is empty
+        - name: A real difference in the data
+          paths: [apps/zot/admin]
+          after_version: 2
+          expect: refuse
+          message: The data differs
+        - name: Every path absent before and after
+          paths: [apps/a-missing, apps/b-missing]
+          expect: refuse
+          message: No path read successfully
+        - name: A wrong ops-admin password
+          paths: [apps/zot/admin]
+          password: not-the-password
+          expect: refuse
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"

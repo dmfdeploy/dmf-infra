@@ -1,0 +1,37 @@
+---
+# One case of test-openbao-ha-guard.yml. Runs the guard's decision file with the
+# fake facts of `case` and records whether it passed or refused.
+- name: "{{ case.name }} — set the fake facts"
+  ansible.builtin.set_fact:
+    _openbao_guard_pod_states: "{{ case.pods }}"
+    _openbao_guard_expected: >-
+      {%- set out = [] -%}
+      {%- for p in case.pods -%}
+      {%- set _ = out.append({'name': p.name, 'node_id': (openbao_raft_node_id | string) if p.name == 'openbao-0' else p.name}) -%}
+      {%- endfor -%}
+      {{ out }}
+    _openbao_guard_state: "{{ case.state }}"
+    _openbao_guard_state_read: "{{ case.state_read }}"
+    _openbao_guard_seal_only: "{{ case.seal_only | default(false) }}"
+
+- name: "{{ case.name }} — run the guard decision"
+  block:
+    - name: Run ha-guard-assert.yml (lockstep with the guard)
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/ha-guard-assert.yml
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "{{ case.name }} — assert the outcome"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      - case.message is not defined or case.message in _message
+    fail_msg: "{{ case.name }}: expected {{ case.expect }}, got {{ _outcome }}. {{ _message }}"
+    success_msg: "{{ case.name }}: {{ _outcome }}"

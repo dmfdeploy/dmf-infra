@@ -1,0 +1,57 @@
+---
+# Pure decision step of the rolling-restart guard. It reads facts only and sets
+# _openbao_guard_problems, a list of reasons that block the next restart. The
+# tests run this file against fake pod states and fake Autopilot state.
+#
+# Facts in:
+#   _openbao_guard_pod_states  [{name, reachable, initialized, sealed}]
+#   _openbao_guard_expected    [{name, node_id}], the Raft node ID of each pod
+#   _openbao_guard_state       the Autopilot state object, or {}
+#   _openbao_guard_state_read  true when the Autopilot state was read
+#   _openbao_guard_seal_only   true for a seal check that authorizes no restart
+#   openbao_guard_max_last_contact_seconds  stale-contact limit
+#
+# Autopilot's own `healthy` flag already applies its last-contact threshold
+# (10 s by default, physical/raft/raft_autopilot.go line 296). The check on
+# last_contact below is a second limit that the role sets itself.
+- name: Work out what blocks the next restart
+  ansible.builtin.set_fact:
+    _openbao_guard_problems: >-
+      {%- set p = [] -%}
+      {%- for s in _openbao_guard_pod_states -%}
+      {%- if not s.reachable -%}{%- set _ = p.append(s.name ~ ' cannot be reached') -%}
+      {%- elif not s.initialized -%}{%- set _ = p.append(s.name ~ ' is not initialized') -%}
+      {%- elif s.sealed -%}{%- set _ = p.append(s.name ~ ' is sealed') -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if (_openbao_guard_pod_states | length) > 1 and not (_openbao_guard_seal_only | default(false) | bool) -%}
+      {%- if not (_openbao_guard_state_read | bool) -%}
+      {%- set _ = p.append('the Raft state could not be read: set OPENBAO_GUARD_TOKEN to an ops-admin token that can read sys/storage/raft/autopilot/state') -%}
+      {%- else -%}
+      {%- set st = _openbao_guard_state -%}
+      {%- set servers = st.servers | default({}) -%}
+      {%- if not (st.healthy | default(false)) -%}{%- set _ = p.append('Autopilot reports the cluster unhealthy') -%}{%- endif -%}
+      {%- if (st.failure_tolerance | default(0) | int) < 1 -%}{%- set _ = p.append('the cluster failure tolerance is ' ~ (st.failure_tolerance | default(0) | int) ~ ', below 1') -%}{%- endif -%}
+      {%- for e in _openbao_guard_expected -%}
+      {%- set srv = servers[e.node_id] | default(none) -%}
+      {%- if srv is none -%}
+      {%- set _ = p.append(e.name ~ ' (node ID ' ~ e.node_id ~ ') is not in the Raft state') -%}
+      {%- else -%}
+      {%- if srv.node_type | default('') != 'voter' or e.node_id not in (st.voters | default([])) -%}{%- set _ = p.append(e.name ~ ' is not a voter') -%}{%- endif -%}
+      {%- if not (srv.healthy | default(false)) -%}{%- set _ = p.append(e.name ~ ' is not healthy in Autopilot') -%}{%- endif -%}
+      {%- set lc = srv.last_contact | default('') | string -%}
+      {%- set acc = namespace(sec=0.0, ok=(lc | length > 0 and lc != 'None')) -%}
+      {%- for num, unit in lc | regex_findall('([0-9.]+)(ms|µs|us|ns|h|m|s)') -%}
+      {%- set acc.sec = acc.sec + (num | float) * ({'h': 3600, 'm': 60, 's': 1, 'ms': 0.001, 'µs': 0.000001, 'us': 0.000001, 'ns': 0.000000001}[unit]) -%}
+      {%- endfor -%}
+      {%- if not acc.ok or acc.sec > (openbao_guard_max_last_contact_seconds | float) -%}{%- set _ = p.append(e.name ~ ' last contact is ' ~ (lc if acc.ok else 'unknown') ~ ', over ' ~ openbao_guard_max_last_contact_seconds ~ ' s') -%}{%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set known = _openbao_guard_expected | map(attribute='node_id') | list -%}
+      {%- for sid in servers.keys() | list -%}
+      {%- if sid not in known -%}{%- set _ = p.append('the Raft state has an unexpected server ' ~ sid) -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if st.leader | default('') not in known -%}{%- set _ = p.append('the Raft leader is not one of the expected pods') -%}{%- endif -%}
+      {%- endif -%}
+      {%- endif -%}
+      {{ p }}

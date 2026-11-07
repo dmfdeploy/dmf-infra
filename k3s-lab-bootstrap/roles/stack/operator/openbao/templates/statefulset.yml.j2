@@ -1,0 +1,145 @@
+{# StatefulSet for OpenBao. With openbao_replicas == 1 this renders the
+   single-replica StatefulSet unchanged. With more than one it renders the
+   Raft cluster. Only the replica count follows openbao_workload_replicas, so a
+   migration can start the HA-shaped StatefulSet at one pod and then scale up. #}
+{% set _ha = (openbao_replicas | int) > 1 %}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: openbao
+  namespace: "{{ openbao_namespace }}"
+  labels:
+    app.kubernetes.io/name: openbao
+spec:
+  serviceName: {{ openbao_headless_service_name if _ha else 'openbao' }}
+  replicas: {{ (openbao_workload_replicas | default(openbao_replicas)) | int }}
+{% if _ha %}
+  # OnDelete: the StatefulSet never restarts a pod by itself. Each restart is a
+  # separate step that runs the rolling-restart guard first and ends with an
+  # unseal. Parallel: every pod can start on a cold boot, without waiting for
+  # the one before it.
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: OnDelete
+{% endif %}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: openbao
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openbao
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+{% if _ha %}
+      affinity:
+        podAntiAffinity:
+{% if openbao_anti_affinity_required | default(false) | bool %}
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - topologyKey: kubernetes.io/hostname
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/name: openbao
+{% else %}
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: openbao
+{% endif %}
+{% endif %}
+      containers:
+        - name: openbao
+          image: "{{ openbao_image }}"
+          imagePullPolicy: IfNotPresent
+{% if _ha %}
+          # Pod 0 keeps the node ID that a single-replica install already
+          # stores in its Raft data ({{ openbao_raft_node_id }}). The other pods use their pod name.
+          command:
+            - sh
+            - -c
+          args:
+            - >-
+              if [ "${POD_NAME##*-}" = "0" ]; then
+              export BAO_RAFT_NODE_ID="{{ openbao_raft_node_id }}";
+              else export BAO_RAFT_NODE_ID="${POD_NAME}"; fi;
+              exec bao server -config=/etc/openbao/config.hcl
+{% else %}
+          command:
+            - bao
+          args:
+            - server
+            - -config=/etc/openbao/config.hcl
+{% endif %}
+          ports:
+            - name: api
+              containerPort: 8200
+            - name: cluster
+              containerPort: 8201
+          env:
+{% if _ha %}
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: BAO_API_ADDR
+              value: "https://$(POD_NAME).{{ openbao_headless_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8200"
+            - name: BAO_CLUSTER_ADDR
+              value: "https://$(POD_NAME).{{ openbao_headless_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8201"
+{% endif %}
+            - name: BAO_ADDR
+              value: "https://127.0.0.1:8200"
+            - name: BAO_CACERT
+              value: "/openbao/config/tls/tls.crt"
+            - name: BAO_LOCAL_ADDRESS
+              value: "127.0.0.1"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/openbao
+            - name: tls
+              mountPath: /openbao/config/tls
+              readOnly: true
+            - name: data
+              mountPath: /openbao/data
+          readinessProbe:
+{% if _ha %}
+            # Ready means initialized and unsealed. A sealed pod leaves the
+            # Service endpoints and counts against the PodDisruptionBudget. An
+            # uninitialized pod reports ready, so a fresh install can reach init.
+            httpGet:
+              scheme: HTTPS
+              port: 8200
+              path: /v1/sys/health?standbyok=true&uninitcode=200
+{% else %}
+            tcpSocket:
+              port: 8200
+{% endif %}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 8200
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources: {{ openbao_resources | to_json }}
+      volumes:
+        - name: config
+          configMap:
+            name: openbao-config
+        - name: tls
+          secret:
+            secretName: "{{ openbao_tls_secret_name }}"
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: "{{ openbao_storage_class }}"
+        resources:
+          requests:
+            storage: "{{ openbao_storage_size }}"

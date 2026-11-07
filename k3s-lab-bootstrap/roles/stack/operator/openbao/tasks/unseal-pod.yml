@@ -1,0 +1,86 @@
+---
+# Unseal one pod (openbao_unseal_target) with the threshold of shares. Each
+# share goes to the pod on stdin and is submitted through the unseal API
+# (`bao write sys/unseal -` with a JSON body on stdin, as dmf-env's
+# unseal-openbao.sh does). It never appears in the argument list of any process.
+#
+# `bao operator unseal -` does not work: that command takes the key as its one
+# positional argument and treats `-` as the key itself (OpenBao v2.5.2,
+# command/operator_unseal.go lines 105-110).
+- name: Wait for the pod to report initialized
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_unseal_target }}"
+      - --
+      - bao
+      - status
+      - -format=json
+  register: _openbao_unseal_status
+  changed_when: false
+  # bao status exits 2 while the pod is sealed (command/status.go lines 94-95).
+  # The output is what counts.
+  failed_when: false
+  until:
+    - _openbao_unseal_status.stdout | default('') | length > 0
+    - _openbao_unseal_status.stdout | default('') | from_json is mapping
+    - (_openbao_unseal_status.stdout | from_json).initialized | default(false) | bool
+  retries: 60
+  delay: 5
+  no_log: true
+
+# The share is placed in a JSON string by the pod's shell, so it must not hold a
+# quote or a backslash. Unseal keys are hex or base64, which never do.
+- name: Assert the shares are safe to place in a JSON string
+  ansible.builtin.assert:
+    that: openbao_unseal_keys_hex[0:(openbao_shamir_threshold | int)] | map('regex_search', '^[A-Za-z0-9+/=_-]+$') | select('none') | list | length == 0
+    fail_msg: An unseal share has a character that is not hex or base64.
+  no_log: true
+  when: (_openbao_unseal_status.stdout | from_json).sealed | default(true) | bool
+
+# The pod's shell reads the share from stdin and writes the JSON body to bao's
+# stdin. printf is a shell builtin, so no child process gets the share as an
+# argument.
+- name: Unseal the pod with the threshold of shares
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_SHARE" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_unseal_target }}
+      -- sh -c '
+      IFS= read -r K;
+      printf "{\"key\":\"%s\"}" "$K" |
+      bao write -format=json sys/unseal -'
+  environment:
+    OPENBAO_SHARE: "{{ item }}"
+  loop: "{{ openbao_unseal_keys_hex[0:(openbao_shamir_threshold | int)] }}"
+  changed_when: true
+  no_log: true
+  when: (_openbao_unseal_status.stdout | from_json).sealed | default(true) | bool
+
+- name: Confirm the pod is unsealed
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_unseal_target }}"
+      - --
+      - bao
+      - status
+      - -format=json
+  register: _openbao_unseal_after
+  changed_when: false
+  failed_when: >-
+    _openbao_unseal_after.stdout | default('') | length == 0
+    or (_openbao_unseal_after.stdout | from_json).sealed | default(true) | bool
+  no_log: true

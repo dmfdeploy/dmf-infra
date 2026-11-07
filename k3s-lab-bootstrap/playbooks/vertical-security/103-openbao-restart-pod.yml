@@ -1,0 +1,31 @@
+---
+# playbooks/vertical-security/103-openbao-restart-pod.yml
+# Restart exactly one OpenBao pod of a Raft cluster, then stop. This is one
+# step of a rolling upgrade or a node drain.
+#
+#   -e openbao_restart_pod_name=openbao-2
+#
+# The play refuses to start unless every pod is unsealed and a healthy Raft voter,
+# and the cluster can lose one more (the rolling-restart guard). It needs an
+# ops-admin token in OPENBAO_GUARD_TOKEN. After the restart the new pod is sealed.
+# Unseal it with the threshold of shares, then run this play for the next pod.
+# Restart the standby pods first and the pod that leads last. To unseal from the
+# automation file, in the sandbox lane only, add
+# -e openbao_restart_unseal_from_automation_file=true.
+#
+# The StatefulSet uses the OnDelete update strategy. Changing the image or the
+# configuration restarts nothing by itself: run the openbao role or
+# 100-openbao.yml, then restart each pod with this play.
+- name: Restart one OpenBao pod
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    openbao_restart_unseal_from_automation_file: false
+  roles:
+    - base/cluster-ready
+  tasks:
+    - name: Restart the pod
+      ansible.builtin.include_role:
+        name: stack/operator/openbao
+        tasks_from: restart-pod.yml

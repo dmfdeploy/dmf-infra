@@ -1,0 +1,69 @@
+---
+# Restart exactly one OpenBao pod of a Raft cluster (playbooks/vertical-security/103-openbao-restart-pod.yml).
+- name: Assert exactly one pod of this cluster is named
+  ansible.builtin.assert:
+    that:
+      - openbao_replicas | int > 1
+      - openbao_restart_pod_name is defined
+      - openbao_restart_pod_name in (range(openbao_replicas | int) | map('string') | map('regex_replace', '^', 'openbao-') | list)
+    fail_msg: >-
+      Set openbao_restart_pod_name to one pod of the Raft cluster, for
+      example openbao-2. This play needs openbao_replicas above 1; a single
+      replica has no peer to take over.
+
+- name: Refuse while any pod is sealed or not a healthy Raft voter
+  ansible.builtin.include_tasks: ha-guard.yml
+
+- name: Read the pod's current UID
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    name: "{{ openbao_restart_pod_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_restart_before
+
+- name: Delete the pod so the StatefulSet recreates it
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: absent
+    api_version: v1
+    kind: Pod
+    name: "{{ openbao_restart_pod_name }}"
+    namespace: "{{ openbao_namespace }}"
+    wait: true
+
+- name: Wait for the new pod to run
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    name: "{{ openbao_restart_pod_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_restart_after
+  until:
+    - _openbao_restart_after.resources | length > 0
+    - _openbao_restart_after.resources[0].metadata.uid != _openbao_restart_before.resources[0].metadata.uid
+    - _openbao_restart_after.resources[0].status.phase | default('') == 'Running'
+    - _openbao_restart_after.resources[0].status.containerStatuses | default([]) | selectattr('state.running', 'defined') | list | length > 0
+  retries: 60
+  delay: 5
+
+- name: Load the unseal shares from the automation file
+  ansible.builtin.include_tasks: load-shares.yml
+  when: openbao_restart_unseal_from_automation_file | bool
+
+- name: Unseal the pod from the automation file
+  ansible.builtin.include_tasks: unseal-pod.yml
+  vars:
+    openbao_unseal_target: "{{ openbao_restart_pod_name }}"
+  when: openbao_restart_unseal_from_automation_file | bool
+
+- name: Tell the operator what comes next
+  ansible.builtin.debug:
+    msg: >-
+      {{ openbao_restart_pod_name }} restarted.
+      {{ 'It was unsealed from the automation file.' if openbao_restart_unseal_from_automation_file | bool
+         else 'It is sealed. Unseal it with the threshold of shares, for example with OPENBAO_POD=' ~ openbao_restart_pod_name ~ ' bin/unseal-openbao.sh <env>.' }}
+      Run 102-openbao-ha-guard.yml to confirm every pod is unsealed and a
+      healthy voter before you restart the next pod.

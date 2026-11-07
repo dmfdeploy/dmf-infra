@@ -9,7 +9,27 @@ openbao_image: "openbao/openbao:2.5.2"
 openbao_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
 openbao_storage_size: 5Gi
 
-# Raft storage config
+# Replica count. This is a site property: set it in the site inventory.
+#   1  A single OpenBao pod. Supported in the sandbox lane only (ADR-0029, as
+#      amended by the Tier 2 plan WP2). A restart of the pod takes OpenBao
+#      offline until it is unsealed, and the pod has no peer to take over.
+#      The visible warning that WP2 requires is not built yet.
+#   3  A Raft cluster. Long-lived sites set 3. HA keeps OpenBao serving while
+#      one pod restarts. It does not remove the unseal: a restarted pod is
+#      sealed and needs the threshold of shares before the next pod restarts.
+# To grow an installed single-replica site, run
+# playbooks/vertical-security/104-openbao-grow-ha.yml. Do not only change this
+# value: the StatefulSet's governing Service cannot change in place.
+openbao_replicas: 1
+
+# Headless Service that gives every pod a stable DNS name for Raft peer traffic
+# (openbao-N.<name>.<namespace>.svc). Used only when openbao_replicas > 1. The
+# TLS certificate must cover it: roles/base/cert-manager (cert_manager_openbao_*).
+openbao_headless_service_name: openbao-internal
+
+# Raft storage config. With one replica this is the node ID. With more than one,
+# it is the node ID of pod 0 only: a single-replica install already stores this
+# ID in its Raft data. The other pods use their pod name.
 openbao_raft_node_id: "1"
 
 # Resources. umbrella dmfdeploy/dmfdeploy#258 platform request-budget audit
@@ -153,3 +173,33 @@ openbao_setup_executor_service_account: setup-request-executor
 # The role id is not a secret. This role publishes it here, on a fresh install
 # and on a rerun, for the receipt-driven 694 path to read.
 openbao_born_inventory_role_id_configmap: born-inventory-approle
+
+# Rolling-restart guard (tasks/ha-guard.yml). Before a restart the guard checks
+# that every pod is unsealed and, on a cluster, that Autopilot shows every
+# expected pod as a healthy voter and the cluster has a failure tolerance of at
+# least 1. If it cannot read that state, it refuses.
+# The token is an ops-admin token. The app-admin-writer policy grants ops-admin
+# read on sys/storage/raft/autopilot/state and sys/storage/raft/configuration.
+# Pass the token in the environment of the play (OPENBAO_GUARD_TOKEN).
+# openbao_guard_require_peers can be false only when openbao_replicas is 1.
+openbao_guard_require_peers: true
+openbao_guard_token: "{{ lookup('ansible.builtin.env', 'OPENBAO_GUARD_TOKEN') }}"
+
+# Limit on a voter's last contact with the leader, in seconds. Autopilot's own
+# threshold is 10 s.
+openbao_guard_max_last_contact_seconds: 10
+
+# After a fresh install or the migration adds voters, Autopilot promotes each new
+# server after a stabilization period. Wait for the cluster to be healthy for up
+# to this long, checking at this interval, before the play fails.
+openbao_guard_wait_timeout_seconds: 300
+openbao_guard_wait_interval_seconds: 10
+
+# Paths (under the secret/ mount) that the migration reads before and after, by
+# metadata only. ops-admin can read the metadata of these paths (the
+# app-admin-writer policy). Add the paths that matter at the site.
+openbao_migration_read_paths:
+  - apps/zot/admin
+  - apps/authentik/breakglass
+  - apps/authentik/bootstrap-passkey
+  - apps/awx/control_node_ssh
