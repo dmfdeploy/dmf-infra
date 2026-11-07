@@ -61,6 +61,11 @@ You need:
    The share goes in at the prompt, so it never appears in the command line
    or the shell history.
 
+   On a site that runs a Raft cluster, each pod needs the threshold of shares.
+   Repeat the command for `openbao-1` and `openbao-2`, one pod at a time. For a
+   restart plan, see "High Availability And Restarts" in
+   `openbao-bootstrap-security-model.md`.
+
 4. Confirm the result:
 
    ```bash

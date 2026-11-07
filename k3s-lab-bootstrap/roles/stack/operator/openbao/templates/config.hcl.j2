@@ -1,17 +1,33 @@
 storage "raft" {
   path    = "/openbao/data"
+{% if openbao_replicas | int > 1 %}
+  # node_id comes from BAO_RAFT_NODE_ID, set per pod in the StatefulSet.
+{% for _ordinal in range(openbao_replicas | int) %}
+
+  retry_join {
+    leader_api_addr     = "https://openbao-{{ _ordinal }}.{{ openbao_headless_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8200"
+    leader_ca_cert_file = "/openbao/config/tls/tls.crt"
+  }
+{% endfor %}
+{% else %}
   node_id = "{{ openbao_raft_node_id }}"
+{% endif %}
 }
 
 listener "tcp" {
-  address       = "0.0.0.0:8200"
+  address         = "0.0.0.0:8200"
   cluster_address = "0.0.0.0:8201"
-  tls_disable   = 0
-  tls_cert_file = "/openbao/config/tls/tls.crt"
-  tls_key_file  = "/openbao/config/tls/tls.key"
+  tls_disable     = 0
+  tls_cert_file   = "/openbao/config/tls/tls.crt"
+  tls_key_file    = "/openbao/config/tls/tls.key"
 }
 
+{% if openbao_replicas | int > 1 %}
+# api_addr and cluster_addr come from BAO_API_ADDR and BAO_CLUSTER_ADDR, set
+# per pod in the StatefulSet.
+{% else %}
 api_addr      = "https://{{ openbao_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8200"
 cluster_addr  = "https://{{ openbao_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8201"
+{% endif %}
 disable_mlock = true
 ui            = true

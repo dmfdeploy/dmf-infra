@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Fake bao for the OpenBao tests. It answers the calls that the role and the
+# guard make, from a state directory ($FAKE_STATE) and scenario variables, and it
+# logs every argument list to $FAKE_STATE/bao-argv.log so a test can prove that no
+# secret arrives as an argument. It follows OpenBao v2.5.2:
+#   - `bao status` exits 0 unsealed and 2 sealed (command/status.go).
+#   - `bao write PATH -` reads a JSON object from stdin, and `key=-` reads the
+#     whole of stdin as the value (go-secure-stdlib kv-builder v0.1.2, builder.go).
+#   - `bao operator unseal KEY` takes the key as its positional argument.
+#   - `bao kv metadata get` prints "No value found at ..." and exits 2 for a
+#     missing path, and exits 2 with "Error reading ..." for other failures
+#     (command/kv_metadata_get.go).
+#   - `bao token capabilities -format=json` prints a JSON list.
+#   - `bao operator raft autopilot state -format=json` prints the autopilot state
+#     (physical/raft/raft_autopilot.go: healthy, failure_tolerance, servers, leader,
+#     voters).
+# Scenario variables (all optional):
+#   FAKE_SEALED          space-separated pods that start sealed
+#   FAKE_THRESHOLD       shares that unseal a pod (default 3)
+#   FAKE_VALID_KEYS      space-separated accepted keys (default: any non-empty key)
+#   FAKE_PASSWORD        accepted userpass password (default: pw)
+#   FAKE_AUTOPILOT       healthy | unhealthy | stale | missing | delayed | denied | down
+#   FAKE_PROMOTE_AFTER   with delayed: autopilot calls before the new voter is healthy
+#   FAKE_CAPS_MISSING    space-separated paths on which the token has no capability
+#   FAKE_CAPS_JSON       capability list for every other path (default ["read"])
+#   FAKE_KV_MODE         ok | absent | denied | transport  (file $FAKE_STATE/kv-mode wins)
+#   FAKE_KV_VERSION      version that `kv metadata get` reports (file kv-version wins)
+set -u
+state="${FAKE_STATE:?FAKE_STATE is not set}"
+pod="${FAKE_POD:-openbao-0}"
+mkdir -p "$state"
+printf '%s\n' "$*" >> "$state/bao-argv.log"
+
+pod_in() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
+progress_file="$state/progress-$pod"
+unsealed_file="$state/unsealed-$pod"
+is_sealed() {
+  [ -f "$unsealed_file" ] && return 1
+  pod_in "$pod" "${FAKE_SEALED:-}" && return 0
+  return 1
+}
+read_kv() { [ -f "$state/$1" ] && cat "$state/$1" || printf '%s' "$2"; }
+count_call() { # count_call NAME -> prints the number of earlier calls, then records this one
+  local n=0
+  [ -f "$state/count-$1" ] && n="$(cat "$state/count-$1")"
+  echo $((n + 1)) > "$state/count-$1"
+  printf '%s' "$n"
+}
+
+case "$*" in
+  "status -format=json")
+    if is_sealed; then
+      printf '{"initialized":true,"sealed":true,"t":3,"n":5,"progress":%s}\n' "$(cat "$progress_file" 2>/dev/null || echo 0)"
+      exit 2
+    fi
+    printf '{"initialized":true,"sealed":false,"t":3,"n":5,"progress":0,"is_self":true}\n'
+    exit 0
+    ;;
+  "write -format=json sys/unseal -")
+    body="$(cat)"
+    key="$(printf '%s' "$body" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+k=d.get("key")
+sys.exit(1) if not isinstance(k,str) or not k else print(k)' 2>/dev/null)" || { echo "Error writing data to sys/unseal: invalid JSON body or no key" >&2; exit 2; }
+    if [ -n "${FAKE_VALID_KEYS:-}" ] && ! pod_in "$key" "$FAKE_VALID_KEYS"; then
+      echo "Error writing data to sys/unseal: invalid key" >&2
+      exit 2
+    fi
+    n=$(( $(cat "$progress_file" 2>/dev/null || echo 0) + 1 ))
+    echo "$n" > "$progress_file"
+    if [ "$n" -ge "${FAKE_THRESHOLD:-3}" ]; then touch "$unsealed_file"; fi
+    printf '{"sealed":%s,"progress":%s}\n' "$([ -f "$unsealed_file" ] && echo false || echo true)" "$n"
+    exit 0
+    ;;
+  "operator unseal "*)
+    # The key is a positional argument: record it, and reject the stdin marker.
+    key="${3:-}"
+    printf 'POSITIONAL-UNSEAL-KEY\n' >> "$state/positional.log"
+    [ "$key" = "-" ] && { echo "Error unsealing: invalid key" >&2; exit 2; }
+    exit 2
+    ;;
+  "write -format=json auth/userpass/login/"*" password=-")
+    pw="$(cat)"
+    if [ "$pw" != "${FAKE_PASSWORD:-pw}" ]; then echo "Error writing data: invalid credentials" >&2; exit 2; fi
+    printf '{"auth":{"client_token":"fake-ops-token"}}\n'
+    exit 0
+    ;;
+  "operator raft autopilot state -format=json")
+    [ -n "${BAO_TOKEN:-}" ] || { echo "Error reading autopilot state: permission denied" >&2; exit 2; }
+    n="$(count_call autopilot)"
+    case "${FAKE_AUTOPILOT:-healthy}" in
+      denied) echo "Error reading autopilot state: permission denied" >&2; exit 2 ;;
+      down) echo "Error reading autopilot state: dial tcp: connection refused" >&2; exit 2 ;;
+    esac
+    python3 - "${FAKE_AUTOPILOT:-healthy}" "$n" "${FAKE_PROMOTE_AFTER:-0}" <<'PY'
+import json, sys
+scenario, calls, promote_after = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+def server(sid, healthy=True, node_type="voter", last_contact="12ms"):
+    return {"id": sid, "name": sid, "address": sid + ".openbao-internal.openbao.svc.cluster.local:8201",
+            "node_status": "alive", "last_contact": last_contact, "last_term": 3, "last_index": 100,
+            "healthy": healthy, "stable_since": "2026-01-01T00:00:00Z", "status": "leader" if sid == "1" else "voter",
+            "version": "2.5.2", "node_type": node_type}
+servers = {"1": server("1", last_contact="0s"), "openbao-1": server("openbao-1"), "openbao-2": server("openbao-2")}
+state = {"healthy": True, "failure_tolerance": 1, "leader": "1", "voters": ["1", "openbao-1", "openbao-2"], "servers": servers}
+if scenario == "unhealthy":
+    servers["openbao-2"]["healthy"] = False
+    state["healthy"] = False
+    state["failure_tolerance"] = 0
+elif scenario == "stale":
+    servers["openbao-2"]["last_contact"] = "1m30.5s"
+elif scenario == "missing":
+    del servers["openbao-2"]
+    state["voters"] = ["1", "openbao-1"]
+elif scenario == "delayed" and calls < promote_after:
+    servers["openbao-2"]["node_type"] = "non-voter"
+    servers["openbao-2"]["healthy"] = False
+    state["voters"] = ["1", "openbao-1"]
+    state["non_voters"] = ["openbao-2"]
+    state["failure_tolerance"] = 0
+print(json.dumps(state))
+PY
+    exit 0
+    ;;
+  "token capabilities -format=json "*)
+    [ -n "${BAO_TOKEN:-}" ] || { echo "Error: permission denied" >&2; exit 2; }
+    path="${4:-}"
+    if pod_in "$path" "${FAKE_CAPS_MISSING:-}"; then printf '["deny"]\n'; else printf '%s\n' "${FAKE_CAPS_JSON:-[\"read\"]}"; fi
+    exit 0
+    ;;
+  "kv metadata get -mount=secret -format=json "*)
+    [ -n "${BAO_TOKEN:-}" ] || { echo "Error reading secret/metadata/x: permission denied" >&2; exit 2; }
+    path="${6:-}"
+    mode="$(read_kv kv-mode "${FAKE_KV_MODE:-ok}")"
+    case "$mode" in
+      denied) echo "Error reading secret/metadata/$path: Error making API request. Code: 403. Errors: * 1 error occurred: * permission denied" >&2; exit 2 ;;
+      transport) echo "Error reading secret/metadata/$path: Get \"https://127.0.0.1:8200/v1/secret/metadata/$path\": dial tcp 127.0.0.1:8200: connect: connection refused" >&2; exit 2 ;;
+      absent) echo "No value found at secret/metadata/$path" >&2; exit 2 ;;
+    esac
+    # A path whose name ends in -missing is absent even in ok mode.
+    case "$path" in *-missing) echo "No value found at secret/metadata/$path" >&2; exit 2 ;; esac
+    printf '{"data":{"current_version":%s,"updated_time":"2026-11-08T00:00:00Z"}}\n' "$(read_kv kv-version "${FAKE_KV_VERSION:-1}")"
+    exit 0
+    ;;
+esac
+echo "fake bao: unexpected call: $*" >&2
+exit 1

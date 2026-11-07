@@ -1,0 +1,20 @@
+---
+# playbooks/vertical-security/105-openbao-verify-ha.yml
+# Verify an OpenBao Raft cluster. Read-only. Run it after a manual recovery of an
+# interrupted migration (see docs/openbao-bootstrap-security-model.md, "Recover an
+# interrupted migration"), or at any time.
+#
+# It waits until every pod is unsealed and a healthy voter, then reads the
+# metadata of the paths in openbao_migration_read_paths. It needs an ops-admin
+# token in OPENBAO_GUARD_TOKEN.
+- name: Verify the OpenBao Raft cluster
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  roles:
+    - base/cluster-ready
+  tasks:
+    - name: Verify the cluster
+      ansible.builtin.include_role:
+        name: stack/operator/openbao
+        tasks_from: verify-ha.yml

@@ -1,0 +1,18 @@
+---
+# Seal state of every pod, with no authority over a restart. The role uses it
+# after it unseals the pods on a rerun. It never reads the Raft state, so it does
+# not replace ha-guard.yml before a restart.
+- name: Collect OpenBao pod state
+  ansible.builtin.include_tasks: ha-guard-collect.yml
+  vars:
+    openbao_guard_token: ""
+
+- name: Evaluate the seal state only
+  ansible.builtin.include_tasks: ha-guard-evaluate.yml
+  vars:
+    _openbao_guard_seal_only: true
+
+- name: Refuse when a pod is sealed
+  ansible.builtin.assert:
+    that: _openbao_guard_problems | length == 0
+    fail_msg: "An OpenBao pod is not ready: {{ _openbao_guard_problems | join('; ') }}."

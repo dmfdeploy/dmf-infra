@@ -1,0 +1,28 @@
+---
+# Wait for the cluster to be healthy, then pass. Used after a change that adds or
+# restarts voters (a fresh install, the migration), because Autopilot first joins
+# a new server as a non-voter and promotes it after a stabilization period
+# (OpenBao v2.5.2 docs, concepts/integrated-storage/autopilot; the server
+# stabilization time defaults to 10 s, physical/raft/raft_autopilot.go line 298).
+#
+# It polls every openbao_guard_wait_interval_seconds, for at most
+# openbao_guard_wait_timeout_seconds, and fails with the last reasons it saw.
+# The bound is a count of polls, so it does not depend on a clock.
+- name: Set the poll bound
+  ansible.builtin.set_fact:
+    _openbao_guard_polls_left: "{{ ((openbao_guard_wait_timeout_seconds | int) / (openbao_guard_wait_interval_seconds | int)) | round(0, 'ceil') | int + 1 }}"
+    _openbao_guard_poll_done: false
+
+- name: Poll until the cluster is healthy or the bound is reached
+  ansible.builtin.include_tasks: ha-guard-poll-once.yml
+  loop: "{{ range(_openbao_guard_polls_left | int) | list }}"
+  loop_control:
+    loop_var: _openbao_guard_poll_index
+
+- name: Refuse when the cluster did not become healthy in time
+  ansible.builtin.assert:
+    that: _openbao_guard_poll_done | bool
+    fail_msg: >-
+      The OpenBao cluster did not become healthy within {{ openbao_guard_wait_timeout_seconds }} s
+      (polled every {{ openbao_guard_wait_interval_seconds }} s): {{ _openbao_guard_problems | join('; ') }}.
+    success_msg: Every OpenBao pod is unsealed and a healthy Raft voter.

@@ -1,0 +1,70 @@
+---
+# Test of the unseal task against a fake kubectl and a fake bao that follow
+# OpenBao v2.5.2. The fake takes the share as the
+# JSON body of `bao write sys/unseal -` on stdin, as the real API does. It treats
+# `bao operator unseal -` as the key `-`, which is what the real command does
+# (command/operator_unseal.go lines 105-110). It logs every argument list.
+#
+# Cases: a sealed pod unseals (single replica, threshold 1 and 3; a rerun); an
+# unsealed pod is left alone; a wrong share fails the play; three pods unseal in
+# order. In every case no share appears in an argument list and the positional
+# unseal command is never used.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-unseal.yml
+
+- name: Unseal test — OpenBao unseal task
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    openbao_namespace: openbao
+    openbao_replicas: 1
+    _shares:
+      - "0123456789abcdef0123456789abcdef"
+      - "fedcba9876543210fedcba9876543210"
+      - "aaaabbbbccccddddeeeeffff00001111"
+      - "99998888777766665555444433332222"
+      - "1111222233334444555566667777aaaa"
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-unseal-
+      register: _state
+      changed_when: false
+
+    - name: Run the unseal cases
+      ansible.builtin.include_tasks: _openbao-unseal-case.yml
+      loop:
+        - name: Sealed single replica, threshold 3
+          sealed: openbao-0
+          threshold: 3
+          pods: [openbao-0]
+          expect: pass
+        - name: Sealed single replica, sandbox threshold 1 (a rerun after a restart)
+          sealed: openbao-0
+          threshold: 1
+          pods: [openbao-0]
+          expect: pass
+        - name: Already unsealed, nothing is submitted
+          sealed: ""
+          threshold: 3
+          pods: [openbao-0]
+          expect: pass
+          no_unseal_call: true
+        - name: A wrong share is refused
+          sealed: openbao-0
+          threshold: 3
+          pods: [openbao-0]
+          valid_keys: "not-the-share"
+          expect: refuse
+        - name: Three sealed pods unseal in order
+          sealed: openbao-0 openbao-1 openbao-2
+          threshold: 3
+          pods: [openbao-0, openbao-1, openbao-2]
+          expect: pass
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"

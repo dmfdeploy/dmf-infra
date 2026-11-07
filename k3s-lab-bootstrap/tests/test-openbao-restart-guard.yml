@@ -1,0 +1,53 @@
+---
+# Test of the restart entry point. It runs the real
+# roles/stack/operator/openbao/tasks/restart-pod.yml against a fake kubectl and bao.
+# The guard takes the expected pod set from openbao_replicas alone. An attempt to
+# narrow it with a pod list (openbao_guard_pods, the old input) has no effect, and
+# a missing pod refuses. Every case refuses at the guard, so the play never reaches
+# a step that deletes a pod.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-restart-guard.yml
+
+- name: Restart entry point test — OpenBao guard cannot be narrowed
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars_files:
+    - ../roles/stack/operator/openbao/defaults/main.yml
+  tasks:
+    - name: Set the site values for the test
+      ansible.builtin.set_fact:
+        openbao_replicas: 3
+        openbao_guard_token: placeholder
+        openbao_restart_pod_name: openbao-1
+
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-restart-
+      register: _state
+      changed_when: false
+
+    - name: Run the restart entry point
+      ansible.builtin.include_tasks: _openbao-restart-guard-case.yml
+      loop:
+        - name: One pod selected by an override, another pod sealed
+          override: [openbao-0]
+          env: {FAKE_SEALED: openbao-2}
+          message: openbao-2 is sealed
+        - name: No pod selected by an override, another pod sealed
+          override: []
+          env: {FAKE_SEALED: openbao-2}
+          message: openbao-2 is sealed
+        - name: A pod is missing
+          override: [openbao-0]
+          env: {FAKE_MISSING: openbao-2}
+          message: openbao-2 cannot be reached
+        - name: A pod is missing, no override
+          env: {FAKE_MISSING: openbao-2}
+          message: openbao-2 cannot be reached
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"

@@ -1,0 +1,83 @@
+---
+# End-to-end test of the rolling-restart guard against a fake kubectl and a fake
+# bao. It runs roles/stack/operator/openbao/tasks/
+# ha-guard.yml, the collect and the assert step, so the Jinja that parses the pod
+# and Autopilot output runs for real. No cluster is contacted.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-ha-guard-collect.yml
+
+- name: Collect test — OpenBao rolling-restart guard against a fake cluster
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    openbao_namespace: openbao
+    openbao_raft_node_id: "1"
+    openbao_guard_max_last_contact_seconds: 10
+    openbao_guard_require_peers: true
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-guard-
+      register: _state
+      changed_when: false
+
+    - name: Run the guard in each fake cluster state
+      ansible.builtin.include_tasks: _openbao-ha-guard-collect-case.yml
+      loop:
+        - name: All pods unsealed and healthy
+          env: {FAKE_AUTOPILOT: healthy}
+          expect: pass
+        - name: One pod sealed
+          env: {FAKE_SEALED: openbao-1}
+          expect: refuse
+          message: openbao-1 is sealed
+        - name: A reachable unsealed pod whose server is unhealthy
+          env: {FAKE_AUTOPILOT: unhealthy}
+          expect: refuse
+          message: openbao-2 is not healthy in Autopilot
+        - name: A reachable unsealed pod with a stale last contact
+          env: {FAKE_AUTOPILOT: stale}
+          expect: refuse
+          message: openbao-2 last contact is 1m30.5s
+        - name: A node ID missing from the Raft state
+          env: {FAKE_AUTOPILOT: missing}
+          expect: refuse
+          message: openbao-2 (node ID openbao-2) is not in the Raft state
+        - name: Autopilot state denied to the token
+          env: {FAKE_AUTOPILOT: denied}
+          expect: refuse
+          message: the Raft state could not be read
+        - name: Autopilot unreachable
+          env: {FAKE_AUTOPILOT: down}
+          expect: refuse
+          message: the Raft state could not be read
+        - name: No token on a cluster
+          token: ""
+          expect: refuse
+          message: OPENBAO_GUARD_TOKEN
+        - name: Bypass flag on a cluster
+          require_peers: false
+          expect: refuse
+          message: accepted only when openbao_replicas is 1
+        - name: Single replica unsealed, no token
+          replicas: 1
+          token: ""
+          expect: pass
+        - name: Single replica sealed, no token
+          replicas: 1
+          token: ""
+          env: {FAKE_SEALED: openbao-0}
+          expect: refuse
+          message: openbao-0 is sealed
+        - name: Single replica, bypass flag accepted
+          replicas: 1
+          token: ""
+          require_peers: false
+          expect: pass
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"

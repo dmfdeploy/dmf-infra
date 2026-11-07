@@ -1,0 +1,116 @@
+---
+# Render test for the OpenBao workload.
+#
+# One replica: the StatefulSet and the ConfigMap equal the single-replica render
+# that the templates must still produce
+# (tests/fixtures/openbao-*-single-replica.*).
+# Three replicas: the Raft shape. Imports the SAME templates that workload.yml
+# renders, so a change to a template breaks this test.
+#
+# Run locally:
+#   ansible-playbook tests/test-openbao-ha-render.yml
+
+- name: Render test — OpenBao single replica and Raft cluster
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    _tpl: "{{ playbook_dir }}/../roles/stack/operator/openbao/templates"
+    openbao_storage_class: longhorn
+  vars_files:
+    - ../roles/stack/operator/openbao/defaults/main.yml
+    - ../roles/base/cert-manager/defaults/main.yml
+
+  tasks:
+    # ── One replica ─────────────────────────────────────────────────────────
+    - name: One replica — render the StatefulSet and the ConfigMap
+      ansible.builtin.set_fact:
+        _sts1: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+        _cfg1: "{{ lookup('ansible.builtin.template', _tpl ~ '/config.hcl.j2') }}"
+
+    - name: One replica — assert the render equals the pre-WP3 render
+      ansible.builtin.assert:
+        that:
+          - _sts1 == (lookup('ansible.builtin.file', 'fixtures/openbao-statefulset-single-replica.json') | from_json)
+          - _cfg1 == lookup('ansible.builtin.file', 'fixtures/openbao-config-single-replica.hcl', rstrip=false)
+        fail_msg: The single-replica render differs from the pre-WP3 render.
+
+    - name: One replica — assert the certificate names are unchanged
+      ansible.builtin.assert:
+        that:
+          - cert_manager_openbao_dns_names == cert_manager_openbao_base_dns_names
+          - cert_manager_openbao_dns_names | length == 4
+
+    # ── Three replicas ──────────────────────────────────────────────────────
+    - name: Three replicas — set the site property
+      ansible.builtin.set_fact:
+        openbao_replicas: 3
+
+    - name: Three replicas — render with preferred anti-affinity
+      ansible.builtin.set_fact:
+        _sts3: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+        _cfg3: "{{ lookup('ansible.builtin.template', _tpl ~ '/config.hcl.j2') }}"
+
+    - name: Three replicas — assert the StatefulSet shape
+      ansible.builtin.assert:
+        that:
+          - _sts3.spec.replicas == 3
+          - _sts3.spec.serviceName == 'openbao-internal'
+          - _sts3.spec.updateStrategy.type == 'OnDelete'
+          - _sts3.spec.podManagementPolicy == 'Parallel'
+          - _sts3.spec.template.spec.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution | length == 1
+          - _sts3.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution is not defined
+          - _sts3.spec.template.spec.containers[0].readinessProbe.httpGet.path is search('/v1/sys/health')
+          - _sts3.spec.template.spec.containers[0].livenessProbe.tcpSocket.port == 8200
+          - _sts3.spec.template.spec.containers[0].env | map(attribute='name') | list is superset(['POD_NAME', 'BAO_API_ADDR', 'BAO_CLUSTER_ADDR'])
+          - _sts3.spec.template.spec.containers[0].args[0] is search('BAO_RAFT_NODE_ID')
+          - _sts3.spec.template.spec.containers[0].args[0] is search('exec bao server')
+        fail_msg: The three-replica StatefulSet has the wrong shape.
+
+    - name: Three replicas — assert the ConfigMap joins every peer over the headless Service
+      ansible.builtin.assert:
+        that:
+          - _cfg3 is not search('^\\s*node_id\\s*=', multiline=True)
+          - _cfg3 is not search('^api_addr', multiline=True)
+          - _cfg3 | regex_findall('retry_join \{') | length == 3
+          - _cfg3 is search('leader_api_addr     = "https://openbao-0.openbao-internal.openbao.svc.cluster.local:8200"')
+          - _cfg3 is search('leader_api_addr     = "https://openbao-2.openbao-internal.openbao.svc.cluster.local:8200"')
+          - _cfg3 | regex_findall('leader_ca_cert_file = "/openbao/config/tls/tls.crt"') | length == 3
+        fail_msg: The three-replica ConfigMap does not join the peers.
+
+    - name: Three replicas — assert the certificate covers every pod name
+      ansible.builtin.assert:
+        that:
+          - "'*.openbao-internal.openbao.svc.cluster.local' in cert_manager_openbao_dns_names"
+          - "'openbao-internal.openbao.svc.cluster.local' in cert_manager_openbao_dns_names"
+          - "'openbao.openbao.svc.cluster.local' in cert_manager_openbao_dns_names"
+        fail_msg: The certificate does not cover the Raft peer names.
+
+    - name: Three replicas — require anti-affinity
+      ansible.builtin.set_fact:
+        openbao_anti_affinity_required: true
+
+    - name: Three replicas — render with required anti-affinity
+      ansible.builtin.set_fact:
+        _sts3r: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+
+    - name: Three replicas — assert required anti-affinity replaces the preference
+      ansible.builtin.assert:
+        that:
+          - _sts3r.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution | length == 1
+          - _sts3r.spec.template.spec.affinity.podAntiAffinity.preferredDuringSchedulingIgnoredDuringExecution is not defined
+
+    - name: Migration — override only the replica count
+      ansible.builtin.set_fact:
+        openbao_workload_replicas: 1
+
+    - name: Migration — render one replica of the Raft shape
+      ansible.builtin.set_fact:
+        _sts3m: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+
+    - name: Migration — assert only the replica count follows the override
+      ansible.builtin.assert:
+        that:
+          - _sts3m.spec.replicas == 1
+          - _sts3m.spec.serviceName == 'openbao-internal'
+          - _sts3m.spec.updateStrategy.type == 'OnDelete'

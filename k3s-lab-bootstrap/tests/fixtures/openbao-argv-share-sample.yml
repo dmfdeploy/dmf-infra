@@ -1,0 +1,29 @@
+---
+# Fixture for test_openbao_no_secret_argv.py: the pattern the check must catch.
+# It is the unseal task as it was before dmfdeploy/dmfdeploy#872. Not run by anything.
+- name: Unseal OpenBao with a share as an argument
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - exec
+      - openbao-0
+      - --
+      - bao
+      - operator
+      - unseal
+      - "{{ openbao_unseal_keys_hex[0] }}"
+
+- name: Run a command with a token in the command line
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl exec openbao-0 -- env BAO_TOKEN={{ openbao_root_token }} bao status
+
+- name: Log in with the password expanded into the arguments
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_PASSWORD" |
+      kubectl exec -i openbao-0 -- sh -c '
+      IFS= read -r P;
+      bao write auth/userpass/login/ops-admin password="$P"
+      secret_id="$S"
+      token="$T"'

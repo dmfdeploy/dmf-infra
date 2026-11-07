@@ -1,0 +1,86 @@
+---
+# Read the metadata of the migration paths and keep it in
+# _openbao_data_read_<openbao_data_read_label>. It records the version and the
+# update time of each path, never a value. Run it as ops-admin, with the password
+# from the automation file (load-shares.yml).
+#
+# A path that does not exist reads as absent, and only when OpenBao says so:
+# `bao kv metadata get` exits 2 and prints "No value found at ..." for a missing
+# path (OpenBao v2.5.2, command/kv_metadata_get.go lines 149-151 and 164-166). Any
+# other failure, such as a permission error or a transport error, stops the play.
+- name: Assert there are paths to read
+  ansible.builtin.assert:
+    that:
+      - openbao_migration_read_paths is sequence
+      - openbao_migration_read_paths | length > 0
+    fail_msg: >-
+      openbao_migration_read_paths is empty. The migration proves that the data is
+      unchanged by reading the same paths before and after, so it needs at least one.
+
+# The password reaches the pod on stdin. `password=-` makes bao read the value
+# from stdin (command/write.go lines 52-53; go-secure-stdlib kv-builder v0.1.2,
+# builder.go lines 79-91). The value is the whole of stdin, so printf sends no
+# trailing newline. No process gets the password as an argument.
+- name: Log in as ops-admin for the data read
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s' "$OPENBAO_PASSWORD" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i openbao-0
+      -- bao write -format=json auth/userpass/login/{{ openbao_operator_username }} password=-
+  environment:
+    OPENBAO_PASSWORD: "{{ openbao_operator_password }}"
+  register: _openbao_data_read_login
+  changed_when: false
+  no_log: true
+
+- name: Read the metadata of each path
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i openbao-0
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao kv metadata get -mount=secret -format=json {{ item }}'
+  environment:
+    OPENBAO_TOKEN: "{{ (_openbao_data_read_login.stdout | from_json).auth.client_token }}"
+  loop: "{{ openbao_migration_read_paths }}"
+  register: _openbao_data_read_raw
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Refuse when any path failed for a reason other than not found
+  ansible.builtin.assert:
+    that: >-
+      _openbao_data_read_raw.results
+      | rejectattr('rc', 'equalto', 0)
+      | rejectattr('stderr', 'search', 'No value found at')
+      | list | length == 0
+    fail_msg: >-
+      The metadata read failed on
+      {{ _openbao_data_read_raw.results | rejectattr('rc', 'equalto', 0) | rejectattr('stderr', 'search', 'No value found at') | map(attribute='item') | list }}
+      for a reason other than not found (permission, transport or another error).
+      This is not the same as a missing path. Fix the cause and run the play again.
+
+- name: Record the version and update time of each path
+  ansible.builtin.set_fact:
+    "_openbao_data_read_{{ openbao_data_read_label }}": >-
+      {%- set out = {} -%}
+      {%- for r in _openbao_data_read_raw.results -%}
+      {%- if r.rc == 0 -%}
+      {%- set d = (r.stdout | from_json).data -%}
+      {%- set _ = out.update({r.item: {'current_version': d.current_version, 'updated_time': d.updated_time}}) -%}
+      {%- else -%}
+      {%- set _ = out.update({r.item: 'absent'}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Show the paths read (versions only)
+  ansible.builtin.debug:
+    msg: "{{ openbao_data_read_label }}: {{ lookup('ansible.builtin.vars', '_openbao_data_read_' ~ openbao_data_read_label) }}"
