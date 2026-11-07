@@ -231,11 +231,16 @@
           changed_when: false
           failed_when: false
 
+        # unarchive needs GNU tar for a .tar file and the controller may be
+        # macOS (BSD tar); plain tar -xf works with both (#858).
         - name: Unpack the catalog export
-          ansible.builtin.unarchive:
-            src: "{{ _cms_catalog_export.path }}/catalog.tar"
-            dest: "{{ _cms_catalog_export.path }}"
-            remote_src: true
+          ansible.builtin.command:
+            argv:
+              - tar
+              - -xf
+              - "{{ _cms_catalog_export.path }}/catalog.tar"
+              - -C
+              - "{{ _cms_catalog_export.path }}"
           changed_when: false
           when: _cms_catalog_archive.rc == 0
 
