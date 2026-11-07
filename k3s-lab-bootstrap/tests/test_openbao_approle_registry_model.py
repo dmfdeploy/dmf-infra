@@ -139,6 +139,19 @@ class SetupOnlyDispositionTests(unittest.TestCase):
                 broken["runtime_targets"][target]["fresh_authentication_proof"] = {"status": "missing"}
                 self.assertTrue(any("evidence_gap" in e for e in registry.validate(broken)))
 
+    def test_a_provided_fresh_authentication_status_is_refused_in_this_step(self):
+        for target in shipped()["runtime_targets"]:
+            with self.subTest(target):
+                broken = copy.deepcopy(shipped())
+                broken["runtime_targets"][target]["fresh_authentication_proof"] = {"status": "provided"}
+                errors = registry.validate(broken)
+                self.assertTrue(any("step 3" in e and "fresh_authentication_proof" in e for e in errors), errors)
+                broken["runtime_targets"][target]["fresh_authentication_proof"] = {
+                    "status": "provided",
+                    "evidence_gap": "step 3",
+                }
+                self.assertTrue(any("fresh_authentication_proof" in e for e in registry.validate(broken)))
+
     def test_an_external_secret_gate_needs_a_namespace(self):
         broken = copy.deepcopy(shipped())
         gate = next(g for g in broken["runtime_targets"]["external-secrets"]["readiness_gates"] if g["kind"] == "ExternalSecret")
