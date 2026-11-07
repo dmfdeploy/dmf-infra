@@ -1,9 +1,10 @@
 ---
 # Zot mirror role defaults.
-# Weekly CronJob that mirrors the in-cluster Zot registry's OCI manifests +
+# Weekly CronJob that mirrors the in-cluster Zot registry's manifests +
 # blobs to the app-backups S3 bucket using `skopeo sync` followed by
-# `aws s3 sync`. OCI-format on B2 — restorable to a fresh Zot without
-# Longhorn.
+# `aws s3 sync`. The copy on B2 uses skopeo's `dir` layout (not an OCI image
+# layout) and keeps every platform of an image index, with its digest —
+# restorable to a fresh Zot without Longhorn.
 #
 # Direction: backup (Zot HTTP → S3 target). NOT hydration.
 #
@@ -16,8 +17,8 @@
 # 365 days (b2-buckets.sh) — long-tail expiry is handled at the bucket
 # level, not by `--remove` (which is NOT used).
 #
-# Object key prefix: zot/<timestamp>/ — timestamp-prefixed so each run
-# creates a new snapshot tree. Never overwrites a fixed key.
+# Object key prefix: zot/<timestamp>/<registry>/<repo>:<tag>/ — timestamp-prefixed
+# so each run creates a new snapshot tree. Never overwrites a fixed key.
 
 # ── Schedule ─────────────────────────────────────────────────────────────────
 
@@ -33,6 +34,14 @@ zot_mirror_labels:
 
 zot_mirror_source_registry: "zot.zot.svc.cluster.local:5000"
 zot_mirror_source_tls_verify: "false"   # in-cluster service; cert is for ingress
+
+# ── Catalog listing ──────────────────────────────────────────────────────────
+# The job asks Zot for the whole repository catalog in one request, with this
+# page size (`/v2/_catalog?n=<size>`). If the catalog is longer, Zot answers
+# with a Link header and the job stops without uploading anything. The error
+# message names this variable: raise it above the number of repositories.
+
+zot_mirror_catalog_page_size: 10000
 
 # ── Pull credentials (ADR-0033) ──────────────────────────────────────────────
 # The backup mirror is a routine, scheduled operation, so per ADR-0028 C3/C4
@@ -54,14 +63,20 @@ zot_mirror_s3_creds_secret: s3-creds-app-backups
 zot_mirror_s3_creds_mount: /etc/s3-creds
 
 # ── Container images ─────────────────────────────────────────────────────────
-# Main container: skopeo. InitContainer: amazon/aws-cli (we copy its `aws`
+# Main container: skopeo, 1.6.0 or later (the first release with
+# `sync --preserve-digests`). InitContainer: amazon/aws-cli (we copy its `aws`
 # binary into a shared emptyDir so the main container has both tools).
 
 zot_mirror_skopeo_image: "quay.io/skopeo/stable:latest"
 zot_mirror_awscli_image: "amazon/aws-cli:latest"
 
 # ── Scratch volume sizing ────────────────────────────────────────────────────
-# Zot PVC is 20Gi; OCI dir layout adds ~5% overhead. Request 25Gi ephemeral.
+# The `dir` layout stores each tag's blobs in its own folder, with no
+# deduplication across tags, and `--all` adds every platform of an image
+# index. The scratch volume must therefore hold the sum of the full image
+# sizes of all tags, which can be larger than the registry's own storage
+# (Zot shares blobs between tags; this copy does not). Raise the value when
+# the sum for an environment approaches it.
 
 zot_mirror_scratch_size: "25Gi"
 

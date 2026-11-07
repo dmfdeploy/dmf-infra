@@ -35,7 +35,7 @@ spec:
               configMap:
                 name: zot-mirror-script
                 defaultMode: 0755
-            # Scratch space for the OCI dir layout dump.
+            # Scratch space for the `dir` layout dump.
             # emptyDir not PVC — ephemeral per-job; Longhorn RWO would
             # prevent the CronJob from mounting Zot's data PVC anyway.
             - name: scratch
