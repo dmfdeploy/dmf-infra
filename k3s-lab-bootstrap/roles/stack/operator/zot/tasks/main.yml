@@ -1,4 +1,26 @@
 ---
+- name: Find Zot passwords longer than bcrypt can use
+  # bcrypt reads only the first 72 bytes of a password, at hashing and at
+  # login. Two passwords that agree on those bytes verify against the same
+  # line, so a change past byte 72 would be neither stored nor rolled out.
+  # A longer password adds no strength, so it is refused. The length is in
+  # UTF-8 bytes, and only the user names are kept, never the passwords. This
+  # runs before any task that changes the cluster.
+  no_log: true
+  ansible.builtin.set_fact:
+    _zot_htpasswd_too_long: >-
+      {{
+        ([zot_admin_user] if zot_admin_password.encode('utf-8') | length > 72 else [])
+        + ([zot_service_user] if zot_service_password.encode('utf-8') | length > 72 else [])
+      }}
+
+- name: Refuse Zot passwords longer than 72 bytes
+  ansible.builtin.fail:
+    msg: >-
+      The Zot password for {{ _zot_htpasswd_too_long | join(' and ') }} is longer than 72 bytes,
+      the most bcrypt uses. Use a password of at most 72 bytes.
+  when: _zot_htpasswd_too_long | length > 0
+
 - name: Create Zot namespace
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
@@ -77,6 +99,9 @@
   changed_when: false
 
 - name: Remove stale Zot StatefulSet when config still uses ConfigMap
+  # Only the `config` volume marks the old shape. The `dmf-local-ca` volume is
+  # a ConfigMap by design on the local-CA lane, so matching any ConfigMap
+  # volume deleted and recreated the StatefulSet on every run.
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: absent
@@ -86,7 +111,7 @@
     namespace: "{{ zot_namespace }}"
   when:
     - zot_existing_sts.resources | length > 0
-    - (zot_existing_sts.resources[0].spec.template.spec.volumes | default([]) | selectattr('configMap', 'defined') | list | length) > 0
+    - (zot_existing_sts.resources[0].spec.template.spec.volumes | default([]) | selectattr('name', 'equalto', 'config') | selectattr('configMap', 'defined') | list | length) > 0
 
 - name: Wait for stale Zot StatefulSet removal
   kubernetes.core.k8s_info:
@@ -102,7 +127,103 @@
   delay: 2
   when:
     - zot_existing_sts.resources | length > 0
-    - (zot_existing_sts.resources[0].spec.template.spec.volumes | default([]) | selectattr('configMap', 'defined') | list | length) > 0
+    - (zot_existing_sts.resources[0].spec.template.spec.volumes | default([]) | selectattr('name', 'equalto', 'config') | selectattr('configMap', 'defined') | list | length) > 0
+
+- name: Read the existing Zot htpasswd Secret
+  # bcrypt salts every hash freshly, so regenerating both lines on every run
+  # changed the Secret and the pod-template hash below each time, and rolled
+  # the pod with no credential change behind it (dmfdeploy#856). Read what is
+  # already in the cluster so a line that still verifies is kept as it is.
+  no_log: true
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: zot-htpasswd
+    namespace: "{{ zot_namespace }}"
+  register: _zot_htpasswd_existing
+
+- name: Pick the stored htpasswd line for each user
+  # `line` is the line already stored for that user, or an empty string. Only
+  # a bcrypt line at the cost the role generates (`$2y$10$`) counts, so an
+  # MD5 or SHA-1 line is replaced rather than kept. A missing Secret, a
+  # missing key, a user with no usable line all give an empty string, which
+  # sends that user down the generate path below.
+  no_log: true
+  vars:
+    _stored: >-
+      {{
+        (((_zot_htpasswd_existing.resources | default([]) | first | default({})).data | default({})).htpasswd
+         | default('') | b64decode).splitlines()
+      }}
+  ansible.builtin.set_fact:
+    _zot_htpasswd_users:
+      - user: "{{ zot_admin_user }}"
+        password: "{{ zot_admin_password }}"
+        line: "{{ _stored | select('match', '^' ~ (zot_admin_user | regex_escape) ~ ':[$]2y[$]10[$]') | first | default('') }}"
+      - user: "{{ zot_service_user }}"
+        password: "{{ zot_service_password }}"
+        line: "{{ _stored | select('match', '^' ~ (zot_service_user | regex_escape) ~ ':[$]2y[$]10[$]') | first | default('') }}"
+
+- name: Check which stored htpasswd lines still verify
+  # `htpasswd -v` checks a password against a file, so each stored line goes
+  # into its own 0600 temp file that holds only that line. The password is fed
+  # on stdin, never argv. A line that is malformed or no longer matches makes
+  # `htpasswd` exit non-zero; that is not an error here, it just means the
+  # line is regenerated below.
+  block:
+    - name: Create a temp file per stored line
+      no_log: true
+      ansible.builtin.tempfile:
+        state: file
+        prefix: zot-htpasswd.
+      register: _zot_htpasswd_tmp
+      changed_when: false
+      loop: "{{ _zot_htpasswd_users | selectattr('line', 'ne', '') | list }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Write each stored line to its temp file
+      no_log: true
+      ansible.builtin.copy:
+        content: "{{ item.item.line }}\n"
+        dest: "{{ item.path }}"
+        mode: "0600"
+      changed_when: false
+      loop: "{{ _zot_htpasswd_tmp.results }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Verify each stored line against the current password
+      no_log: true
+      ansible.builtin.command:
+        argv: [htpasswd, -vi, "{{ item.path }}", "{{ item.item.user }}"]
+        stdin: "{{ item.item.password }}"
+      register: _zot_htpasswd_verify
+      changed_when: false
+      failed_when: false
+      loop: "{{ _zot_htpasswd_tmp.results }}"
+      delegate_to: localhost
+      become: false
+  always:
+    - name: Remove the htpasswd temp files
+      no_log: true
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      changed_when: false
+      loop: "{{ _zot_htpasswd_tmp.results | default([]) | selectattr('path', 'defined') | list }}"
+      delegate_to: localhost
+      become: false
+
+- name: List the users whose stored htpasswd line is still good
+  no_log: true
+  ansible.builtin.set_fact:
+    _zot_htpasswd_reuse: >-
+      {{
+        _zot_htpasswd_verify.results | default([]) | selectattr('rc', 'defined')
+        | selectattr('rc', 'equalto', 0) | map(attribute='item.item.user') | list
+      }}
 
 - name: Generate bcrypt htpasswd line for admin (break-glass)
   # Jinja's `password_hash('bcrypt')` filter goes through passlib, whose
@@ -116,10 +237,12 @@
   # Linux and ships with macOS, produces a deterministic-format bcrypt
   # hash, and is what every other htpasswd-consuming tool exercises.
   # Password is fed via stdin to keep it out of argv.
+  # Skipped when the stored line for this user still verifies (see above).
   ansible.builtin.command:
     argv: [htpasswd, -inB, -C, "10", "{{ zot_admin_user }}"]
     stdin: "{{ zot_admin_password }}"
   register: _zot_htpasswd_cli
+  when: zot_admin_user not in _zot_htpasswd_reuse
   changed_when: false
   delegate_to: localhost
   become: false
@@ -129,24 +252,37 @@
   # ADR-0033: the scoped service account that every authenticated WRITE path
   # (630 seed + zot-mirror backup) uses. Same bcrypt mechanism as admin above;
   # password fed via stdin. Both lines land in the single `htpasswd` Secret key.
+  # Skipped when the stored line for this user still verifies (see above).
   ansible.builtin.command:
     argv: [htpasswd, -inB, -C, "10", "{{ zot_service_user }}"]
     stdin: "{{ zot_service_password }}"
   register: _zot_svc_htpasswd_cli
+  when: zot_service_user not in _zot_htpasswd_reuse
   changed_when: false
   delegate_to: localhost
   become: false
   no_log: true
 
 - name: Set Zot htpasswd lines (admin break-glass + zot-svc machine-write)
+  # A user whose password is unchanged keeps the stored line, so a Secret
+  # already in canonical form (the admin line, a newline, the service line,
+  # no trailing newline) stays byte-identical. Any other form, such as a
+  # duplicate line, extra whitespace or a trailing newline, is rewritten once
+  # to canonical form and is then stable.
+  ansible.builtin.set_fact:
+    zot_admin_htpasswd_line: >-
+      {{ (_zot_htpasswd_users[0].line if zot_admin_user in _zot_htpasswd_reuse else _zot_htpasswd_cli.stdout) | trim }}
+    zot_service_htpasswd_line: >-
+      {{ (_zot_htpasswd_users[1].line if zot_service_user in _zot_htpasswd_reuse else _zot_svc_htpasswd_cli.stdout) | trim }}
+  no_log: true
+
+- name: Combine the Zot htpasswd lines
   # The htpasswd file holds BOTH users, newline-joined in one Secret key.
   # `zot_htpasswd_combined` is the source of truth for both the Secret body
   # and the rollout-trigger hash, so a change to EITHER credential rolls the
   # pod (Zot only reads htpasswd at process start).
   ansible.builtin.set_fact:
-    zot_admin_htpasswd_line: "{{ _zot_htpasswd_cli.stdout | trim }}"
-    zot_service_htpasswd_line: "{{ _zot_svc_htpasswd_cli.stdout | trim }}"
-    zot_htpasswd_combined: "{{ (_zot_htpasswd_cli.stdout | trim) ~ '\n' ~ (_zot_svc_htpasswd_cli.stdout | trim) }}"
+    zot_htpasswd_combined: "{{ zot_admin_htpasswd_line ~ '\n' ~ zot_service_htpasswd_line }}"
   no_log: true
 
 - name: Create Zot htpasswd secret
