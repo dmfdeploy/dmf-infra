@@ -4,6 +4,13 @@
     "external-secrets": {
       "approle_name": "external-secrets",
       "secret_id_ttl": "720h",
+      "consumer_type": "external_secrets_cluster_store",
+      "metadata_path": "secret/data/platform/approle-rotation/external-secrets",
+      "create_site": "roles/stack/operator/openbao/tasks/main.yml",
+      "fresh_authentication_proof": {
+        "status": "missing",
+        "evidence_gap": "A refresh through the expected store does not show that the store authenticated with the replacement SecretID, because ESO may reuse a cached token. Step 3 supplies that proof. Until then the target is never accepted."
+      },
       "rotation_due_fraction": 0.6666666667,
       "warning_remaining_fraction": 0.25,
       "critical_remaining_fraction": 0.1,
@@ -21,6 +28,14 @@
           "name": "openbao",
           "condition": "Ready=True",
           "status": "existing_check"
+        },
+        {
+          "kind": "ExternalSecret",
+          "namespace": "authentik",
+          "name_pattern": "authentik-runtime",
+          "condition": "Ready=True",
+          "status": "required_rotation_gate",
+          "evidence_gap": "no current step waits for this ExternalSecret to refresh after a SecretID change, and its refresh interval is one hour, so the rotation transaction has to trigger a refresh"
         }
       ]
     },
@@ -28,6 +43,13 @@
       "approle_name": "object-storage-openbao-snapshots",
       "logical_name": "openbao_snapshots",
       "secret_id_ttl": "8760h",
+      "consumer_type": "external_secrets_cluster_store",
+      "metadata_path": "secret/data/platform/approle-rotation/object-storage-openbao-snapshots",
+      "create_site": "roles/base/object-storage-credentials/tasks/main.yml",
+      "fresh_authentication_proof": {
+        "status": "missing",
+        "evidence_gap": "A refresh through the expected store does not show that the store authenticated with the replacement SecretID, because ESO may reuse a cached token. Step 3 supplies that proof. Until then the target is never accepted."
+      },
       "rotation_due_fraction": 0.6666666667,
       "warning_remaining_fraction": 0.25,
       "critical_remaining_fraction": 0.1,
@@ -65,6 +87,13 @@
       "approle_name": "object-storage-app-backups",
       "logical_name": "app_backups",
       "secret_id_ttl": "8760h",
+      "consumer_type": "external_secrets_cluster_store",
+      "metadata_path": "secret/data/platform/approle-rotation/object-storage-app-backups",
+      "create_site": "roles/base/object-storage-credentials/tasks/main.yml",
+      "fresh_authentication_proof": {
+        "status": "missing",
+        "evidence_gap": "A refresh through the expected store does not show that the store authenticated with the replacement SecretID, because ESO may reuse a cached token. Step 3 supplies that proof. Until then the target is never accepted."
+      },
       "rotation_due_fraction": 0.6666666667,
       "warning_remaining_fraction": 0.25,
       "critical_remaining_fraction": 0.1,
@@ -110,9 +139,25 @@
     "born-inventory-netbox-reader": {
       "approle_name": "born-inventory-netbox-reader",
       "secret_id_ttl": "720h",
+      "create_site": "roles/stack/operator/openbao/tasks/main.yml",
       "disposition": "setup_only",
       "continuous_rotation": false,
-      "continuous_expiry_monitoring": false
+      "continuous_expiry_monitoring": false,
+      "entrypoints": [
+        "playbooks/694-born-inventory.yml",
+        "bootstrap-configure.yml",
+        "bootstrap-sandbox-configure.yml",
+        "playbooks/lifecycle/test-layer6.yml"
+      ],
+      "fresh_on_rerun_required": true,
+      "issuance_verification": {
+        "requirement": "Each run mints one SecretID with a one-hour TTL and one use, and the create response confirms both bounds.",
+        "evidence": "tests/test_openbao_setup_only_issuance.py"
+      },
+      "revocation_verification": {
+        "requirement": "Each run destroys the SecretID accessor on every exit path the process survives. A crash or a lost response leaves at most a one-use credential that expires within one hour.",
+        "evidence": "tests/test_openbao_setup_only_issuance.py"
+      }
     }
   }
 }

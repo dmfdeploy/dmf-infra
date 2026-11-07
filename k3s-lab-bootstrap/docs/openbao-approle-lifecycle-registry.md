@@ -42,3 +42,110 @@ The read-only metric record format is defined in
 [`openbao-approle-rotation-metadata-v1.md`](openbao-approle-rotation-metadata-v1.md).
 The observer reads each configured runtime target directly and does not list
 the KV prefix.
+
+## Library: adapters and the setup-only path
+
+`lib/approle_lifecycle/` holds the code that the rotation transaction calls. It
+uses the standard library only and takes client objects, so a playbook, a job
+or a test can run it. It does not read or print a credential.
+
+- `registry.py` loads the registry, validates its shape and derives the
+  thresholds. A runtime target also names its `consumer_type` and the
+  `metadata_path` of its rotation record, which must equal
+  `secret/data/platform/approle-rotation/<target>`.
+- `adapters.py` has one delivery adapter for each destination kind and one
+  readiness adapter for each gate kind that the registry declares. A delivery
+  adapter writes the SecretID and stamps the transaction id and target version
+  with it. A Kubernetes Secret takes them as annotations in the same request.
+  A KV v2 record takes them as keys, and the write keeps every other key and
+  uses check-and-set. An unknown kind or a missing client is an error.
+  Every readiness adapter needs the delivery time and fails with
+  `readiness_failed` without it. The ClusterSecretStore gate and the Secret key
+  gate are preconditions and never accept a replacement alone. The
+  ExternalSecret gate checks that the ExternalSecret reads the expected
+  ClusterSecretStore (the one the target's own store gate names), is Ready,
+  and has a `refreshTime` strictly after the delivery. A pass proves a
+  successful refresh through the expected store after the delivery. It does
+  not prove authentication with the replacement, because ESO may reuse a
+  cached token. That proof belongs to step 3. A target whose registry entry
+  marks `fresh_authentication_proof` as `missing` is therefore never accepted.
+  Every runtime target carries the field, because each one's acceptance rests
+  on a ClusterSecretStore or ExternalSecret refresh, and today all three
+  (`external-secrets` and both object-storage targets) are `missing`, each
+  with an `evidence_gap`. The validator refuses a runtime target without it.
+  For a target marked `missing`, `evaluate_target` returns not accepted
+  with the reason code `fresh_authentication_proof_missing`, before and
+  whatever the gates return, and it still returns each gate's result.
+  The `external-secrets` target names `authentik-runtime` in the `authentik`
+  namespace as its ExternalSecret
+  (`roles/stack/operator/authentik/tasks/main.yml`, created from the main
+  `openbao` store by default). Its refresh interval is one hour, so the
+  rotation transaction has to trigger a refresh. The registry records that as
+  `required_rotation_gate` with an `evidence_gap`.
+  Every client call goes through a wrapper that replaces any exception, a
+  `BaseException` included, with a fixed-message error or a fresh instance of
+  the interrupt class, so a response body cannot reach a traceback. A failed
+  readiness read is a failed gate.
+- `setup_only.py` runs the fresh-on-rerun path for `born-inventory-netbox-reader`:
+  validate the immutable request receipt, claim it once with a Lease, log in as
+  the issuer, mint one SecretID with `ttl=1h` and `num_uses=1`, confirm an
+  accessor and both bounds in the response, and hand the SecretID to the
+  caller's `use` function. The code destroys the accessor on every exit path
+  that the process survives, and a failed destroy raises. After a crash, or
+  when no response arrives, the accessor is not known. The one-use, one-hour
+  bound on what remains holds only when the create response confirmed both
+  values exactly, as integers or the exact decimal strings. Every message says
+  "unconfirmed" otherwise, and no message renders a value that OpenBao
+  returned. The issuer policy that enforces the bound is step A.2.
+  Every transport or `use` exception becomes a `SetupOnlyError` with a fixed
+  message. An interrupt (`KeyboardInterrupt`, `SystemExit`,
+  `GeneratorExit`) becomes a fresh instance of its class with no arguments
+  after cleanup, and it stays an interrupt even when cleanup fails: in that
+  case it carries one fixed note, "cleanup failed, so the residue is
+  unconfirmed". A cleanup failure after an ordinary failure is a
+  `SetupOnlyError` whose cause is the module's own fixed-message error.
+  None of them carries the original exception, so a SecretID cannot reach a
+  traceback. Any failure before the claim leaves OpenBao and
+  Kubernetes untouched.
+
+The setup-only disposition in the registry lists the checked Ansible
+entrypoints, the fresh-on-rerun requirement, the issuance and revocation
+requirements with an evidence path for each, and the `create_site`. The
+validator rejects a disposition without them, and a test fails when a named
+path does not exist.
+
+## What step A.1 delivers and what A.2 does
+
+Step A.1 delivers the library and its tests. Playbook 694 still reads the
+born-inventory SecretID from the persistent break-glass file. In
+`roles/common/dmf-born-inventory/tasks/main.yml`, step A.2 replaces the tasks
+that load and use it: the file check at line 19, the assert at line 27, the
+load at line 37, the extraction at line 45, the assert at line 60, and the
+login at line 98. Step A.2 adds the Kubernetes-auth issuer identity and its
+policy, so it also wires 694 to the setup-only path together with the
+concrete clients, and it removes the break-glass read. Until then a 694
+rerun reuses the old SecretID, and it can run without a receipt. The dmf-cms
+receipt writer and the dmf-init handoff are separate dependencies in other
+repositories.
+
+## Completeness check
+
+`tests/test_openbao_approle_lifecycle_registry.py` applies a two-part rule.
+
+1. Every file whose text mentions a SecretID TTL, in any spelling or case, or
+   an `auth/approle/role/` path must be the registry, a file that the
+   registry names as a create site, or an entry in the exclusion list in the
+   test, which gives a reason for each entry. The file list comes from
+   `git ls-files` (tracked files plus untracked files that git does not
+   ignore) with no directory pruning. Files that git ignores are out of scope,
+   because CI cannot see them. A new file that mentions either fails until
+   someone registers it or excludes it with a reason, and a stale exclusion
+   entry fails.
+2. Inside a registered or excluded file, the number of such mentions is pinned
+   in the test. A new declaration in an allowed file changes the count and
+   fails with a message to register the declaration and update the pin.
+
+The create-site checks stay: each `bao write auth/approle/role/<name>` command
+must set a registry TTL, a TTL key must not appear outside the registry, and
+the number of create sites must stay at three. That check knows one spelling of
+a create command. The two-part rule covers the others.
