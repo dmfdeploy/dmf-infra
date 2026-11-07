@@ -1,6 +1,6 @@
 ---
 # Test of the unseal task against a fake kubectl and a fake bao that follow
-# OpenBao v2.5.2 (dmfdeploy/dmfdeploy#864 WP3). The fake takes the share as the
+# OpenBao v2.5.2. The fake takes the share as the
 # JSON body of `bao write sys/unseal -` on stdin, as the real API does. It treats
 # `bao operator unseal -` as the key `-`, which is what the real command does
 # (command/operator_unseal.go lines 105-110). It logs every argument list.
@@ -13,7 +13,7 @@
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-unseal.yml
 
-- name: Unseal test — OpenBao unseal task (#864 WP3)
+- name: Unseal test — OpenBao unseal task
   hosts: localhost
   gather_facts: false
   connection: local

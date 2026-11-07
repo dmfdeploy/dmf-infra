@@ -1,5 +1,5 @@
 ---
-# Test of the restart entry point (dmfdeploy/dmfdeploy#864 WP3). It runs the real
+# Test of the restart entry point. It runs the real
 # roles/stack/operator/openbao/tasks/restart-pod.yml against a fake kubectl and bao.
 # The guard takes the expected pod set from openbao_replicas alone. An attempt to
 # narrow it with a pod list (openbao_guard_pods, the old input) has no effect, and
@@ -9,7 +9,7 @@
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-restart-guard.yml
 
-- name: Restart entry point test — OpenBao guard cannot be narrowed (#864 WP3)
+- name: Restart entry point test — OpenBao guard cannot be narrowed
   hosts: localhost
   gather_facts: false
   connection: local

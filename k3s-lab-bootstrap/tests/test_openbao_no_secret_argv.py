@@ -1,6 +1,6 @@
 """Static check: no OpenBao task passes a share, token or password as a command argument.
 
-Dmfdeploy/dmfdeploy#872 and #864 WP3. A command argument shows in the process list
+Tracked in dmfdeploy/dmfdeploy#872. A command argument shows in the process list
 of the node and of the pod. A task passes a secret on stdin, or through the task
 `environment:` and a shell variable instead. The check reads the OpenBao role's task
 files and the OpenBao playbooks as text and reports every Jinja expression that names
@@ -24,11 +24,11 @@ SHELL_CREDENTIAL = re.compile(r"\b[a-z_]*(?:password|secret_id|token|key)=\"?\$[
 SECRET = re.compile(r"unseal_key|root_token|_token|password|secret_id|share_|_share", re.I)
 # Names that look secret but carry none.
 BENIGN = re.compile(r"openbao_shamir_|breakglass_|_name\b|_path\b|_dir\b|_service\b|_ttl\b|openbao_namespace")
-# Known earlier defects of the same class, outside the unseal path and out of scope
-# for WP3: dmfdeploy/dmfdeploy#872. Each entry is an expression that this check
+# Known earlier defects of the same class, outside the unseal path and not yet fixed,
+# tracked in dmfdeploy/dmfdeploy#872. Each entry is an expression that this check
 # tolerates for now. Remove the entry when the task is fixed.
 # Existing logins that expand the password into the `bao write` arguments, in code
-# that WP3 did not write. They are the same defect class as #872. Each entry is
+# outside the unseal path. They are the same defect class as #872. Each entry is
 # the whole stripped line. Remove it when the task sends the password on stdin.
 KNOWN_SHELL = {
     ("main.yml", 'bao write -format=json auth/userpass/login/{{ openbao_policy_reconciler_username }} password="$P"\''),
