@@ -1,0 +1,116 @@
+---
+# Receipt-driven path: a fresh one-use SecretID per run, minted by the setup
+# issuer identity. This path never reads the break-glass file. The role id is
+# not a credential: the openbao role publishes it in a ConfigMap, and the
+# command line reads it from there unless dmf_born_inventory_setup_role_id is
+# set. A direct NetBox token is refused in main.yml before this file runs.
+
+- name: Assert the setup request id is present
+  ansible.builtin.assert:
+    that:
+      - dmf_born_inventory_setup_request_id | length > 0
+    fail_msg: >-
+      The receipt-driven born-inventory path needs the opaque request id of a
+      dmf-cms receipt in DMF_SETUP_REQUEST_ID. Create a receipt in the console
+      first and pass its id to this run.
+  no_log: true
+
+- name: Discover OpenBao pod for the setup-only path
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ dmf_born_inventory_openbao_namespace }}"
+    label_selectors:
+      - "{{ dmf_born_inventory_openbao_pod_label_selector }}"
+  register: _dmf_born_inventory_setup_pod_info
+
+- name: Assert OpenBao pod exists for the setup-only path
+  ansible.builtin.assert:
+    that:
+      - _dmf_born_inventory_setup_pod_info.resources | length > 0
+    fail_msg: >-
+      Could not find an OpenBao pod in namespace
+      {{ dmf_born_inventory_openbao_namespace }} with selector
+      {{ dmf_born_inventory_openbao_pod_label_selector }}.
+
+- name: Issue a one-use SecretID, read the NetBox token and revoke
+  block:
+    - name: Create a private directory for the issuance code
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: dmf-setup-only-
+      register: _dmf_born_inventory_setup_dir
+
+    - name: Copy the issuance code to the control node
+      ansible.builtin.copy:
+        src: "{{ role_path }}/../../../lib/approle_lifecycle/"
+        dest: "{{ _dmf_born_inventory_setup_dir.path }}/approle_lifecycle/"
+        mode: "0600"
+        directory_mode: "0700"
+
+    - name: Run the setup-only issuance
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ _dmf_born_inventory_setup_dir.path }}/approle_lifecycle/born_inventory_cli.py"
+          - --env-id
+          - "{{ dmf_born_inventory_env_id }}"
+          - --approle-name
+          - "{{ dmf_born_inventory_setup_approle_name }}"
+          - --role-id
+          - "{{ dmf_born_inventory_setup_role_id }}"
+          - --role-id-configmap
+          - "{{ dmf_born_inventory_setup_role_id_configmap }}"
+          - --issuer-namespace
+          - "{{ dmf_born_inventory_setup_issuer_namespace }}"
+          - --issuer-service-account
+          - "{{ dmf_born_inventory_setup_issuer_service_account }}"
+          - --issuer-openbao-role
+          - "{{ dmf_born_inventory_setup_issuer_role }}"
+          - --audience
+          - "{{ dmf_born_inventory_setup_audience }}"
+          - --openbao-namespace
+          - "{{ dmf_born_inventory_openbao_namespace }}"
+          - --openbao-pod
+          - "{{ _dmf_born_inventory_setup_pod_info.resources[0].metadata.name }}"
+          - --executor-as
+          - "{{ dmf_born_inventory_setup_executor_as }}"
+      environment:
+        DMF_SETUP_REQUEST_ID: "{{ dmf_born_inventory_setup_request_id }}"
+      register: _dmf_born_inventory_setup_run
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Report the setup-only issuance result
+      ansible.builtin.debug:
+        msg: >-
+          Setup-only issuance: rc={{ _dmf_born_inventory_setup_run.rc }}.
+          {{ _dmf_born_inventory_setup_run.stderr | default('') }}
+
+    - name: Assert the setup-only issuance succeeded
+      ansible.builtin.assert:
+        that:
+          - _dmf_born_inventory_setup_run.rc == 0
+        fail_msg: >-
+          The setup-only issuance failed closed. Cleanup or a remaining
+          SecretID can be unconfirmed: the error above says what is known, and
+          a SecretID that remains is limited to one use and one hour only when
+          that error says the response confirmed it. If the error names a
+          missing role id, no receipt was consumed: set
+          dmf_born_inventory_setup_role_id and run again with the same receipt.
+          A stale role id fails at the AppRole login, after the claim. Fix the
+          role id and create a fresh receipt in every other case.
+
+    - name: Take the NetBox admin token from the issuance result
+      ansible.builtin.set_fact:
+        _dmf_born_inventory_netbox_admin_token_from_openbao: >-
+          {{ (_dmf_born_inventory_setup_run.stdout | from_json).netbox_admin_token }}
+      no_log: true
+  always:
+    - name: Remove the issuance code directory
+      ansible.builtin.file:
+        path: "{{ _dmf_born_inventory_setup_dir.path }}"
+        state: absent
+      when: _dmf_born_inventory_setup_dir.path is defined

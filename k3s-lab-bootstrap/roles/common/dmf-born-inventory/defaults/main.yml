@@ -229,3 +229,27 @@ dmf_born_inventory_app_cluster_coords:
     service: landing-page
     namespace: default
     port: 80
+
+# Receipt-driven NetBox token path (dmfdeploy/dmfdeploy#11, plan step A.2).
+# Off by default: 694 then reads the break-glass AppRole exactly as before,
+# in tasks/openbao-breakglass.yml. On: 694 needs the opaque request id of a
+# dmf-cms receipt, runs the setup-only issuance (lib/approle_lifecycle), and
+# never reads the break-glass file. A direct NetBox admin token is refused.
+# The tasks it replaces are all of tasks/openbao-breakglass.yml.
+dmf_born_inventory_receipt_path_enabled: false
+# The opaque request id. dmf-init passes it in the configure process
+# environment as DMF_SETUP_REQUEST_ID.
+dmf_born_inventory_setup_request_id: "{{ lookup('ansible.builtin.env', 'DMF_SETUP_REQUEST_ID') }}"
+dmf_born_inventory_setup_approle_name: "{{ openbao_born_inventory_role_name | default('born-inventory-netbox-reader') }}"
+dmf_born_inventory_setup_issuer_namespace: "{{ openbao_namespace | default('openbao') }}"
+dmf_born_inventory_setup_issuer_service_account: "{{ openbao_setup_issuer_service_account | default('setup-issuer') }}"
+dmf_born_inventory_setup_issuer_role: "{{ openbao_setup_issuer_k8s_role | default('setup-issuer') }}"
+dmf_born_inventory_setup_audience: "{{ openbao_setup_issuer_audience | default('openbao') }}"
+# Receipt reads and claim creates run as this identity (kubectl --as).
+dmf_born_inventory_setup_executor_as: >-
+  system:serviceaccount:{{ openbao_setup_requests_namespace | default('dmf-setup-requests') }}:{{
+  openbao_setup_executor_service_account | default('setup-request-executor') }}
+# The AppRole role id is not a credential. The openbao role publishes it in
+# the ConfigMap below, and the command line reads it there when this is empty.
+dmf_born_inventory_setup_role_id: ""
+dmf_born_inventory_setup_role_id_configmap: born-inventory-approle

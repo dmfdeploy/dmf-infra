@@ -10,8 +10,9 @@ the process survives, and a failure to destroy it raises. What it cannot
 guarantee: after a crash, or when no response arrives, the accessor is not
 known. The bound on what remains (one use, one hour) holds only when the
 create response confirmed it. The issuer policy that enforces the bound is
-step A.2, so until then the messages say "unconfirmed" whenever the response
-did not confirm it, and no message renders a value that OpenBao returned.
+files/policies/setup-issuer.hcl in the openbao role, which is not yet verified
+on a live cluster. The messages say "unconfirmed" whenever the response did not
+confirm it, and no message renders a value that OpenBao returned.
 The code never reports success when the SecretID could not be destroyed.
 
 Every exception from a transport or from `use` is replaced by a fixed-message

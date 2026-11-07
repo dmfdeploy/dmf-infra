@@ -1,0 +1,170 @@
+---
+# Setup-only issuer identity and the receipt namespace RBAC.
+# Included from main.yml after the born-inventory AppRole.
+
+- name: Assert the issuer policy names the born-inventory AppRole
+  ansible.builtin.assert:
+    that:
+      - >-
+        ('auth/approle/role/' ~ openbao_born_inventory_role_name ~ '/secret-id"')
+        in lookup('ansible.builtin.file', role_path ~ '/files/policies/setup-issuer.hcl')
+    fail_msg: >-
+      files/policies/setup-issuer.hcl does not grant the secret-id path of
+      {{ openbao_born_inventory_role_name }}. Update the policy file and this
+      variable together.
+
+- name: Create the setup issuer ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ openbao_setup_issuer_service_account }}"
+        namespace: "{{ openbao_namespace }}"
+
+- name: Create the setup request namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ openbao_setup_requests_namespace }}"
+
+# The role id can be undefined, null or empty here: the rerun preload copies a
+# missing break-glass key as null. Normalize it once and use only the result.
+# No identity that a rerun uses may read the role id of
+# `born-inventory-netbox-reader`, and no policy is widened for it. A run
+# without a role id leaves the ConfigMap as it is and prints the recovery.
+- name: Normalize the born-inventory AppRole role id
+  ansible.builtin.set_fact:
+    _openbao_born_inventory_role_id_published: "{{ openbao_born_inventory_role_id | default('', true) | string | trim }}"
+  no_log: true
+
+- name: Publish the born-inventory AppRole role id
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ openbao_born_inventory_role_id_configmap }}"
+        namespace: "{{ openbao_setup_requests_namespace }}"
+      data:
+        role_id: "{{ _openbao_born_inventory_role_id_published }}"
+  no_log: true
+  when: _openbao_born_inventory_role_id_published | length > 0
+
+- name: Report a missing born-inventory role id
+  ansible.builtin.debug:
+    msg: >-
+      The born-inventory role id is not in the break-glass state on this run,
+      so the ConfigMap {{ openbao_born_inventory_role_id_configmap }} was not
+      written or changed. The receipt-driven 694 path needs it: set
+      dmf_born_inventory_setup_role_id to the current role id, or write the
+      role id to that ConfigMap.
+  when: _openbao_born_inventory_role_id_published | length == 0
+
+- name: Create the setup request executor ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ openbao_setup_executor_service_account }}"
+        namespace: "{{ openbao_setup_requests_namespace }}"
+
+- name: Grant the executor receipt read and claim create
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        name: setup-request-executor
+        namespace: "{{ openbao_setup_requests_namespace }}"
+      rules:
+        - apiGroups: [""]
+          resources: ["configmaps"]
+          verbs: ["get"]
+        - apiGroups: ["coordination.k8s.io"]
+          resources: ["leases"]
+          verbs: ["create", "get"]
+
+- name: Bind the executor Role to the executor ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        name: setup-request-executor
+        namespace: "{{ openbao_setup_requests_namespace }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: setup-request-executor
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ openbao_setup_executor_service_account }}"
+          namespace: "{{ openbao_setup_requests_namespace }}"
+
+# CMS slot (step A.2b, dmf-cms receipt writer): the ServiceAccount
+# `dmf-cms-setup-requests` and its RoleBinding, which grants `create` and `get`
+# on ConfigMaps only, are added here by A.2b. Nothing in this file grants the
+# CMS anything.
+
+- name: Write the setup issuer policy
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n%s\n' "$OPENBAO_TOKEN" "$POLICY_HCL" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_setup_issuer_policy_name }} -'
+  environment:
+    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
+    POLICY_HCL: "{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/setup-issuer.hcl') }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+# Writing a Kubernetes-auth role needs a privileged token. `policy-writer`
+# covers only `sys/policies/acl/*`, so a rerun has no identity that can write
+# `auth/kubernetes/role/*`. A fresh install writes the role with the initial
+# root token. An existing environment gets it through the temporary-root
+# procedure of dmfdeploy/dmfdeploy#866, and a rerun leaves it as it is. The
+# identity verifier fails when the role is missing.
+- name: Write the setup issuer Kubernetes-auth role
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/kubernetes/role/{{ openbao_setup_issuer_k8s_role }}
+      bound_service_account_names={{ openbao_setup_issuer_service_account }}
+      bound_service_account_namespaces={{ openbao_namespace }}
+      audience={{ openbao_setup_issuer_audience }}
+      token_policies={{ openbao_setup_issuer_policy_name }}
+      token_ttl={{ openbao_setup_issuer_token_ttl }}
+      token_max_ttl={{ openbao_setup_issuer_token_max_ttl }}'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)

@@ -3,7 +3,9 @@
 # (ADR-0008 + ADR-0021 + ADR-0024). Confirms that:
 #
 #   1. ops-admin, policy-reconciler, and approle-reconciler can all log in
-#      (positive: the identities exist and the break-glass JSON is complete).
+#      (positive: the identities exist and the break-glass JSON is complete),
+#      and the Kubernetes-auth setup-issuer can log in with a TokenRequest JWT
+#      for its ServiceAccount.
 #   2. The AC-5 separation matrix from the AppRole-Reconciler Implementation
 #      Brief §7.5 holds on the live cluster — ops-admin cannot write policy
 #      and cannot mint object-storage AppRole secret-ids; policy-reconciler
@@ -33,9 +35,13 @@
   vars:
     verify_openbao_namespace: "{{ openbao_namespace | default('openbao') }}"
     verify_openbao_pod_selector: "app.kubernetes.io/name=openbao"
+    verify_setup_issuer_service_account: "{{ openbao_setup_issuer_service_account | default('setup-issuer') }}"
+    verify_setup_issuer_k8s_role: "{{ openbao_setup_issuer_k8s_role | default('setup-issuer') }}"
+    verify_setup_issuer_audience: "{{ openbao_setup_issuer_audience | default('openbao') }}"
     # Probe matrix per Implementation Brief §7.5. Each entry asserts the
     # identity's capability on the target path matches the expected outcome.
     # `deny` means the only capability returned is `deny` (full deny);
+    # `update` means the only capability returned is `update`;
     # `denied_or_missing` accepts either explicit deny or no-capabilities.
     verify_probes:
       - identity: ops-admin
@@ -58,6 +64,46 @@
         path: secret/data/apps/forgejo/admin
         expected: deny
         reason: approle-reconciler must not read app secrets (ops-admin's job)
+      - identity: setup-issuer
+        path: auth/approle/role/born-inventory-netbox-reader/secret-id
+        expected: update
+        reason: the setup issuer mints SecretIDs for born-inventory-netbox-reader, and only create is open
+      - identity: setup-issuer
+        path: auth/approle/role/born-inventory-netbox-reader/secret-id-accessor/destroy
+        expected: update
+        reason: the setup issuer destroys the accessor of the SecretID it minted
+      - identity: setup-issuer
+        path: auth/approle/role/born-inventory-netbox-reader/custom-secret-id
+        expected: deny
+        reason: the setup issuer must not assign a caller-supplied SecretID
+      - identity: setup-issuer
+        path: auth/approle/role/born-inventory-netbox-reader/role-id
+        expected: deny
+        reason: the setup issuer must not read AppRole configuration
+      - identity: setup-issuer
+        path: auth/approle/role/born-inventory-netbox-reader
+        expected: deny
+        reason: the setup issuer must not change the AppRole
+      - identity: setup-issuer
+        path: auth/approle/role/external-secrets/secret-id
+        expected: deny
+        reason: the setup issuer must not mint credentials for another role
+      - identity: setup-issuer
+        path: secret/data/apps/netbox/runtime
+        expected: deny
+        reason: the setup issuer must not read application secrets
+      - identity: setup-issuer
+        path: sys/policies/acl/test
+        expected: deny
+        reason: the setup issuer must not write ACL policies
+      - identity: setup-issuer
+        path: sys/auth
+        expected: deny
+        reason: the setup issuer must not reach sys/*
+      - identity: setup-issuer
+        path: sys/mounts
+        expected: deny
+        reason: the setup issuer must not reach sys/*
     # ExternalSecrets that base/object-storage-credentials creates per
     # default. Names match the role's object_storage_consumer_namespaces
     # mapping: openbao_snapshots ships only to openbao-system; app_backups
@@ -138,6 +184,50 @@
         _verify_openbao_pod: "{{ _verify_openbao_pod_info.resources[0].metadata.name }}"
 
     # ────────────────────────────────────────────────────────────────
+    # Step 2b — setup-issuer login (Kubernetes auth). The JWT is a short-lived
+    # TokenRequest for the issuer ServiceAccount and travels on stdin.
+    # ────────────────────────────────────────────────────────────────
+    - name: Request a JWT for the setup issuer ServiceAccount
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ verify_openbao_namespace }}"
+          - create
+          - token
+          - "{{ verify_setup_issuer_service_account }}"
+          - --duration
+          - 10m
+          - --audience
+          - "{{ verify_setup_issuer_audience }}"
+      register: _verify_issuer_jwt
+      changed_when: false
+      no_log: true
+
+    - name: Log in as the setup issuer
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s' "$ISSUER_JWT" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ verify_openbao_namespace }}
+          exec -i {{ _verify_openbao_pod }}
+          -- sh -c '
+          exec bao write -format=json auth/kubernetes/login
+          role={{ verify_setup_issuer_k8s_role | quote }} jwt=-'
+      environment:
+        ISSUER_JWT: "{{ _verify_issuer_jwt.stdout | trim }}"
+      register: _verify_issuer_login
+      changed_when: false
+      no_log: true
+
+    - name: Capture setup-issuer token
+      ansible.builtin.set_fact:
+        _verify_token_setup_issuer: "{{ (_verify_issuer_login.stdout | from_json).auth.client_token }}"
+      no_log: true
+
+    # ────────────────────────────────────────────────────────────────
     # Step 3 — AC-5 negative probes (Implementation Brief §7.5)
     # ────────────────────────────────────────────────────────────────
     - name: Probe capability matrix
@@ -157,7 +247,8 @@
             {
               'ops-admin': _verify_token_ops_admin,
               'policy-reconciler': _verify_token_policy_reconciler,
-              'approle-reconciler': _verify_token_approle_reconciler
+              'approle-reconciler': _verify_token_approle_reconciler,
+              'setup-issuer': _verify_token_setup_issuer
             }[item.identity]
           }}
       register: _verify_probe_results
@@ -187,6 +278,7 @@
         that:
           - >-
               (item.0.expected == 'deny' and item.1 == ['deny']) or
+              (item.0.expected == 'update' and item.1 == ['update']) or
               (item.0.expected == 'denied_or_missing' and (item.1 == ['deny'] or item.1 | length == 0))
         fail_msg: >-
           AC-5 separation violated: {{ item.0.identity }} → {{ item.0.path }}.
@@ -272,8 +364,8 @@
       ansible.builtin.debug:
         msg: |-
           OpenBao identity model verified on this cluster:
-            - 3 identities log in: ops-admin, policy-reconciler, approle-reconciler
-            - {{ verify_probes | length }} AC-5 negative probes all return 'deny':
+            - 4 identities log in: ops-admin, policy-reconciler, approle-reconciler, setup-issuer
+            - {{ verify_probes | length }} capability probes match their expected outcome:
               {% for p in verify_probes %}
               * {{ p.identity }} → {{ p.path }}: {{ p.expected }}
               {% endfor %}
