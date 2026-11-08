@@ -104,18 +104,15 @@
     - name: Log in as ops-admin for policy verification
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n' "$OPENBAO_PASSWORD" |
           k3s kubectl -n {{ openbao_namespace | default('openbao') }}
           exec -i pod/{{ openbao_pods.resources[0].metadata.name }}
           -- sh -c '
-          IFS= read -r P;
           BAO_ADDR=https://127.0.0.1:8200
           BAO_CACERT=/openbao/config/tls/tls.crt
-          bao write -format=json auth/userpass/login/{{ _ops_admin_username }} password="$P"'
+          bao write -format=json auth/userpass/login/{{ _ops_admin_username }} -'
+        stdin: "{{ {'password': _ops_admin_password} | to_json }}\n"
       register: _ops_admin_login
       changed_when: false
-      environment:
-        OPENBAO_PASSWORD: "{{ _ops_admin_password }}"
       no_log: true
       when:
         - _ops_admin_username | default('') | length > 0
@@ -132,7 +129,6 @@
     - name: Check ops-admin capabilities on Zot admin path
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n' "$OPENBAO_TOKEN" |
           k3s kubectl -n {{ openbao_namespace | default('openbao') }}
           exec -i pod/{{ openbao_pods.resources[0].metadata.name }}
           -- sh -c '
@@ -142,10 +138,9 @@
           BAO_CACERT=/openbao/config/tls/tls.crt;
           export BAO_ADDR BAO_CACERT;
           bao token capabilities -format=json secret/data/apps/zot/admin'
+        stdin: "{{ _ops_admin_token }}\n"
       register: _zot_admin_caps
       changed_when: false
-      environment:
-        OPENBAO_TOKEN: "{{ _ops_admin_token }}"
       no_log: true
       when:
         - _ops_admin_token is defined

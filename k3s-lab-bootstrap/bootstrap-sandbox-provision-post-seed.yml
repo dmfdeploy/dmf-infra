@@ -26,7 +26,6 @@
     - name: Confirm required bootstrap seed path exists
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n' "$OPENBAO_TOKEN" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ openbao_session_namespace | default('openbao') }}
           exec -i {{ _openbao_session_pod }}
@@ -34,12 +33,12 @@
           IFS= read -r BAO_TOKEN;
           export BAO_TOKEN;
           bao kv metadata get -format=json {{ item }} >/dev/null'
+        stdin: "{{ _openbao_session_client_token }}\n"
       loop:
         - secret/platform/bootstrap_admin
         - secret/platform/k3s/cluster
       changed_when: false
-      environment:
-        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+      no_log: true
 
 # ── Vertical: Identity base ──────────────────────────────────────────────────
 - import_playbook: playbooks/vertical-security/110-authentik.yml

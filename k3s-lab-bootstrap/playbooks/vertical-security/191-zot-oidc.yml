@@ -42,7 +42,6 @@
     - name: Validate Zot admin secret was persisted to OpenBao
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n' "$OPENBAO_TOKEN" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ openbao_session_namespace | default('openbao') }}
           exec -i {{ _openbao_session_pod }}
@@ -50,8 +49,7 @@
           IFS= read -r BAO_TOKEN;
           export BAO_TOKEN;
           bao kv get -field=password secret/apps/zot/admin'
-      environment:
-        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
+        stdin: "{{ _openbao_session_client_token }}\n"
       register: _zot_admin_secret_verify
       changed_when: false
       failed_when: false

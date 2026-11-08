@@ -57,17 +57,14 @@
 - name: Log into OpenBao with operator userpass for NetBox bootstrap writes
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_PASSWORD" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ netbox_openbao_namespace }}
       exec -i {{ _netbox_openbao_pod }}
       -- sh -c '
-      IFS= read -r P;
-      bao write -format=json auth/userpass/login/{{ _netbox_openbao_username | quote }} password="$P"'
+      bao write -format=json auth/userpass/login/{{ _netbox_openbao_username | quote }} -'
+    stdin: "{{ {'password': _netbox_openbao_password} | to_json }}\n"
   register: _netbox_openbao_login_raw
   changed_when: false
-  environment:
-    OPENBAO_PASSWORD: "{{ _netbox_openbao_password }}"
   no_log: true
 
 - name: Extract OpenBao client token for NetBox bootstrap writes
@@ -78,7 +75,6 @@
 - name: Read current NetBox runtime secret from OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ netbox_openbao_namespace }}
       exec -i {{ _netbox_openbao_pod }}
@@ -86,11 +82,10 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json {{ netbox_runtime_secret_path | quote }}'
+    stdin: "{{ _netbox_openbao_client_token }}\n"
   register: _netbox_runtime_secret_raw
   changed_when: false
   failed_when: false
-  environment:
-    OPENBAO_TOKEN: "{{ _netbox_openbao_client_token }}"
   no_log: true
 
 - name: Parse current NetBox runtime secret document
@@ -266,30 +261,14 @@
 - name: Persist NetBox runtime secret to OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n%s\n%s\n%s\n%s\n'
-      "$OPENBAO_TOKEN"
-      "$NETBOX_DB_PASSWORD"
-      "$NETBOX_VALKEY_PASSWORD"
-      "$NETBOX_API_TOKEN_PEPPER"
-      "$NETBOX_SECRET_KEY"
-      "$NETBOX_SUPERUSER_API_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ netbox_openbao_namespace }}
       exec -i {{ _netbox_openbao_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r DB_PASSWORD;
-      IFS= read -r VALKEY_PASSWORD;
-      IFS= read -r API_TOKEN_PEPPER;
-      IFS= read -r SECRET_KEY;
-      IFS= read -r SUPERUSER_API_TOKEN;
       export BAO_TOKEN;
-      bao kv put {{ netbox_runtime_secret_path | quote }}
-      db_password="$DB_PASSWORD"
-      valkey_password="$VALKEY_PASSWORD"
-      api_token_pepper="$API_TOKEN_PEPPER"
-      secret_key="$SECRET_KEY"
-      superuser_api_token="$SUPERUSER_API_TOKEN"'
+      bao kv put {{ netbox_runtime_secret_path | quote }} -'
+    stdin: "{{ _netbox_openbao_client_token }}\n{{ {'db_password': netbox_db_password_effective, 'valkey_password': netbox_valkey_password_effective, 'api_token_pepper': netbox_api_token_pepper_effective, 'secret_key': netbox_secret_key_effective, 'superuser_api_token': netbox_superuser_api_token_effective} | to_json }}\n"
   register: _netbox_openbao_write_result
   when:
     - _netbox_runtime_secret_data.db_password | default('') != netbox_db_password_effective
@@ -297,13 +276,6 @@
       or _netbox_runtime_secret_data.api_token_pepper | default('') != netbox_api_token_pepper_effective
       or _netbox_runtime_secret_data.secret_key | default('') != netbox_secret_key_effective
       or _netbox_runtime_secret_data.superuser_api_token | default('') != netbox_superuser_api_token_effective
-  environment:
-    OPENBAO_TOKEN: "{{ _netbox_openbao_client_token }}"
-    NETBOX_DB_PASSWORD: "{{ netbox_db_password_effective }}"
-    NETBOX_VALKEY_PASSWORD: "{{ netbox_valkey_password_effective }}"
-    NETBOX_API_TOKEN_PEPPER: "{{ netbox_api_token_pepper_effective }}"
-    NETBOX_SECRET_KEY: "{{ netbox_secret_key_effective }}"
-    NETBOX_SUPERUSER_API_TOKEN: "{{ netbox_superuser_api_token_effective }}"
   no_log: true
 
 - name: Verify NetBox runtime secret was persisted to OpenBao
@@ -311,7 +283,6 @@
     - name: Read back NetBox password from OpenBao
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n' "$OPENBAO_TOKEN" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ netbox_openbao_namespace }}
           exec -i {{ _netbox_openbao_pod }}
@@ -319,10 +290,9 @@
           IFS= read -r BAO_TOKEN;
           export BAO_TOKEN;
           bao kv get -format=json {{ netbox_runtime_secret_path | quote }}'
+        stdin: "{{ _netbox_openbao_client_token }}\n"
       register: _netbox_openbao_raw
       changed_when: false
-      environment:
-        OPENBAO_TOKEN: "{{ _netbox_openbao_client_token }}"
       no_log: true
 
     - name: Extract NetBox password from OpenBao JSON

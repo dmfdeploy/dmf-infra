@@ -176,7 +176,6 @@
 - name: Apply OpenBao reader policy
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _osc_pod }}
@@ -184,12 +183,11 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao policy write object-storage-{{ logical_item.logical_dashed }}-reader /tmp/object-storage-{{ logical_item.logical_dashed }}-reader.hcl'
+    stdin: "{{ _osc_policy_token }}\n"
   loop: "{{ _os_logical_items }}"
   loop_control:
     loop_var: logical_item
     label: "{{ logical_item.logical }}"
-  environment:
-    OPENBAO_TOKEN: "{{ _osc_policy_token }}"
   no_log: true
 
 # ── Step 4: Check AppRole existence (idempotency gate) ───────────────────────
@@ -197,7 +195,6 @@
 - name: Check if AppRole exists
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _osc_pod }}
@@ -205,13 +202,12 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao read -format=json auth/approle/role/object-storage-{{ logical_item.logical_dashed }}/role-id'
+    stdin: "{{ _osc_approle_token }}\n"
   register: _os_approle_roleid_checks
   loop: "{{ _os_logical_items }}"
   loop_control:
     loop_var: logical_item
     label: "{{ logical_item.logical }}"
-  environment:
-    OPENBAO_TOKEN: "{{ _osc_approle_token }}"
   failed_when: false
   changed_when: false
   no_log: true
@@ -225,7 +221,6 @@
 - name: Check if eso-binding exists
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _osc_pod }}
@@ -233,13 +228,12 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json secret/platform/eso-bindings/object-storage-{{ logical_item.logical_dashed }}'
+    stdin: "{{ _osc_approle_token }}\n"
   register: _os_eso_binding_checks
   loop: "{{ _os_logical_items }}"
   loop_control:
     loop_var: logical_item
     label: "{{ logical_item.logical }}"
-  environment:
-    OPENBAO_TOKEN: "{{ _osc_approle_token }}"
   failed_when: false
   changed_when: false
   no_log: true
@@ -256,7 +250,6 @@
 - name: Create AppRole
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _osc_pod }}
@@ -264,13 +257,12 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao write auth/approle/role/object-storage-{{ item.logical_item.logical_dashed }} token_policies=object-storage-{{ item.logical_item.logical_dashed }}-reader secret_id_ttl={{openbao_approle_lifecycle_registry.runtime_targets['object-storage-' ~ item.logical_item.logical_dashed].secret_id_ttl}} token_ttl={{ openbao_approle_token_ttl }} token_max_ttl={{ openbao_approle_token_max_ttl }}'
+    stdin: "{{ _osc_approle_token }}\n"
   loop: "{{ _os_approle_roleid_checks.results }}"
   loop_control:
     loop_var: item
     label: "{{ item.logical_item.logical }}"
   when: item.rc != 0
-  environment:
-    OPENBAO_TOKEN: "{{ _osc_approle_token }}"
   no_log: true
 
 # ── Step 6: Generate secret-id when role OR binding is missing ──────────────
@@ -288,7 +280,6 @@
 - name: Generate secret-id
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _osc_pod }}
@@ -296,6 +287,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao write -format=json -force auth/approle/role/object-storage-{{ item.logical_item.logical_dashed }}/secret-id'
+    stdin: "{{ _osc_approle_token }}\n"
   register: _os_approle_secret_ids
   loop: "{{ _os_approle_roleid_checks.results }}"
   loop_control:
@@ -305,13 +297,11 @@
   when: >-
     item.rc != 0
     or _os_eso_binding_checks.results[ansible_loop.index0].rc != 0
-  environment:
-    OPENBAO_TOKEN: "{{ _osc_approle_token }}"
   no_log: true
 
 # ── Step 7: Store secret-id in OpenBao (operator reference / break-glass) ───
-# Secret-id is written to a short-lived file inside the pod for `bao kv put @file`.
-# This keeps the secret-id out of argv and removes the temp file immediately.
+# The secret-id goes to `bao kv put` as a JSON body on stdin, so it is in no
+# argument list and in no file.
 #
 # _os_approle_secret_ids.results[].item is the Step 6 loop item (the
 # _os_approle_roleid_checks result dict). Its .logical_item field carries
@@ -320,23 +310,14 @@
 - name: Store secret-id in OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n' "$OPENBAO_TOKEN" "$SECRET_ID" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _osc_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
-      IFS= read -r SECRET_ID;
-      SECRET_FILE="$(mktemp /tmp/object-storage-secret-id.XXXXXX)";
-      printf "%s" "$SECRET_ID" > "$SECRET_FILE";
-      bao kv put secret/platform/eso-bindings/object-storage-{{ item.item.logical_item.logical_dashed }} secret_id=@"$SECRET_FILE";
-      rc=$?;
-      rm -f "$SECRET_FILE";
-      exit "$rc"'
-  environment:
-    OPENBAO_TOKEN: "{{ _osc_approle_token }}"
-    SECRET_ID: "{{ (item.stdout | from_json).data.secret_id }}"
+      bao kv put secret/platform/eso-bindings/object-storage-{{ item.item.logical_item.logical_dashed }} -'
+    stdin: "{{ _osc_approle_token }}\n{{ {'secret_id': (item.stdout | from_json).data.secret_id} | to_json }}\n"
   loop: "{{ _os_approle_secret_ids.results }}"
   loop_control:
     loop_var: item
@@ -349,7 +330,6 @@
 - name: Read AppRole role-id
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _osc_pod }}
@@ -357,13 +337,12 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao read -format=json auth/approle/role/object-storage-{{ logical_item.logical_dashed }}/role-id'
+    stdin: "{{ _osc_approle_token }}\n"
   register: _os_approle_final_roleids
   loop: "{{ _os_logical_items }}"
   loop_control:
     loop_var: logical_item
     label: "{{ logical_item.logical }}"
-  environment:
-    OPENBAO_TOKEN: "{{ _osc_approle_token }}"
   no_log: true
 
 # ── Step 9: Read secret-id from OpenBao for ALL logicals ────────────────────
@@ -373,7 +352,6 @@
 - name: Read secret-id from OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _osc_pod }}
@@ -381,13 +359,12 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json secret/platform/eso-bindings/object-storage-{{ logical_item.logical_dashed }}'
+    stdin: "{{ _osc_approle_token }}\n"
   register: _os_approle_final_secretids
   loop: "{{ _os_logical_items }}"
   loop_control:
     loop_var: logical_item
     label: "{{ logical_item.logical }}"
-  environment:
-    OPENBAO_TOKEN: "{{ _osc_approle_token }}"
   no_log: true
 
 # ── Step 10: Build combined credential list with namespace subelements ──────

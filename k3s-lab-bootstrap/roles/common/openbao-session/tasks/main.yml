@@ -80,17 +80,14 @@
 - name: Log into OpenBao with {{ openbao_session_mode }} userpass
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_PASSWORD" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_session_namespace }}
       exec -i {{ _openbao_session_pod }}
       -- sh -c '
-      IFS= read -r P;
-      bao write -format=json auth/userpass/login/{{ _openbao_session_username | quote }} password="$P"'
+      bao write -format=json auth/userpass/login/{{ _openbao_session_username | quote }} -'
+    stdin: "{{ {'password': _openbao_session_password} | to_json }}\n"
   register: _openbao_session_login_raw
   changed_when: false
-  environment:
-    OPENBAO_PASSWORD: "{{ _openbao_session_password }}"
   no_log: true
 
 - name: Extract OpenBao client token

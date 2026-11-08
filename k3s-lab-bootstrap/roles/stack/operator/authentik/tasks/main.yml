@@ -40,7 +40,6 @@
 - name: Read current Authentik runtime secret from OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ authentik_openbao_namespace }}
       exec -i {{ _authentik_openbao_pod }}
@@ -48,11 +47,10 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json {{ authentik_runtime_secret_path | quote }}'
+    stdin: "{{ _authentik_openbao_client_token }}\n"
   register: _authentik_runtime_secret_raw
   changed_when: false
   failed_when: false
-  environment:
-    OPENBAO_TOKEN: "{{ _authentik_openbao_client_token }}"
   no_log: true
 
 - name: Parse current Authentik runtime secret document
@@ -138,33 +136,18 @@
 - name: Persist Authentik runtime secret to OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n%s\n%s\n'
-      "$OPENBAO_TOKEN"
-      "$AUTHENTIK_SECRET_KEY"
-      "$AUTHENTIK_BOOTSTRAP_TOKEN"
-      "$AUTHENTIK_POSTGRES_PASSWORD" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ authentik_openbao_namespace }}
       exec -i {{ _authentik_openbao_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r SECRET_KEY;
-      IFS= read -r BOOTSTRAP_TOKEN;
-      IFS= read -r POSTGRES_PASSWORD;
       export BAO_TOKEN;
-      bao kv put {{ authentik_runtime_secret_path | quote }}
-      secret_key="$SECRET_KEY"
-      bootstrap_token="$BOOTSTRAP_TOKEN"
-      postgres_password="$POSTGRES_PASSWORD"'
+      bao kv put {{ authentik_runtime_secret_path | quote }} -'
+    stdin: "{{ _authentik_openbao_client_token }}\n{{ {'secret_key': authentik_secret_key_effective, 'bootstrap_token': authentik_bootstrap_token_effective, 'postgres_password': authentik_postgresql_password_effective} | to_json }}\n"
   when:
     - _authentik_runtime_secret_data.secret_key | default('') != authentik_secret_key_effective
       or _authentik_runtime_secret_data.bootstrap_token | default('') != authentik_bootstrap_token_effective
       or _authentik_runtime_secret_data.postgres_password | default('') != authentik_postgresql_password_effective
-  environment:
-    OPENBAO_TOKEN: "{{ _authentik_openbao_client_token }}"
-    AUTHENTIK_SECRET_KEY: "{{ authentik_secret_key_effective }}"
-    AUTHENTIK_BOOTSTRAP_TOKEN: "{{ authentik_bootstrap_token_effective }}"
-    AUTHENTIK_POSTGRES_PASSWORD: "{{ authentik_postgresql_password_effective }}"
   no_log: true
 
 - name: Create Authentik runtime ExternalSecret

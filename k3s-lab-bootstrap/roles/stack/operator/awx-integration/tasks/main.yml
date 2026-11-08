@@ -160,18 +160,15 @@
 - name: Log into OpenBao with operator userpass for AWX persistence
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_PASSWORD" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ awx_integration_openbao_namespace }}
       exec -i {{ _awx_openbao_pod }}
       -- sh -c '
-      IFS= read -r P;
-      bao write -format=json auth/userpass/login/{{ _awx_openbao_username | quote }} password="$P"'
+      bao write -format=json auth/userpass/login/{{ _awx_openbao_username | quote }} -'
+    stdin: "{{ {'password': _awx_openbao_password} | to_json }}\n"
   register: _awx_openbao_operator_login_raw
   changed_when: false
   run_once: true
-  environment:
-    OPENBAO_PASSWORD: "{{ _awx_openbao_password }}"
   no_log: true
   when: awx_integration_persist_to_openbao | bool
 
@@ -185,20 +182,15 @@
 - name: Log into in-cluster OpenBao for AWX source-token reads
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n' "$OPENBAO_ROLE_ID" "$OPENBAO_SECRET_ID" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ awx_integration_openbao_namespace }}
       exec -i {{ _awx_openbao_pod }}
       -- sh -c '
-      IFS= read -r ROLE_ID;
-      IFS= read -r SECRET_ID;
-      bao write -format=json auth/approle/login role_id="$ROLE_ID" secret_id="$SECRET_ID"'
+      bao write -format=json auth/approle/login -'
+    stdin: "{{ {'role_id': _awx_openbao_eso_role_id, 'secret_id': _awx_openbao_eso_secret_id} | to_json }}\n"
   register: _awx_openbao_login_raw
   changed_when: false
   run_once: true
-  environment:
-    OPENBAO_ROLE_ID: "{{ _awx_openbao_eso_role_id }}"
-    OPENBAO_SECRET_ID: "{{ _awx_openbao_eso_secret_id }}"
   no_log: true
   when:
     - awx_integration_netbox_token | default('', true) | length == 0
@@ -221,7 +213,6 @@
 - name: Read NetBox runtime token from in-cluster OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ awx_integration_openbao_namespace }}
       exec -i {{ _awx_openbao_pod }}
@@ -229,11 +220,10 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json {{ awx_integration_netbox_runtime_secret_path | quote }}'
+    stdin: "{{ _awx_openbao_client_token }}\n"
   register: _awx_openbao_netbox_raw
   changed_when: false
   run_once: true
-  environment:
-    OPENBAO_TOKEN: "{{ _awx_openbao_client_token }}"
   no_log: true
   when: >-
     awx_integration_netbox_token | default('', true) | length == 0
@@ -294,7 +284,6 @@
 - name: Read Forgejo runtime token from in-cluster OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ awx_integration_openbao_namespace }}
       exec -i {{ _awx_openbao_pod }}
@@ -302,11 +291,10 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json {{ awx_integration_forgejo_runtime_secret_path | quote }}'
+    stdin: "{{ _awx_openbao_client_token }}\n"
   register: _awx_openbao_forgejo_raw
   changed_when: false
   run_once: true
-  environment:
-    OPENBAO_TOKEN: "{{ _awx_openbao_client_token }}"
   no_log: true
   when: awx_integration_forgejo_token | default('', true) | length == 0
 
@@ -327,7 +315,6 @@
 - name: Revoke OpenBao token after AWX source-token reads
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ awx_integration_openbao_namespace }}
       exec -i {{ _awx_openbao_pod }}
@@ -335,11 +322,10 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao token revoke -self'
+    stdin: "{{ _awx_openbao_client_token }}\n"
   changed_when: false
   failed_when: false
   run_once: true
-  environment:
-    OPENBAO_TOKEN: "{{ _awx_openbao_client_token }}"
   no_log: true
   when: _awx_openbao_client_token is defined
 
@@ -1551,29 +1537,17 @@
 - name: Persist AWX integration secrets to in-cluster OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n%s\n'
-      "$OPENBAO_TOKEN"
-      "$AWX_SVC_PASSWORD"
-      "$AWX_SVC_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ awx_integration_openbao_namespace }}
       exec -i {{ _awx_openbao_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r SVC_PASSWORD;
-      IFS= read -r SVC_TOKEN;
+      BODY=$(cat);
       export BAO_TOKEN;
-      bao kv patch {{ awx_integration_runtime_secret_path | quote }}
-      awx_svc_password="$SVC_PASSWORD"
-      awx_svc_token="$SVC_TOKEN"
-      || bao kv put {{ awx_integration_runtime_secret_path | quote }}
-      awx_svc_password="$SVC_PASSWORD"
-      awx_svc_token="$SVC_TOKEN"'
+      printf %s "$BODY" | bao kv patch {{ awx_integration_runtime_secret_path | quote }} -
+      || printf %s "$BODY" | bao kv put {{ awx_integration_runtime_secret_path | quote }} -'
+    stdin: "{{ _awx_openbao_operator_client_token }}\n{{ {'awx_svc_password': awx_integration_svc_password_effective, 'awx_svc_token': awx_integration_svc_token_effective} | to_json }}\n"
   run_once: true
-  environment:
-    OPENBAO_TOKEN: "{{ _awx_openbao_operator_client_token }}"
-    AWX_SVC_PASSWORD: "{{ awx_integration_svc_password_effective }}"
-    AWX_SVC_TOKEN: "{{ awx_integration_svc_token_effective }}"
   changed_when: false
   no_log: true
   when: awx_integration_persist_to_openbao | bool
@@ -2241,23 +2215,19 @@
     - awx_control_node_ssh_privkey_path | length > 0
 
 - name: Bootstrap AWX SSH privkey to OpenBao (write)
-  ansible.builtin.shell: |
-    printf '%s\n%s\n' "$OPENBAO_TOKEN" "$SSH_KEY_B64" |
-    kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
-    -n {{ awx_integration_openbao_namespace }} \
-    exec -i {{ _awx_openbao_pod }} \
-    -- sh -c '
-    IFS= read -r BAO_TOKEN
-    IFS= read -r SSH_KEY_B64
-    export BAO_TOKEN
-    SSH_KEY_DATA=$(echo "$SSH_KEY_B64" | base64 -d)
-    bao kv put secret/apps/awx/control_node_ssh ssh_key_data="$SSH_KEY_DATA"
-    '
+  ansible.builtin.shell:
+    cmd: |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
+      -n {{ awx_integration_openbao_namespace }} \
+      exec -i {{ _awx_openbao_pod }} \
+      -- sh -c '
+      IFS= read -r BAO_TOKEN
+      export BAO_TOKEN
+      bao kv put secret/apps/awx/control_node_ssh -
+      '
+    stdin: "{{ _awx_openbao_operator_client_token }}\n{{ {'ssh_key_data': _awx_ssh_privkey_slurp.content | b64decode} | to_json }}\n"
   register: _awx_ssh_bootstrap_write
   run_once: true
-  environment:
-    OPENBAO_TOKEN: "{{ _awx_openbao_operator_client_token }}"
-    SSH_KEY_B64: "{{ _awx_ssh_privkey_slurp.content }}"
   changed_when: false
   no_log: true
   when:
@@ -2311,7 +2281,6 @@
 - name: Read AWX control-node SSH privkey from OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ awx_integration_openbao_namespace }}
       exec -i {{ _awx_openbao_pod }}
@@ -2319,11 +2288,10 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json secret/apps/awx/control_node_ssh'
+    stdin: "{{ _awx_openbao_operator_client_token }}\n"
   register: _awx_control_node_ssh_raw
   changed_when: false
   run_once: true
-  environment:
-    OPENBAO_TOKEN: "{{ _awx_openbao_operator_client_token }}"
   no_log: true
   when:
     - awx_integration_persist_to_openbao | bool
