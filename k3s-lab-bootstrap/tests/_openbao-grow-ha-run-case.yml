@@ -8,6 +8,13 @@
     openbao_grow_cert_wait_retries: 5
     openbao_grow_cert_wait_delay: 1
 
+# A case can replace the rendered certificate names. The fact stays set for later
+# cases, so a case that sets it goes last in its list.
+- name: "{{ case.name }} — set the certificate names of the case"
+  ansible.builtin.set_fact:
+    cert_manager_openbao_dns_names: "{{ case.dns_names }}"
+  when: case.dns_names is defined
+
 - name: "{{ case.name }} — set up the fake cluster"
   ansible.builtin.include_tasks: _openbao-grow-ha-setup.yml
 
@@ -72,7 +79,15 @@
   ansible.builtin.stat:
     path: "{{ _case_dir }}/bao-argv.log"
   register: _bao_log
-  when: case.id == 'check_mode'
+  when: case.id in ['check_mode', 'dns_names']
+
+# The certificate names are checked before the first call.
+- name: "{{ case.name }} — nothing was read or written before the refusal"
+  ansible.builtin.assert:
+    that:
+      - _events | length == 0
+      - not _bao_log.stat.exists
+  when: case.id == 'dns_names'
 
 # Check mode refuses at the first task: no call reached the cluster, the fake
 # kubernetes.core or the fake bao.

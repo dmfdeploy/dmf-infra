@@ -50,19 +50,21 @@ cert_manager_openbao_base_dns_names:
   - openbao.openbao.svc.cluster.local
 # Raft peers. Every pod of an HA OpenBao serves this one certificate
 # and dials its peers by pod name, so the certificate covers the headless
-# Service and a wildcard for the pod names under it. The Service name is the
-# default of openbao_headless_service_name in the openbao role: keep them in
-# step. The names appear only when the site sets openbao_replicas above 1,
-# which is a site property in the inventory.
-cert_manager_openbao_headless_service_name: openbao-internal
+# Service and a wildcard for the pod names under it. The names appear only when
+# the site sets openbao_replicas above 1, which is a site property in the
+# inventory.
+# The headless Service name. The openbao role reads the same variable, with the
+# same default, for the StatefulSet and the Raft peer addresses. Keep the two
+# defaults equal: one inventory override then changes both.
+openbao_headless_service_name: openbao-internal
 cert_manager_openbao_ha_dns_names:
-  - "{{ cert_manager_openbao_headless_service_name }}"
-  - "{{ cert_manager_openbao_headless_service_name }}.openbao"
-  - "{{ cert_manager_openbao_headless_service_name }}.openbao.svc"
-  - "{{ cert_manager_openbao_headless_service_name }}.openbao.svc.cluster.local"
-  - "*.{{ cert_manager_openbao_headless_service_name }}.openbao"
-  - "*.{{ cert_manager_openbao_headless_service_name }}.openbao.svc"
-  - "*.{{ cert_manager_openbao_headless_service_name }}.openbao.svc.cluster.local"
+  - "{{ openbao_headless_service_name }}"
+  - "{{ openbao_headless_service_name }}.{{ cert_manager_openbao_namespace }}"
+  - "{{ openbao_headless_service_name }}.{{ cert_manager_openbao_namespace }}.svc"
+  - "{{ openbao_headless_service_name }}.{{ cert_manager_openbao_namespace }}.svc.cluster.local"
+  - "*.{{ openbao_headless_service_name }}.{{ cert_manager_openbao_namespace }}"
+  - "*.{{ openbao_headless_service_name }}.{{ cert_manager_openbao_namespace }}.svc"
+  - "*.{{ openbao_headless_service_name }}.{{ cert_manager_openbao_namespace }}.svc.cluster.local"
 cert_manager_openbao_dns_names: >-
   {{ cert_manager_openbao_base_dns_names
      + (cert_manager_openbao_ha_dns_names if (openbao_replicas | default(1) | int) > 1 else []) }}
