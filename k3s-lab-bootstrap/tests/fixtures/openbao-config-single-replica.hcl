@@ -9,9 +9,12 @@ listener "tcp" {
   tls_disable     = 0
   tls_cert_file   = "/openbao/config/tls/tls.crt"
   tls_key_file    = "/openbao/config/tls/tls.key"
+  max_request_duration = "60s"
 }
 
 api_addr      = "https://openbao.openbao.svc.cluster.local:8200"
 cluster_addr  = "https://openbao.openbao.svc.cluster.local:8201"
 disable_mlock = true
 ui            = true
+
+default_max_request_duration = "60s"
