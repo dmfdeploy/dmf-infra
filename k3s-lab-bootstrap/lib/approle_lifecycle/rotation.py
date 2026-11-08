@@ -1,9 +1,10 @@
 """Registry-driven rotation transaction for one runtime AppRole target, and a
-sweep over every runtime target (dmfdeploy/dmfdeploy#11, step A.3a).
+sweep over every runtime target.
 
-One run follows the six steps of the lifecycle plan's "Safe rotation
-transaction": read, stage a candidate, issue it, deliver it, wait for
-readiness, promote. A run takes a registry target, the C5 quartet (actor,
+One run follows the six steps of the "Safe rotation transaction" section of
+`docs/plans/openbao-approle-credential-lifecycle-plan.md` in the dmfdeploy
+umbrella repository: read, stage a candidate, issue it, deliver it, wait for
+readiness, promote. A run takes a registry target, the audit context (actor,
 role, request id, reason) and clients. The request id is the run id. All I/O
 goes through the clients listed on `RotationClients`, so the same code runs in
 a playbook, a job or a test. This module has no transport.
@@ -20,8 +21,8 @@ before each request. It relies on time bounds that it states and checks:
   client declares that bound as its `request_timeout` attribute, and a run
   refuses a client whose bound is larger than the config's. The protocol also
   counts on the servers bounding a request (OpenBao `max_request_duration`,
-  the Kubernetes API server's request timeout). Step A.3b validates both on the
-  sandbox.
+  the Kubernetes API server's request timeout). The caller that wires the
+  real clients validates both bounds on the sandbox cluster.
 - Assumption 2, bounded clock skew and pauses. The clocks of the runs differ by
   at most `clock_skew_margin` seconds (`CLOCK_SKEW_MARGIN_SECONDS` by default),
   and a run does not pause for longer than that between a check and the
@@ -95,10 +96,10 @@ The rules that keep a consumer from being stranded:
   accessor listing are not part of the client interfaces.
 
 Readiness uses `adapters.evaluate_target` unless the config supplies another
-evaluator. That function never accepts a target in this step (the registry
+evaluator. That function never accepts a target yet (the registry
 status `missing` for `fresh_authentication_proof`), so with the default a
 transaction stops at `delivered-pending-readiness` and keeps its replacement.
-Step A.3b or a later step supplies the proof.
+A later change that defines the proof supplies it.
 
 Metadata v1 has no field for the transaction id, state, staging path or the
 pending accessor. The engine keeps them in its own record at
@@ -260,7 +261,7 @@ class RotationConfig:
 
 @dataclass(frozen=True)
 class RunContext:
-    """The C5 quartet. `request_id` is the run id."""
+    """The audit context of a run. `request_id` is the run id."""
 
     actor: str
     role: str
@@ -295,7 +296,7 @@ class SweepResult:
 
 
 def validate_context(context):
-    """Raise RotationError unless the quartet is complete and well formed.
+    """Raise RotationError unless the audit context is complete and well formed.
     Nothing has been read or written yet."""
     if not isinstance(context, RunContext):
         raise RotationError("invalid_state", "the run context is missing")
@@ -656,7 +657,7 @@ class _TargetRun:
         self._promote()
         return self._result("rotated")
 
-    # -- step 1: read
+    # -- read
     def _read_role(self):
         role = _call("lookup_failed", "the AppRole could not be read", self.bao.read_role, self.approle)
         if not isinstance(role, dict):
@@ -691,7 +692,7 @@ class _TargetRun:
         elif data["state"] == ABORTED:
             self._finish_abort()
 
-    # -- step 2: intent and staging
+    # -- intent and staging
     def _begin(self):
         version = (self.main or {}).get("target_version") or 0
         data = _new_transaction(self.entry, self.context, version + 1, self.now())
@@ -728,7 +729,7 @@ class _TargetRun:
             raise RotationError("invalid_state", "a staging record already exists") from None
         return candidate
 
-    # -- step 3: look up or create the same candidate
+    # -- look up or create the same candidate
     def _bounds_ok(self, found):
         return (
             isinstance(found, dict)
@@ -825,7 +826,7 @@ class _TargetRun:
         self.tx.update(state=DELIVERED_PENDING_READINESS, delivered_at=self.now())
 
     def _classify(self):
-        """Step 5: any destination with the marker makes the transaction delivered."""
+        """Any destination with the marker makes the transaction delivered."""
         if any(self._markers()):
             self._mark_delivered()
 
@@ -859,7 +860,7 @@ class _TargetRun:
         if not verdict.ok:
             raise RotationError("readiness_failed", "a readiness gate did not pass")
 
-    # -- step 6: promote, then clean up
+    # -- promote, then clean up
     def _promote(self):
         """Switch the v1 record to the new accessor. The success heartbeat
         stays as it was: it moves only after cleanup succeeds."""
