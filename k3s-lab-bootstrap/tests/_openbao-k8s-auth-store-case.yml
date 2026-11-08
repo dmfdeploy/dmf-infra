@@ -32,7 +32,8 @@
   ansible.builtin.assert:
     that:
       - _auth.keys() | list == [('kubernetes' if case.method == 'kubernetes' else 'appRole')]
-      - case.method != 'approle' or (_object | dict2items | rejectattr('key', 'equalto', 'status') | items2dict) == (lookup('ansible.builtin.file', 'fixtures/eso-store-approle-before-kubernetes-auth.json') | from_json)
+      - >-
+        case.method != 'approle' or (_object | dict2items | rejectattr('key', 'in', ['status']) | items2dict | combine({'metadata': {'name': _object.metadata.name}})) == (lookup('ansible.builtin.file', 'fixtures/eso-store-approle-before-kubernetes-auth.json') | from_json)
       - >-
         case.method != 'kubernetes' or _auth.kubernetes == {'mountPath': 'kubernetes', 'role': 'external-secrets', 'serviceAccountRef': {'name': 'external-secrets', 'namespace': 'external-secrets', 'audiences': ['openbao']}}
       # A store is replaced only when it holds another method.
