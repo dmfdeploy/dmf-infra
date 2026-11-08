@@ -14,6 +14,8 @@
   connection: local
   vars:
     openbao_raft_node_id: "1"
+    openbao_namespace: openbao
+    openbao_headless_service_name: openbao-internal
     openbao_guard_max_last_contact_seconds: 10
     guard_cases:
       - name: All healthy
@@ -41,16 +43,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -81,16 +86,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -122,16 +130,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -163,16 +174,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -192,16 +206,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: false
               last_contact: 12ms
@@ -221,16 +238,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -250,16 +270,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 1m30.5s
@@ -279,16 +302,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 250ms
@@ -307,16 +333,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: ''
@@ -335,11 +364,13 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -359,16 +390,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: non-voter
               healthy: true
               last_contact: 12ms
@@ -388,16 +422,19 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -417,21 +454,25 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             openbao-2:
               id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
             ghost:
               id: ghost
+              address: ghost.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -451,11 +492,77 @@
           servers:
             '1':
               id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 0s
             openbao-1:
               id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: leader is not one of the expected pods
+      - name: Node 1 is at the Service address
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              address: openbao.openbao.svc.cluster.local:8201
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+            openbao-2:
+              id: openbao-2
+              address: openbao-2.openbao-internal.openbao.svc.cluster.local:8201
+              node_type: voter
+              healthy: true
+              last_contact: 12ms
+        state_read: true
+        expect: refuse
+        message: 'openbao-0 (node ID 1) is at the Raft address openbao.openbao.svc.cluster.local:8201, not openbao-0.openbao-internal.openbao.svc.cluster.local:8201'
+      - name: A server has no address in the state
+        pods: *id001
+        state:
+          healthy: true
+          failure_tolerance: 1
+          leader: '1'
+          voters:
+            - '1'
+            - openbao-1
+            - openbao-2
+          servers:
+            '1':
+              id: '1'
+              address: openbao-0.openbao-internal.openbao.svc.cluster.local:8201
+              node_type: voter
+              healthy: true
+              last_contact: 0s
+            openbao-1:
+              id: openbao-1
+              address: openbao-1.openbao-internal.openbao.svc.cluster.local:8201
               node_type: voter
               healthy: true
               last_contact: 12ms
@@ -466,7 +573,7 @@
               last_contact: 12ms
         state_read: true
         expect: refuse
-        message: leader is not one of the expected pods
+        message: 'openbao-2 (node ID openbao-2) is at the Raft address unknown'
       - name: The state could not be read
         pods: *id001
         state: {}

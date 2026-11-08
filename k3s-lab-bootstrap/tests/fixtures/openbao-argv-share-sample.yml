@@ -1,6 +1,6 @@
 ---
 # Fixture for test_openbao_no_secret_argv.py: the pattern the check must catch.
-# It is the unseal task as it was before dmfdeploy/dmfdeploy#872. Not run by anything.
+# It is the unseal task as it was before the shares moved to stdin. Not run by anything.
 - name: Unseal OpenBao with a share as an argument
   ansible.builtin.command:
     argv:

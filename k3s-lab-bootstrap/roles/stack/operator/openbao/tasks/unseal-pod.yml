@@ -7,6 +7,11 @@
 # `bao operator unseal -` does not work: that command takes the key as its one
 # positional argument and treats `-` as the key itself (OpenBao v2.5.2,
 # command/operator_unseal.go lines 105-110).
+#
+# The two `bao status` reads run in check mode (check_mode: false) because they
+# change nothing, and the play needs their output. Without it, check mode skips
+# the command, the wait never sees output, and the play fails. The unseal write
+# below stays skipped in check mode.
 - name: Wait for the pod to report initialized
   ansible.builtin.command:
     argv:
@@ -22,6 +27,7 @@
       - status
       - -format=json
   register: _openbao_unseal_status
+  check_mode: false
   changed_when: false
   # bao status exits 2 while the pod is sealed (command/status.go lines 94-95).
   # The output is what counts.
@@ -79,6 +85,7 @@
       - status
       - -format=json
   register: _openbao_unseal_after
+  check_mode: false
   changed_when: false
   failed_when: >-
     _openbao_unseal_after.stdout | default('') | length == 0

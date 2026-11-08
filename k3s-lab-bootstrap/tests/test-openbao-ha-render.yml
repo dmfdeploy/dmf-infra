@@ -28,12 +28,12 @@
         _sts1: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
         _cfg1: "{{ lookup('ansible.builtin.template', _tpl ~ '/config.hcl.j2') }}"
 
-    - name: One replica — assert the render equals the pre-WP3 render
+    - name: One replica — assert the render equals the render from before the Raft change
       ansible.builtin.assert:
         that:
           - _sts1 == (lookup('ansible.builtin.file', 'fixtures/openbao-statefulset-single-replica.json') | from_json)
           - _cfg1 == lookup('ansible.builtin.file', 'fixtures/openbao-config-single-replica.hcl', rstrip=false)
-        fail_msg: The single-replica render differs from the pre-WP3 render.
+        fail_msg: The single-replica render differs from the render from before the Raft change.
 
     - name: One replica — assert the certificate names are unchanged
       ansible.builtin.assert:

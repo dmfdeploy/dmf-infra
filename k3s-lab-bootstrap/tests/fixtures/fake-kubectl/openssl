@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 # Fake openssl for tests/test-openbao-grow-ha.yml. It answers only
 # `openssl x509 -noout -ext subjectAltName`, and prints $FAKE_SAN (default: a
-# certificate that covers the Raft peers). The macOS openssl is LibreSSL, which has
-# no `-ext` option, and the migration's certificate check runs on a Linux node.
+# certificate that covers the Raft peers), unless its input is the text "stale":
+# then it prints a certificate that does not cover them. The macOS openssl is
+# LibreSSL, which has no `-ext` option, and the migration's certificate check runs
+# on a Linux node.
 case "$*" in
   "x509 -noout -ext subjectAltName")
-    cat > /dev/null
+    crt="$(cat)"
+    # The certificate "stale" is one that does not cover the Raft peers yet.
+    if [ "$crt" = stale ]; then
+      printf 'X509v3 Subject Alternative Name: \n    DNS:openbao\n'
+      exit 0
+    fi
     printf 'X509v3 Subject Alternative Name: \n    %s\n' "${FAKE_SAN:-DNS:openbao, DNS:*.openbao-internal.openbao.svc.cluster.local}"
     exit 0
     ;;

@@ -1,0 +1,71 @@
+---
+# The OpenBao certificate: namespace, self-signed Issuer, Certificate and the wait
+# for it. main.yml includes this file, and the OpenBao grow-HA play includes it
+# alone (include_role with tasks_from) to reissue the certificate with the Raft
+# peer names from the same definition.
+
+# OpenBao TLS is internal-only. Use a self-signed issuer so the OpenBao pod and
+# in-cluster clients can trust the same certificate without depending on ACME.
+
+- name: Create OpenBao namespace for TLS Issuer
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ cert_manager_openbao_namespace }}"
+  when: cert_manager_openbao_enabled | bool
+
+- name: Create OpenBao self-signed Issuer
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Issuer
+      metadata:
+        name: "{{ cert_manager_openbao_issuer_name }}"
+        namespace: "{{ cert_manager_openbao_namespace }}"
+      spec:
+        selfSigned: {}
+  when: cert_manager_openbao_enabled | bool
+
+- name: Create OpenBao Certificate
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ cert_manager_openbao_certificate_name }}"
+        namespace: "{{ cert_manager_openbao_namespace }}"
+      spec:
+        secretName: "{{ cert_manager_openbao_tls_secret_name }}"
+        commonName: "{{ cert_manager_openbao_common_name }}"
+        dnsNames: "{{ cert_manager_openbao_dns_names }}"
+        ipAddresses: "{{ cert_manager_openbao_ip_addresses }}"
+        issuerRef:
+          name: "{{ cert_manager_openbao_issuer_name }}"
+          kind: Issuer
+  when: cert_manager_openbao_enabled | bool
+
+- name: Wait for OpenBao Certificate to become Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ cert_manager_openbao_certificate_name }}"
+    namespace: "{{ cert_manager_openbao_namespace }}"
+  register: cert_manager_openbao_certificate_status
+  until: >-
+    cert_manager_openbao_certificate_status.resources | length > 0
+    and (cert_manager_openbao_certificate_status.resources[0].status.conditions | default([]))
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length > 0
+  retries: "{{ cert_manager_openbao_wait_retries }}"
+  delay: "{{ cert_manager_openbao_wait_delay }}"
+  when: cert_manager_openbao_enabled | bool

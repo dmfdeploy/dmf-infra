@@ -11,15 +11,26 @@
 #     missing path, and exits 2 with "Error reading ..." for other failures
 #     (command/kv_metadata_get.go).
 #   - `bao token capabilities -format=json` prints a JSON list.
-#   - `bao operator raft autopilot state -format=json` prints the autopilot state
-#     (physical/raft/raft_autopilot.go: healthy, failure_tolerance, servers, leader,
-#     voters).
+#   - `bao read -format=json sys/storage/raft/autopilot/state` prints the API
+#     response: the state object, with snake_case keys (healthy, failure_tolerance,
+#     leader, voters, servers), is under "data".
+#   - `bao read -format=json sys/storage/raft/configuration` prints the API response:
+#     data.config.servers is a list of {node_id, address, leader, voter}.
+#   - `bao operator raft autopilot state -format=json` prints the same state with Go
+#     field names (Healthy, FailureTolerance, Servers, NodeType, LastContact), as
+#     OpenBao 2.5.2 does. The guard must not read this form, so a caller that does
+#     fails the tests.
 # Scenario variables (all optional):
 #   FAKE_SEALED          space-separated pods that start sealed
 #   FAKE_THRESHOLD       shares that unseal a pod (default 3)
 #   FAKE_VALID_KEYS      space-separated accepted keys (default: any non-empty key)
 #   FAKE_PASSWORD        accepted userpass password (default: pw)
-#   FAKE_AUTOPILOT       healthy | unhealthy | stale | missing | delayed | denied | down
+#   FAKE_AUTOPILOT       healthy | unhealthy | stale | missing | delayed | denied | down |
+#                        service_address (node 1 at the Service address)
+#   FAKE_PEER_DOMAIN     what follows <pod>. in a Raft address (default
+#                        openbao-internal.openbao.svc.cluster.local)
+#   FAKE_RAFT_CONFIG     healthy | service_address | denied  (node 1's address in the
+#                        Raft configuration; file raft-config in the state directory wins)
 #   FAKE_PROMOTE_AFTER   with delayed: autopilot calls before the new voter is healthy
 #   FAKE_CAPS_MISSING    space-separated paths on which the token has no capability
 #   FAKE_CAPS_JSON       capability list for every other path (default ["read"])
@@ -30,12 +41,18 @@ state="${FAKE_STATE:?FAKE_STATE is not set}"
 pod="${FAKE_POD:-openbao-0}"
 mkdir -p "$state"
 printf '%s\n' "$*" >> "$state/bao-argv.log"
+# One log of every call in order, shared with the fake kubectl and the fake
+# kubernetes.core modules, so a test can check what ran before what.
+printf 'bao %s %s\n' "$pod" "$*" >> "$state/events.log"
 
 pod_in() { case " $2 " in *" $1 "*) return 0 ;; esac; return 1; }
 progress_file="$state/progress-$pod"
 unsealed_file="$state/unsealed-$pod"
+# A pod that the fake kubernetes.core.k8s deleted comes back sealed.
+sealed_file="$state/sealed-$pod"
 is_sealed() {
   [ -f "$unsealed_file" ] && return 1
+  [ -f "$sealed_file" ] && return 0
   pod_in "$pod" "${FAKE_SEALED:-}" && return 0
   return 1
 }
@@ -68,7 +85,7 @@ sys.exit(1) if not isinstance(k,str) or not k else print(k)' 2>/dev/null)" || { 
     fi
     n=$(( $(cat "$progress_file" 2>/dev/null || echo 0) + 1 ))
     echo "$n" > "$progress_file"
-    if [ "$n" -ge "${FAKE_THRESHOLD:-3}" ]; then touch "$unsealed_file"; fi
+    if [ "$n" -ge "${FAKE_THRESHOLD:-3}" ]; then touch "$unsealed_file"; rm -f "$sealed_file"; fi
     printf '{"sealed":%s,"progress":%s}\n' "$([ -f "$unsealed_file" ] && echo false || echo true)" "$n"
     exit 0
     ;;
@@ -85,24 +102,30 @@ sys.exit(1) if not isinstance(k,str) or not k else print(k)' 2>/dev/null)" || { 
     printf '{"auth":{"client_token":"fake-ops-token"}}\n'
     exit 0
     ;;
-  "operator raft autopilot state -format=json")
+  "read -format=json sys/storage/raft/autopilot/state"|"operator raft autopilot state -format=json")
     [ -n "${BAO_TOKEN:-}" ] || { echo "Error reading autopilot state: permission denied" >&2; exit 2; }
     n="$(count_call autopilot)"
     case "${FAKE_AUTOPILOT:-healthy}" in
       denied) echo "Error reading autopilot state: permission denied" >&2; exit 2 ;;
       down) echo "Error reading autopilot state: dial tcp: connection refused" >&2; exit 2 ;;
     esac
-    python3 - "${FAKE_AUTOPILOT:-healthy}" "$n" "${FAKE_PROMOTE_AFTER:-0}" <<'PY'
+    form=api
+    [ "$1" = "operator" ] && form=cli
+    python3 - "${FAKE_AUTOPILOT:-healthy}" "$n" "${FAKE_PROMOTE_AFTER:-0}" "$form" "${FAKE_PEER_DOMAIN:-openbao-internal.openbao.svc.cluster.local}" <<'PY'
 import json, sys
-scenario, calls, promote_after = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
+scenario, calls, promote_after, form, domain = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4], sys.argv[5]
 def server(sid, healthy=True, node_type="voter", last_contact="12ms"):
-    return {"id": sid, "name": sid, "address": sid + ".openbao-internal.openbao.svc.cluster.local:8201",
+    # Node 1 is pod 0. Each pod is at <pod>.<headless service>.<namespace>.svc:8201.
+    pod = "openbao-0" if sid == "1" else sid
+    return {"id": sid, "name": sid, "address": pod + "." + domain + ":8201",
             "node_status": "alive", "last_contact": last_contact, "last_term": 3, "last_index": 100,
             "healthy": healthy, "stable_since": "2026-01-01T00:00:00Z", "status": "leader" if sid == "1" else "voter",
             "version": "2.5.2", "node_type": node_type}
 servers = {"1": server("1", last_contact="0s"), "openbao-1": server("openbao-1"), "openbao-2": server("openbao-2")}
 state = {"healthy": True, "failure_tolerance": 1, "leader": "1", "voters": ["1", "openbao-1", "openbao-2"], "servers": servers}
-if scenario == "unhealthy":
+if scenario == "service_address":
+    servers["1"]["address"] = "openbao.openbao.svc.cluster.local:8201"
+elif scenario == "unhealthy":
     servers["openbao-2"]["healthy"] = False
     state["healthy"] = False
     state["failure_tolerance"] = 0
@@ -117,8 +140,34 @@ elif scenario == "delayed" and calls < promote_after:
     state["voters"] = ["1", "openbao-1"]
     state["non_voters"] = ["openbao-2"]
     state["failure_tolerance"] = 0
-print(json.dumps(state))
+
+def go_name(key):
+    # The CLI prints Go struct field names: id -> ID, node_type -> NodeType.
+    return "ID" if key == "id" else "".join(part.capitalize() for part in key.split("_"))
+
+def go_form(obj):
+    return {go_name(k): v for k, v in obj.items()}
+
+if form == "api":
+    print(json.dumps({"request_id": "00000000-0000-4000-8000-000000000000", "lease_id": "",
+                      "lease_duration": 0, "renewable": False, "data": state, "warnings": None}))
+else:
+    cli = go_form(state)
+    cli["Servers"] = {sid: dict(go_form(srv), UpgradeVersion="") for sid, srv in servers.items()}
+    cli.setdefault("NonVoters", None)
+    cli["Upgrade"] = None
+    cli["OptimisticFailureTolerance"] = state["failure_tolerance"]
+    print(json.dumps(cli, indent=2))
 PY
+    exit 0
+    ;;
+  "read -format=json sys/storage/raft/configuration")
+    [ -n "${BAO_TOKEN:-}" ] || { echo "Error reading sys/storage/raft/configuration: permission denied" >&2; exit 2; }
+    mode="$(read_kv raft-config "${FAKE_RAFT_CONFIG:-healthy}")"
+    [ "$mode" = denied ] && { echo "Error reading sys/storage/raft/configuration: permission denied" >&2; exit 2; }
+    node1="openbao-0.${FAKE_PEER_DOMAIN:-openbao-internal.openbao.svc.cluster.local}:8201"
+    [ "$mode" = service_address ] && node1="openbao.openbao.svc.cluster.local:8201"
+    printf '{"request_id":"00000000-0000-4000-8000-000000000000","data":{"config":{"index":1,"servers":[{"address":"%s","leader":true,"node_id":"1","protocol_version":"3","voter":true}]}}}\n' "$node1"
     exit 0
     ;;
   "token capabilities -format=json "*)

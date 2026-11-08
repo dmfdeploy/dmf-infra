@@ -1,5 +1,5 @@
 storage "raft" {
-  path    = "/openbao/data"
+  path    = "{{ openbao_data_path }}"
 {% if openbao_replicas | int > 1 %}
   # node_id comes from BAO_RAFT_NODE_ID, set per pod in the StatefulSet.
 {% for _ordinal in range(openbao_replicas | int) %}

@@ -1,14 +1,24 @@
 ---
-# Test of the migration's refusals. It runs the real
+# Test of the migration. It runs the real
 # roles/stack/operator/openbao/tasks/grow-ha.yml against a fake kubectl, a fake
 # bao and a fake kubernetes.core (tests/fixtures/fake-collections), which logs
-# every change to the cluster. Each case must refuse, and the log of changes must
-# stay empty: every check that can refuse runs before the first change.
+# every call in order to $FAKE_STATE/events.log.
 #
-# Cases: a baseline with no existing path; a token that cannot read the Raft
-# paths (and no data read happens before that check); a site that is already a
-# cluster, or that an earlier run left half-migrated (no automatic resume); a
-# sealed pod 0; a certificate that does not cover the Raft peers.
+# Play 1, the refusals. Each case must refuse, and the log of changes must stay
+# empty: every check that can refuse runs before the first change. Cases: a
+# replica count of 1, 2 or 5 (the play supports exactly 3), and a count of 2 or 0
+# on the role's normal path; a baseline with
+# no existing path; a token that cannot read the Raft paths (and no data read
+# happens before that check); a site that is already a cluster, or that an earlier
+# run left half-migrated (no automatic resume); a sealed pod 0, with and without a
+# token that cannot read the Raft paths.
+#
+# Play 2, full runs. They check what the migration does and in what order: the
+# certificate is reissued after the checks and before the StatefulSet is deleted,
+# no bao call runs between the reissue and the restart of pod 0, raft/peers.json is
+# written before pod 0 is deleted, and the play scales only when node 1 is at its
+# per-pod address. A run in check mode refuses at the first task and leaves both
+# logs empty.
 #
 # Run locally, from k3s-lab-bootstrap:
 #   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections" \
@@ -64,10 +74,99 @@
           env: {FAKE_SEALED: openbao-0}
           message: openbao-0 is not initialized, unsealed and
           expect_kv_read: false
-        - name: The certificate does not cover the Raft peers
-          env: {FAKE_SAN: "DNS:openbao"}
-          message: does not cover
+        - name: Pod 0 is sealed and the token cannot read the Raft paths
+          env: {FAKE_SEALED: openbao-0, FAKE_CAPS_MISSING: sys/storage/raft/autopilot/state}
+          message: openbao-0 is not initialized, unsealed and
           expect_kv_read: false
+        - name: Two replicas
+          replicas: 2
+          message: A two-pod Raft cluster cannot lose a pod
+          expect_kv_read: false
+          expect_no_calls: true
+        - name: One replica
+          replicas: 1
+          message: The grow play supports exactly 3 replicas
+          expect_kv_read: false
+          expect_no_calls: true
+        - name: Five replicas
+          replicas: 5
+          message: The grow play supports exactly 3 replicas
+          expect_kv_read: false
+          expect_no_calls: true
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"
+
+    # The role's main.yml refuses a count of 2 or 0 at its first task. A count of 1
+    # or 3 would run the whole role, which the fakes do not model, so those two
+    # cases run the check file that main.yml and grow-ha.yml both include.
+    - name: Check the replica count on the role's normal path
+      ansible.builtin.include_tasks: _openbao-replicas-case.yml
+      loop:
+        - {replicas: 2, via: role, expect: refuse}
+        - {replicas: 0, via: role, expect: refuse}
+        - {replicas: 1, via: check, expect: pass}
+        - {replicas: 3, via: check, expect: pass}
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "replicas {{ case.replicas }}"
+
+- name: Migration test — OpenBao grow-HA full runs
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars_files:
+    - ../roles/stack/operator/openbao/defaults/main.yml
+  tasks:
+    - name: Set the site values for the test
+      ansible.builtin.set_fact:
+        openbao_replicas: 3
+        openbao_shamir_threshold: 1
+        openbao_guard_token: placeholder
+        openbao_operator_password: s3cret-test-password
+        openbao_migration_read_paths: [apps/zot/admin, apps/authentik/breakglass]
+
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-grow-run-
+      register: _state
+      changed_when: false
+
+    - name: Run the migration
+      ansible.builtin.include_tasks: _openbao-grow-ha-run-case.yml
+      loop:
+        - id: complete
+          name: A complete run
+          expect: pass
+        - id: custom_service
+          name: A complete run with another headless Service name
+          headless: raft-peers
+          env:
+            FAKE_PEER_DOMAIN: raft-peers.openbao.svc.cluster.local
+            FAKE_SAN: "DNS:*.raft-peers.openbao.svc.cluster.local"
+          expect: pass
+        - id: slow_certificate
+          name: The secret holds the old certificate for two reads
+          env: {FAKE_CERT_STALE_READS: "2"}
+          expect: pass
+        - id: certificate_never
+          name: The secret never holds a certificate that covers the peers
+          env: {FAKE_CERT_STALE_READS: "50"}
+          expect: refuse
+        - id: service_address
+          name: Node 1 stays at the Service address
+          env: {FAKE_RAFT_CONFIG: service_address}
+          expect: refuse
+          message: Raft node 1 is at openbao.openbao.svc.cluster.local:8201
+          also: 'the branch "Pod 0 is unsealed and node 1 is at the wrong address"'
+        - id: check_mode
+          name: A run in check mode
+          check_mode: true
+          expect: refuse
+          message: The grow play does not support check mode
       loop_control:
         loop_var: case
         index_var: case_index

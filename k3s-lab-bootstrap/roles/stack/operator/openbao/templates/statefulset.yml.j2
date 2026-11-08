@@ -105,7 +105,7 @@ spec:
               mountPath: /openbao/config/tls
               readOnly: true
             - name: data
-              mountPath: /openbao/data
+              mountPath: {{ openbao_data_path }}
           readinessProbe:
 {% if _ha %}
             # Ready means initialized and unsealed. A sealed pod leaves the

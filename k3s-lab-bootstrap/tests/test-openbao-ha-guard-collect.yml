@@ -13,6 +13,7 @@
   connection: local
   vars:
     openbao_namespace: openbao
+    openbao_headless_service_name: openbao-internal
     openbao_raft_node_id: "1"
     openbao_guard_max_last_contact_seconds: 10
     openbao_guard_require_peers: true
@@ -46,6 +47,10 @@
           env: {FAKE_AUTOPILOT: missing}
           expect: refuse
           message: openbao-2 (node ID openbao-2) is not in the Raft state
+        - name: Node 1 stored at the Service address
+          env: {FAKE_AUTOPILOT: service_address}
+          expect: refuse
+          message: 'openbao-0 (node ID 1) is at the Raft address openbao.openbao.svc.cluster.local:8201'
         - name: Autopilot state denied to the token
           env: {FAKE_AUTOPILOT: denied}
           expect: refuse
