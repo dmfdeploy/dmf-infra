@@ -303,7 +303,9 @@ class ExternalSecretGate:
 
     What a pass proves: a successful refresh through the expected store after
     the delivery. It does not prove authentication with the replacement,
-    because ESO may reuse a cached token. That proof belongs to step 3.
+    because ESO may reuse a cached token. The fresh-authentication proof is not defined yet; see
+    `docs/plans/openbao-approle-credential-lifecycle-plan.md` in the dmfdeploy
+    umbrella repository.
     """
 
     proves_acceptance = True
@@ -416,9 +418,10 @@ def store_name(entry):
 def evaluate_target(entry, gates, since, inventory=None):
     """Decide whether a target accepted a replacement delivered at `since`.
 
-    In this step, no target is accepted. A refresh through the expected store
-    does not prove that the replacement authenticated, and step 3 of the
-    credential lifecycle plan defines the proof that can. Until then every
+    No target is accepted yet. A refresh through the expected store does not
+    prove that the replacement authenticated, and the proof that can is not
+    defined yet (see `docs/plans/openbao-approle-credential-lifecycle-plan.md`
+    in the dmfdeploy umbrella repository). Until then every
     runtime target gets the reason code `fresh_authentication_proof_missing`,
     whatever its proof status string and whatever the gates return. The
     individual gate results are returned either way.
