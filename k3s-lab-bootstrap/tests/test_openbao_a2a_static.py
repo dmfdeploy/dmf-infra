@@ -18,8 +18,11 @@ BORN_ROLE = ROOT / "roles/common/dmf-born-inventory"
 # break-glass file is the default path and moved out of main.yml unchanged.
 ARGV_CHECKED = [
     OPENBAO_ROLE / "tasks/setup-issuer.yml",
+    OPENBAO_ROLE / "tasks/setup-rotation-scheduler.yml",
     BORN_ROLE / "tasks/openbao-setup-only.yml",
     ROOT / "playbooks/verify-openbao-identity-model.yml",
+    ROOT / "playbooks/vertical-orchestration/115-approle-rotation.yml",
+    ROOT / "playbooks/vertical-orchestration/110-eso-secret-rotation.yml",
 ]
 LEGACY_ARGV_EXCEPTIONS = {
     (BORN_ROLE / "tasks/openbao-breakglass.yml", "Log into OpenBao with born-inventory AppRole"): (

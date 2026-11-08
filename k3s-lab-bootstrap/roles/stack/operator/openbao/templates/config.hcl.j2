@@ -20,6 +20,7 @@ listener "tcp" {
   tls_disable     = 0
   tls_cert_file   = "/openbao/config/tls/tls.crt"
   tls_key_file    = "/openbao/config/tls/tls.key"
+  max_request_duration = "{{ openbao_max_request_duration_seconds }}s"
 }
 
 {% if openbao_replicas | int > 1 %}
@@ -31,3 +32,5 @@ cluster_addr  = "https://{{ openbao_service_name }}.{{ openbao_namespace }}.svc.
 {% endif %}
 disable_mlock = true
 ui            = true
+
+default_max_request_duration = "{{ openbao_max_request_duration_seconds }}s"

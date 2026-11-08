@@ -4,8 +4,8 @@
 #
 #   1. ops-admin, policy-reconciler, and approle-reconciler can all log in
 #      (positive: the identities exist and the break-glass JSON is complete),
-#      and the Kubernetes-auth setup-issuer can log in with a TokenRequest JWT
-#      for its ServiceAccount.
+#      and the Kubernetes-auth setup-issuer and rotation scheduler can log in
+#      with a TokenRequest JWT for their ServiceAccounts.
 #   2. The AC-5 separation matrix from the AppRole-Reconciler Implementation
 #      Brief §7.5 holds on the live cluster — ops-admin cannot write policy
 #      and cannot mint object-storage AppRole secret-ids; policy-reconciler
@@ -38,10 +38,14 @@
     verify_setup_issuer_service_account: "{{ openbao_setup_issuer_service_account | default('setup-issuer') }}"
     verify_setup_issuer_k8s_role: "{{ openbao_setup_issuer_k8s_role | default('setup-issuer') }}"
     verify_setup_issuer_audience: "{{ openbao_setup_issuer_audience | default('openbao') }}"
+    verify_rotation_scheduler_service_account: "{{ openbao_rotation_scheduler_service_account | default('approle-rotation-scheduler') }}"
+    verify_rotation_scheduler_k8s_role: "{{ openbao_rotation_scheduler_k8s_role | default('approle-rotation-scheduler') }}"
+    verify_rotation_scheduler_audience: "{{ openbao_rotation_scheduler_audience | default('openbao') }}"
     # Probe matrix per Implementation Brief §7.5. Each entry asserts the
     # identity's capability on the target path matches the expected outcome.
     # `deny` means the only capability returned is `deny` (full deny);
-    # `update` means the only capability returned is `update`;
+    # `update` means the only capability returned is `update`; `read` means the
+    # only capability returned is `read`;
     # `denied_or_missing` accepts either explicit deny or no-capabilities.
     verify_probes:
       - identity: ops-admin
@@ -104,6 +108,62 @@
         path: sys/mounts
         expected: deny
         reason: the setup issuer must not reach sys/*
+      - identity: rotation-scheduler
+        path: auth/approle/role/external-secrets
+        expected: read
+        reason: the scheduler reads a target's role to check its TTL, and cannot change the role
+      - identity: rotation-scheduler
+        path: auth/approle/role/external-secrets/custom-secret-id
+        expected: update
+        reason: the scheduler assigns the candidate SecretID of a registry target
+      - identity: rotation-scheduler
+        path: auth/approle/role/external-secrets/secret-id/lookup
+        expected: update
+        reason: the scheduler looks up its candidate by value
+      - identity: rotation-scheduler
+        path: auth/approle/role/external-secrets/secret-id-accessor/destroy
+        expected: update
+        reason: the scheduler destroys the accessor of a replaced SecretID
+      - identity: rotation-scheduler
+        path: auth/approle/role/external-secrets/secret-id
+        expected: deny
+        reason: the scheduler must not use the endpoint that generates a random SecretID
+      - identity: rotation-scheduler
+        path: auth/approle/role/external-secrets/secret-id-accessor/lookup
+        expected: deny
+        reason: the scheduler must not look up an accessor
+      - identity: rotation-scheduler
+        path: auth/approle/role/born-inventory-netbox-reader/secret-id
+        expected: deny
+        reason: the scheduler must not mint credentials for an AppRole outside the registry
+      - identity: rotation-scheduler
+        path: auth/approle/role/born-inventory-netbox-reader/custom-secret-id
+        expected: deny
+        reason: the scheduler must not assign a SecretID to an AppRole outside the registry
+      - identity: rotation-scheduler
+        path: secret/data/apps/netbox/runtime
+        expected: deny
+        reason: the scheduler must not read application secrets
+      - identity: rotation-scheduler
+        path: secret/data/apps/forgejo/admin
+        expected: deny
+        reason: the scheduler must not read application secrets
+      - identity: rotation-scheduler
+        path: sys/policies/acl/test
+        expected: deny
+        reason: the scheduler must not write ACL policies
+      - identity: rotation-scheduler
+        path: auth/kubernetes/role/test
+        expected: deny
+        reason: the scheduler must not administer auth methods
+      - identity: rotation-scheduler
+        path: sys/auth
+        expected: deny
+        reason: the scheduler must not reach sys/*
+      - identity: rotation-scheduler
+        path: sys/mounts
+        expected: deny
+        reason: the scheduler must not reach sys/*
     # ExternalSecrets that base/object-storage-credentials creates per
     # default. Names match the role's object_storage_consumer_namespaces
     # mapping: openbao_snapshots ships only to openbao-system; app_backups
@@ -228,6 +288,134 @@
       no_log: true
 
     # ────────────────────────────────────────────────────────────────
+    # Step 2c — rotation scheduler login (Kubernetes auth), the same way.
+    # The scheduler's role is written on a fresh install only, so an
+    # environment that was upgraded through a role rerun may not have it yet.
+    # The login and the scheduler probes then do not run, with a message,
+    # unless the rotation switch is on: with the switch on, a missing role is
+    # a failure. Only two answers count as "not set up": the ServiceAccount is
+    # not found, or OpenBao's Kubernetes auth says the role does not exist
+    # ("invalid role name" in the auth plugin's login, "could not be found" in
+    # OpenBao's own lookup). Any other failure of the token request or of the
+    # login fails verification, whatever the switch says.
+    # ────────────────────────────────────────────────────────────────
+    - name: Request a JWT for the rotation scheduler ServiceAccount
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ verify_openbao_namespace }}"
+          - create
+          - token
+          - "{{ verify_rotation_scheduler_service_account }}"
+          - --duration
+          - 10m
+          - --audience
+          - "{{ verify_rotation_scheduler_audience }}"
+      register: _verify_scheduler_jwt
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Log in as the rotation scheduler
+      ansible.builtin.shell:
+        cmd: >-
+          printf '%s' "$SCHEDULER_JWT" |
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ verify_openbao_namespace }}
+          exec -i {{ _verify_openbao_pod }}
+          -- sh -c '
+          exec bao write -format=json auth/kubernetes/login
+          role={{ verify_rotation_scheduler_k8s_role | quote }} jwt=-'
+      environment:
+        SCHEDULER_JWT: "{{ _verify_scheduler_jwt.stdout | trim }}"
+      register: _verify_scheduler_login
+      changed_when: false
+      failed_when: false
+      no_log: true
+      when: _verify_scheduler_jwt.rc == 0
+
+    - name: Work out whether the rotation scheduler is set up
+      ansible.builtin.set_fact:
+        _verify_scheduler_ready: "{{ _verify_scheduler_login.rc | default(1) == 0 }}"
+        _verify_scheduler_switch: "{{ approle_rotation_engine_enabled | default(false) | bool }}"
+        _verify_scheduler_account_missing: >-
+          {{
+            _verify_scheduler_jwt.rc != 0
+            and '(NotFound)' in _verify_scheduler_jwt.stderr
+            and 'serviceaccounts' in _verify_scheduler_jwt.stderr
+          }}
+        _verify_scheduler_role_missing: >-
+          {{
+            ('could not be found' in (_verify_scheduler_login.stderr | default('')))
+            or ('invalid role name' in (_verify_scheduler_login.stderr | default('')))
+          }}
+
+    - name: Work out whether the token request failed for another reason
+      ansible.builtin.set_fact:
+        _verify_scheduler_token_request_failed: >-
+          {{ _verify_scheduler_jwt.rc != 0 and not (_verify_scheduler_account_missing | bool) }}
+
+    - name: Assert the token request for the rotation scheduler did not fail
+      ansible.builtin.assert:
+        that:
+          - not (_verify_scheduler_token_request_failed | bool)
+        fail_msg: >-
+          The token request for the ServiceAccount
+          {{ verify_rotation_scheduler_service_account }} failed for a reason
+          other than the ServiceAccount being absent, so the scheduler
+          identity cannot be judged. The error was:
+          {{ _verify_scheduler_jwt.stderr | default('') | trim }}
+
+    - name: Work out whether the rotation scheduler is missing
+      ansible.builtin.set_fact:
+        _verify_scheduler_not_set_up: >-
+          {{ (_verify_scheduler_account_missing | bool) or (_verify_scheduler_role_missing | bool) }}
+
+    - name: Assert the rotation scheduler can log in when it is expected to
+      ansible.builtin.assert:
+        that:
+          - _verify_scheduler_ready | bool or (_verify_scheduler_not_set_up | bool and not (_verify_scheduler_switch | bool))
+        fail_msg: >-
+          The rotation scheduler could not log in to OpenBao as role
+          {{ verify_rotation_scheduler_k8s_role }}. Either its ServiceAccount
+          or Kubernetes-auth role is missing while approle_rotation_engine_enabled
+          is on, or the login failed for another reason (for example the
+          Kubernetes auth reviewer config is missing). The openbao role writes
+          the Kubernetes-auth role on a fresh install only: an installed
+          environment needs the out-of-repo procedure that writes it.
+
+    - name: Say that the rotation scheduler is not set up yet
+      ansible.builtin.debug:
+        msg: >-
+          The rotation scheduler's ServiceAccount or Kubernetes-auth role
+          ({{ verify_rotation_scheduler_k8s_role }}) does not exist yet, and
+          approle_rotation_engine_enabled is off, so its login and capability
+          probes were skipped. The openbao role writes that role on a fresh
+          install only. Set up the scheduler identity before you turn the
+          rotation on.
+      when: not (_verify_scheduler_ready | bool)
+
+    - name: Capture rotation-scheduler token
+      ansible.builtin.set_fact:
+        _verify_token_rotation_scheduler: >-
+          {{
+            (_verify_scheduler_login.stdout | from_json).auth.client_token
+            if _verify_scheduler_ready | bool else ''
+          }}
+      no_log: true
+
+    - name: Choose the capability probes to run
+      ansible.builtin.set_fact:
+        _verify_active_probes: >-
+          {{
+            verify_probes
+            if _verify_scheduler_ready | bool
+            else verify_probes | rejectattr('identity', 'equalto', 'rotation-scheduler') | list
+          }}
+    # ────────────────────────────────────────────────────────────────
     # Step 3 — AC-5 negative probes (Implementation Brief §7.5)
     # ────────────────────────────────────────────────────────────────
     - name: Probe capability matrix
@@ -248,13 +436,14 @@
               'ops-admin': _verify_token_ops_admin,
               'policy-reconciler': _verify_token_policy_reconciler,
               'approle-reconciler': _verify_token_approle_reconciler,
-              'setup-issuer': _verify_token_setup_issuer
+              'setup-issuer': _verify_token_setup_issuer,
+              'rotation-scheduler': _verify_token_rotation_scheduler
             }[item.identity]
           }}
       register: _verify_probe_results
       changed_when: false
       no_log: true
-      loop: "{{ verify_probes }}"
+      loop: "{{ _verify_active_probes }}"
       loop_control:
         label: "{{ item.identity }} → {{ item.path }}"
 
@@ -279,6 +468,7 @@
           - >-
               (item.0.expected == 'deny' and item.1 == ['deny']) or
               (item.0.expected == 'update' and item.1 == ['update']) or
+              (item.0.expected == 'read' and item.1 == ['read']) or
               (item.0.expected == 'denied_or_missing' and (item.1 == ['deny'] or item.1 | length == 0))
         fail_msg: >-
           AC-5 separation violated: {{ item.0.identity }} → {{ item.0.path }}.
@@ -287,7 +477,7 @@
           This indicates a policy drift or an identity gained an unintended
           capability. Review ADR-0021 and the role policies before mutating
           further state.
-      loop: "{{ verify_probes | zip(_verify_probe_caps_list) | list }}"
+      loop: "{{ _verify_active_probes | zip(_verify_probe_caps_list) | list }}"
       loop_control:
         label: "{{ item.0.identity }} → {{ item.0.path }}"
 
@@ -364,9 +554,10 @@
       ansible.builtin.debug:
         msg: |-
           OpenBao identity model verified on this cluster:
-            - 4 identities log in: ops-admin, policy-reconciler, approle-reconciler, setup-issuer
-            - {{ verify_probes | length }} capability probes match their expected outcome:
-              {% for p in verify_probes %}
+            - {{ _verify_active_probes | map(attribute='identity') | unique | list | length }} identities log in and are probed:
+              {{ _verify_active_probes | map(attribute='identity') | unique | join(', ') }}
+            - {{ _verify_active_probes | length }} capability probes match their expected outcome:
+              {% for p in _verify_active_probes %}
               * {{ p.identity }} → {{ p.path }}: {{ p.expected }}
               {% endfor %}
             - 2 ClusterSecretStores Ready (openbao-openbao-snapshots, openbao-app-backups)

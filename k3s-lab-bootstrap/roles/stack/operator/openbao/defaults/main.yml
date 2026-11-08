@@ -217,3 +217,25 @@ openbao_migration_read_paths:
   - apps/authentik/breakglass
   - apps/authentik/bootstrap-passkey
   - apps/awx/control_node_ssh
+
+# OpenBao ends a request after this many seconds. The config sets it on every
+# listener (max_request_duration) and as the server-wide default
+# (default_max_request_duration). The rotation engine counts on a bound that is
+# no longer than its request timeout, and the rotation playbook refuses to run
+# when a listener allows more. OpenBao reads the value at start, so restart the
+# pods after a change: the playbook also refuses to run until every OpenBao
+# container has started after the last update of the config.
+openbao_max_request_duration_seconds: 60
+
+# Rotation scheduler: runs the AppRole rotation transaction (see
+# playbooks/vertical-orchestration/115-approle-rotation.yml). Its OpenBao
+# policy is rendered from the registry into files/policies/rotation-scheduler.hcl.
+# The audience is a choice of this repo. The Lease is named by the engine
+# (rotation.LEASE_NAME) and lives in the OpenBao namespace.
+# The login token is short-lived, and one run takes a few minutes at most.
+openbao_rotation_scheduler_service_account: approle-rotation-scheduler
+openbao_rotation_scheduler_k8s_role: approle-rotation-scheduler
+openbao_rotation_scheduler_policy_name: approle-rotation-scheduler
+openbao_rotation_scheduler_audience: openbao
+openbao_rotation_scheduler_token_ttl: 20m
+openbao_rotation_scheduler_token_max_ttl: 30m

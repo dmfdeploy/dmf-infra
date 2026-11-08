@@ -1179,6 +1179,9 @@
 - name: Set up the setup-only issuer identity and the receipt namespace
   ansible.builtin.include_tasks: setup-issuer.yml
 
+- name: Set up the rotation scheduler identity
+  ansible.builtin.include_tasks: setup-rotation-scheduler.yml
+
 # ---------------------------------------------------------------------------
 # Phase 5 — operator userpass retrieval path
 # Grants human operators a narrow read on secret/data/apps/*/admin without
