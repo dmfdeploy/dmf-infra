@@ -1,0 +1,43 @@
+---
+# One case of test-openbao-k8s-auth.yml, part 2: a writer changes the store between
+# the role's read and its replace. The replace carries a stale resourceVersion, so it
+# fails at the replace step and the store keeps the method it held.
+- name: Stale replace — start from an AppRole store
+  ansible.builtin.include_tasks: _openbao-k8s-auth-store-apply.yml
+  vars:
+    _method: approle
+    _dir: "{{ _state.path }}/store-stale"
+
+- name: Stale replace — switch to Kubernetes while another writer changes the store
+  block:
+    - name: Apply the method
+      ansible.builtin.include_tasks: _openbao-k8s-auth-store-apply.yml
+      vars:
+        _method: kubernetes
+        _dir: "{{ _state.path }}/store-stale"
+        _write_after_read: "yes"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _stale_outcome: pass
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        _stale_outcome: fail
+        _stale_task: "{{ ansible_failed_task.name }}"
+        _stale_message: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: Stale replace — read what the cluster holds
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/store-stale/k8s/ClusterSecretStore-openbao.json"
+  register: _held_stale
+
+- name: Stale replace — assert the replace failed and the store is unchanged
+  vars:
+    _object: "{{ _held_stale.content | b64decode | from_json }}"
+  ansible.builtin.assert:
+    that:
+      - _stale_outcome == 'fail'
+      - _stale_task == 'Create ClusterSecretStore (OpenBao/Vault provider)'
+      - "'metadata.resourceVersion' in _stale_message"
+      - _object.spec.provider.vault.auth.keys() | list == ['appRole']
+    fail_msg: "outcome {{ _stale_outcome }}, task {{ _stale_task | default('') }}, message {{ _stale_message | default('') }}"

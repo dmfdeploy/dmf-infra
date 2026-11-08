@@ -9,6 +9,10 @@ run of the grow-HA play reads back.
 - Applying a ClusterSecretStore writes k8s/ClusterSecretStore-<name>.json. An update
   merges maps into the stored object, as a patch of a custom resource does, unless
   force is true, which replaces the object as a replace does. The store is Ready.
+  Every write stores a metadata.resourceVersion that is one higher than the last write
+  (the first is "1"). As the API server does for a custom resource, a forced replace of
+  an existing store fails unless the definition's metadata.resourceVersion equals the
+  stored one. A create and an update without force do not check it.
 - Deleting a Pod writes k8s/Pod-<name>.json with a new UID, as the StatefulSet
   recreates the pod, and marks the pod sealed for the fake bao.
 - Creating a Certificate writes k8s/Secret-<secretName>.json with a certificate
@@ -61,9 +65,19 @@ def main():
         stem = "ClusterSecretStore-" + name
         stored = os.path.join(objects, stem + ".json")
         new = json.loads(json.dumps(p["definition"]))
-        if os.path.exists(stored) and not p["force"]:
+        version = 1
+        if os.path.exists(stored):
             with open(stored) as handle:
-                new = merge(json.load(handle), new)
+                old = json.load(handle)
+            version = int(old["metadata"]["resourceVersion"]) + 1
+            if p["force"]:
+                sent = (new.get("metadata") or {}).get("resourceVersion")
+                if sent != old["metadata"]["resourceVersion"]:
+                    module.fail_json(msg="%s.%s %r is invalid: metadata.resourceVersion: Invalid value: %r: must be specified for an update, and must equal the stored version %s"
+                                     % (kind, "external-secrets.io", name, sent, old["metadata"]["resourceVersion"]))
+            else:
+                new = merge(old, new)
+        new.setdefault("metadata", {})["resourceVersion"] = str(version)
         new["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
         write_object(objects, stem, new)
     if p["state"] == "present" and kind == "Certificate":

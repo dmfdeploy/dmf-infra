@@ -5,8 +5,10 @@
 #      Kubernetes auth (tests/fixtures/openbao-statefulset-single-replica.json). With
 #      it on, only serviceAccountName is added.
 #   2. The ClusterSecretStore with approle equals the object that the role applied
-#      before Kubernetes auth (tests/fixtures/eso-store-approle-before-kubernetes-auth.json),
-#      and a switch in either direction leaves exactly one auth method.
+#      before Kubernetes auth (tests/fixtures/eso-store-approle-before-kubernetes-auth.json,
+#      without its resourceVersion), and a switch in either direction leaves exactly one
+#      auth method. A replace that carries a stale resourceVersion fails and leaves the
+#      store as it was.
 #   3. The config step writes the reviewer config without a CA and a stored token, reads
 #      it back, writes nothing on a rerun, and fails when the mount ignores the fields.
 #   4. The installed-environment path writes with a temporary root token and revokes it
@@ -89,6 +91,9 @@
         loop_var: case
         index_var: case_index
         label: "{{ case.name }}"
+
+    - name: Replace with a stale resourceVersion and keep what the cluster holds
+      ansible.builtin.include_tasks: _openbao-k8s-auth-store-stale-case.yml
 
     # ── 3. The config step ──────────────────────────────────────────────────
     - name: Run the config step
