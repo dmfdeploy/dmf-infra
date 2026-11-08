@@ -1594,8 +1594,8 @@ class UnansweredCallTests(unittest.TestCase):
 
 
 class InFlightRaceTests(unittest.TestCase):
-    """Codex round 2: a stalled read-then-write and a create delayed across a
-    takeover. Neither can be fenced at the server, so the protocol is a Lease
+    """Two in-flight races: a stalled read-then-write, and a create delayed
+    across a takeover. Neither can be fenced at the server, so the protocol is a Lease
     with a lock delay, a self-stop after every call, and an abort that resolves
     by lookup."""
 
