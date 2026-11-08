@@ -1,0 +1,60 @@
+---
+# One attempt of the identity verifier's refresh probe. The caller loops over
+# _verify_attempt and stops after the first attempt that sets _verify_refreshed.
+#
+# The annotation value is unique to this run and attempt. The threshold is taken after
+# the annotation has been applied. The attempt passes when it finds a Ready
+# ExternalSecret that carries this annotation and whose status.refreshTime is
+# strictly later than the threshold: a successful refresh through the main store
+# after a forced sync. The refresh time has a resolution of one second, so a
+# refresh that lands in the threshold's own second fails the attempt, and the
+# next attempt forces another sync.
+
+- name: Set a force-sync annotation that is unique to this run and attempt
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ verify_main_store_sync_target.namespace }}"
+      - annotate
+      - --overwrite
+      - "externalsecret/{{ verify_main_store_sync_target.name }}"
+      - "force-sync=verify-{{ _verify_run_id }}-{{ _verify_attempt }}"
+  changed_when: true
+
+- name: Record the threshold after the annotation was applied
+  ansible.builtin.set_fact:
+    _verify_refresh_after: "{{ lookup('ansible.builtin.pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+
+- name: Wait for a later refresh through the main store
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: external-secrets.io/v1
+    kind: ExternalSecret
+    namespace: "{{ verify_main_store_sync_target.namespace }}"
+    name: "{{ verify_main_store_sync_target.name }}"
+  register: _verify_main_es
+  until: >-
+    _verify_main_es.resources | default([]) | length > 0
+    and (_verify_main_es.resources[0].metadata.annotations | default({}))['force-sync'] | default('')
+        == 'verify-' ~ _verify_run_id ~ '-' ~ _verify_attempt
+    and (_verify_main_es.resources[0].status.refreshTime | default('')) > _verify_refresh_after
+    and (_verify_main_es.resources[0].status.conditions | default([])
+         | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length) > 0
+  retries: 6
+  delay: 5
+  failed_when: false
+
+- name: Note whether this attempt saw the refresh
+  ansible.builtin.set_fact:
+    _verify_refreshed: >-
+      {{
+        _verify_main_es.resources | default([]) | length > 0
+        and (_verify_main_es.resources[0].metadata.annotations | default({}))['force-sync'] | default('')
+            == 'verify-' ~ _verify_run_id ~ '-' ~ _verify_attempt
+        and (_verify_main_es.resources[0].status.refreshTime | default('')) > _verify_refresh_after
+        and (_verify_main_es.resources[0].status.conditions | default([])
+             | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length) > 0
+      }}

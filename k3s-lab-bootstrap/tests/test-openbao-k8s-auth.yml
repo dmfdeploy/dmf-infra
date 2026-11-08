@@ -1,0 +1,240 @@
+---
+# Tests of ESO's main store on Kubernetes auth.
+#
+#   1. The StatefulSet with the variable off equals the render from before
+#      Kubernetes auth (tests/fixtures/openbao-statefulset-single-replica.json). With
+#      it on, only serviceAccountName is added.
+#   2. The ClusterSecretStore with approle equals the object that the role applied
+#      before Kubernetes auth (tests/fixtures/eso-store-approle-before-kubernetes-auth.json),
+#      and a switch in either direction leaves exactly one auth method.
+#   3. The config step writes the reviewer config without a CA and a stored token, reads
+#      it back, writes nothing on a rerun, and fails when the mount ignores the fields.
+#   4. The installed-environment path writes with a temporary root token and revokes it
+#      before it exits, also when a step fails; with no token it writes nothing.
+#
+# The fake kubectl, bao and kubernetes.core modules stand in for the cluster. They
+# are in tests/fixtures. Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
+#   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
+#   ansible-playbook tests/test-openbao-k8s-auth.yml
+
+- name: Kubernetes auth for ESO's main store
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    _tpl: "{{ playbook_dir }}/../roles/stack/operator/openbao/templates"
+    _eso: "{{ playbook_dir }}/../roles/base/external-secrets"
+    openbao_storage_class: longhorn
+    _root: fake-root-token-1
+  vars_files:
+    - ../roles/stack/operator/openbao/defaults/main.yml
+    - ../roles/base/external-secrets/defaults/main.yml
+    - ../roles/base/external-secrets/vars/main.yml
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-k8s-auth-
+      register: _state
+      changed_when: false
+
+    # ── 1. StatefulSet ──────────────────────────────────────────────────────
+    - name: Variable off — render the StatefulSet
+      ansible.builtin.set_fact:
+        _sts_off: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+
+    - name: Variable on — render the StatefulSet
+      ansible.builtin.set_fact:
+        _sts_on: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+      vars:
+        openbao_kubernetes_reviewer_enabled: true
+
+    - name: Rollback of the ESO switch alone — render the StatefulSet
+      ansible.builtin.set_fact:
+        _sts_rollback: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+      vars:
+        openbao_kubernetes_reviewer_enabled: true
+        openbao_eso_auth_method: approle
+
+    - name: ESO switch on, reviewer off — render the StatefulSet
+      ansible.builtin.set_fact:
+        _sts_switch_only: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+      vars:
+        openbao_eso_auth_method: kubernetes
+
+    - name: Assert off equals the old render and on only adds the ServiceAccount
+      ansible.builtin.assert:
+        that:
+          - _sts_off == (lookup('ansible.builtin.file', 'fixtures/openbao-statefulset-single-replica.json') | from_json)
+          - _sts_off.spec.template.spec.serviceAccountName is not defined
+          - _sts_on.spec.template.spec.serviceAccountName == 'openbao'
+          - _sts_on.spec.template.spec | dict2items | rejectattr('key', 'equalto', 'serviceAccountName') | items2dict == _sts_off.spec.template.spec
+          - _sts_on.spec.template.spec.containers == _sts_off.spec.template.spec.containers
+          # The reviewer identity has its own switch: the ESO switch alone changes nothing,
+          # and flipping the ESO switch back keeps the ServiceAccount.
+          - _sts_switch_only == _sts_off
+          - _sts_rollback == _sts_on
+
+    # ── 2. ClusterSecretStore ───────────────────────────────────────────────
+    - name: Apply the store in each order and keep what the cluster holds
+      ansible.builtin.include_tasks: _openbao-k8s-auth-store-case.yml
+      loop:
+        - { name: approle on a new store, method: approle, store: new }
+        - { name: kubernetes on a new store, method: kubernetes, store: new }
+        - { name: kubernetes over an approle store, method: kubernetes, store: approle }
+        - { name: approle over a kubernetes store, method: approle, store: kubernetes }
+        - { name: kubernetes over a kubernetes store, method: kubernetes, store: kubernetes }
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"
+
+    # ── 3. The config step ──────────────────────────────────────────────────
+    - name: Run the config step
+      ansible.builtin.include_tasks: _openbao-k8s-auth-config-case.yml
+      loop:
+        - name: fresh mount
+          check: fresh
+        - name: rerun writes nothing
+          check: rerun
+        - name: old config with a stored token and a CA is replaced
+          check: replaced
+        - name: a mount that ignores the reviewer fields fails the read-back
+          check: ignores
+          env: {FAKE_K8S_IGNORES_REVIEWER_FIELDS: "yes"}
+        - name: an identity that is not root cannot write
+          check: not-root
+          token: fake-ops-token
+        - name: reviewer only, ESO on AppRole, writes the config and no role
+          check: reviewer-only
+          method: approle
+          dir: config-reviewer-only
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"
+
+    # ── 4. The installed-environment path ───────────────────────────────────
+    - name: Run the installed-environment path
+      ansible.builtin.include_tasks: _openbao-k8s-auth-case.yml
+      loop:
+        - name: token, everything works
+          token: "{{ _root }}"
+          expect: pass
+          wrote: true
+          revoked: true
+          rbac: true
+          config_writes: 1
+          records: 1
+          role: true
+        - name: rerun with a new token writes and records nothing more
+          state: 0
+          token: fake-root-token-2
+          expect: pass
+          wrote: true
+          revoked: true
+          config_writes: 1
+          records: 1
+        - name: no token
+          expect: pass
+          rbac: true
+          wrote: false
+          revoked: false
+        - name: token, the role write fails
+          token: "{{ _root }}"
+          env: {FAKE_K8S_WRITE_FAILS: "yes"}
+          expect: fail
+          wrote: true
+          revoked: true
+        - name: token that is not a root token
+          token: fake-ops-token
+          expect: fail
+          wrote: false
+          revoked: true
+        - name: token, a pod is sealed
+          token: "{{ _root }}"
+          env: {FAKE_SEALED: openbao-0}
+          expect: fail
+          wrote: false
+          revoked: true
+        - name: token, the reviewer variable is off
+          token: "{{ _root }}"
+          reviewer: false
+          expect: fail
+          wrote: false
+          revoked: true
+        - name: token, the cluster is not ready
+          token: "{{ _root }}"
+          readiness_fails: true
+          expect: fail
+          wrote: false
+          revoked: true
+        - name: token, the pod is missing
+          token: "{{ _root }}"
+          no_pod: true
+          expect: fail
+          wrote: false
+          revoked: false
+          message: was NOT revoked
+          nothing_ran_except_lookup: true
+        - name: token, the pod lookup fails
+          token: "{{ _root }}"
+          env: {FAKE_K8S_INFO_FAILS: "yes"}
+          expect: fail
+          wrote: false
+          revoked: false
+          message: was NOT revoked
+          nothing_ran_except_lookup: true
+        - name: reviewer on, ESO on AppRole, token
+          token: "{{ _root }}"
+          method: approle
+          expect: pass
+          wrote: true
+          revoked: true
+          config_writes: 1
+          role: false
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"
+
+    - name: Assert the outcome of every installed-environment case
+      ansible.builtin.assert:
+        that:
+          - _outcomes | length == 11
+          - _outcomes | rejectattr('ok') | list | length == 0
+        fail_msg: "{{ _outcomes | rejectattr('ok') | map(attribute='name') | join('; ') }}"
+
+    # With the variable off, the workload creates no ServiceAccount, ClusterRole or
+    # binding for OpenBao.
+    - name: Variable off — prepare the fake cluster
+      ansible.builtin.copy:
+        src: fixtures/k8s-seed/
+        dest: "{{ _state.path }}/workload-off/k8s/"
+        mode: preserve
+      changed_when: false
+
+    - name: Variable off — apply the workload
+      environment:
+        FAKE_STATE: "{{ _state.path }}/workload-off"
+      block:
+        - name: Run workload.yml
+          ansible.builtin.include_role:
+            name: stack/operator/openbao
+            tasks_from: workload.yml
+          vars:
+            openbao_eso_auth_method: approle
+            openbao_kubernetes_reviewer_enabled: false
+
+    - name: Variable off — read the calls to the cluster
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/workload-off/k8s-mutations.log"
+      register: _workload_off
+
+    - name: Variable off — assert no RBAC object and the StatefulSet applied
+      ansible.builtin.assert:
+        that:
+          - "'present StatefulSet openbao' in (_workload_off.content | b64decode)"
+          - "'ServiceAccount' not in (_workload_off.content | b64decode)"
+          - "'ClusterRole' not in (_workload_off.content | b64decode)"

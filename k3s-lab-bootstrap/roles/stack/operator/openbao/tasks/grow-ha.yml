@@ -285,7 +285,6 @@
 - name: Read the Raft configuration
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i openbao-0
@@ -293,8 +292,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao read -format=json sys/storage/raft/configuration'
-  environment:
-    OPENBAO_TOKEN: "{{ openbao_guard_token }}"
+    stdin: "{{ openbao_guard_token }}\n"
   register: _openbao_grow_raft_config
   changed_when: false
   failed_when: false

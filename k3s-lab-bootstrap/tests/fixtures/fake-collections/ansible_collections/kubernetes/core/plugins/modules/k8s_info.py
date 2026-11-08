@@ -1,5 +1,6 @@
 #!/usr/bin/python
-"""Fake kubernetes.core.k8s_info: reads objects from $FAKE_STATE/k8s."""
+"""Fake kubernetes.core.k8s_info: reads objects from $FAKE_STATE/k8s. It fails when
+FAKE_K8S_INFO_FAILS is set."""
 import json
 import os
 
@@ -18,6 +19,8 @@ def main():
         ),
         supports_check_mode=True,
     )
+    if os.environ.get("FAKE_K8S_INFO_FAILS"):
+        module.fail_json(msg="the API server is not reachable")
     state = os.environ.get("FAKE_STATE", "")
     path = os.path.join(state, "k8s", "%s-%s.json" % (module.params["kind"], module.params["name"] or "all"))
     resources = []

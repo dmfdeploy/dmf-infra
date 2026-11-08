@@ -1,0 +1,164 @@
+---
+# Write the Kubernetes auth config of the OpenBao mount and, when ESO uses
+# Kubernetes auth, ESO's role. Then read both back and check every field. Included by main.yml on a fresh install (with
+# the initial root token) and by the installed-environment play
+# (playbooks/vertical-security/106-openbao-kubernetes-auth.yml, with a temporary
+# root token). The caller sets openbao_k8s_auth_token. No other identity holds
+# the power to write auth/kubernetes/config.
+#
+# The config uses local-file reviewer mode: OpenBao reads the CA and the token
+# from the pod's own files. A stored reviewer token stops working when the pod
+# is replaced. The read-back fails if the mount ignores these fields, as an older
+# OpenBao does, because it then never reports token_reviewer_jwt_set.
+
+- name: Read the current Kubernetes auth config and ESO role
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json auth/kubernetes/config;
+      echo "---";
+      bao read -format=json auth/kubernetes/role/{{ openbao_eso_kubernetes_role_name }}'
+    stdin: "{{ openbao_k8s_auth_token }}\n"
+  register: _openbao_k8s_current
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+# A rerun writes nothing when the config and the role already match. The pre-read
+# prints the config, a separator line and the role. An empty section (nothing
+# written yet) never matches. The role is written only when ESO uses Kubernetes
+# auth.
+- name: Decide whether the config and the role need a write
+  ansible.builtin.set_fact:
+    _openbao_k8s_config_in_sync: >-
+      {{
+        (_sections | length == 2) and (_sections[0] | trim | length > 0)
+        and ((_sections[0] | from_json).data.kubernetes_host == openbao_kubernetes_auth_host)
+        and ((_sections[0] | from_json).data.kubernetes_ca_cert | default('', true) == '')
+        and ((_sections[0] | from_json).data.token_reviewer_jwt_set | default(true) | bool == false)
+        and ((_sections[0] | from_json).data.disable_local_ca_jwt | default(true) | bool == false)
+      }}
+    _openbao_k8s_role_in_sync: >-
+      {{
+        openbao_eso_auth_method != 'kubernetes'
+        or (
+          (_sections | length == 2) and (_sections[1] | trim | length > 0)
+          and ((_sections[1] | from_json).data.bound_service_account_names == [openbao_eso_service_account])
+          and ((_sections[1] | from_json).data.bound_service_account_namespaces == [openbao_eso_namespace])
+          and ((_sections[1] | from_json).data.audience == openbao_eso_kubernetes_audience)
+          and ((_sections[1] | from_json).data.token_policies == [openbao_eso_policy_name])
+          and ((_sections[1] | from_json).data.token_ttl | int == openbao_eso_kubernetes_token_ttl | int)
+          and ((_sections[1] | from_json).data.token_max_ttl | int == openbao_eso_kubernetes_token_max_ttl | int)
+        )
+      }}
+  vars:
+    _sections: "{{ _openbao_k8s_current.stdout | default('') | split('---') }}"
+  no_log: true
+
+- name: Note whether this run changes anything
+  ansible.builtin.set_fact:
+    _openbao_k8s_changed: "{{ not (_openbao_k8s_config_in_sync | bool and _openbao_k8s_role_in_sync | bool) }}"
+
+- name: Write the Kubernetes auth config in local-file reviewer mode
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/kubernetes/config
+      kubernetes_host={{ openbao_kubernetes_auth_host | quote }}
+      kubernetes_ca_cert=""
+      token_reviewer_jwt=""
+      disable_local_ca_jwt=false'
+    stdin: "{{ openbao_k8s_auth_token }}\n"
+  no_log: true
+  changed_when: true
+  when: not (_openbao_k8s_config_in_sync | bool)
+
+- name: Write the ESO Kubernetes auth role
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/kubernetes/role/{{ openbao_eso_kubernetes_role_name }}
+      bound_service_account_names={{ openbao_eso_service_account }}
+      bound_service_account_namespaces={{ openbao_eso_namespace }}
+      audience={{ openbao_eso_kubernetes_audience }}
+      token_policies={{ openbao_eso_policy_name }}
+      token_ttl={{ openbao_eso_kubernetes_token_ttl }}
+      token_max_ttl={{ openbao_eso_kubernetes_token_max_ttl }}'
+    stdin: "{{ openbao_k8s_auth_token }}\n"
+  no_log: true
+  changed_when: true
+  when:
+    - openbao_eso_auth_method == 'kubernetes'
+    - not (_openbao_k8s_role_in_sync | bool)
+
+- name: Read the Kubernetes auth config back
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json auth/kubernetes/config'
+    stdin: "{{ openbao_k8s_auth_token }}\n"
+  register: _openbao_k8s_config_read
+  changed_when: false
+  no_log: true
+
+- name: Read the ESO Kubernetes auth role back
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json auth/kubernetes/role/{{ openbao_eso_kubernetes_role_name }}'
+    stdin: "{{ openbao_k8s_auth_token }}\n"
+  register: _openbao_k8s_role_read
+  changed_when: false
+  no_log: true
+  when: openbao_eso_auth_method == 'kubernetes'
+
+- name: Check every field of the config and the role
+  ansible.builtin.assert:
+    that:
+      - _openbao_k8s_config.kubernetes_host == openbao_kubernetes_auth_host
+      - openbao_kubernetes_auth_host == 'https://kubernetes.default.svc'
+      - _openbao_k8s_config.kubernetes_ca_cert | default('', true) == ''
+      - _openbao_k8s_config.token_reviewer_jwt_set is defined
+      - not (_openbao_k8s_config.token_reviewer_jwt_set | bool)
+      - _openbao_k8s_config.disable_local_ca_jwt is defined
+      - not (_openbao_k8s_config.disable_local_ca_jwt | bool)
+      - openbao_eso_auth_method != 'kubernetes' or _openbao_k8s_role.bound_service_account_names == [openbao_eso_service_account]
+      - openbao_eso_auth_method != 'kubernetes' or _openbao_k8s_role.bound_service_account_namespaces == [openbao_eso_namespace]
+      - openbao_eso_auth_method != 'kubernetes' or _openbao_k8s_role.audience == openbao_eso_kubernetes_audience
+      - openbao_eso_auth_method != 'kubernetes' or _openbao_k8s_role.token_policies == [openbao_eso_policy_name]
+      - openbao_eso_auth_method != 'kubernetes' or _openbao_k8s_role.token_ttl | int == openbao_eso_kubernetes_token_ttl | int
+      - openbao_eso_auth_method != 'kubernetes' or _openbao_k8s_role.token_max_ttl | int == openbao_eso_kubernetes_token_max_ttl | int
+    fail_msg: >-
+      The Kubernetes auth config or the ESO role does not read back as written.
+      Expected kubernetes_host {{ openbao_kubernetes_auth_host }}, no
+      kubernetes_ca_cert, token_reviewer_jwt_set false and
+      disable_local_ca_jwt false. A missing token_reviewer_jwt_set field means
+      this OpenBao does not support local-file reviewer mode.
+  vars:
+    _openbao_k8s_config: "{{ (_openbao_k8s_config_read.stdout | from_json).data }}"
+    _openbao_k8s_role: "{{ (_openbao_k8s_role_read.stdout | from_json).data if openbao_eso_auth_method == 'kubernetes' else {} }}"

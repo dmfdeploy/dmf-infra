@@ -107,6 +107,53 @@ openbao_engines:
 # ESO AppRole — the role ESO will use to authenticate
 openbao_eso_role_name: external-secrets
 
+# How ESO's main ClusterSecretStore logs in to OpenBao: `approle` or
+# `kubernetes`. The external-secrets role reads the same variable. Set it once
+# in the site inventory. The ESO AppRole stays in either case, so a rollback only
+# flips this variable back. `kubernetes` needs
+# openbao_kubernetes_reviewer_enabled.
+# See docs/decisions/0051-eso-main-store-kubernetes-auth.md in the umbrella repo.
+openbao_eso_auth_method: "{{ eso_openbao_auth_method | default('approle') }}"
+
+# The Kubernetes auth mount's reviewer identity, separate from the ESO login
+# switch above. With true, OpenBao runs as its own ServiceAccount, a ClusterRole
+# grants it TokenReview, and a new install writes the mount config in local-file
+# reviewer mode. With false (and approle), the render equals the one from before
+# Kubernetes auth existed. Every Kubernetes-auth client of the mount shares this
+# reviewer, so a rollback of the ESO switch leaves it on.
+openbao_kubernetes_reviewer_enabled: false
+
+# Kubernetes auth role for ESO. It binds to ESO's controller ServiceAccount and
+# keeps the AppRole's `eso-reader` policy. ESO requests the audience for the
+# token it presents (the store's serviceAccountRef.audiences).
+openbao_eso_kubernetes_role_name: external-secrets
+openbao_eso_service_account: "{{ eso_service_account_name | default('external-secrets') }}"
+openbao_eso_namespace: "{{ eso_namespace | default('external-secrets') }}"
+openbao_eso_kubernetes_audience: openbao
+# Lifetimes in seconds: OpenBao reports them in seconds, and the config step
+# compares what it reads back.
+openbao_eso_kubernetes_token_ttl: 900
+openbao_eso_kubernetes_token_max_ttl: 3600
+
+# The ServiceAccount OpenBao runs as when ESO uses Kubernetes auth. A
+# ClusterRole grants it `create` on `tokenreviews` and nothing else.
+openbao_service_account: openbao
+openbao_token_review_cluster_role: openbao-token-review
+
+# The temporary root token that the installed-environment play uses to write the
+# Kubernetes auth config. Pass it in the environment of the play, never as an
+# argument or in a file. The play revokes it before it exits.
+openbao_k8s_temp_root_token: "{{ lookup('ansible.builtin.env', 'OPENBAO_TEMP_ROOT_TOKEN') }}"
+
+# The role that waits for the cluster before the installed-environment play uses
+# a token. The play runs it inside the block that revokes the token.
+openbao_k8s_readiness_role: base/cluster-ready
+
+# The reviewer config of the Kubernetes auth mount. OpenBao reads the CA and
+# the token from the pod's own files, so a rotated token or a new cluster needs
+# no config write. The host is the in-cluster DNS name, never a Service IP.
+openbao_kubernetes_auth_host: https://kubernetes.default.svc
+
 # born-inventory AppRole — narrow read-only access to the NetBox runtime
 # secret. This replaces direct root-token reads in the born-inventory role.
 openbao_born_inventory_role_name: born-inventory-netbox-reader

@@ -101,9 +101,12 @@ Three components together form this root of trust:
   `nodes: 3`.
 - **Sealed on every cold boot.** Operator performs the unseal ritual
   (see [Unseal ritual](#unseal-ritual)).
-- Auth methods enabled at commissioning: `approle` (for ESO and automation),
-  `kubernetes` (for in-cluster workload identities), `userpass` (break-glass
-  admin login).
+- Auth methods enabled at commissioning: `kubernetes` (for ESO's main store
+  and in-cluster workload identities), `approle` (for automation, the
+  object-storage stores, and the ESO AppRole that stays for a rollback),
+  `userpass` (break-glass admin login). With `eso_openbao_auth_method:
+  kubernetes`, the Kubernetes auth config uses the pod's own token and CA
+  files, so a restore onto a new cluster needs no config write.
 - Does **not** enable any auth method requiring external network reach
   (no OIDC-auth-from-Authentik, because Authentik itself boots after OpenBao
   is unsealed).
@@ -314,8 +317,8 @@ types still do.
 - Every application consumes secrets via `ExternalSecret` objects that
   reference paths in the truck's OpenBao.
 - **Factory seed**: the commissioning playbook writes all required secrets
-  (Authentik DB creds, ESO AppRole, signing keys, app API keys, etc.) to
-  OpenBao **after** OpenBao is initialized and before apps are deployed.
+  (Authentik DB creds, ESO Kubernetes auth role and ESO AppRole, signing
+  keys, app API keys, etc.) to OpenBao **after** OpenBao is initialized and before apps are deployed.
 - **In-field rotation**: via update pack (for factory-managed secrets) or
   via the OpenBao UI/CLI by authorized operators (for client-managed
   secrets, if any).
@@ -398,11 +401,12 @@ Under the hood each command is an Ansible playbook invocation plus
    keys, **print keys** for sealed-envelope handover. Unseal immediately
    for factory seeding.
 4. **OpenBao configure** — enable PKI, issue truck's private CA,
-   enable `approle`/`kubernetes`/`userpass`, create policies.
+   enable `approle`/`kubernetes`/`userpass`, write the Kubernetes auth config
+   and ESO's role, create policies.
 5. **Seed base secrets** — write all app credentials, signing keys, ESO
-   AppRole.
+   AppRole (kept for a rollback).
 6. **ESO deploy** — ClusterSecretStore points at embedded OpenBao, auth
-   via AppRole.
+   via Kubernetes auth (`eso_openbao_auth_method: kubernetes`).
 7. **Zot deploy** — empty registry, then sync images per
    `flypack/images.lock`. Configure containerd mirror.
 8. **Authentik deploy** — Postgres + Redis + server + worker. DB secret

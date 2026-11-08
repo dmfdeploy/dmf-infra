@@ -1,0 +1,94 @@
+---
+# One case of test-openbao-k8s-auth.yml: the installed-environment path
+# (roles/stack/operator/openbao/tasks/kubernetes-auth-existing.yml) against the fake
+# cluster. It records the outcome and leaves the state directory for the asserts.
+# A case that names another state (state: N) runs on the fake cluster of case N, so a
+# rerun sees what the first run wrote.
+- name: "{{ case.name }} — prepare the fake cluster"
+  ansible.builtin.copy:
+    src: fixtures/k8s-seed/
+    dest: "{{ _state.path }}/{{ case.state | default(case_index) }}/k8s/"
+    mode: preserve
+  changed_when: false
+
+- name: "{{ case.name }} — take the pod away"
+  ansible.builtin.file:
+    path: "{{ _state.path }}/{{ case.state | default(case_index) }}/k8s/Pod-openbao-0.json"
+    state: absent
+  when: case.no_pod | default(false)
+
+- name: "{{ case.name }} — run the installed-environment tasks"
+  block:
+    - name: Run kubernetes-auth-existing.yml
+      ansible.builtin.include_role:
+        name: stack/operator/openbao
+        tasks_from: kubernetes-auth-existing.yml
+      vars:
+        openbao_k8s_temp_root_token: "{{ case.token | default('') }}"
+        openbao_eso_auth_method: "{{ case.method | default('kubernetes') }}"
+        openbao_kubernetes_reviewer_enabled: "{{ case.reviewer | default(true) }}"
+        openbao_k8s_readiness_role: "{{ playbook_dir }}/fixtures/fake-roles/cluster-ready"
+        fake_cluster_ready_fails: "{{ case.readiness_fails | default(false) }}"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        _outcome: fail
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment: "{{ case.env | default({}) | combine({'FAKE_STATE': _state.path ~ '/' ~ (case.state | default(case_index))}) }}"
+
+- name: "{{ case.name }} — read the logs"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case.state | default(case_index) }}/{{ item }}"
+  register: _logs
+  failed_when: false
+  loop: [bao-argv.log, events.log, k8s-mutations.log]
+
+- name: "{{ case.name }} — list the files the fake bao keeps"
+  ansible.builtin.find:
+    paths: "{{ _state.path }}/{{ case.state | default(case_index) }}"
+    patterns: ["revoked-*", "config.json"]
+    recurse: true
+  register: _kept
+
+- name: "{{ case.name }} — set the facts the asserts read"
+  ansible.builtin.set_fact:
+    _argv: "{{ _logs.results[0].content | default('') | b64decode }}"
+    _events: "{{ _logs.results[1].content | default('') | b64decode | split('\n') }}"
+    _mutations: "{{ _logs.results[2].content | default('') | b64decode }}"
+    _revoked: "{{ _kept.files | map(attribute='path') | select('search', 'revoked-') | map('basename') | list }}"
+    _config_written: "{{ _kept.files | map(attribute='path') | select('search', 'config.json') | list | length > 0 }}"
+
+- name: "{{ case.name }} — judge the case"
+  vars:
+    _wrote_config: "{{ _config_written | bool }}"
+  ansible.builtin.set_fact:
+    _outcomes: >-
+      {{
+        _outcomes | default([]) + [{
+          'name': case.name,
+          'ok': (_outcome == case.expect)
+                and (_wrote_config == case.wrote)
+                and (case.revoked == (('revoked-' ~ case.token) in _revoked if case.token is defined else false))
+                and ((case.token | default('none-given')) not in _argv)
+                and ((case.token is not defined) or (_events | select('search', ' token revoke -self') | list | length <= (2 if case.state is defined else 1)))
+                and (not (case.wrote and case.revoked) or (
+                  (_events | select('search', ' write auth/kubernetes/|token revoke -self') | list | last) is search('token revoke -self')))
+                and (case.expect != 'fail' or ('present ConfigMap openbao-kubernetes-auth-record' not in _mutations))
+                and ((case.config_writes is not defined) or (_argv | regex_findall('(?m)^write auth/kubernetes/config ') | length == case.config_writes))
+                and ((case.records is not defined) or (_mutations | regex_findall('(?m)^present ConfigMap openbao-kubernetes-auth-record') | length == case.records))
+                and ((case.role is not defined) or (('write auth/kubernetes/role/' in _argv) == case.role))
+                and ((case.message is not defined) or (case.message in _message))
+                and ((case.nothing_ran_except_lookup is not defined) or (_argv == '' and _mutations == ''))
+                and (not (case.rbac | default(false)) or (
+                  ('present ServiceAccount openbao' in _mutations)
+                  and ('present ClusterRole openbao-token-review' in _mutations)
+                  and ('present ClusterRoleBinding openbao-token-review' in _mutations)
+                  and ('present StatefulSet openbao' in _mutations))),
+          'outcome': _outcome,
+          'message': _message
+        }]
+      }}

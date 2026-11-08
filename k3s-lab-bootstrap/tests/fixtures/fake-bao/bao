@@ -36,6 +36,16 @@
 #   FAKE_CAPS_JSON       capability list for every other path (default ["read"])
 #   FAKE_KV_MODE         ok | absent | denied | transport  (file $FAKE_STATE/kv-mode wins)
 #   FAKE_KV_VERSION      version that `kv metadata get` reports (file kv-version wins)
+#   FAKE_K8S_IGNORES_REVIEWER_FIELDS  set: an old mount, whose config read has no
+#                        token_reviewer_jwt_set field
+#   FAKE_K8S_WRITE_FAILS set: a write to auth/kubernetes/role/* fails
+# Kubernetes auth: the config and the roles are files under $state/k8s-auth. A token
+# whose name starts with fake-root is a root token and may read and write
+# auth/kubernetes/*; every other token gets 403 on a write. A token revoked with
+# `bao token revoke -self` (file revoked-<token>) is refused everywhere. A config
+# write rebuilds the config from its fields, as the mount does, and token_reviewer_jwt
+# set to "" stores no token. A pem_keys value that does not parse fails after the
+# permission check.
 set -u
 state="${FAKE_STATE:?FAKE_STATE is not set}"
 pod="${FAKE_POD:-openbao-0}"
@@ -188,6 +198,79 @@ PY
     # A path whose name ends in -missing is absent even in ok mode.
     case "$path" in *-missing) echo "No value found at secret/metadata/$path" >&2; exit 2 ;; esac
     printf '{"data":{"current_version":%s,"updated_time":"2026-11-08T00:00:00Z"}}\n' "$(read_kv kv-version "${FAKE_KV_VERSION:-1}")"
+    exit 0
+    ;;
+esac
+k8s_auth_dir="$state/k8s-auth"
+token_ok() { [ -n "${BAO_TOKEN:-}" ] && [ ! -f "$state/revoked-$BAO_TOKEN" ]; }
+is_root() { case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac; return 1; }
+forbidden() { printf 'Error %s: Error making API request.\n\nCode: 403. Errors:\n\n* 1 error occurred:\n\t* permission denied\n' "$1" >&2; exit 2; }
+case "$*" in
+  "token lookup -format=json")
+    token_ok || forbidden "looking up token"
+    if is_root; then printf '{"data":{"policies":["root"]}}\n'; else printf '{"data":{"policies":["default"]}}\n'; fi
+    exit 0
+    ;;
+  "token revoke -self")
+    token_ok || forbidden "revoking token"
+    touch "$state/revoked-$BAO_TOKEN"
+    exit 0
+    ;;
+  "write auth/kubernetes/config "*)
+    token_ok && is_root || forbidden "writing data to auth/kubernetes/config"
+    mkdir -p "$k8s_auth_dir"
+    shift 2
+    python3 - "$k8s_auth_dir/config.json" "$@" <<'PY'
+import json, sys
+path, fields = sys.argv[1], dict(a.split("=", 1) for a in sys.argv[2:])
+if "pem_keys" in fields:
+    print("Error writing data to auth/kubernetes/config: data does not contain any valid RSA or ECDSA public keys", file=sys.stderr)
+    sys.exit(2)
+config = {"kubernetes_host": fields.get("kubernetes_host", ""),
+          "kubernetes_ca_cert": fields.get("kubernetes_ca_cert", ""),
+          "token_reviewer_jwt_set": bool(fields.get("token_reviewer_jwt", "")),
+          "disable_local_ca_jwt": fields.get("disable_local_ca_jwt", "false") == "true"}
+json.dump(config, open(path, "w"))
+PY
+    exit $?
+    ;;
+  "read -format=json auth/kubernetes/config")
+    token_ok && is_root || forbidden "reading auth/kubernetes/config"
+    [ -f "$k8s_auth_dir/config.json" ] || { echo "No value found at auth/kubernetes/config" >&2; exit 2; }
+    python3 - "$k8s_auth_dir/config.json" "${FAKE_K8S_IGNORES_REVIEWER_FIELDS:-}" <<'PY'
+import json, sys
+data = json.load(open(sys.argv[1]))
+if sys.argv[2]:
+    data.pop("token_reviewer_jwt_set", None)
+    data.pop("disable_local_ca_jwt", None)
+print(json.dumps({"data": data}))
+PY
+    exit 0
+    ;;
+  "write auth/kubernetes/role/"*)
+    token_ok && is_root || forbidden "writing data to auth/kubernetes/role"
+    [ -z "${FAKE_K8S_WRITE_FAILS:-}" ] || { echo "Error writing data to auth/kubernetes/role: internal error" >&2; exit 2; }
+    mkdir -p "$k8s_auth_dir"
+    name="${2#auth/kubernetes/role/}"
+    shift 2
+    python3 - "$k8s_auth_dir/role-$name.json" "$@" <<'PY'
+import json, sys
+path, fields = sys.argv[1], dict(a.split("=", 1) for a in sys.argv[2:])
+role = {"bound_service_account_names": fields["bound_service_account_names"].split(","),
+        "bound_service_account_namespaces": fields["bound_service_account_namespaces"].split(","),
+        "audience": fields.get("audience", ""),
+        "token_policies": fields.get("token_policies", "").split(","),
+        "token_ttl": int(fields.get("token_ttl", "0")),
+        "token_max_ttl": int(fields.get("token_max_ttl", "0"))}
+json.dump(role, open(path, "w"))
+PY
+    exit $?
+    ;;
+  "read -format=json auth/kubernetes/role/"*)
+    token_ok && is_root || forbidden "reading auth/kubernetes/role"
+    name="${3#auth/kubernetes/role/}"
+    [ -f "$k8s_auth_dir/role-$name.json" ] || { echo "No value found at auth/kubernetes/role/$name" >&2; exit 2; }
+    python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$k8s_auth_dir/role-$name.json"
     exit 0
     ;;
 esac

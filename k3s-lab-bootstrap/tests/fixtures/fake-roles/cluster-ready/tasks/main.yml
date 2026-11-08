@@ -1,0 +1,7 @@
+---
+# Stands in for base/cluster-ready in the tests. It fails when
+# fake_cluster_ready_fails is set, as the real role does when the cluster is not ready.
+- name: Fail as a cluster that is not ready
+  ansible.builtin.fail:
+    msg: The cluster is not ready.
+  when: fake_cluster_ready_fails | default(false) | bool

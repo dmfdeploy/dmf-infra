@@ -49,6 +49,56 @@
     openbao_anti_affinity_required: "{{ (_openbao_nodes.resources | length) >= (openbao_replicas | int) }}"
   when: openbao_replicas | int > 1
 
+# Kubernetes auth needs OpenBao to call TokenReview. OpenBao runs as its
+# own ServiceAccount, and a ClusterRole grants that account `create` on
+# `tokenreviews` only. system:auth-delegator is not used: it also grants
+# SubjectAccessReviews.
+- name: Create the OpenBao ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ openbao_service_account }}"
+        namespace: "{{ openbao_namespace }}"
+  when: openbao_kubernetes_reviewer_enabled | bool
+
+- name: Create the token-review ClusterRole
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRole
+      metadata:
+        name: "{{ openbao_token_review_cluster_role }}"
+      rules:
+        - apiGroups: ["authentication.k8s.io"]
+          resources: ["tokenreviews"]
+          verbs: ["create"]
+  when: openbao_kubernetes_reviewer_enabled | bool
+
+- name: Bind the token-review ClusterRole to the OpenBao ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ openbao_token_review_cluster_role }}"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: "{{ openbao_token_review_cluster_role }}"
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ openbao_service_account }}"
+          namespace: "{{ openbao_namespace }}"
+  when: openbao_kubernetes_reviewer_enabled | bool
+
 - name: Create OpenBao StatefulSet
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml

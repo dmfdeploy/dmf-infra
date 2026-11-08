@@ -64,7 +64,6 @@
         - name: Revoke fresh-init root token after failed bootstrap
           ansible.builtin.shell:
             cmd: >-
-              printf '%s\n' "$OPENBAO_TOKEN" |
               kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
               -n {{ openbao_namespace }}
               exec -i {{ openbao_pod }}
@@ -72,8 +71,7 @@
               IFS= read -r BAO_TOKEN;
               export BAO_TOKEN;
               bao token revoke -self'
-          environment:
-            OPENBAO_TOKEN: "{{ _openbao_failed_init_root_token }}"
+            stdin: "{{ _openbao_failed_init_root_token }}\n"
           register: _openbao_failed_init_root_revoke
           changed_when: _openbao_failed_init_root_revoke.rc == 0
           failed_when: false

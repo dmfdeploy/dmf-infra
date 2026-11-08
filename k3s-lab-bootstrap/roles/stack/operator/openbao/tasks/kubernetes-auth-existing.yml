@@ -1,0 +1,229 @@
+---
+# Move an installed environment to the Kubernetes auth reviewer identity and, when
+# ESO uses Kubernetes auth, to ESO's role
+# (playbooks/vertical-security/106-openbao-kubernetes-auth.yml).
+#
+# Order of runs:
+#   1. Run the play without a token. It applies the OpenBao ServiceAccount, the
+#      token-review ClusterRole and the workload, waits until every pod runs as
+#      the dedicated account, and stops. A single replica restarts by itself and
+#      is sealed afterwards. A Raft cluster restarts one pod at a time with
+#      103-openbao-restart-pod.yml.
+#   2. Unseal, then generate a temporary root token with the generate-root
+#      procedure. Give it to the play in OPENBAO_TEMP_ROOT_TOKEN. The play writes
+#      the Kubernetes auth config and, with ESO on Kubernetes auth, ESO's role,
+#      and nothing else. It records metadata when it changed something.
+#   3. Run step 2 again at any time. When the config and the role already match,
+#      it writes and records nothing.
+#
+# The token is the play's own from the moment it is read. Everything after that, the
+# pod lookup and the readiness checks included, runs in one block whose `always`
+# section revokes the token and proves the server refuses it. The revoke needs the
+# pod. When the lookup itself fails, the `always` section cannot revoke, so it
+# fails loudly and says that the token is still valid and how to revoke it by its
+# accessor. The token goes to the pod on stdin only. This play never reads or
+# writes the break-glass file.
+
+- name: Read the temporary root token from the environment, and note that no pod is known yet
+  ansible.builtin.set_fact:
+    _openbao_k8s_temp_root: "{{ openbao_k8s_temp_root_token }}"
+    _openbao_k8s_pod_known: false
+  no_log: true
+
+- name: Move to Kubernetes auth, and revoke the token afterwards
+  block:
+    - name: Resolve the pod that runs the commands
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Pod
+        name: openbao-0
+        namespace: "{{ openbao_namespace }}"
+      register: _openbao_k8s_pod_lookup
+
+    - name: Refuse when the pod is missing
+      ansible.builtin.assert:
+        that: _openbao_k8s_pod_lookup.resources | default([]) | length == 1
+        fail_msg: The pod openbao-0 is not in namespace {{ openbao_namespace }}.
+
+    - name: Name the pod
+      ansible.builtin.set_fact:
+        openbao_pod: openbao-0
+        _openbao_k8s_pod_known: true
+
+    - name: Wait until the cluster is ready
+      ansible.builtin.include_role:
+        name: "{{ openbao_k8s_readiness_role }}"
+
+    - name: Assert the reviewer identity is selected
+      ansible.builtin.assert:
+        that: openbao_kubernetes_reviewer_enabled | bool
+        fail_msg: >-
+          Set openbao_kubernetes_reviewer_enabled to true in the site inventory
+          first. The workload and the config must agree on it.
+
+    - name: Apply the ServiceAccount, the ClusterRole and the workload
+      ansible.builtin.include_tasks: workload.yml
+
+    - name: Wait until every pod runs as the OpenBao ServiceAccount
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Pod
+        namespace: "{{ openbao_namespace }}"
+        label_selectors:
+          - "app.kubernetes.io/name=openbao"
+      register: _openbao_k8s_pods
+      until:
+        - _openbao_k8s_pods.resources | length == (openbao_replicas | int)
+        - _openbao_k8s_pods.resources | map(attribute='spec.serviceAccountName') | unique | list == [openbao_service_account]
+        - _openbao_k8s_pods.resources | map(attribute='status.phase') | unique | list == ['Running']
+      retries: "{{ 60 if openbao_replicas | int == 1 else 1 }}"
+      delay: 5
+      failed_when: false
+
+    - name: Stop until the pods run as the OpenBao ServiceAccount
+      ansible.builtin.fail:
+        msg: >-
+          Not every OpenBao pod runs as {{ openbao_service_account }} yet. A Raft
+          cluster restarts one pod at a time: run 103-openbao-restart-pod.yml for
+          each pod that still uses another account, unseal it, and run this play
+          again.
+      when: >-
+        (_openbao_k8s_pods.resources | length != (openbao_replicas | int))
+        or (_openbao_k8s_pods.resources | map(attribute='spec.serviceAccountName') | unique | list != [openbao_service_account])
+        or (_openbao_k8s_pods.resources | map(attribute='status.phase') | unique | list != ['Running'])
+
+    - name: Stop here when no token was given
+      ansible.builtin.debug:
+        msg: >-
+          The workload runs as {{ openbao_service_account }}. Unseal OpenBao,
+          generate a temporary root token, and run this play again with the token in
+          OPENBAO_TEMP_ROOT_TOKEN.
+      when: _openbao_k8s_temp_root | length == 0
+
+    - name: Write the config and the role
+      when: _openbao_k8s_temp_root | length > 0
+      block:
+        - name: Refuse while a pod is sealed
+          ansible.builtin.include_tasks: seal-check.yml
+
+        - name: Check that the token is a root token
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ openbao_namespace }}
+              exec -i {{ openbao_pod }}
+              -- sh -c '
+              IFS= read -r BAO_TOKEN;
+              export BAO_TOKEN;
+              bao token lookup -format=json'
+            stdin: "{{ _openbao_k8s_temp_root }}\n"
+          register: _openbao_k8s_lookup
+          changed_when: false
+          no_log: true
+
+        - name: Assert the token holds the root policy
+          ansible.builtin.assert:
+            that: "'root' in (_openbao_k8s_lookup.stdout | from_json).data.policies"
+            fail_msg: The token in OPENBAO_TEMP_ROOT_TOKEN is not a root token.
+
+        - name: Write and check the Kubernetes auth config and ESO's role
+          ansible.builtin.include_tasks: kubernetes-auth-config.yml
+          vars:
+            openbao_k8s_auth_token: "{{ _openbao_k8s_temp_root }}"
+
+        - name: Record what was written, with no secret in it
+          kubernetes.core.k8s:
+            kubeconfig: /etc/rancher/k3s/k3s.yaml
+            state: present
+            definition:
+              apiVersion: v1
+              kind: ConfigMap
+              metadata:
+                name: openbao-kubernetes-auth-record
+                namespace: "{{ openbao_namespace }}"
+              data:
+                recorded_at: "{{ lookup('ansible.builtin.pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
+                kubernetes_host: "{{ openbao_kubernetes_auth_host }}"
+                reviewer_mode: local-file
+                eso_role_written: "{{ openbao_eso_auth_method == 'kubernetes' }}"
+                eso_role: "{{ openbao_eso_kubernetes_role_name }}"
+                bound_service_account: "{{ openbao_eso_namespace }}/{{ openbao_eso_service_account }}"
+                audience: "{{ openbao_eso_kubernetes_audience }}"
+          when: _openbao_k8s_changed | bool
+
+  always:
+    - name: Fail loudly when the pod is unknown and a token was given
+      ansible.builtin.fail:
+        msg: >-
+          The temporary root token was NOT revoked: the play could not find the pod
+          openbao-0, and the revoke needs it. Revoke the token now by its accessor
+          from a working session that may revoke tokens:
+          `bao token revoke -accessor <accessor>`. Find the accessor in the audit
+          entry of the generate-root decode. Do not run this play again until the
+          token is gone.
+      when:
+        - _openbao_k8s_temp_root | default('') | length > 0
+        - not (_openbao_k8s_pod_known | default(false) | bool)
+
+    - name: Revoke the temporary root token
+      when:
+        - _openbao_k8s_temp_root | default('') | length > 0
+        - _openbao_k8s_pod_known | default(false) | bool
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ openbao_namespace }}
+          exec -i {{ openbao_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao token revoke -self'
+        stdin: "{{ _openbao_k8s_temp_root }}\n"
+      register: _openbao_k8s_revoke
+      changed_when: _openbao_k8s_revoke.rc == 0
+      failed_when: false
+      retries: 3
+      delay: 2
+      until: _openbao_k8s_revoke.rc == 0
+      no_log: true
+
+    - name: Prove the server refuses the revoked token
+      when:
+        - _openbao_k8s_temp_root | default('') | length > 0
+        - _openbao_k8s_pod_known | default(false) | bool
+      ansible.builtin.shell:
+        cmd: >-
+          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+          -n {{ openbao_namespace }}
+          exec -i {{ openbao_pod }}
+          -- sh -c '
+          IFS= read -r BAO_TOKEN;
+          export BAO_TOKEN;
+          bao token lookup -format=json'
+        stdin: "{{ _openbao_k8s_temp_root }}\n"
+      register: _openbao_k8s_after_revoke
+      changed_when: false
+      failed_when: false
+      no_log: true
+
+    - name: Fail loudly when the token is not revoked
+      when:
+        - _openbao_k8s_temp_root | default('') | length > 0
+        - _openbao_k8s_pod_known | default(false) | bool
+      ansible.builtin.assert:
+        that:
+          - _openbao_k8s_revoke.rc | default(1) == 0
+          - _openbao_k8s_after_revoke.rc | default(0) != 0
+        fail_msg: >-
+          The temporary root token is NOT revoked, or the server still accepts it.
+          Revoke it now by its accessor from a working session that may revoke
+          tokens: `bao token revoke -accessor <accessor>`. Find the accessor in
+          the audit entry of the generate-root decode. Do not run this play again
+          until the token is gone.
+
+    - name: Clear the token from memory
+      ansible.builtin.set_fact:
+        _openbao_k8s_temp_root: ""
+      no_log: true

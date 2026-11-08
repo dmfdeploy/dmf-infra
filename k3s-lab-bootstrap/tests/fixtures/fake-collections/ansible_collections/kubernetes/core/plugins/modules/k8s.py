@@ -3,7 +3,12 @@
 run of the grow-HA play reads back.
 
 - Every call goes to $FAKE_STATE/k8s-mutations.log and to $FAKE_STATE/events.log.
-- Creating a StatefulSet writes k8s/Pod-all.json with one running pod per replica.
+- Creating a StatefulSet writes k8s/StatefulSet-<name>.json, ready, and k8s/Pod-all.json with one running pod per replica,
+  each with the ServiceAccount of the pod template (or `default`).
+- A call with force true is also logged to $FAKE_STATE/k8s-force.log.
+- Applying a ClusterSecretStore writes k8s/ClusterSecretStore-<name>.json. An update
+  merges maps into the stored object, as a patch of a custom resource does, unless
+  force is true, which replaces the object as a replace does. The store is Ready.
 - Deleting a Pod writes k8s/Pod-<name>.json with a new UID, as the StatefulSet
   recreates the pod, and marks the pod sealed for the fake bao.
 - Creating a Certificate writes k8s/Secret-<secretName>.json with a certificate
@@ -30,6 +35,7 @@ def main():
             namespace=dict(type="str"),
             delete_options=dict(type="dict"),
             wait=dict(type="bool"),
+            force=dict(type="bool", default=False),
         ),
     )
     p = module.params
@@ -42,9 +48,24 @@ def main():
     with open(os.path.join(state, "events.log"), "a") as handle:
         handle.write("k8s %s %s %s\n" % (p["state"], kind, name))
     objects = os.path.join(state, "k8s")
+    if p["force"]:
+        with open(os.path.join(state, "k8s-force.log"), "a") as handle:
+            handle.write("%s %s\n" % (kind, name))
     if p["state"] == "present" and kind == "StatefulSet":
-        replicas = int(((p["definition"] or {}).get("spec", {}) or {}).get("replicas", 1))
-        write_object(objects, "Pod-all", [running_pod("openbao-%d" % i, "uid-%d-0" % i) for i in range(replicas)])
+        spec = (p["definition"] or {}).get("spec", {}) or {}
+        replicas = int(spec.get("replicas", 1))
+        account = (((spec.get("template") or {}).get("spec")) or {}).get("serviceAccountName", "default")
+        write_object(objects, "StatefulSet-" + name, {"status": {"readyReplicas": replicas}})
+        write_object(objects, "Pod-all", [running_pod("openbao-%d" % i, "uid-%d-0" % i, account) for i in range(replicas)])
+    if p["state"] == "present" and kind == "ClusterSecretStore":
+        stem = "ClusterSecretStore-" + name
+        stored = os.path.join(objects, stem + ".json")
+        new = json.loads(json.dumps(p["definition"]))
+        if os.path.exists(stored) and not p["force"]:
+            with open(stored) as handle:
+                new = merge(json.load(handle), new)
+        new["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
+        write_object(objects, stem, new)
     if p["state"] == "present" and kind == "Certificate":
         spec = (p["definition"] or {}).get("spec", {}) or {}
         names = spec.get("dnsNames", [])
@@ -66,9 +87,20 @@ def main():
     module.exit_json(changed=True)
 
 
-def running_pod(name, uid):
+def merge(old, new):
+    # A JSON merge patch: maps merge, any other value is replaced.
+    if isinstance(old, dict) and isinstance(new, dict):
+        merged = dict(old)
+        for key, value in new.items():
+            merged[key] = merge(old[key], value) if key in old else value
+        return merged
+    return new
+
+
+def running_pod(name, uid, account="default"):
     return {
         "metadata": {"name": name, "uid": uid},
+        "spec": {"serviceAccountName": account},
         "status": {"phase": "Running", "containerStatuses": [{"state": {"running": {}}}]},
     }
 

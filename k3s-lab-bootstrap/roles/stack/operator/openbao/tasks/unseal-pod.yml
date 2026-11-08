@@ -55,7 +55,6 @@
 - name: Unseal the pod with the threshold of shares
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_SHARE" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ openbao_unseal_target }}
@@ -63,8 +62,7 @@
       IFS= read -r K;
       printf "{\"key\":\"%s\"}" "$K" |
       bao write -format=json sys/unseal -'
-  environment:
-    OPENBAO_SHARE: "{{ item }}"
+    stdin: "{{ item }}\n"
   loop: "{{ openbao_unseal_keys_hex[0:(openbao_shamir_threshold | int)] }}"
   changed_when: true
   no_log: true
