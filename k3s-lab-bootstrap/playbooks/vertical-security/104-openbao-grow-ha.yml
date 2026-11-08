@@ -10,6 +10,8 @@
 # The play refuses to run unless openbao-0 is initialized, unsealed and active.
 # It never runs `bao operator init`. It reads the same paths before and after and
 # fails when they differ.
+#
+# It supports exactly three replicas and does not support check mode (--check).
 - name: Grow OpenBao from one replica to a Raft cluster
   hosts: k3s_control[0]
   become: true

@@ -15,6 +15,7 @@
   connection: local
   vars:
     openbao_namespace: openbao
+    openbao_headless_service_name: openbao-internal
     openbao_replicas: 3
     openbao_raft_node_id: "1"
     openbao_guard_token: placeholder

@@ -48,7 +48,7 @@ jobs:
             echo "=== syntax-check: $pb ==="
             ansible-playbook "$pb" --syntax-check
           done
-      - name: OpenBao Raft render, guard, unseal and migration tests (dmfdeploy/dmfdeploy#864)
+      - name: OpenBao Raft render, guard, unseal and migration tests
         run: |
           ansible-playbook tests/test-openbao-ha-render.yml
           ansible-playbook tests/test-openbao-ha-guard.yml

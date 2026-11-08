@@ -9,6 +9,9 @@
 #   - kubeconfig: /etc/rancher/k3s/k3s.yaml for all k8s modules
 # ---------------------------------------------------------------------------
 
+- name: Refuse an unsupported replica count
+  ansible.builtin.include_tasks: assert-replicas.yml
+
 - name: Load the finite-TTL AppRole lifecycle registry
   ansible.builtin.include_vars:
     file: "{{ role_path }}/../../../../vars/openbao-approle-lifecycle-registry.json"

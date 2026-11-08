@@ -1,31 +1,54 @@
 ---
-# Grow an installed single-replica OpenBao to a Raft cluster of openbao_replicas
-# pods (playbooks/vertical-security/104-openbao-grow-ha.yml). Keeps the data and
-# the existing shares. Never initializes. Refuses unless the existing pod is
+# Grow an installed single-replica OpenBao to a Raft cluster of three pods
+# (playbooks/vertical-security/104-openbao-grow-ha.yml). Keeps the data and the
+# existing shares. Never initializes. Refuses unless the existing pod is
 # unsealed, active and healthy.
 #
 # Before you run it:
 #   1. With openbao_replicas still 1, run vertical-security/100-openbao.yml so
 #      the app-admin-writer policy gives ops-admin the two Raft reads, then take
 #      an ops-admin token for OPENBAO_GUARD_TOKEN.
-#   2. Set openbao_replicas (for example 3) in the site inventory.
-#   3. Run the cert-manager play so the certificate covers the Raft peers, then
-#      the ESO play so the ClusterSecretStore trusts the new certificate. The pod
-#      serves the new certificate only after the step "Recreate pod 0" below.
+#   2. Set openbao_replicas: 3 in the site inventory.
+#
+# After the play, run the ESO play (vertical-orchestration/100-eso.yml). The play
+# reissues the OpenBao certificate with the Raft peer names. The certificate is
+# self-signed, so the new one is a new trust anchor: the ClusterSecretStore is not
+# ready between the reissue and the ESO play, and the ExternalSecrets keep their
+# last values.
+#
+# The in-pod bao CLI trusts the mounted certificate. After the reissue it fails
+# TLS against the old server certificate that pod 0 still serves, so no in-pod bao
+# call may run between the reissue and the restart of pod 0.
+#
+# The play supports exactly three replicas and does not support check mode.
 #
 # There is no automatic resume. The play runs from a single-replica install only,
 # and every check that can refuse runs before the first change. If the play stops
 # after it changed the StatefulSet, it refuses to run again. Recover by hand as the
-# security model doc describes ("Recover an interrupted migration"): unseal every
-# pod with bin/unseal-openbao.sh, wait until 102-openbao-ha-guard.yml passes, then
-# run 105-openbao-verify-ha.yml.
+# security model doc describes ("Recover an interrupted migration"). A stop after
+# the certificate reissue and before the StatefulSet change leaves the install
+# single-replica, so the play can run again once that recovery is done.
 
-- name: Assert the site asks for a Raft cluster
+# The play reads state with commands that check mode skips, and its steps wait on
+# each other, so a check-mode run would report a healthy pod as unhealthy. Refuse
+# before any read or write.
+- name: Refuse check mode
   ansible.builtin.assert:
-    that: openbao_replicas | int > 1
+    that: not ansible_check_mode
     fail_msg: >-
-      openbao_replicas is {{ openbao_replicas }}. Set it above 1 in the site
-      inventory (long-lived sites use 3) before you grow the cluster.
+      The grow play does not support check mode (--check). Run it without --check
+      on a disposable environment first. Nothing has changed.
+
+- name: Refuse an unsupported replica count
+  ansible.builtin.include_tasks: assert-replicas.yml
+
+- name: Assert the site asks for a Raft cluster of three
+  ansible.builtin.assert:
+    that: openbao_replicas | int == 3
+    fail_msg: >-
+      openbao_replicas is {{ openbao_replicas }}. The grow play supports exactly 3
+      replicas. Set openbao_replicas: 3 in the site inventory before you grow the
+      cluster. Nothing has changed.
 
 - name: Assert the guard token is set
   ansible.builtin.assert:
@@ -33,9 +56,6 @@
     fail_msg: >-
       The checks read the Raft state and need OPENBAO_GUARD_TOKEN, an ops-admin
       token. Set it and run the play again. Nothing has changed.
-
-- name: Check the guard token can read the Raft paths
-  ansible.builtin.include_tasks: capabilities-check.yml
 
 - name: Read the existing StatefulSet
   kubernetes.core.k8s_info:
@@ -93,38 +113,11 @@
       threshold of shares (bin/unseal-openbao.sh), and run this play again.
       Nothing has changed.
 
+- name: Check the guard token can read the Raft paths
+  ansible.builtin.include_tasks: capabilities-check.yml
+
 - name: Load the unseal shares and the ops-admin password
   ansible.builtin.include_tasks: load-shares.yml
-
-- name: Read the TLS secret
-  kubernetes.core.k8s_info:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    api_version: v1
-    kind: Secret
-    name: "{{ openbao_tls_secret_name }}"
-    namespace: "{{ openbao_namespace }}"
-  register: _openbao_grow_tls
-  no_log: true
-
-- name: Read the TLS certificate names
-  ansible.builtin.shell:
-    cmd: printf '%s' "$OPENBAO_CRT" | base64 -d | openssl x509 -noout -ext subjectAltName
-  environment:
-    OPENBAO_CRT: "{{ _openbao_grow_tls.resources[0].data['tls.crt'] }}"
-  register: _openbao_grow_san
-  changed_when: false
-  no_log: true
-
-- name: Refuse unless the certificate covers the Raft peers
-  ansible.builtin.assert:
-    that: >-
-      ('*.' ~ openbao_headless_service_name ~ '.' ~ openbao_namespace ~ '.svc.cluster.local')
-      in _openbao_grow_san.stdout
-    fail_msg: >-
-      The OpenBao certificate does not cover
-      *.{{ openbao_headless_service_name }}.{{ openbao_namespace }}.svc.cluster.local.
-      Run the cert-manager play with openbao_replicas set, then run this play
-      again. Nothing has changed.
 
 - name: Read the data before the change
   ansible.builtin.include_tasks: data-read.yml
@@ -141,10 +134,40 @@
       nothing to compare before and after. Add paths that exist, then run the play
       again. Nothing has changed.
 
+# Reissue the certificate with the Raft peer names. The Certificate definition is
+# the cert-manager role's, so the DNS name list has one source. The self-signed
+# issuer makes the new certificate a new trust anchor: the ClusterSecretStore is
+# not ready until the ESO play runs after this one. Pod 0 still serves the old
+# certificate until it restarts below, so no in-pod bao call may run from here
+# until pod 0 is unsealed.
+- name: Reissue the OpenBao certificate with the Raft peer names
+  ansible.builtin.include_role:
+    name: base/cert-manager
+    tasks_from: openbao-certificate.yml
+
+# cert-manager can report the Certificate Ready before it replaces the secret, so
+# read the certificate itself.
+- name: Wait for the TLS secret to hold a certificate that covers the Raft peers
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      get secret {{ openbao_tls_secret_name }}
+      -o jsonpath='{.data.tls\.crt}' |
+      base64 -d |
+      openssl x509 -noout -ext subjectAltName
+  register: _openbao_grow_san
+  until:
+    - _openbao_grow_san.rc == 0
+    - ('*.' ~ openbao_headless_service_name ~ '.' ~ openbao_namespace ~ '.svc.cluster.local') in _openbao_grow_san.stdout
+  retries: "{{ openbao_grow_cert_wait_retries }}"
+  delay: "{{ openbao_grow_cert_wait_delay }}"
+  changed_when: false
+
 # The governing Service of a StatefulSet cannot change in place. Delete the
 # StatefulSet and keep its pod and volume (orphan), then create it again in the
 # Raft shape at one replica.
-# From here on, the play changes the cluster.
+# From here on, OpenBao is offline until pod 0 is unsealed.
 - name: Delete the StatefulSet and keep its pod and volume
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
@@ -171,6 +194,27 @@
     namespace: "{{ openbao_namespace }}"
   register: _openbao_grow_pod0_before
 
+# A single-replica install stores node 1 in the Raft configuration at the Service
+# address, and OpenBao does not rewrite it when pod 0 restarts with the per-pod
+# addresses. With three pods behind the Service, a new leader dials a random pod
+# for node 1 and steps down. raft/peers.json makes pod 0 recover its configuration
+# at start with node 1 at its per-pod address. OpenBao removes the file once it
+# has applied it.
+- name: Write the Raft peers file of pod 0
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s' {{ peers_json | quote }} |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i openbao-0
+      -- sh -c 'cat > {{ openbao_data_path }}/raft/peers.json'
+  vars:
+    peers_json: >-
+      {{ [{'id': openbao_raft_node_id | string,
+           'address': 'openbao-0.' ~ openbao_headless_service_name ~ '.' ~ openbao_namespace ~ '.svc.cluster.local:8201',
+           'non_voter': false}] | to_json }}
+  changed_when: true
+
 # Pod 0 has to restart: it loads the new certificate and the per-pod addresses
 # only at start. It comes back sealed.
 - name: Recreate pod 0
@@ -181,7 +225,10 @@
     kind: Pod
     name: openbao-0
     namespace: "{{ openbao_namespace }}"
-    wait: true
+    # No wait: the StatefulSet recreates the pod under the same name at once,
+    # so a wait for the name to disappear never ends. The next task waits for
+    # a pod with a new UID.
+    wait: false
 
 - name: Wait for the new pod 0 to run
   kubernetes.core.k8s_info:
@@ -228,6 +275,49 @@
   delay: 5
   no_log: true
 
+# Scale only when node 1 is at its per-pod address. With node 1 at the Service
+# address, a leader dials a random pod for that peer and steps down.
+- name: Read the Raft configuration
+  ansible.builtin.shell:
+    cmd: >-
+      printf '%s\n' "$OPENBAO_TOKEN" |
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i openbao-0
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json sys/storage/raft/configuration'
+  environment:
+    OPENBAO_TOKEN: "{{ openbao_guard_token }}"
+  register: _openbao_grow_raft_config
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Find the address of node 1
+  ansible.builtin.set_fact:
+    _openbao_grow_node_address: >-
+      {%- set out = namespace(address='') -%}
+      {%- if _openbao_grow_raft_config.rc | default(1) == 0 and _openbao_grow_raft_config.stdout | default('') is search('^\s*\{') -%}
+      {%- for server in (((_openbao_grow_raft_config.stdout | from_json).data | default({})).config | default({})).servers | default([]) -%}
+      {%- if server.node_id | string == openbao_raft_node_id | string -%}{%- set out.address = server.address | default('') -%}{%- endif -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {{ out.address }}
+  no_log: true
+
+- name: Refuse to scale unless node 1 is at its per-pod address
+  ansible.builtin.assert:
+    that: _openbao_grow_node_address == 'openbao-0.' ~ openbao_headless_service_name ~ '.' ~ openbao_namespace ~ '.svc.cluster.local:8201'
+    fail_msg: >-
+      Raft node {{ openbao_raft_node_id }} is at
+      {{ _openbao_grow_node_address | default('', true) or 'an address that could not be read' }}, not at
+      openbao-0.{{ openbao_headless_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8201.
+      The play did not scale. Pod 0 is running alone. Follow "Recover an interrupted
+      migration" in the security model doc, the branch "Pod 0 is unsealed and node 1
+      is at the wrong address", which covers writing raft/peers.json by hand.
+
 - name: Scale the workload to the full replica count
   ansible.builtin.include_tasks: workload.yml
 
@@ -253,4 +343,6 @@
       The cluster has {{ openbao_replicas }} pods, all unsealed. The migration used the
       automation file to unseal. To prove the recovery shares still work, restart one
       standby pod with 103-openbao-restart-pod.yml and unseal it with the recovery
-      shares (bin/unseal-openbao.sh). Then run 102-openbao-ha-guard.yml.
+      shares (bin/unseal-openbao.sh). Then run 102-openbao-ha-guard.yml. Run the ESO
+      play (vertical-orchestration/100-eso.yml) now: the ClusterSecretStore stays not
+      ready until it trusts the reissued certificate.

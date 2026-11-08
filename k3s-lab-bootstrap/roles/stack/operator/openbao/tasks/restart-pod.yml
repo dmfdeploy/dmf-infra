@@ -31,7 +31,10 @@
     kind: Pod
     name: "{{ openbao_restart_pod_name }}"
     namespace: "{{ openbao_namespace }}"
-    wait: true
+    # No wait: the StatefulSet recreates the pod under the same name at once,
+    # so a wait for the name to disappear never ends. The next task waits for
+    # a pod with a new UID.
+    wait: false
 
 - name: Wait for the new pod to run
   kubernetes.core.k8s_info:

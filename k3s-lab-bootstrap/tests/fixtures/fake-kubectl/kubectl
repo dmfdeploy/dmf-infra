@@ -1,11 +1,41 @@
 #!/usr/bin/env bash
-# Fake kubectl for the OpenBao tests (tests/test-openbao-*.yml). It handles one
-# call form: `kubectl [flags] exec [-i] POD -- COMMAND...`. It runs COMMAND here,
-# with the fake bao (tests/fixtures/fake-bao/bao) first on PATH and the pod name
-# in FAKE_POD. Standard input passes through, as it does with `kubectl exec -i`.
-# Any other call fails, so a test notices a new kind of call.
+# Fake kubectl for the OpenBao tests (tests/test-openbao-*.yml). It handles two
+# call forms:
+#   kubectl [flags] exec [-i] POD -- COMMAND...
+#     It runs COMMAND here, with the fake bao (tests/fixtures/fake-bao/bao) first on
+#     PATH and the pod name in FAKE_POD. Standard input passes through, as it does
+#     with `kubectl exec -i`. The command `sh -c 'cat > PATH'` does not run: the
+#     fake keeps its standard input as $FAKE_STATE/pod-fs/POD/PATH instead.
+#   kubectl [flags] get secret NAME -o jsonpath=...
+#     It prints the tls.crt of $FAKE_STATE/k8s/Secret-NAME.json, or the text
+#     "stale" (base64) for the first $FAKE_CERT_STALE_READS reads, as a secret that
+#     cert-manager has not replaced yet.
+# Every call is logged to $FAKE_STATE/events.log. Any other call fails, so a test
+# notices a new kind of call.
 set -u
 pod=""
+state="${FAKE_STATE:-}"
+log_event() { [ -n "$state" ] && { mkdir -p "$state"; printf '%s\n' "$*" >> "$state/events.log"; }; return 0; }
+case " $* " in
+  *" get secret "*)
+    secret=""
+    prev=""
+    for a in "$@"; do
+      [ "$prev" = secret ] && secret="$a"
+      prev="$a"
+    done
+    log_event "kubectl get secret $secret"
+    n=0
+    [ -f "$state/count-secret-$secret" ] && n="$(cat "$state/count-secret-$secret")"
+    echo $((n + 1)) > "$state/count-secret-$secret"
+    if [ "$n" -lt "${FAKE_CERT_STALE_READS:-0}" ]; then
+      printf 'stale' | base64
+    else
+      python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["data"]["tls.crt"], end="")' "$state/k8s/Secret-$secret.json"
+    fi
+    exit 0
+    ;;
+esac
 while [ $# -gt 0 ]; do
   case "$1" in
     exec) shift; break ;;
@@ -27,6 +57,13 @@ fi
 case " ${FAKE_MISSING:-} " in
   *" $pod "*) echo "Error from server (NotFound): pods \"$pod\" not found" >&2; exit 1 ;;
 esac
+if [ $# -eq 3 ] && [ "$1" = sh ] && [ "$2" = -c ] && [ "${3#cat > /}" != "$3" ]; then
+  dest="${3#cat > }"
+  mkdir -p "$state/pod-fs/$pod$(dirname "$dest")"
+  cat > "$state/pod-fs/$pod$dest"
+  log_event "kubectl exec $pod write $dest"
+  exit 0
+fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FAKE_POD="$pod"
 export PATH="$here/../fake-bao:$PATH"

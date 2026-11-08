@@ -178,6 +178,10 @@ Long-lived sites run OpenBao as a Raft cluster of three pods. Set
 sandbox lane keeps. A single pod has no peer to take over, so OpenBao is offline
 from the moment that pod restarts until someone unseals it.
 
+Use `1` or at least `3`. A Raft cluster of two pods cannot lose a pod, so the
+role refuses `2` before it changes anything. The grow play is narrower: it
+supports exactly `3` replicas.
+
 A cluster keeps OpenBao serving while one pod restarts. It does not remove the
 unseal. The seal is Shamir, so every restarted pod comes back sealed and needs
 the threshold of shares before the next pod restarts. A rolling upgrade is a
@@ -213,10 +217,14 @@ To restart pods, for an upgrade or a node drain, restart one pod at a time:
    pod that leads last.
 
 The guard reads each pod with `bao status`. On a cluster it also reads the Raft
-state from Autopilot (`bao operator raft autopilot state`). It refuses unless
+state from Autopilot (`bao read sys/storage/raft/autopilot/state`). It refuses unless
 every expected pod, matched by its Raft node ID, is a voter that Autopilot reports
-as healthy with a recent last contact, Autopilot reports the cluster healthy, and
-the cluster can lose one more voter (a failure tolerance of at least 1). A pod
+as healthy with a recent last contact, is at its per-pod Raft address
+(`<pod>.openbao-internal.openbao.svc.cluster.local:8201`), Autopilot reports the
+cluster healthy, and the cluster can lose one more voter (a failure tolerance of at
+least 1). A single-replica install stores node 1 at the Service address, and
+OpenBao does not rewrite it when pod 0 restarts. A leader then dials a random pod
+for that peer and steps down, so the guard names the address and refuses. A pod
 that is unsealed and answers locally is not enough: a follower cut off from its
 peers still looks that way. If the state cannot be read, the guard refuses.
 
@@ -245,55 +253,161 @@ reboot schedule in `k3s-lab-bootstrap/docs/hardening.md` does not run it.
 site. It keeps the data and the existing shares and never runs `bao operator
 init`. It is a live change: pod 0 restarts and stays sealed until the play
 unseals it. Rehearse it on a disposable environment first, and get the operator's
-approval before you run it on an installed one.
+approval before you run it on an installed one. The play supports exactly three
+replicas. It does not support `--check`: it refuses at its first task, before it
+reads or changes anything.
 
 1. With `openbao_replicas` still `1`, run `vertical-security/100-openbao.yml`. It
    reconciles the `app-admin-writer` policy, so `ops-admin` gets the two Raft
    reads. Take an `ops-admin` token for `OPENBAO_GUARD_TOKEN`.
-2. Set `openbao_replicas: 3` in the site inventory.
-3. Run the cert-manager play so the certificate covers the Raft peers, then the
-   ESO play so the `ClusterSecretStore` trusts the new certificate.
-4. Run the play with `OPENBAO_GUARD_TOKEN` set. Before it changes anything, it
-   checks that the token can read both Raft paths, that the existing pod is
-   initialized, unsealed and active, and that the certificate covers the peers.
-   It then reads the metadata of the paths in `openbao_migration_read_paths`
-   (version and update time, never a value). It fails if the list is empty, if a
-   read fails for any reason other than a confirmed "not found", or if no path
-   reads successfully, and it checks that before its first change, so a site with
-   nothing to compare finds out before the outage. It recreates the StatefulSet in the Raft shape without
-   deleting the pod or the volume, restarts pod 0, unseals it, scales to three
-   pods, unseals the new pods, and waits for every pod to be a healthy voter
-   (up to `openbao_guard_wait_timeout_seconds`, checking every
-   `openbao_guard_wait_interval_seconds`, because Autopilot promotes a new server
-   after a stabilization period). It then reads the same paths again and fails
-   when they differ.
+2. Set `openbao_replicas: 3` in the site inventory. The play refuses any other
+   count.
+3. Run the play with `OPENBAO_GUARD_TOKEN` set. Before it changes anything, it
+   checks that the replica count is 3, that the existing pod is initialized,
+   unsealed and active, and that the token can read both Raft paths. It then reads
+   the metadata of the paths in `openbao_migration_read_paths` (version and update
+   time, never a value). It fails if the list is empty, if a read fails for any
+   reason other than a confirmed "not found", or if no path reads successfully, and
+   it checks that before its first change, so a site with nothing to compare finds
+   out before the outage.
+
+   The play then reissues the OpenBao certificate with the Raft peer names, from
+   the cert-manager role's Certificate definition, and waits until the TLS secret
+   holds a certificate that covers `*.openbao-internal.openbao.svc.cluster.local`.
+   It recreates the StatefulSet in the Raft shape without deleting the pod or the
+   volume. It writes `raft/peers.json` into the data directory of pod 0, so that
+   node 1 is stored at `openbao-0.openbao-internal.openbao.svc.cluster.local:8201`
+   and not at the Service address. It restarts pod 0 and unseals it. It then
+   reads `sys/storage/raft/configuration` and refuses to scale unless node 1 is at
+   that address. It scales to three pods, unseals the new pods, and waits for every
+   pod to be a healthy voter (up to `openbao_guard_wait_timeout_seconds`, checking
+   every `openbao_guard_wait_interval_seconds`, because Autopilot promotes a new
+   server after a stabilization period). It then reads the same paths again and
+   fails when they differ.
+4. Run the ESO play (`vertical-orchestration/100-eso.yml`) right after the play.
+   The issuer is self-signed, so the reissued certificate is a new trust anchor.
+   Between the reissue and the ESO play, the `ClusterSecretStore` is not ready.
+   The ExternalSecrets keep their last values meanwhile.
 5. Prove the recovery shares. Restart one standby pod with
    `103-openbao-restart-pod.yml` and unseal it with the recovery shares.
 
 The play has no automatic resume. It runs only from a single-replica install, and
-every check that can refuse runs before its first change. After the first change
-it refuses to run again, because the StatefulSet is no longer a single replica.
+every check that can refuse runs before its first change. Once it changes the
+StatefulSet, it refuses to run again, because the StatefulSet is no longer a
+single replica. If it stops after the certificate reissue and before the
+StatefulSet change, the install is still single-replica, and you can run the play
+again after the first repair in the next section.
 
 #### Recover An Interrupted Migration
 
-If the play stops after it changed the StatefulSet, recover by hand:
+This section covers a grow to three replicas, the only size that the play
+supports. If the play stops, find the stop point, then follow the steps for it.
+For every stop point, start with `bin/unseal-openbao.sh <env> --status-all`, which
+shows each pod and whether it is sealed. To see the Raft peers, run `bao operator
+raft list-peers` in a pod that is unsealed, with an `ops-admin` token. If every
+`bao` call in pod 0 fails with an `x509` error, the reissued certificate is in
+place and pod 0 still serves the old one. Skip the peer check and follow step 1: a
+restart of pod 0 clears the error.
 
-1. Check what state the pods are in: `bin/unseal-openbao.sh <env> --status-all`.
-2. Unseal every sealed pod with the recovery shares, one pod at a time:
-   `OPENBAO_POD=<pod> bin/unseal-openbao.sh <env>`. If a pod is missing or the
-   StatefulSet is not in the Raft shape (governing Service `openbao-internal`,
-   `openbao_replicas` pods), stop and ask for help before you change anything.
-3. Run `vertical-security/102-openbao-ha-guard.yml` with `OPENBAO_GUARD_TOKEN` set,
+Node 1 is at the wrong address when `list-peers` shows it at
+`openbao.openbao.svc.cluster.local:8201` (the Service). It must be at
+`openbao-0.openbao-internal.openbao.svc.cluster.local:8201`. To fix it, give pod 0
+a `peers.json` file that holds the right address. OpenBao reads the file when pod 0
+starts and removes it:
+
+```json
+[{"id": "1", "address": "openbao-0.openbao-internal.openbao.svc.cluster.local:8201", "non_voter": false}]
+```
+
+Send the file to pod 0 on stdin:
+`kubectl -n openbao exec -i openbao-0 -- sh -c 'cat > /openbao/data/raft/peers.json'`.
+Then delete the pod with `kubectl -n openbao delete pod openbao-0`, wait for the
+StatefulSet to recreate it, and unseal it.
+
+The stop points are in the order that the play reaches them:
+
+1. **The certificate has the peer names, and the StatefulSet is still the
+   single-replica one.** The play stopped after it reissued the certificate and
+   before it deleted the StatefulSet. Pod 0 still serves the old certificate, so
+   the `bao` CLI in the pod fails with an `x509` error, and a new run of the play
+   fails its own status check. Repair it:
+   1. Delete pod 0 with `kubectl -n openbao delete pod openbao-0`, so that it
+      loads the new certificate. Wait for the StatefulSet to recreate it.
+   2. Unseal it with `OPENBAO_POD=openbao-0 bin/unseal-openbao.sh <env>`.
+   3. Run the ESO play, `vertical-orchestration/100-eso.yml`. It reads the
+      certificate from the OpenBao TLS secret and sets it as the `caBundle` of
+      the `ClusterSecretStore`, so ESO trusts the new certificate.
+   4. Run `vertical-security/104-openbao-grow-ha.yml` again. It finishes the
+      migration, so you do not need the later steps. Run the ESO play again when
+      it ends, as the play says.
+
+   This branch has not been rehearsed end to end. A rehearsal observed the TLS
+   failure, and that a restart of pod 0 followed by an unseal clears it.
+2. **The StatefulSet is missing.** No play recreates it at one replica today. Stop
+   and ask for help before you change anything.
+3. **The StatefulSet is in the Raft shape at one replica, and pod 0 has not
+   restarted.** The governing Service is `openbao-internal`, and there is one
+   pod. Write `peers.json` as above, delete pod 0, wait for the new pod, and unseal
+   it with `OPENBAO_POD=openbao-0 bin/unseal-openbao.sh <env>`. Then go to step 7.
+4. **Pod 0 restarted and is sealed.** Unseal it with
+   `OPENBAO_POD=openbao-0 bin/unseal-openbao.sh <env>`. Then follow step 5.
+5. **Pod 0 is unsealed and node 1 is at the wrong address.** The StatefulSet is
+   in the Raft shape at one replica, and pod 0 has restarted, is unsealed and
+   leads. The play stopped before it scaled, with "Raft node 1 is at ... not at
+   ..." or with a note that it could not read the address. Whichever message you
+   saw, follow these steps:
+   1. Run `list-peers` and read the address of node 1.
+   2. If node 1 is at the Service address, write `peers.json` as above, delete pod
+      0, and unseal it with `OPENBAO_POD=openbao-0 bin/unseal-openbao.sh <env>`.
+   3. Run `list-peers` again. Go to step 7 only when node 1 is at exactly
+      `openbao-0.openbao-internal.openbao.svc.cluster.local:8201` (with the
+      default headless Service name and namespace).
+   4. If `list-peers` fails, or shows any other address for node 1, stop. Do not
+      scale. Ask for help, and include the output of `list-peers` and of
+      `--status-all`.
+
+   Do not run the play again: it refuses, because the StatefulSet is no longer a
+   single replica.
+6. **The StatefulSet is scaled and the pods are sealed.** Unseal each sealed pod
+   with `OPENBAO_POD=<pod> bin/unseal-openbao.sh <env>`, one at a time. Then run
+   `list-peers`. If node 1 is at the Service address, write the same file, with
+   all three peers, to every pod, then delete all three pods and unseal them:
+
+   ```json
+   [
+     {"id": "1", "address": "openbao-0.openbao-internal.openbao.svc.cluster.local:8201", "non_voter": false},
+     {"id": "openbao-1", "address": "openbao-1.openbao-internal.openbao.svc.cluster.local:8201", "non_voter": false},
+     {"id": "openbao-2", "address": "openbao-2.openbao-internal.openbao.svc.cluster.local:8201", "non_voter": false}
+   ]
+   ```
+
+   OpenBao is offline until the threshold of pods is unsealed. Then go to step 8.
+
+These steps finish a recovery that began at step 3, 4 or 5. A recovery that began
+at step 6 continues at step 8.
+
+7. Scale the StatefulSet to three pods:
+   `kubectl -n openbao scale statefulset openbao --replicas=3`. Unseal each new
+   pod with `OPENBAO_POD=<pod> bin/unseal-openbao.sh <env>`.
+8. Run `vertical-security/102-openbao-ha-guard.yml` with `OPENBAO_GUARD_TOKEN` set,
    and repeat until it passes. Autopilot promotes a new server a short time after
-   it joins, so the guard can refuse for a minute or two.
-4. Run `vertical-security/105-openbao-verify-ha.yml`. It checks that every pod is a
+   it joins, so the guard can refuse for a minute or two. If it refuses with a Raft
+   address, the message names the server by pod name and node ID. During a grow,
+   only node 1 can carry the Service address, because the other pods join with
+   their per-pod address. If the message names node 1, follow the three-peer
+   repair in step 6. If it names another server, stop and do not apply the node 1
+   repair.
+9. Run `vertical-security/105-openbao-verify-ha.yml`. It checks that every pod is a
    healthy voter and reads the metadata of the paths in
    `openbao_migration_read_paths`. It has no earlier read to compare with, so
    compare the versions it prints with the "before" read in the output of the
    migration run.
+10. Run the ESO play (`vertical-orchestration/100-eso.yml`) if the play stopped
+    before it, so the `ClusterSecretStore` trusts the reissued certificate.
 
 The play unseals with the automation file, as the role does on every rerun. Step
-5 is the check that the ADR-0009 shares still work after the migration.
+5 of "Grow A Single Replica To A Raft Cluster" is the check that the ADR-0009
+shares still work after the migration.
 
 ### Break-Glass JSON
 

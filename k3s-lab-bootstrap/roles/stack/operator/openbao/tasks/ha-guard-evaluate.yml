@@ -10,10 +10,19 @@
 #   _openbao_guard_state_read  true when the Autopilot state was read
 #   _openbao_guard_seal_only   true for a seal check that authorizes no restart
 #   openbao_guard_max_last_contact_seconds  stale-contact limit
+#   openbao_headless_service_name, openbao_namespace  the Raft peer address of each pod
 #
 # Autopilot's own `healthy` flag already applies its last-contact threshold
 # (10 s by default, physical/raft/raft_autopilot.go line 296). The check on
 # last_contact below is a second limit that the role sets itself.
+#
+# Each server must be at the per-pod Raft address, <pod>.<headless service>.
+# <namespace>.svc.cluster.local:8201, the address that the StatefulSet template
+# gives BAO_CLUSTER_ADDR. A single-replica install stores node 1 at the Service
+# address, and OpenBao does not rewrite it when pod 0 restarts. With node 1 at the
+# Service address, a leader dials a random pod for that peer and steps down. The
+# refusal names the pod, its node ID and the address that Autopilot reports, so
+# the reader can tell which server carries the wrong one.
 - name: Work out what blocks the next restart
   ansible.builtin.set_fact:
     _openbao_guard_problems: >-
@@ -39,6 +48,8 @@
       {%- else -%}
       {%- if srv.node_type | default('') != 'voter' or e.node_id not in (st.voters | default([])) -%}{%- set _ = p.append(e.name ~ ' is not a voter') -%}{%- endif -%}
       {%- if not (srv.healthy | default(false)) -%}{%- set _ = p.append(e.name ~ ' is not healthy in Autopilot') -%}{%- endif -%}
+      {%- set want = e.name ~ '.' ~ openbao_headless_service_name ~ '.' ~ openbao_namespace ~ '.svc.cluster.local:8201' -%}
+      {%- if (srv.address | default('')) != want -%}{%- set _ = p.append(e.name ~ ' (node ID ' ~ e.node_id ~ ') is at the Raft address ' ~ ((srv.address | default('')) if (srv.address | default('') | length > 0) else 'unknown') ~ ', not ' ~ want) -%}{%- endif -%}
       {%- set lc = srv.last_contact | default('') | string -%}
       {%- set acc = namespace(sec=0.0, ok=(lc | length > 0 and lc != 'None')) -%}
       {%- for num, unit in lc | regex_findall('([0-9.]+)(ms|µs|us|ns|h|m|s)') -%}

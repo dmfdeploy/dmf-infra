@@ -22,8 +22,22 @@
 
 - name: Write the fake TLS secret
   ansible.builtin.copy:
-    content: '{"data": {"tls.crt": "ZmFrZQ=="}}'
+    content: '{"data": {"tls.crt": "ZmFrZQ==", "tls.key": "ZmFrZQ=="}}'
     dest: "{{ _case_dir }}/k8s/Secret-openbao-tls.json"
+    mode: "0600"
+
+- name: Write the fake pod 0
+  ansible.builtin.copy:
+    content: >-
+      {{ {'metadata': {'name': 'openbao-0', 'uid': 'uid-openbao-0-0'},
+          'status': {'phase': 'Running', 'containerStatuses': [{'state': {'running': {}}}]}} | to_json }}
+    dest: "{{ _case_dir }}/k8s/Pod-openbao-0.json"
+    mode: "0600"
+
+- name: Write the fake OpenBao Certificate
+  ansible.builtin.copy:
+    content: '{"status": {"conditions": [{"type": "Ready", "status": "True"}]}}'
+    dest: "{{ _case_dir }}/k8s/Certificate-openbao.json"
     mode: "0600"
 
 - name: Write the fake break-glass JSON

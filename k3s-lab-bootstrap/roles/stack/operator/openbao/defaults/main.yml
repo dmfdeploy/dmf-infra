@@ -10,13 +10,15 @@ openbao_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
 openbao_storage_size: 5Gi
 
 # Replica count. This is a site property: set it in the site inventory.
-#   1  A single OpenBao pod. Supported in the sandbox lane only (ADR-0029, as
-#      amended by the Tier 2 plan). A restart of the pod takes OpenBao
-#      offline until it is unsealed, and the pod has no peer to take over.
-#      The visible warning that the Tier 2 plan requires is not built yet.
+#   1  A single OpenBao pod. Supported in the sandbox lane only (ADR-0029, the
+#      tiered unseal posture). A restart of the pod takes OpenBao offline
+#      until it is unsealed, and the pod has no peer to take over. The visible
+#      warning that a single-pod site should show is not built yet.
 #   3  A Raft cluster. Long-lived sites set 3. HA keeps OpenBao serving while
 #      one pod restarts. It does not remove the unseal: a restarted pod is
 #      sealed and needs the threshold of shares before the next pod restarts.
+# A higher count is also a Raft cluster. 0 and 2 are refused: a Raft cluster of two
+# pods cannot lose a pod.
 # To grow an installed single-replica site, run
 # playbooks/vertical-security/104-openbao-grow-ha.yml. Do not only change this
 # value: the StatefulSet's governing Service cannot change in place.
@@ -31,6 +33,10 @@ openbao_headless_service_name: openbao-internal
 # it is the node ID of pod 0 only: a single-replica install already stores this
 # ID in its Raft data. The other pods use their pod name.
 openbao_raft_node_id: "1"
+
+# Data directory of the pod: the volume mount, and the path of the raft storage
+# stanza. Raft keeps its files in the raft/ directory under it.
+openbao_data_path: /openbao/data
 
 # Resources. umbrella dmfdeploy/dmfdeploy#258 platform request-budget audit
 # (2026-07-24, data-backed, requests only): measured avg 5m CPU on
@@ -194,6 +200,12 @@ openbao_guard_max_last_contact_seconds: 10
 # to this long, checking at this interval, before the play fails.
 openbao_guard_wait_timeout_seconds: 300
 openbao_guard_wait_interval_seconds: 10
+
+# The grow-HA play reissues the OpenBao certificate, then waits for the TLS secret
+# to hold a certificate that covers the Raft peers: at most this many reads, with
+# this many seconds between them.
+openbao_grow_cert_wait_retries: 60
+openbao_grow_cert_wait_delay: 5
 
 # Paths (under the secret/ mount) that the migration reads before and after, by
 # metadata only. ops-admin can read the metadata of these paths (the

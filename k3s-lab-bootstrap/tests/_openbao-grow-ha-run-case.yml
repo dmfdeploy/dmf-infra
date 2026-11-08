@@ -1,0 +1,163 @@
+---
+# One case of the full runs in test-openbao-grow-ha.yml. It runs grow-ha.yml to the
+# end, or to its refusal, and then reads $FAKE_STATE/events.log, the ordered log of
+# every call that the fake kubectl, bao and kubernetes.core received.
+- name: "{{ case.name }} — set the site values of the case"
+  ansible.builtin.set_fact:
+    openbao_headless_service_name: "{{ case.headless | default('openbao-internal') }}"
+    openbao_grow_cert_wait_retries: 5
+    openbao_grow_cert_wait_delay: 1
+
+- name: "{{ case.name }} — set up the fake cluster"
+  ansible.builtin.include_tasks: _openbao-grow-ha-setup.yml
+
+- name: "{{ case.name }} — run the migration"
+  block:
+    # As 104-openbao-grow-ha.yml runs it: the role's template lookups need the role.
+    - name: Run grow-ha.yml (the real procedure)
+      ansible.builtin.include_role:
+        name: stack/operator/openbao
+        tasks_from: grow-ha.yml
+      when: not (case.check_mode | default(false))
+    - name: Run grow-ha.yml with ansible-playbook --check
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - --check
+          - "{{ playbook_dir }}/_openbao-grow-ha-check-mode-play.yml"
+        chdir: "{{ playbook_dir }}/.."
+      register: _check_run
+      changed_when: false
+      failed_when: false
+      when: case.check_mode | default(false)
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+      when: not (case.check_mode | default(false))
+    - name: Record the outcome of the check-mode run
+      ansible.builtin.set_fact:
+        _outcome: "{{ 'refuse' if _check_run.rc != 0 else 'pass' }}"
+        _message: "{{ _check_run.stdout }}"
+      when: case.check_mode | default(false)
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment: >-
+    {{ {'FAKE_STATE': _case_dir, 'FAKE_PASSWORD': 's3cret-test-password', 'FAKE_THRESHOLD': '1',
+        'FAKE_SEALED': 'openbao-1 openbao-2'} | combine(case.env | default({})) }}
+
+- name: "{{ case.name }} — read the event log"
+  ansible.builtin.slurp:
+    src: "{{ _case_dir }}/events.log"
+  register: _events_raw
+  failed_when: false
+
+- name: "{{ case.name }} — list the events"
+  ansible.builtin.set_fact:
+    _events: "{{ (_events_raw.content | default('') | b64decode).splitlines() }}"
+
+- name: "{{ case.name }} — assert the outcome"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      - case.message is not defined or case.message in _message
+      - case.also is not defined or case.also in _message
+    fail_msg: "{{ case.name }}: outcome {{ _outcome }}, message '{{ _message }}'"
+    success_msg: "{{ case.name }}: {{ _outcome }}"
+
+- name: "{{ case.name }} — look for a log of the fake bao"
+  ansible.builtin.stat:
+    path: "{{ _case_dir }}/bao-argv.log"
+  register: _bao_log
+  when: case.id == 'check_mode'
+
+# Check mode refuses at the first task: no call reached the cluster, the fake
+# kubernetes.core or the fake bao.
+- name: "{{ case.name }} — nothing was read or written"
+  ansible.builtin.assert:
+    that:
+      - _events | length == 0
+      - not _bao_log.stat.exists
+  when: case.id == 'check_mode'
+
+# Every step that follows names the position of an event in the log. A step that
+# cannot find its event fails the case.
+- name: "{{ case.name }} — find the events that fix the order"
+  ansible.builtin.set_fact:
+    _at_reissue: "{{ _events.index('k8s present Certificate openbao') if 'k8s present Certificate openbao' in _events else -1 }}"
+    _at_sts_delete: "{{ _events.index('k8s absent StatefulSet openbao') if 'k8s absent StatefulSet openbao' in _events else -1 }}"
+    _at_peers: "{{ _events.index('kubectl exec openbao-0 write /openbao/data/raft/peers.json') if 'kubectl exec openbao-0 write /openbao/data/raft/peers.json' in _events else -1 }}"
+    _at_pod_delete: "{{ _events.index('k8s absent Pod openbao-0') if 'k8s absent Pod openbao-0' in _events else -1 }}"
+    _bao_events: "{{ _events | select('match', '^bao ') | list }}"
+
+- name: "{{ case.name }} — the certificate is reissued after the checks and before the StatefulSet is deleted"
+  ansible.builtin.assert:
+    that:
+      - _at_reissue | int > 0
+      - _events[0] is match('^bao ')
+      - _at_sts_delete | int > _at_reissue | int
+  when: case.expect == 'pass'
+
+# The baseline read is the "before" of the before and after comparison. It has to
+# happen while pod 0 still serves the old certificate and holds the old data.
+- name: "{{ case.name }} — the baseline read of every configured path comes before the certificate is reissued"
+  ansible.builtin.assert:
+    that: >-
+      ('bao openbao-0 kv metadata get -mount=secret -format=json ' ~ item)
+      in _events[:(_at_reissue | int)]
+    fail_msg: "The read of {{ item }} is not before the reissue (event {{ _at_reissue }}): {{ _events }}"
+  loop: "{{ openbao_migration_read_paths }}"
+  when: case.expect == 'pass'
+
+# The in-pod bao CLI trusts the mounted certificate, so after the reissue it fails
+# TLS against the old server certificate until pod 0 restarts.
+- name: "{{ case.name }} — no bao call runs between the reissue and the restart of pod 0"
+  ansible.builtin.assert:
+    that:
+      - _at_pod_delete | int > _at_reissue | int
+      - _events[(_at_reissue | int):(_at_pod_delete | int)] | select('match', '^bao ') | list | length == 0
+      - _events[(_at_pod_delete | int):] | select('match', '^bao ') | first is match('^bao openbao-0 status ')
+    fail_msg: "A bao call ran between the reissue and the restart of pod 0: {{ _events[(_at_reissue | int):(_at_pod_delete | int)] | select('match', '^bao ') | list }}"
+  when: case.expect == 'pass'
+
+- name: "{{ case.name }} — read the peers file"
+  ansible.builtin.slurp:
+    src: "{{ _case_dir }}/pod-fs/openbao-0/openbao/data/raft/peers.json"
+  register: _peers
+  failed_when: false
+  when: case.expect == 'pass'
+
+- name: "{{ case.name }} — raft/peers.json holds node 1 at its per-pod address, and is written before pod 0 is deleted"
+  ansible.builtin.assert:
+    that:
+      - _at_peers | int > 0
+      - _at_peers | int < _at_pod_delete | int
+      - _at_peers | int > _at_sts_delete | int
+      - >-
+        (_peers.content | b64decode | from_json) ==
+        [{'id': '1', 'address': 'openbao-0.' ~ openbao_headless_service_name ~ '.openbao.svc.cluster.local:8201', 'non_voter': false}]
+    fail_msg: "peers.json: {{ _peers.content | default('') | b64decode }}"
+  when: case.expect == 'pass'
+
+- name: "{{ case.name }} — the wait reads the secret again until the certificate covers the peers"
+  ansible.builtin.assert:
+    that: _events | select('equalto', 'kubectl get secret openbao-tls') | list | length == 3
+  when: case.id == 'slow_certificate'
+
+- name: "{{ case.name }} — nothing is deleted while the certificate does not cover the peers"
+  ansible.builtin.assert:
+    that:
+      - _at_reissue | int > 0
+      - _at_sts_delete | int == -1
+      - _at_pod_delete | int == -1
+  when: case.id == 'certificate_never'
+
+- name: "{{ case.name }} — the play did not scale"
+  ansible.builtin.assert:
+    that:
+      - _events | select('equalto', 'k8s present StatefulSet openbao') | list | length == 1
+      - _at_pod_delete | int > 0
+  when: case.id == 'service_address'

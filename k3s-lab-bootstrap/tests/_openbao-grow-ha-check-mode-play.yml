@@ -1,0 +1,16 @@
+---
+# Played by `ansible-playbook --check` from _openbao-grow-ha-run-case.yml: the
+# task keyword check_mode does not change the variable ansible_check_mode, so the
+# test needs a real check-mode run of the play. The site values are left out on
+# purpose: the play must refuse before it uses one.
+- name: Run the grow-HA play in check mode
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars_files:
+    - ../roles/stack/operator/openbao/defaults/main.yml
+  tasks:
+    - name: Run grow-ha.yml
+      ansible.builtin.include_role:
+        name: stack/operator/openbao
+        tasks_from: grow-ha.yml

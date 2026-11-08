@@ -1,0 +1,11 @@
+---
+# Refuse a replica count that no OpenBao deployment supports. A Raft cluster of
+# two pods needs both to elect a leader, so it cannot lose a pod. The role and the
+# grow-HA play include this file before they read or change anything.
+- name: Assert the replica count is 1 or at least 3
+  ansible.builtin.assert:
+    that: (openbao_replicas | int == 1) or (openbao_replicas | int >= 3)
+    fail_msg: >-
+      openbao_replicas is {{ openbao_replicas }}. A two-pod Raft cluster cannot
+      lose a pod. Use 1 (sandbox lane) or at least 3 (long-lived sites use 3).
+      Nothing has changed.

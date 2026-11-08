@@ -20,6 +20,10 @@
       {%- endfor -%}
       {{ out }}
 
+# The two reads in this file run in check mode (check_mode: false) because they
+# change nothing, and the guard needs their output. 100-openbao.yml --check reaches
+# them through seal-check.yml. Without it, check mode skips the commands and the
+# guard reports every pod as unreachable.
 - name: Read the seal state of each OpenBao pod
   ansible.builtin.command:
     argv:
@@ -36,6 +40,7 @@
       - -format=json
   loop: "{{ _openbao_guard_names }}"
   register: _openbao_guard_status
+  check_mode: false
   changed_when: false
   # bao status exits 2 while a pod is sealed and 1 when it cannot be reached
   # (command/status.go). The evaluate task reads the output, so a failed call is
@@ -57,12 +62,14 @@
     _openbao_guard_asker: >-
       {{ (_openbao_guard_pod_states | rejectattr('sealed') | selectattr('reachable') | map(attribute='name') | list | first) | default('') }}
 
-# Autopilot state: OpenBao v2.5.2, GET sys/storage/raft/autopilot/state
-# (vault/logical_system_raft.go lines 508-533). The CLI prints the state object
-# (command/operator_raft_autopilot_state.go line 98) with healthy,
-# failure_tolerance, leader, voters and servers keyed by node ID, each with
-# node_type, healthy and last_contact (physical/raft/raft_autopilot.go lines
-# 370-397).
+# Autopilot state: OpenBao v2.5.2, GET sys/storage/raft/autopilot/state, read
+# with `bao read -format=json`. The response is the API object, and the state is
+# under .data with snake_case keys: healthy, failure_tolerance, leader, voters and
+# servers keyed by node ID, each with node_type, healthy and last_contact.
+# `bao operator raft autopilot state -format=json` does not fit: it prints the
+# same state with Go field names (Healthy, FailureTolerance, Servers, NodeType,
+# LastContact), which ha-guard-evaluate.yml does not read. Both forms were checked
+# against a running OpenBao 2.5.2.
 - name: Read the Raft state from Autopilot
   ansible.builtin.shell:
     cmd: >-
@@ -73,10 +80,11 @@
       -- sh -c '
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
-      bao operator raft autopilot state -format=json'
+      bao read -format=json sys/storage/raft/autopilot/state'
   environment:
     OPENBAO_TOKEN: "{{ openbao_guard_token }}"
   register: _openbao_guard_state_raw
+  check_mode: false
   changed_when: false
   failed_when: false
   no_log: true
@@ -85,17 +93,20 @@
     - openbao_guard_token | default('') | length > 0
     - _openbao_guard_asker | length > 0
 
-- name: Record the Raft state
+# The state object is .data of the response. A response with no .data mapping
+# counts as not read, so the guard refuses.
+- name: Parse the Autopilot response
   ansible.builtin.set_fact:
-    _openbao_guard_state_read: >-
-      {{ _openbao_guard_state_raw is defined
-         and _openbao_guard_state_raw.rc | default(1) == 0
-         and _openbao_guard_state_raw.stdout | default('') | length > 0
-         and _openbao_guard_state_raw.stdout is search('^\s*\{') }}
-    _openbao_guard_state: >-
+    _openbao_guard_response: >-
       {{ (_openbao_guard_state_raw.stdout | from_json)
          if (_openbao_guard_state_raw is defined and _openbao_guard_state_raw.rc | default(1) == 0
              and _openbao_guard_state_raw.stdout | default('') | length > 0
              and _openbao_guard_state_raw.stdout is search('^\s*\{'))
          else {} }}
+  no_log: true
+
+- name: Record the Raft state
+  ansible.builtin.set_fact:
+    _openbao_guard_state_read: "{{ _openbao_guard_response.data | default(none) is mapping }}"
+    _openbao_guard_state: "{{ (_openbao_guard_response.data | default({})) if (_openbao_guard_response.data | default(none) is mapping) else {} }}"
   no_log: true
