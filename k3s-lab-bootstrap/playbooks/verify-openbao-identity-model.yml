@@ -348,15 +348,14 @@
     - name: Log in as the rotation scheduler
       ansible.builtin.shell:
         cmd: >-
-          printf '%s' "$SCHEDULER_JWT" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ verify_openbao_namespace }}
           exec -i {{ _verify_openbao_pod }}
           -- sh -c '
           exec bao write -format=json auth/kubernetes/login
           role={{ verify_rotation_scheduler_k8s_role | quote }} jwt=-'
-      environment:
-        SCHEDULER_JWT: "{{ _verify_scheduler_jwt.stdout | trim }}"
+        stdin: "{{ _verify_scheduler_jwt.stdout | trim }}"
+        stdin_add_newline: false
       register: _verify_scheduler_login
       changed_when: false
       failed_when: false

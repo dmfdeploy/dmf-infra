@@ -716,9 +716,8 @@
       -n {{ openbao_namespace }}
       exec -i {{ openbao_pod }}
       -- sh -c '
-      IFS= read -r P;
-      bao write -format=json auth/userpass/login/{{ openbao_policy_reconciler_username }} password="$P"'
-    stdin: "{{ openbao_policy_reconciler_password }}\n"
+      bao write -format=json auth/userpass/login/{{ openbao_policy_reconciler_username }} -'
+    stdin: "{{ {'password': openbao_policy_reconciler_password} | to_json }}\n"
   register: _policy_reconciler_login_raw
   changed_when: false
   no_log: true
@@ -743,9 +742,8 @@
       -n {{ openbao_namespace }}
       exec -i {{ openbao_pod }}
       -- sh -c '
-      IFS= read -r P;
-      bao write -format=json auth/userpass/login/{{ openbao_approle_reconciler_username }} password="$P"'
-    stdin: "{{ openbao_approle_reconciler_password }}\n"
+      bao write -format=json auth/userpass/login/{{ openbao_approle_reconciler_username }} -'
+    stdin: "{{ {'password': openbao_approle_reconciler_password} | to_json }}\n"
   register: _approle_reconciler_login_raw
   changed_when: false
   failed_when: _approle_reconciler_login_raw.rc != 0
@@ -1236,13 +1234,9 @@
       exec -i {{ openbao_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r P;
       export BAO_TOKEN;
-      bao write auth/userpass/users/{{ openbao_operator_username }}
-      password="$P"
-      token_policies={{ openbao_operator_policy_name }},{{ openbao_operator_runtime_policy_name }}
-      token_ttl=1h token_max_ttl=4h'
-    stdin: "{{ openbao_root_token }}\n{{ openbao_operator_password }}\n"
+      bao write auth/userpass/users/{{ openbao_operator_username }} -'
+    stdin: "{{ openbao_root_token }}\n{{ {'password': openbao_operator_password, 'token_policies': openbao_operator_policy_name ~ ',' ~ openbao_operator_runtime_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
   no_log: true
   when:
     - openbao_init_raw is defined
@@ -1354,13 +1348,9 @@
       exec -i {{ openbao_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r P;
       export BAO_TOKEN;
-      bao write auth/userpass/users/{{ openbao_policy_reconciler_username }}
-      password="$P"
-      token_policies={{ openbao_policy_writer_policy_name }}
-      token_ttl=1h token_max_ttl=4h'
-    stdin: "{{ openbao_root_token }}\n{{ openbao_policy_reconciler_password }}\n"
+      bao write auth/userpass/users/{{ openbao_policy_reconciler_username }} -'
+    stdin: "{{ openbao_root_token }}\n{{ {'password': openbao_policy_reconciler_password, 'token_policies': openbao_policy_writer_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
   no_log: true
   when:
     - openbao_init_raw is defined
@@ -1374,13 +1364,9 @@
       exec -i {{ openbao_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r P;
       export BAO_TOKEN;
-      bao write auth/userpass/users/{{ openbao_approle_reconciler_username }}
-      password="$P"
-      token_policies={{ openbao_approle_reconciler_policy_name }}
-      token_ttl=1h token_max_ttl=4h'
-    stdin: "{{ openbao_root_token }}\n{{ openbao_approle_reconciler_password }}\n"
+      bao write auth/userpass/users/{{ openbao_approle_reconciler_username }} -'
+    stdin: "{{ openbao_root_token }}\n{{ {'password': openbao_approle_reconciler_password, 'token_policies': openbao_approle_reconciler_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
   no_log: true
   when:
     - openbao_init_raw is defined
@@ -1428,9 +1414,8 @@
       -n {{ openbao_namespace }}
       exec -i {{ openbao_pod }}
       -- sh -c '
-      IFS= read -r P;
-      bao write -format=json auth/userpass/login/{{ openbao_operator_username }} password="$P"'
-    stdin: "{{ openbao_operator_password }}\n"
+      bao write -format=json auth/userpass/login/{{ openbao_operator_username }} -'
+    stdin: "{{ {'password': openbao_operator_password} | to_json }}\n"
   register: _openbao_ops_admin_login
   changed_when: false
   no_log: true

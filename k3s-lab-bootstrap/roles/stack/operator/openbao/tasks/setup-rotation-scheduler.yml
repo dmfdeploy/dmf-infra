@@ -59,7 +59,6 @@
 - name: Write the rotation scheduler policy
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n' "$OPENBAO_TOKEN" "$POLICY_HCL" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ openbao_pod }}
@@ -67,9 +66,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao policy write {{ openbao_rotation_scheduler_policy_name }} -'
-  environment:
-    OPENBAO_TOKEN: "{{ _openbao_policy_apply_token }}"
-    POLICY_HCL: "{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/rotation-scheduler.hcl') }}"
+    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/rotation-scheduler.hcl') }}\n"
   no_log: true
   when: openbao_is_initialized | bool
 
@@ -80,7 +77,6 @@
 - name: Write the rotation scheduler Kubernetes-auth role
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ openbao_pod }}
@@ -94,8 +90,7 @@
       token_policies={{ openbao_rotation_scheduler_policy_name }}
       token_ttl={{ openbao_rotation_scheduler_token_ttl }}
       token_max_ttl={{ openbao_rotation_scheduler_token_max_ttl }}'
-  environment:
-    OPENBAO_TOKEN: "{{ openbao_root_token }}"
+    stdin: "{{ openbao_root_token }}\n"
   no_log: true
   when:
     - openbao_init_raw is defined
