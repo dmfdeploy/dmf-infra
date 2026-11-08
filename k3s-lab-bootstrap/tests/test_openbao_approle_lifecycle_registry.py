@@ -54,7 +54,6 @@ EXCLUDED = {
     "k3s-lab-bootstrap/lib/approle_lifecycle/setup_only.py": "reads the create response of a per-run SecretID for a role created elsewhere",
     "k3s-lab-bootstrap/lib/approle_lifecycle/rotation.py": "compares the role and lookup TTL with the registry and creates no role",
     "k3s-lab-bootstrap/playbooks/verify-openbao-identity-model.yml": "reads SecretIDs of an existing role to verify identities and creates no role",
-    "k3s-lab-bootstrap/playbooks/vertical-orchestration/110-eso-secret-rotation.yml": "mints a SecretID for an existing role, which inherits the role TTL",
     "k3s-lab-bootstrap/roles/base/prometheus/files/rules/recording.yaml": "uses the metric name dmf_openbao_approle_secret_id_ttl_seconds",
     "k3s-lab-bootstrap/roles/base/prometheus/templates/rules/alerts.yaml.j2": "uses the metric name dmf_openbao_approle_secret_id_ttl_seconds",
     "k3s-lab-bootstrap/roles/base/prometheus/tests/test_openbao_approle_rotation_396.promtool.yml": "feeds the metric name to promtool",
@@ -69,6 +68,14 @@ EXCLUDED = {
     "k3s-lab-bootstrap/tests/test_openbao_approle_registry_model.py": "tests the registry model with TTL values",
     "k3s-lab-bootstrap/tests/test_openbao_setup_only_issuance.py": "tests the setup-only path against the create response",
     "k3s-lab-bootstrap/tests/test_openbao_rotation_transaction.py": "tests the rotation engine against fake role and lookup TTLs",
+    "k3s-lab-bootstrap/lib/approle_lifecycle/rotation_transports.py": "addresses the AppRole paths of the registry targets for the rotation engine and creates no role",
+    "k3s-lab-bootstrap/lib/approle_lifecycle/scheduler_policy.py": "renders the scheduler policy paths from the registry and creates no role",
+    "k3s-lab-bootstrap/roles/stack/operator/openbao/files/policies/rotation-scheduler.hcl": "grants the scheduler the SecretID paths of the registry targets and creates no role",
+    "k3s-lab-bootstrap/tests/golden/rotation-scheduler.hcl": "the reviewed copy of the rendered scheduler policy",
+    "k3s-lab-bootstrap/tests/test_openbao_rotation_transports.py": "tests the rotation clients against the AppRole paths",
+    "k3s-lab-bootstrap/tests/test_openbao_rotation_wiring.py": "checks that the verifier probes agree with the scheduler policy paths",
+    "k3s-lab-bootstrap/tests/test_openbao_scheduler_policy.py": "tests the scheduler policy paths and the calls the engine makes",
+    "k3s-lab-bootstrap/tasks/eso-secret-rotation-legacy.yml": "mints a SecretID for an existing role, which inherits the role TTL; the earlier ESO procedure, kept while the rotation switch is off",
 }
 
 
@@ -77,8 +84,7 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/lib/approle_lifecycle/registry.py": 3,
     "k3s-lab-bootstrap/lib/approle_lifecycle/setup_only.py": 4,
     "k3s-lab-bootstrap/lib/approle_lifecycle/rotation.py": 4,
-    "k3s-lab-bootstrap/playbooks/verify-openbao-identity-model.yml": 8,
-    "k3s-lab-bootstrap/playbooks/vertical-orchestration/110-eso-secret-rotation.yml": 1,
+    "k3s-lab-bootstrap/playbooks/verify-openbao-identity-model.yml": 16,
     "k3s-lab-bootstrap/roles/base/object-storage-credentials/tasks/main.yml": 9,
     "k3s-lab-bootstrap/roles/base/prometheus/files/rules/recording.yaml": 1,
     "k3s-lab-bootstrap/roles/base/prometheus/templates/rules/alerts.yaml.j2": 3,
@@ -95,6 +101,14 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/tests/test_openbao_approle_registry_model.py": 1,
     "k3s-lab-bootstrap/tests/test_openbao_setup_only_issuance.py": 13,
     "k3s-lab-bootstrap/tests/test_openbao_rotation_transaction.py": 12,
+    "k3s-lab-bootstrap/lib/approle_lifecycle/rotation_transports.py": 7,
+    "k3s-lab-bootstrap/lib/approle_lifecycle/scheduler_policy.py": 2,
+    "k3s-lab-bootstrap/roles/stack/operator/openbao/files/policies/rotation-scheduler.hcl": 12,
+    "k3s-lab-bootstrap/tests/golden/rotation-scheduler.hcl": 12,
+    "k3s-lab-bootstrap/tests/test_openbao_rotation_transports.py": 4,
+    "k3s-lab-bootstrap/tests/test_openbao_rotation_wiring.py": 1,
+    "k3s-lab-bootstrap/tests/test_openbao_scheduler_policy.py": 13,
+    "k3s-lab-bootstrap/tasks/eso-secret-rotation-legacy.yml": 1,
 }
 
 

@@ -1,0 +1,227 @@
+---
+# Rotate the SecretID of one runtime AppRole target, or of every runtime
+# target, as the rotation scheduler identity.
+#
+# The registry (vars/openbao-approle-lifecycle-registry.json) lists the
+# targets. lib/approle_lifecycle/rotation.py runs the transaction, and
+# lib/approle_lifecycle/rotation_cli.py is the command this playbook runs. A
+# run follows these steps:
+#
+#   1. Apply the Kubernetes RBAC that the registry's consumers and readiness
+#      gates need.
+#   2. Check the engine's assumptions and refuse to run when one fails: the
+#      request limit of every OpenBao listener, whether the running OpenBao
+#      loaded its current config, the API server's request timeout, a bound
+#      on every Kubernetes call, and the node clock. Each refusal says what
+#      to fix.
+#   3. Log in to OpenBao with a short-lived ServiceAccount token, run the
+#      engine, and print one line per target. No SecretID, token or accessor
+#      is printed.
+#
+# A second run is safe: a target that is not due reports `not_due`, and a
+# transaction that is still pending continues with its staged SecretID.
+#
+# Required variables:
+#   approle_rotation_target   a registry target name, or `all` for a sweep
+#   approle_rotation_actor    who asked for the run
+#   approle_rotation_reason   why
+# Optional:
+#   approle_rotation_role         attribution role (default `operator`)
+#   approle_rotation_request_id   keep the same value when retrying a run
+#
+# Run:
+#   bin/run-playbook.sh <env> \
+#     ../dmf-infra/k3s-lab-bootstrap/playbooks/vertical-orchestration/115-approle-rotation.yml \
+#     -e approle_rotation_target=all -e approle_rotation_actor=<name> \
+#     -e approle_rotation_reason="<reason>"
+- name: Rotate AppRole SecretIDs
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  tags:
+    - vertical-security
+    - approle-rotation
+
+  vars:
+    approle_rotation_openbao_namespace: "{{ openbao_namespace | default('openbao') }}"
+    approle_rotation_openbao_pod_selector: "app.kubernetes.io/name=openbao"
+    approle_rotation_openbao_config_map: openbao-config
+    approle_rotation_service_account: "{{ openbao_rotation_scheduler_service_account | default('approle-rotation-scheduler') }}"
+    approle_rotation_k8s_role: "{{ openbao_rotation_scheduler_k8s_role | default('approle-rotation-scheduler') }}"
+    approle_rotation_audience: "{{ openbao_rotation_scheduler_audience | default('openbao') }}"
+    approle_rotation_attribution_role: "{{ approle_rotation_role | default('operator') }}"
+    approle_rotation_run_id: >-
+      {{ approle_rotation_request_id | default('rotation-' ~ now(utc=true).strftime('%Y%m%dT%H%M%SZ'), true) }}
+    approle_rotation_registry: "{{ playbook_dir }}/../../vars/openbao-approle-lifecycle-registry.json"
+    approle_rotation_code: "{{ playbook_dir }}/../../lib/approle_lifecycle/"
+    # The command line of rotation_cli.py. The preflight run adds one flag.
+    approle_rotation_argv:
+      - python3
+      - "{{ _approle_rotation_dir.path }}/approle_lifecycle/rotation_cli.py"
+      - --registry
+      - "{{ _approle_rotation_dir.path }}/registry.json"
+      - --inventory-json
+      - "{{ _approle_rotation_inventory }}"
+      - "{{ '--all' if approle_rotation_target == 'all' else '--target=' ~ approle_rotation_target }}"
+      - "--actor={{ approle_rotation_actor }}"
+      - "--role={{ approle_rotation_attribution_role }}"
+      - "--request-id={{ approle_rotation_run_id }}"
+      - "--reason={{ approle_rotation_reason }}"
+      - --openbao-namespace
+      - "{{ approle_rotation_openbao_namespace }}"
+      - --openbao-pod
+      - "{{ _approle_rotation_pod_info.resources[0].metadata.name }}"
+      - --openbao-config-map
+      - "{{ approle_rotation_openbao_config_map }}"
+      - --openbao-pod-selector
+      - "{{ approle_rotation_openbao_pod_selector }}"
+      - --service-account
+      - "{{ approle_rotation_service_account }}"
+      - --openbao-role
+      - "{{ approle_rotation_k8s_role }}"
+      - --audience
+      - "{{ approle_rotation_audience }}"
+      - --lease-namespace
+      - "{{ approle_rotation_openbao_namespace }}"
+      - --act-as-service-account
+
+  tasks:
+    - name: Assert the run context is present
+      ansible.builtin.assert:
+        that:
+          - approle_rotation_target | default('') | length > 0
+          - approle_rotation_actor | default('') | trim | length > 0
+          - approle_rotation_reason | default('') | trim | length > 0
+        fail_msg: >-
+          Set approle_rotation_target (a registry target name, or all),
+          approle_rotation_actor and approle_rotation_reason. The engine
+          refuses a run without them before it changes anything.
+
+    - name: Load the object-storage consumer namespace defaults
+      ansible.builtin.include_vars:
+        file: "{{ playbook_dir }}/../../roles/base/object-storage-credentials/defaults/main.yml"
+        name: _approle_rotation_object_storage_defaults
+
+    - name: Set the readiness gate inventory
+      ansible.builtin.set_fact:
+        _approle_rotation_inventory: >-
+          {{
+            {'object_storage_consumer_namespaces':
+              object_storage_consumer_namespaces
+              | default(_approle_rotation_object_storage_defaults.object_storage_consumer_namespaces)}
+            | to_json
+          }}
+
+    - name: Discover the OpenBao pod
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Pod
+        namespace: "{{ approle_rotation_openbao_namespace }}"
+        label_selectors:
+          - "{{ approle_rotation_openbao_pod_selector }}"
+      register: _approle_rotation_pod_info
+
+    - name: Assert the OpenBao pod exists
+      ansible.builtin.assert:
+        that:
+          - _approle_rotation_pod_info.resources | length > 0
+        fail_msg: >-
+          Could not find an OpenBao pod in namespace
+          {{ approle_rotation_openbao_namespace }} with selector
+          {{ approle_rotation_openbao_pod_selector }}.
+
+    - name: Run the rotation
+      block:
+        - name: Create a private directory for the rotation code
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: dmf-rotation-
+          register: _approle_rotation_dir
+
+        - name: Copy the rotation code and the registry to the control node
+          ansible.builtin.copy:
+            src: "{{ item.src }}"
+            dest: "{{ _approle_rotation_dir.path }}/{{ item.dest }}"
+            mode: "0600"
+            directory_mode: "0700"
+          loop:
+            - { src: "{{ approle_rotation_code }}", dest: approle_lifecycle/ }
+            - { src: "{{ approle_rotation_registry }}", dest: registry.json }
+          loop_control:
+            label: "{{ item.dest }}"
+
+        - name: Render the consumer RBAC of the registry
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -m
+              - approle_lifecycle.scheduler_policy
+              - rbac
+              - --registry
+              - "{{ _approle_rotation_dir.path }}/registry.json"
+              - --inventory-json
+              - "{{ _approle_rotation_inventory }}"
+              - --namespace
+              - "{{ approle_rotation_openbao_namespace }}"
+              - --service-account
+              - "{{ approle_rotation_service_account }}"
+              - --lease-namespace
+              - "{{ approle_rotation_openbao_namespace }}"
+              - --scope
+              - consumers
+          environment:
+            PYTHONPATH: "{{ _approle_rotation_dir.path }}"
+          register: _approle_rotation_rbac
+          changed_when: false
+
+        - name: Apply the consumer RBAC of the registry
+          kubernetes.core.k8s:
+            kubeconfig: /etc/rancher/k3s/k3s.yaml
+            state: present
+            definition: "{{ item }}"
+          loop: "{{ _approle_rotation_rbac.stdout | from_json }}"
+          loop_control:
+            label: "{{ item.kind }}/{{ item.metadata.namespace | default('cluster') }}/{{ item.metadata.name }}"
+
+        - name: Check the assumptions of the rotation engine
+          ansible.builtin.command:
+            argv: "{{ approle_rotation_argv + ['--preflight-only'] }}"
+          register: _approle_rotation_preflight
+          changed_when: false
+          failed_when: false
+
+        - name: Assert the assumptions of the rotation engine hold
+          ansible.builtin.assert:
+            that:
+              - _approle_rotation_preflight.rc == 0
+            fail_msg: "{{ _approle_rotation_preflight.stderr | default('the check did not run') }}"
+
+        - name: Run the rotation engine
+          ansible.builtin.command:
+            argv: "{{ approle_rotation_argv }}"
+          register: _approle_rotation_run
+          changed_when: "'outcome=rotated' in _approle_rotation_run.stdout"
+          failed_when: false
+
+        - name: Report the outcome of each target
+          ansible.builtin.debug:
+            msg: "{{ _approle_rotation_run.stdout_lines + _approle_rotation_run.stderr_lines }}"
+
+        - name: Assert that no target failed
+          ansible.builtin.assert:
+            that:
+              - _approle_rotation_run.rc == 0
+            fail_msg: >-
+              The rotation did not finish cleanly (exit status
+              {{ _approle_rotation_run.rc }}). The report above names each
+              target's outcome and reason code. A pending transaction keeps
+              its staged SecretID and continues on the next run. Run again
+              with the same approle_rotation_request_id to retry this
+              invocation.
+      always:
+        - name: Remove the rotation code directory
+          ansible.builtin.file:
+            path: "{{ _approle_rotation_dir.path }}"
+            state: absent
+          when: _approle_rotation_dir.path is defined
