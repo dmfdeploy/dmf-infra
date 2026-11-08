@@ -130,7 +130,6 @@
 - name: Read NetBox runtime secret from OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ dmf_born_inventory_openbao_namespace }}
       exec -i {{ _dmf_born_inventory_openbao_pod }}
@@ -138,12 +137,12 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao read -format=json secret/data/apps/netbox/runtime'
+    stdin: "{{ _dmf_born_inventory_openbao_client_token }}\n"
   register: _dmf_born_inventory_runtime_secret_raw
   changed_when: false
   failed_when: false
   environment:
     BAO_ADDR: https://127.0.0.1:8200
-    OPENBAO_TOKEN: "{{ _dmf_born_inventory_openbao_client_token }}"
   no_log: true
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 

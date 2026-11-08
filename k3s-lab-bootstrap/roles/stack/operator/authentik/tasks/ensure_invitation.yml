@@ -110,44 +110,15 @@
 - name: Persist Authentik bootstrap passkey enrollment status to OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n'
-      "$OPENBAO_TOKEN"
-      "$AUTHENTIK_PASSKEY_USERNAME"
-      "$AUTHENTIK_PASSKEY_EMAIL"
-      "$AUTHENTIK_PASSKEY_HAS_WEBAUTHN"
-      "$AUTHENTIK_PASSKEY_WEBAUTHN_COUNT"
-      "$AUTHENTIK_PASSKEY_REQUIRED_WEBAUTHN_COUNT"
-      "$AUTHENTIK_PASSKEY_URL"
-      "$AUTHENTIK_PASSKEY_EXPIRES" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ authentik_openbao_namespace }}
       exec -i {{ _authentik_openbao_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r USERNAME;
-      IFS= read -r EMAIL;
-      IFS= read -r HAS_WEBAUTHN;
-      IFS= read -r WEBAUTHN_COUNT;
-      IFS= read -r REQUIRED_WEBAUTHN_COUNT;
-      IFS= read -r ENROLLMENT_URL;
-      IFS= read -r EXPIRES;
       export BAO_TOKEN;
-      bao kv put {{ authentik_bootstrap_passkey_secret_path | quote }}
-      username="$USERNAME"
-      email="$EMAIL"
-      has_webauthn="$HAS_WEBAUTHN"
-      webauthn_count="$WEBAUTHN_COUNT"
-      required_webauthn_count="$REQUIRED_WEBAUTHN_COUNT"
-      enrollment_url="$ENROLLMENT_URL"
-      expires="$EXPIRES"'
+      bao kv put {{ authentik_bootstrap_passkey_secret_path | quote }} -'
+    stdin: |
+      {{ _authentik_openbao_client_token }}
+      {{ {'username': _authentik_bootstrap_passkey_invitation_data.username, 'email': _authentik_bootstrap_passkey_invitation_data.email, 'has_webauthn': (_authentik_bootstrap_passkey_invitation_data.has_webauthn | bool) | string | lower, 'webauthn_count': _authentik_bootstrap_passkey_invitation_data.webauthn_count | string, 'required_webauthn_count': _authentik_bootstrap_passkey_invitation_data.required_webauthn_count | string, 'enrollment_url': _authentik_bootstrap_passkey_invitation_data.url, 'expires': _authentik_bootstrap_passkey_invitation_data.expires} | to_json }}
   when: authentik_blueprints_enabled | bool
-  environment:
-    OPENBAO_TOKEN: "{{ _authentik_openbao_client_token }}"
-    AUTHENTIK_PASSKEY_USERNAME: "{{ _authentik_bootstrap_passkey_invitation_data.username }}"
-    AUTHENTIK_PASSKEY_EMAIL: "{{ _authentik_bootstrap_passkey_invitation_data.email }}"
-    AUTHENTIK_PASSKEY_HAS_WEBAUTHN: "{{ (_authentik_bootstrap_passkey_invitation_data.has_webauthn | bool) | string | lower }}"
-    AUTHENTIK_PASSKEY_WEBAUTHN_COUNT: "{{ _authentik_bootstrap_passkey_invitation_data.webauthn_count | string }}"
-    AUTHENTIK_PASSKEY_REQUIRED_WEBAUTHN_COUNT: "{{ _authentik_bootstrap_passkey_invitation_data.required_webauthn_count | string }}"
-    AUTHENTIK_PASSKEY_URL: "{{ _authentik_bootstrap_passkey_invitation_data.url }}"
-    AUTHENTIK_PASSKEY_EXPIRES: "{{ _authentik_bootstrap_passkey_invitation_data.expires }}"
   no_log: true

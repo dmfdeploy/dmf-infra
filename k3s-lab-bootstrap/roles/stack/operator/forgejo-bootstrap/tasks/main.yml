@@ -712,18 +712,15 @@
 - name: Log into OpenBao with operator userpass for Forgejo persistence
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_PASSWORD" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ forgejo_openbao_namespace }}
       exec -i {{ _forgejo_openbao_pod }}
       -- sh -c '
-      IFS= read -r P;
-      bao write -format=json auth/userpass/login/{{ _forgejo_openbao_username | quote }} password="$P"'
+      bao write -format=json auth/userpass/login/{{ _forgejo_openbao_username | quote }} -'
+    stdin: "{{ {'password': _forgejo_openbao_password} | to_json }}\n"
   register: _forgejo_openbao_login_raw
   changed_when: false
   run_once: true
-  environment:
-    OPENBAO_PASSWORD: "{{ _forgejo_openbao_password }}"
   no_log: true
   when: forgejo_persist_to_openbao | bool
 
@@ -737,29 +734,14 @@
 - name: Persist Forgejo integration secrets to in-cluster OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n%s\n%s\n'
-      "$OPENBAO_TOKEN"
-      "$FORGEJO_ADMIN_TOKEN"
-      "$FORGEJO_SVC_PASSWORD"
-      "$FORGEJO_SVC_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ forgejo_openbao_namespace }}
       exec -i {{ _forgejo_openbao_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r ADMIN_TOKEN;
-      IFS= read -r SVC_PASSWORD;
-      IFS= read -r SVC_TOKEN;
       export BAO_TOKEN;
-      bao kv put {{ forgejo_runtime_secret_path | quote }}
-      forgejo_admin_token="$ADMIN_TOKEN"
-      forgejo_svc_password="$SVC_PASSWORD"
-      forgejo_svc_token="$SVC_TOKEN"'
+      bao kv put {{ forgejo_runtime_secret_path | quote }} -'
+    stdin: "{{ _forgejo_openbao_client_token }}\n{{ {'forgejo_admin_token': forgejo_admin_token_effective, 'forgejo_svc_password': forgejo_svc_password_effective, 'forgejo_svc_token': forgejo_svc_token_effective} | to_json }}\n"
   run_once: true
-  environment:
-    OPENBAO_TOKEN: "{{ _forgejo_openbao_client_token }}"
-    FORGEJO_ADMIN_TOKEN: "{{ forgejo_admin_token_effective }}"
-    FORGEJO_SVC_PASSWORD: "{{ forgejo_svc_password_effective }}"
-    FORGEJO_SVC_TOKEN: "{{ forgejo_svc_token_effective }}"
   no_log: true
   when: forgejo_persist_to_openbao | bool

@@ -35,9 +35,9 @@ CREDENTIAL_WORD = r"(token|secret|password|jwt|share|accessor)(?!_(max_)?ttl|_po
 STDIN_PIPE = re.compile(r"""printf\s+'[^']*'(?:\s+"\$\w+")+\s*\|""")
 SHELL_VARIABLE = re.compile(r"\$\{?\w*" + CREDENTIAL_WORD + r"\w*", re.I)
 JINJA_EXPRESSION = re.compile(r"\{\{[^}]*" + CREDENTIAL_WORD + r"[^}]*\}\}", re.I)
-# Lines that end the command part of a task.
+# Lines that end the command part of a task. `stdin` is data for the process, not an argument.
 TASK_KEYS = re.compile(
-    r"^\s+(environment|register|no_log|changed_when|failed_when|when|delegate_to|become|loop|loop_control|vars|block|always):"
+    r"^\s+(stdin|stdin_add_newline|environment|register|no_log|changed_when|failed_when|when|delegate_to|become|loop|loop_control|vars|block|always):"
 )
 
 

@@ -186,7 +186,6 @@
     - name: Read current Authentik runtime secret from OpenBao
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n' "$OPENBAO_TOKEN" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ cms_openbao_namespace | default('openbao') }}
           exec -i {{ _openbao_session_pod }}
@@ -194,11 +193,10 @@
           IFS= read -r BAO_TOKEN;
           export BAO_TOKEN;
           bao kv get -format=json secret/apps/authentik/runtime'
+        stdin: "{{ _openbao_session_client_token }}\n"
       register: _cms_authentik_runtime_secret_raw
       changed_when: false
       failed_when: false
-      environment:
-        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
       no_log: true
 
     - name: Parse current Authentik runtime secret from OpenBao
@@ -233,7 +231,6 @@
     - name: Persist API token to OpenBao
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n%s\n' "$OPENBAO_TOKEN" "$AUTHENTIK_RUNTIME_SECRET_PAYLOAD" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ cms_openbao_namespace | default('openbao') }}
           exec -i {{ _openbao_session_pod }}
@@ -243,10 +240,8 @@
           export BAO_ADDR=https://127.0.0.1:8200;
           export BAO_TOKEN;
           printf %s "$payload" | bao kv put secret/apps/authentik/runtime -'
+        stdin: "{{ _openbao_session_client_token }}\n{{ _cms_authentik_runtime_secret_payload }}\n"
       when: _cms_authentik_token_data.changed | default(false) | bool
-      environment:
-        OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
-        AUTHENTIK_RUNTIME_SECRET_PAYLOAD: "{{ _cms_authentik_runtime_secret_payload }}"
       no_log: true
 
     - name: Build stringData for DMF Console runtime Secret patch

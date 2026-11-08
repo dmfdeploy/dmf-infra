@@ -367,7 +367,6 @@
     - name: Read sealed app-admin secrets from OpenBao
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n' "$OPENBAO_TOKEN" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ verify_bootstrap_convergence_namespace }}
           exec -i {{ _bootstrap_convergence_pod }}
@@ -375,8 +374,7 @@
           IFS= read -r BAO_TOKEN;
           export BAO_TOKEN;
           bao kv get -format=json {{ item.path | quote }}'
-      environment:
-        OPENBAO_TOKEN: "{{ _bootstrap_convergence_operator_token }}"
+        stdin: "{{ _bootstrap_convergence_operator_token }}\n"
       register: _bootstrap_convergence_secret_results
       changed_when: false
       failed_when: false

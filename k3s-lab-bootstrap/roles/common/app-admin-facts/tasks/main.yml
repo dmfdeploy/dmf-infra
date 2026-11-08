@@ -35,7 +35,6 @@
 - name: Read existing app-admin secret from OpenBao
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ app_admin_openbao_namespace }}
       exec -i {{ _openbao_session_pod }}
@@ -43,11 +42,10 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json {{ app_admin_secret_path | quote }}'
+    stdin: "{{ _openbao_session_client_token }}\n"
   register: _app_admin_existing_secret_raw
   changed_when: false
   failed_when: false
-  environment:
-    OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
   no_log: true
 
 - name: Parse existing app-admin secret document
@@ -219,29 +217,20 @@
 - name: Persist app-admin secret to OpenBao when missing or changed (materialize only)
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n%s\n%s\n%s\n' "$OPENBAO_TOKEN" "$APP_ADMIN_USERNAME" "$APP_ADMIN_PASSWORD" "$APP_ADMIN_EMAIL" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ app_admin_openbao_namespace }}
       exec -i {{ _openbao_session_pod }}
       -- sh -c '
       IFS= read -r BAO_TOKEN;
-      IFS= read -r U;
-      IFS= read -r P;
-      IFS= read -r E;
       export BAO_TOKEN;
-      bao kv put {{ app_admin_secret_path | quote }}
-      username="$U" password="$P" email="$E"'
+      bao kv put {{ app_admin_secret_path | quote }} -'
+    stdin: "{{ _openbao_session_client_token }}\n{{ {'username': _app_admin_effective_username, 'password': _app_admin_effective_password, 'email': _app_admin_effective_email} | to_json }}\n"
   register: _app_admin_kv_put
   when:
     - app_admin_mode == 'materialize'
     - _app_admin_existing_data.username | default('') != _app_admin_effective_username
       or _app_admin_existing_data.password | default('') != _app_admin_effective_password
       or _app_admin_existing_data.email | default('') != _app_admin_effective_email
-  environment:
-    OPENBAO_TOKEN: "{{ _openbao_session_client_token }}"
-    APP_ADMIN_USERNAME: "{{ _app_admin_effective_username }}"
-    APP_ADMIN_PASSWORD: "{{ _app_admin_effective_password }}"
-    APP_ADMIN_EMAIL: "{{ _app_admin_effective_email }}"
   no_log: true
   failed_when: false
 
