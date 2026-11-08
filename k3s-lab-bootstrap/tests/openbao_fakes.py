@@ -14,6 +14,7 @@ class FakeKubernetes:
         self.objects = {}
         self.lists = {}
         self.patches = []
+        self.versions = {}
         self.fail_patch = False
         self.read_error = None
         self.receipts = {}
@@ -28,12 +29,27 @@ class FakeKubernetes:
         if self.read_error is not None:
             raise self.read_error
         value = self.secrets.get((namespace, name))
-        return copy.deepcopy(value) if value is not None else None
+        if value is None:
+            return None
+        found = copy.deepcopy(value)
+        found["resource_version"] = str(self.versions.get((namespace, name), 1))
+        return found
 
-    def patch_secret(self, namespace, name, key, value, annotations):
+    def _check_version(self, namespace, name, resource_version):
+        if resource_version is not None and str(self.versions.get((namespace, name), 1)) != resource_version:
+            raise RuntimeError("the object has been modified")
+        self.versions[(namespace, name)] = self.versions.get((namespace, name), 1) + 1
+
+    def annotate_secret(self, namespace, name, annotations, resource_version):
+        self.calls.append(("annotate_secret", namespace, name))
+        self._check_version(namespace, name, resource_version)
+        self.secrets[(namespace, name)]["annotations"].update(annotations)
+
+    def patch_secret(self, namespace, name, key, value, annotations, resource_version=None):
         self.calls.append(("patch_secret", namespace, name, key))
         if self.fail_patch:
             raise RuntimeError(f"transport said the body was {value}")
+        self._check_version(namespace, name, resource_version)
         current = self.secrets.setdefault((namespace, name), {"data": {}, "annotations": {}})
         current["data"][key] = value
         current["annotations"].update(annotations)

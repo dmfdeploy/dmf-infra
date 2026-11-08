@@ -16,8 +16,10 @@ from datetime import datetime, timezone
 
 TRANSACTION_ANNOTATION = "approle-lifecycle.dmf.example.com/transaction-id"
 VERSION_ANNOTATION = "approle-lifecycle.dmf.example.com/target-version"
+FENCE_ANNOTATION = "approle-lifecycle.dmf.example.com/aborted-transaction-id"
 TRANSACTION_KEY = "transaction_id"
 VERSION_KEY = "target_version"
+FENCE_KEY = "aborted_transaction_id"
 _TRANSACTION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
 
@@ -63,8 +65,17 @@ class KubernetesSecretKeyDestination:
     """A named key of a Kubernetes Secret.
 
     Client methods: `get_secret(namespace, name)` returns None or a dict with
-    `data` (key to value) and `annotations`; `patch_secret(namespace, name,
-    key, value, annotations)` sets the key and the annotations in one request.
+    `data` (key to value), `annotations` and `resource_version`;
+    `patch_secret(namespace, name, key, value, annotations, resource_version)`
+    sets the key and the annotations in one request that the API server
+    rejects unless the Secret still has `resource_version` (None creates the
+    Secret); `annotate_secret(namespace, name, annotations, resource_version)`
+    sets annotations only, under the same condition.
+
+    A delivery is conditional on the version read just before it, so a write
+    that was in flight when another actor changed the Secret fails instead of
+    replacing the newer state. `fence` changes the version without touching
+    the credential.
     """
 
     def __init__(self, destination, client):
@@ -90,8 +101,18 @@ class KubernetesSecretKeyDestination:
         marker = self.marker()
         return marker is not None and marker["transaction_id"] == transaction_id
 
+    def _current(self, reason_code):
+        """Read the Secret and its resource version. A Secret that exists
+        without a version cannot be written conditionally, so it is refused."""
+        message = f"could not read {self.label()}"
+        current = _guarded(reason_code, message, self.client.get_secret, self.namespace, self.name)
+        if current is not None and not current.get("resource_version"):
+            raise AdapterError(reason_code, f"{self.label()} has no resource version")
+        return current
+
     def deliver(self, secret_id, transaction_id, target_version):
         _check_transaction(transaction_id, target_version)
+        current = self._current("delivery_failed")
         _guarded(
             "delivery_failed",
             f"could not update {self.label()}",
@@ -101,6 +122,24 @@ class KubernetesSecretKeyDestination:
             self.key,
             secret_id,
             {TRANSACTION_ANNOTATION: transaction_id, VERSION_ANNOTATION: str(target_version)},
+            current["resource_version"] if current is not None else None,
+        )
+
+    def fence(self, transaction_id):
+        """Change the Secret's version so that a delivery still in flight for
+        `transaction_id` fails. The Secret must exist."""
+        _check_transaction(transaction_id, 1)
+        current = self._current("delivery_failed")
+        if current is None:
+            raise AdapterError("delivery_failed", f"{self.label()} does not exist, so it cannot be fenced")
+        _guarded(
+            "delivery_failed",
+            f"could not fence {self.label()}",
+            self.client.annotate_secret,
+            self.namespace,
+            self.name,
+            {FENCE_ANNOTATION: transaction_id},
+            current["resource_version"],
         )
 
 
@@ -109,7 +148,9 @@ class OpenBaoKv2RecordDestination:
 
     Client methods: `read_kv2(path)` returns None or `(data, version)`;
     `write_kv2(path, data, cas)` writes the whole record only when its current
-    version equals `cas`. The adapter keeps every other key of the record.
+    version equals `cas`. The adapter keeps every other key of the record, and
+    it writes with the version it read just before, so a delivery in flight
+    when another actor wrote the record fails.
     """
 
     def __init__(self, destination, client):
@@ -144,6 +185,19 @@ class OpenBaoKv2RecordDestination:
         merged[TRANSACTION_KEY] = transaction_id
         merged[VERSION_KEY] = target_version
         _guarded("delivery_failed", message, self.client.write_kv2, self.path, merged, version)
+
+    def fence(self, transaction_id):
+        """Write the record under the version just read, naming
+        `transaction_id`, so that a delivery in flight for it fails. A missing
+        record is created, which also fails a stale create."""
+        _check_transaction(transaction_id, 1)
+        message = f"could not fence {self.label()}"
+        current = _guarded("delivery_failed", message, self.client.read_kv2, self.path)
+        data, version = current if current is not None else ({}, 0)
+        _guarded(
+            "delivery_failed", message, self.client.write_kv2, self.path,
+            {**data, FENCE_KEY: transaction_id}, version,
+        )
 
 
 def build_destination(destination, clients):

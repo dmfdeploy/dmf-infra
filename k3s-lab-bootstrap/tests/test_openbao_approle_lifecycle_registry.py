@@ -52,6 +52,7 @@ EXCLUDED = {
     "k3s-lab-bootstrap/docs/openbao-approle-lifecycle-registry.md": "documents the registry and quotes its field names",
     "k3s-lab-bootstrap/lib/approle_lifecycle/registry.py": "reads the registry fields and creates no role",
     "k3s-lab-bootstrap/lib/approle_lifecycle/setup_only.py": "reads the create response of a per-run SecretID for a role created elsewhere",
+    "k3s-lab-bootstrap/lib/approle_lifecycle/rotation.py": "compares the role and lookup TTL with the registry and creates no role",
     "k3s-lab-bootstrap/playbooks/verify-openbao-identity-model.yml": "reads SecretIDs of an existing role to verify identities and creates no role",
     "k3s-lab-bootstrap/playbooks/vertical-orchestration/110-eso-secret-rotation.yml": "mints a SecretID for an existing role, which inherits the role TTL",
     "k3s-lab-bootstrap/roles/base/prometheus/files/rules/recording.yaml": "uses the metric name dmf_openbao_approle_secret_id_ttl_seconds",
@@ -67,6 +68,7 @@ EXCLUDED = {
     "k3s-lab-bootstrap/tests/test_openbao_approle_registry_assertions.py": "tests the role assertions that name the removed overrides",
     "k3s-lab-bootstrap/tests/test_openbao_approle_registry_model.py": "tests the registry model with TTL values",
     "k3s-lab-bootstrap/tests/test_openbao_setup_only_issuance.py": "tests the setup-only path against the create response",
+    "k3s-lab-bootstrap/tests/test_openbao_rotation_transaction.py": "tests the rotation engine against fake role and lookup TTLs",
 }
 
 
@@ -74,6 +76,7 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/docs/openbao-approle-lifecycle-registry.md": 7,
     "k3s-lab-bootstrap/lib/approle_lifecycle/registry.py": 3,
     "k3s-lab-bootstrap/lib/approle_lifecycle/setup_only.py": 4,
+    "k3s-lab-bootstrap/lib/approle_lifecycle/rotation.py": 4,
     "k3s-lab-bootstrap/playbooks/verify-openbao-identity-model.yml": 8,
     "k3s-lab-bootstrap/playbooks/vertical-orchestration/110-eso-secret-rotation.yml": 1,
     "k3s-lab-bootstrap/roles/base/object-storage-credentials/tasks/main.yml": 9,
@@ -91,6 +94,7 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/tests/test_openbao_approle_registry_assertions.py": 4,
     "k3s-lab-bootstrap/tests/test_openbao_approle_registry_model.py": 1,
     "k3s-lab-bootstrap/tests/test_openbao_setup_only_issuance.py": 13,
+    "k3s-lab-bootstrap/tests/test_openbao_rotation_transaction.py": 12,
 }
 
 
