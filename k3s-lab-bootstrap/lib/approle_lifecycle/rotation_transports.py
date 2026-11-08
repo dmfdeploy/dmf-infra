@@ -446,6 +446,10 @@ class RotationOpenBao(_Bounded):
         )
         if rc != 0:
             self._fail(err, "the SecretID lookup failed")
+        # The lookup is a write, and OpenBao answers a write that finds nothing
+        # with an empty success (204), not with an error: only reads and lists
+        # turn an empty answer into 404. So an unknown SecretID arrives here as
+        # empty output.
         if not out.strip():
             return None
         data = self._data(out, "the lookup response is malformed")
