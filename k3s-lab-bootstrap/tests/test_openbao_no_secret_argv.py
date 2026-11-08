@@ -242,14 +242,16 @@ def secret_in_child_arguments(text):
     return found
 
 
-# The OpenBao family: the OpenBao role's tasks, the OpenBao playbooks, the identity verifier
-# and the two rotation playbooks. This list is the same in every branch.
+# The OpenBao family: the OpenBao role's tasks, the OpenBao playbooks, the identity verifier,
+# the ESO rotation playbook and its legacy tasks file, and the ops-admin rotation playbook.
+# This list is the same in every branch.
 OPENBAO_FAMILY_FILES = sorted(
     list((ROOT / "roles/stack/operator/openbao/tasks").glob("*.yml"))
     + list((ROOT / "playbooks/vertical-security").glob("10*-openbao*.yml"))
     + [
         ROOT / "playbooks/verify-openbao-identity-model.yml",
         ROOT / "playbooks/vertical-orchestration/110-eso-secret-rotation.yml",
+        ROOT / "tasks/eso-secret-rotation-legacy.yml",
         ROOT / "playbooks/vertical-orchestration/120-ops-admin-rotation.yml",
     ]
 )
@@ -420,10 +422,9 @@ PERMANENT_ENVIRONMENT = {
 # every other file in the other. Each branch pins what it leaves as it is on the main branch, so
 # the suite passes on its own. Once both changes are in, both sets are empty and the two names go.
 PENDING_ENVIRONMENT_OPENBAO_FAMILY = {
+    'playbooks/verify-openbao-identity-model.yml::Log in as the rotation scheduler::SCHEDULER_JWT',
     'playbooks/verify-openbao-identity-model.yml::Log in as the setup issuer::ISSUER_JWT',
     'playbooks/verify-openbao-identity-model.yml::Probe capability matrix::OPENBAO_TOKEN',
-    'playbooks/vertical-orchestration/110-eso-secret-rotation.yml::Generate new ESO AppRole secret_id::ESO_ROTATION_BAO_TOKEN',
-    'playbooks/vertical-orchestration/110-eso-secret-rotation.yml::Log into OpenBao with operator userpass::OPENBAO_PASSWORD',
     'playbooks/vertical-orchestration/120-ops-admin-rotation.yml::Decode temporary root token::OPS_ADMIN_ENCODED_ROOT_TOKEN',
     'playbooks/vertical-orchestration/120-ops-admin-rotation.yml::Revoke temporary root token::OPS_ADMIN_ROOT_TOKEN',
     'playbooks/vertical-orchestration/120-ops-admin-rotation.yml::Submit Shamir shares to generate the temporary root token::OPS_ADMIN_SHARE',
@@ -470,9 +471,13 @@ PENDING_ENVIRONMENT_OPENBAO_FAMILY = {
     'roles/stack/operator/openbao/tasks/main.yml::Upsert policy-reconciler userpass user::OPENBAO_POLICY_RECONCILER_PASSWORD',
     'roles/stack/operator/openbao/tasks/main.yml::Upsert policy-reconciler userpass user::OPENBAO_TOKEN',
     'roles/stack/operator/openbao/tasks/main.yml::Verify approle-reconciler login on rerun path::OPENBAO_APPROLE_RECONCILER_PASSWORD',
+    'roles/stack/operator/openbao/tasks/setup-rotation-scheduler.yml::Write the rotation scheduler Kubernetes-auth role::OPENBAO_TOKEN',
+    'roles/stack/operator/openbao/tasks/setup-rotation-scheduler.yml::Write the rotation scheduler policy::OPENBAO_TOKEN',
     'roles/stack/operator/openbao/tasks/setup-issuer.yml::Write the setup issuer Kubernetes-auth role::OPENBAO_TOKEN',
     'roles/stack/operator/openbao/tasks/setup-issuer.yml::Write the setup issuer policy::OPENBAO_TOKEN',
     'roles/stack/operator/openbao/tasks/unseal-pod.yml::Unseal the pod with the threshold of shares::OPENBAO_SHARE',
+    'tasks/eso-secret-rotation-legacy.yml::Generate new ESO AppRole secret_id::ESO_ROTATION_BAO_TOKEN',
+    'tasks/eso-secret-rotation-legacy.yml::Log into OpenBao with operator userpass::OPENBAO_PASSWORD',
 }
 
 PENDING_ENVIRONMENT_OTHER = set()
