@@ -104,7 +104,8 @@ class SchedulerIdentityTests(unittest.TestCase):
             with self.subTest(task=name):
                 body = task(SCHEDULER, name)
                 self.assertIn("no_log: true", body)
-                self.assertRegex(body, r"printf '[^']*'(\s+\"\$\w+\")+\s*\|")
+                self.assertRegex(body, r"(?m)^\s+stdin: \"\{\{ \w+ \}\}\\n")
+                self.assertNotRegex(body, r"(?m)^\s+environment:")
 
     def test_the_kubernetes_auth_role_is_written_on_a_fresh_install_only(self):
         body = task(SCHEDULER, "Write the rotation scheduler Kubernetes-auth role")
@@ -183,8 +184,9 @@ class RotationPlaybookTests(unittest.TestCase):
 
 
 # The task list that playbook 110 ran before the switch existed, with its four
-# leading spaces removed, as it is in the legacy file.
-LEGACY_BODY_SHA256 = "6a1a5887553ed5f1822be0bac1a016c4466052f5e9bb1c265e3f52a5128fd585"
+# leading spaces removed, as it is in the legacy file. The two OpenBao tasks send
+# their secrets on stdin; the rest is unchanged.
+LEGACY_BODY_SHA256 = "eef72edf3f224d6b2cf583ede5bcf5cdc93ce12de38628453ae296f0f650f9a4"
 LEGACY_HEADER_END = "Everything below this comment is the old task list.\n"
 SWITCH_ON = "approle_rotation_engine_enabled | default(false) | bool"
 
@@ -242,7 +244,9 @@ class VerifierTests(unittest.TestCase):
         self.assertIn("'rotation-scheduler': _verify_token_rotation_scheduler", VERIFY)
         login = task(VERIFY, "Log in as the rotation scheduler")
         self.assertIn("jwt=-", login)
-        self.assertRegex(login, r"printf '%s' \"\$SCHEDULER_JWT\" \|")
+        self.assertIn('stdin: "{{ _verify_scheduler_jwt.stdout | trim }}"', login)
+        self.assertIn("stdin_add_newline: false", login)
+        self.assertNotRegex(login, r"(?m)^\s+environment:")
 
     def test_the_negative_probes_cover_every_required_class(self):
         denied = {path for path, expected in self.PROBES if expected == "deny"}

@@ -11,10 +11,10 @@ pod can read. Send the value on stdin instead (`password=-`, or a JSON body).
 A task-level `environment:` entry that holds a secret is the same defect. Ansible turns
 `environment:` into an assignment in the remote shell command, so the value shows in
 the process list on the node. The module's `stdin:` parameter carries a secret without
-that. The environment check below fails on such an entry in the files that are already
-fixed, and it pins the entries that remain elsewhere, so a new one cannot appear. It
-reads both the block form and the flow form of `environment:`, and it tests the key name
-and the value template. A pin names the file, the task and the key.
+that. The environment check below fails on such an entry in every task file except the
+permanent entries it pins, so a new one cannot appear. It reads both the block form and
+the flow form of `environment:`, and it tests the key name and the value template. A pin
+names the file, the task and the key.
 
 Two more checks cover every task, in every file, that carries a secret on `stdin:`.
 The task must set `no_log: true`, because Ansible records module arguments, `stdin:`
@@ -46,15 +46,6 @@ BENIGN = re.compile(r"openbao_shamir_|breakglass_|_name\b|_path\b|_dir\b|_servic
 # Known earlier defects of the same class, outside the unseal path and not yet fixed.
 # Each entry is an expression that this check tolerates for now. Remove the entry
 # when the task is fixed.
-# Existing logins that expand the password into the `bao write` arguments, in code
-# outside the unseal path. They are the same defect class. Each entry is
-# the whole stripped line. Remove it when the task sends the password on stdin.
-KNOWN_SHELL = {
-    ("main.yml", 'bao write -format=json auth/userpass/login/{{ openbao_policy_reconciler_username }} password="$P"\''),
-    ("main.yml", 'bao write -format=json auth/userpass/login/{{ openbao_approle_reconciler_username }} password="$P"\''),
-    ("main.yml", 'password="$P"'),
-    ("main.yml", 'bao write -format=json auth/userpass/login/{{ openbao_operator_username }} password="$P"\''),
-}
 KNOWN = {
     # Writes share 3 to the macOS Keychain on the operator workstation with `security -w`.
     "openbao_unseal_keys_b64[2]",
@@ -242,32 +233,12 @@ def secret_in_child_arguments(text):
     return found
 
 
-# The OpenBao family: the OpenBao role's tasks, the OpenBao playbooks, the identity verifier,
-# the ESO rotation playbook and its legacy tasks file, and the ops-admin rotation playbook.
-# This list is the same in every branch.
-OPENBAO_FAMILY_FILES = sorted(
-    list((ROOT / "roles/stack/operator/openbao/tasks").glob("*.yml"))
-    + list((ROOT / "playbooks/vertical-security").glob("10*-openbao*.yml"))
-    + [
-        ROOT / "playbooks/verify-openbao-identity-model.yml",
-        ROOT / "playbooks/vertical-orchestration/110-eso-secret-rotation.yml",
-        ROOT / "tasks/eso-secret-rotation-legacy.yml",
-        ROOT / "playbooks/vertical-orchestration/120-ops-admin-rotation.yml",
-    ]
-)
-
-# Files whose tasks pass every secret on stdin, except the permanent entries below. The
-# change that converts the OpenBao family lists it in the first name; the change that converts
-# every other file lists them in the second. Once both are in, both names hold their files.
-ENV_CLEAN_OPENBAO_FAMILY = OPENBAO_FAMILY_FILES
-
-ENV_CLEAN_OTHER = [
+# Every non-test task file passes its secrets on stdin, except the permanent entries below.
+ENV_CLEAN = [
     path
     for path in sorted(ROOT.rglob("*.yml"))
-    if path.relative_to(ROOT).parts[0] != "tests" and path not in OPENBAO_FAMILY_FILES
+    if path.relative_to(ROOT).parts[0] != "tests"
 ]
-
-ENV_CLEAN = ENV_CLEAN_OPENBAO_FAMILY + ENV_CLEAN_OTHER
 
 
 def secret_expressions(text):
@@ -334,7 +305,7 @@ class OpenBaoNoSecretArgvTest(unittest.TestCase):
         found = []
         for path in FILES:
             for number, line in argv_and_cmd_lines(path):
-                if SHELL_CREDENTIAL.search(line) and (path.name, line.strip()) not in KNOWN_SHELL:
+                if SHELL_CREDENTIAL.search(line):
                     found.append(f"{path.relative_to(ROOT)}:{number}: {line.strip()}")
         self.assertEqual(found, [], "shell variable expanded into a credential argument:\n" + "\n".join(found))
 
@@ -406,8 +377,8 @@ class OpenBaoNoSecretArgvTest(unittest.TestCase):
         self.assertLess(code.index("capabilities-check.yml"), first_change)
 
 
-# Entries that stay for good, as "path::task name". Both are different defects and each has its
-# own fix.
+# Entries that stay for good, as "path::task name". Each is a different case and has its own
+# reason.
 PERMANENT_ENVIRONMENT = {
     # Cloud credentials for a local `docker run -e NAME`; docker reads them from the
     # environment of the process, so stdin does not replace the entry.
@@ -419,71 +390,7 @@ PERMANENT_ENVIRONMENT = {
     'roles/common/dmf-born-inventory/tasks/openbao-breakglass.yml::Log into OpenBao with born-inventory AppRole::OPENBAO_SECRET_ID',
 }
 
-# Entries that a pending change converts, as "path::task name": the OpenBao family in one name,
-# every other file in the other. Each branch pins what it leaves as it is on the main branch, so
-# the suite passes on its own. Once both changes are in, both sets are empty and the two names go.
-PENDING_ENVIRONMENT_OPENBAO_FAMILY = {
-    'playbooks/verify-openbao-identity-model.yml::Log in as the rotation scheduler::SCHEDULER_JWT',
-    'playbooks/verify-openbao-identity-model.yml::Log in as the setup issuer::ISSUER_JWT',
-    'playbooks/verify-openbao-identity-model.yml::Probe capability matrix::OPENBAO_TOKEN',
-    'playbooks/vertical-orchestration/120-ops-admin-rotation.yml::Decode temporary root token::OPS_ADMIN_ENCODED_ROOT_TOKEN',
-    'playbooks/vertical-orchestration/120-ops-admin-rotation.yml::Revoke temporary root token::OPS_ADMIN_ROOT_TOKEN',
-    'playbooks/vertical-orchestration/120-ops-admin-rotation.yml::Submit Shamir shares to generate the temporary root token::OPS_ADMIN_SHARE',
-    'playbooks/vertical-orchestration/120-ops-admin-rotation.yml::Update ops-admin password in OpenBao::OPS_ADMIN_NEW_PASSWORD',
-    'playbooks/vertical-orchestration/120-ops-admin-rotation.yml::Update ops-admin password in OpenBao::OPS_ADMIN_ROOT_TOKEN',
-    'playbooks/vertical-security/100-openbao.yml::Revoke fresh-init root token after failed bootstrap::OPENBAO_TOKEN',
-    "roles/stack/operator/openbao/tasks/capabilities-check.yml::Read the token's capabilities on the Raft paths::OPENBAO_TOKEN",
-    'roles/stack/operator/openbao/tasks/data-read.yml::Log in as ops-admin for the data read::OPENBAO_PASSWORD',
-    'roles/stack/operator/openbao/tasks/data-read.yml::Read the metadata of each path::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/grow-ha.yml::Read the Raft configuration::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/ha-guard-collect.yml::Read the Raft state from Autopilot::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Apply app-admin-reader policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Apply app-admin-writer policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Apply app-runtime-writer policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Apply approle-reconciler-writer policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Apply born-inventory runtime-reader policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Apply eso-reader policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Apply policy-writer policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Check ops-admin capabilities on Authentik bootstrap-passkey data path::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Check ops-admin capabilities on Authentik bootstrap-passkey metadata path::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Check ops-admin capabilities on Authentik breakglass data path::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Check ops-admin capabilities on Authentik breakglass metadata path::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Check ops-admin capabilities on Zot admin data path::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Check ops-admin capabilities on Zot admin metadata path::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Configure kubernetes auth backend::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Create ESO AppRole::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Create born-inventory AppRole::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Enable PKI secrets engine::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Enable approle auth method::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Enable kubernetes auth method::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Enable kv-v2 secrets engine::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Enable userpass auth method::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Generate ESO AppRole secret_id::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Generate born-inventory AppRole secret_id::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Log in as ops-admin for capability verification::OPENBAO_PASSWORD',
-    'roles/stack/operator/openbao/tasks/main.yml::Log in as policy-reconciler (rerun path)::OPENBAO_POLICY_RECONCILER_PASSWORD',
-    'roles/stack/operator/openbao/tasks/main.yml::Read ESO AppRole role_id::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Read born-inventory AppRole role_id::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Revoke root token::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Upsert approle-reconciler userpass user::OPENBAO_APPROLE_RECONCILER_PASSWORD',
-    'roles/stack/operator/openbao/tasks/main.yml::Upsert approle-reconciler userpass user::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Upsert operator userpass user::OPENBAO_OPERATOR_PASSWORD',
-    'roles/stack/operator/openbao/tasks/main.yml::Upsert operator userpass user::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Upsert policy-reconciler userpass user::OPENBAO_POLICY_RECONCILER_PASSWORD',
-    'roles/stack/operator/openbao/tasks/main.yml::Upsert policy-reconciler userpass user::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/main.yml::Verify approle-reconciler login on rerun path::OPENBAO_APPROLE_RECONCILER_PASSWORD',
-    'roles/stack/operator/openbao/tasks/setup-rotation-scheduler.yml::Write the rotation scheduler Kubernetes-auth role::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/setup-rotation-scheduler.yml::Write the rotation scheduler policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/setup-issuer.yml::Write the setup issuer Kubernetes-auth role::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/setup-issuer.yml::Write the setup issuer policy::OPENBAO_TOKEN',
-    'roles/stack/operator/openbao/tasks/unseal-pod.yml::Unseal the pod with the threshold of shares::OPENBAO_SHARE',
-    'tasks/eso-secret-rotation-legacy.yml::Generate new ESO AppRole secret_id::ESO_ROTATION_BAO_TOKEN',
-    'tasks/eso-secret-rotation-legacy.yml::Log into OpenBao with operator userpass::OPENBAO_PASSWORD',
-}
-
-PENDING_ENVIRONMENT_OTHER = set()
-
-PINNED_ENVIRONMENT = PERMANENT_ENVIRONMENT | PENDING_ENVIRONMENT_OPENBAO_FAMILY | PENDING_ENVIRONMENT_OTHER
+PINNED_ENVIRONMENT = PERMANENT_ENVIRONMENT
 
 
 class OpenBaoNoSecretEnvironmentTest(unittest.TestCase):

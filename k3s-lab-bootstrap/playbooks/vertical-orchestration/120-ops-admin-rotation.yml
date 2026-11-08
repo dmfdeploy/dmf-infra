@@ -248,11 +248,10 @@
           exec -i {{ _ops_admin_rotation_openbao_pod }}
           --
           sh -c 'IFS= read -r BAO_TOKEN;
-          IFS= read -r PW;
           export BAO_ADDR=https://127.0.0.1:8200;
           export BAO_TOKEN;
-          bao write auth/userpass/users/{{ ops_admin_rotation_username }} password="$PW"'
-        stdin: "{{ _ops_admin_rotation_root_token }}\n{{ _ops_admin_rotation_new_password }}\n"
+          bao write auth/userpass/users/{{ ops_admin_rotation_username }} -'
+        stdin: "{{ _ops_admin_rotation_root_token }}\n{{ {'password': _ops_admin_rotation_new_password} | to_json }}\n"
       register: _ops_admin_rotation_password_update
       changed_when: true
       no_log: true
