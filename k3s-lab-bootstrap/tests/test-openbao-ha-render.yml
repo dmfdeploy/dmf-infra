@@ -114,3 +114,22 @@
           - _sts3m.spec.replicas == 1
           - _sts3m.spec.serviceName == 'openbao-internal'
           - _sts3m.spec.updateStrategy.type == 'OnDelete'
+
+    # One inventory override of the headless Service name changes the StatefulSet
+    # and the certificate together.
+    - name: Another headless Service name — set it as the site does
+      ansible.builtin.set_fact:
+        openbao_headless_service_name: raft-peers
+
+    - name: Another headless Service name — render the StatefulSet
+      ansible.builtin.set_fact:
+        _sts3n: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+
+    - name: Another headless Service name — assert the certificate names follow the StatefulSet
+      ansible.builtin.assert:
+        that:
+          - _sts3n.spec.serviceName == 'raft-peers'
+          - "'*.raft-peers.openbao.svc.cluster.local' in cert_manager_openbao_dns_names"
+          - "'raft-peers.openbao.svc.cluster.local' in cert_manager_openbao_dns_names"
+          - cert_manager_openbao_dns_names | select('search', 'openbao-internal') | list | length == 0
+        fail_msg: The certificate names do not follow openbao_headless_service_name.

@@ -6,7 +6,12 @@ run of the grow-HA play reads back.
 - Creating a StatefulSet writes k8s/Pod-all.json with one running pod per replica.
 - Deleting a Pod writes k8s/Pod-<name>.json with a new UID, as the StatefulSet
   recreates the pod, and marks the pod sealed for the fake bao.
+- Creating a Certificate writes k8s/Secret-<secretName>.json with a certificate
+  that holds the DNS names of the Certificate, as cert-manager replaces the secret.
+  The fake openssl prints those names, so a test sees the names that the play
+  rendered.
 """
+import base64
 import json
 import os
 
@@ -40,6 +45,14 @@ def main():
     if p["state"] == "present" and kind == "StatefulSet":
         replicas = int(((p["definition"] or {}).get("spec", {}) or {}).get("replicas", 1))
         write_object(objects, "Pod-all", [running_pod("openbao-%d" % i, "uid-%d-0" % i) for i in range(replicas)])
+    if p["state"] == "present" and kind == "Certificate":
+        spec = (p["definition"] or {}).get("spec", {}) or {}
+        names = spec.get("dnsNames", [])
+        if isinstance(names, str):
+            names = [names]
+        crt = "dnsNames:" + ",".join(names)
+        write_object(objects, "Secret-" + spec.get("secretName", "tls"),
+                     {"data": {"tls.crt": base64.b64encode(crt.encode()).decode(), "tls.key": "ZmFrZQ=="}})
     if p["state"] == "absent" and kind == "Pod":
         restarts = os.path.join(state, "restarts-%s" % name)
         count = int(open(restarts).read()) + 1 if os.path.exists(restarts) else 1

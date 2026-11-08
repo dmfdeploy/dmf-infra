@@ -1,0 +1,16 @@
+---
+# Refuse when the OpenBao certificate would not cover the Raft peer names. The
+# peers dial each other as <pod>.<headless service>.<namespace>.svc.cluster.local,
+# so the wildcard for that name must be in the rendered DNS names. The grow-HA play
+# includes this file before it changes anything.
+- name: Assert the OpenBao certificate covers the Raft peer names
+  ansible.builtin.assert:
+    that: >-
+      ('*.' ~ openbao_headless_service_name ~ '.' ~ openbao_namespace ~ '.svc.cluster.local')
+      in (cert_manager_openbao_dns_names | list)
+    fail_msg: >-
+      The OpenBao certificate would not cover the Raft peers. Its DNS names lack
+      *.{{ openbao_headless_service_name }}.{{ openbao_namespace }}.svc.cluster.local, the
+      name that the pods dial each other by. Check openbao_headless_service_name,
+      cert_manager_openbao_namespace and cert_manager_openbao_dns_names in the site
+      inventory. Nothing has changed.

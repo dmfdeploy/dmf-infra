@@ -50,6 +50,11 @@
       replicas. Set openbao_replicas: 3 in the site inventory before you grow the
       cluster. Nothing has changed.
 
+- name: Refuse when the certificate would not cover the Raft peer names
+  ansible.builtin.include_role:
+    name: base/cert-manager
+    tasks_from: assert-openbao-peer-names.yml
+
 - name: Assert the guard token is set
   ansible.builtin.assert:
     that: openbao_guard_token | default('') | length > 0
