@@ -1,0 +1,27 @@
+{
+  "apiVersion": "external-secrets.io/v1",
+  "kind": "ClusterSecretStore",
+  "metadata": {
+    "name": "openbao"
+  },
+  "spec": {
+    "provider": {
+      "vault": {
+        "server": "https://openbao.openbao.svc.cluster.local:8200",
+        "path": "secret",
+        "version": "v2",
+        "auth": {
+          "appRole": {
+            "path": "approle",
+            "roleId": "role-id-1",
+            "secretRef": {
+              "name": "openbao-approle",
+              "namespace": "external-secrets",
+              "key": "id"
+            }
+          }
+        }
+      }
+    }
+  }
+}

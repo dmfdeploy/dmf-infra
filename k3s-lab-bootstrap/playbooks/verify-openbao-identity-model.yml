@@ -15,6 +15,11 @@
 #      reconciling — both ClusterSecretStores Ready, and ExternalSecrets in
 #      the six target namespaces (openbao-system, awx, netbox, authentik,
 #      forgejo, zot) report status.conditions[Ready] == True.
+#   4. When eso_openbao_auth_method is kubernetes, the main store logs in with
+#      Kubernetes auth: a fresh token with the right audience gets a real
+#      login, an ExternalSecret that reads through the main store refreshes
+#      after a forced sync, a wrong ServiceAccount, namespace or audience is
+#      refused, and no standing identity can write auth/kubernetes/config.
 #
 # Tokens never appear in argv or logs (ADR-0007). Capability probes pipe the
 # token via stdin into the OpenBao pod's shell; the probe output contains
@@ -41,6 +46,16 @@
     verify_rotation_scheduler_service_account: "{{ openbao_rotation_scheduler_service_account | default('approle-rotation-scheduler') }}"
     verify_rotation_scheduler_k8s_role: "{{ openbao_rotation_scheduler_k8s_role | default('approle-rotation-scheduler') }}"
     verify_rotation_scheduler_audience: "{{ openbao_rotation_scheduler_audience | default('openbao') }}"
+    verify_eso_auth_method: "{{ eso_openbao_auth_method | default('approle') }}"
+    verify_eso_namespace: "{{ eso_namespace | default('external-secrets') }}"
+    verify_eso_service_account: "{{ eso_service_account_name | default('external-secrets') }}"
+    verify_eso_k8s_role: "{{ openbao_eso_kubernetes_role_name | default('external-secrets') }}"
+    verify_eso_audience: "{{ openbao_eso_kubernetes_audience | default('openbao') }}"
+    verify_eso_store_name: "{{ eso_cluster_secret_store_name | default('openbao') }}"
+    # An ExternalSecret that reads from the main store, to force a refresh.
+    verify_main_store_sync_target:
+      namespace: authentik
+      name: authentik-runtime
     # Probe matrix per Implementation Brief §7.5. Each entry asserts the
     # identity's capability on the target path matches the expected outcome.
     # `deny` means the only capability returned is `deny` (full deny);
@@ -68,6 +83,18 @@
         path: secret/data/apps/forgejo/admin
         expected: deny
         reason: approle-reconciler must not read app secrets (ops-admin's job)
+      - identity: ops-admin
+        path: auth/kubernetes/config
+        expected: deny
+        reason: ops-admin must not write the Kubernetes auth config
+      - identity: policy-reconciler
+        path: auth/kubernetes/config
+        expected: deny
+        reason: policy-reconciler must not write the Kubernetes auth config
+      - identity: approle-reconciler
+        path: auth/kubernetes/config
+        expected: deny
+        reason: approle-reconciler must not write the Kubernetes auth config
       - identity: setup-issuer
         path: auth/approle/role/born-inventory-netbox-reader/secret-id
         expected: update
@@ -269,15 +296,14 @@
     - name: Log in as the setup issuer
       ansible.builtin.shell:
         cmd: >-
-          printf '%s' "$ISSUER_JWT" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ verify_openbao_namespace }}
           exec -i {{ _verify_openbao_pod }}
           -- sh -c '
           exec bao write -format=json auth/kubernetes/login
           role={{ verify_setup_issuer_k8s_role | quote }} jwt=-'
-      environment:
-        ISSUER_JWT: "{{ _verify_issuer_jwt.stdout | trim }}"
+        stdin: "{{ _verify_issuer_jwt.stdout | trim }}"
+        stdin_add_newline: false
       register: _verify_issuer_login
       changed_when: false
       no_log: true
@@ -421,7 +447,6 @@
     - name: Probe capability matrix
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n' "$OPENBAO_TOKEN" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ verify_openbao_namespace }}
           exec -i {{ _verify_openbao_pod }}
@@ -429,8 +454,7 @@
           IFS= read -r BAO_TOKEN;
           export BAO_TOKEN;
           bao token capabilities -format=json {{ item.path | quote }}'
-      environment:
-        OPENBAO_TOKEN: >-
+        stdin: >-
           {{
             {
               'ops-admin': _verify_token_ops_admin,
@@ -548,6 +572,318 @@
         label: "{{ item.item.namespace }}/{{ item.item.name }}"
 
     # ────────────────────────────────────────────────────────────────
+    # Step 6 — main store on Kubernetes auth (only when it is selected)
+    # ────────────────────────────────────────────────────────────────
+    - name: Read the main ClusterSecretStore
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: external-secrets.io/v1
+        kind: ClusterSecretStore
+        name: "{{ verify_eso_store_name }}"
+      register: _verify_main_store
+      when: verify_eso_auth_method == 'kubernetes'
+
+    - name: Assert the main store is Ready and uses only Kubernetes auth
+      ansible.builtin.assert:
+        that:
+          - _verify_main_store.resources | length == 1
+          - _verify_main_store.resources[0].spec.provider.vault.auth.keys() | list == ['kubernetes']
+          - _verify_main_store.resources[0].spec.provider.vault.auth.kubernetes.serviceAccountRef.name == verify_eso_service_account
+          - _verify_main_store.resources[0].spec.provider.vault.auth.kubernetes.serviceAccountRef.namespace == verify_eso_namespace
+          - verify_eso_audience in _verify_main_store.resources[0].spec.provider.vault.auth.kubernetes.serviceAccountRef.audiences
+          - >-
+              _verify_main_store.resources[0].status.conditions
+              | selectattr('type', 'equalto', 'Ready')
+              | selectattr('status', 'equalto', 'True')
+              | list | length > 0
+        fail_msg: >-
+          The main ClusterSecretStore {{ verify_eso_store_name }} is missing, not
+          Ready, or does not hold exactly the Kubernetes auth block.
+      when: verify_eso_auth_method == 'kubernetes'
+
+    - name: Check the main store's Kubernetes auth
+      when: verify_eso_auth_method == 'kubernetes'
+      block:
+        - name: Request a fresh token for ESO's ServiceAccount with the right audience
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ verify_eso_namespace }}"
+              - create
+              - token
+              - "{{ verify_eso_service_account }}"
+              - --duration
+              - 10m
+              - --audience
+              - "{{ verify_eso_audience }}"
+          register: _verify_eso_jwt
+          changed_when: false
+          no_log: true
+
+        - name: Log in as ESO with the fresh token
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ verify_openbao_namespace }}
+              exec -i {{ _verify_openbao_pod }}
+              -- sh -c '
+              exec bao write -format=json auth/kubernetes/login
+              role={{ verify_eso_k8s_role | quote }} jwt=-'
+            stdin: "{{ _verify_eso_jwt.stdout | trim }}"
+            stdin_add_newline: false
+          register: _verify_eso_login
+          changed_when: false
+          no_log: true
+
+        - name: Capture the ESO login result
+          ansible.builtin.set_fact:
+            _verify_eso_auth: "{{ (_verify_eso_login.stdout | from_json).auth }}"
+          no_log: true
+
+        - name: Assert the login has the eso-reader policy and a short lifetime
+          ansible.builtin.assert:
+            that:
+              - "'eso-reader' in _verify_eso_auth.policies"
+              - _verify_eso_auth.lease_duration | int > 0
+              - _verify_eso_auth.lease_duration | int <= 3600
+            fail_msg: The ESO login did not return the eso-reader policy with a short token lifetime.
+          no_log: true
+
+        - name: Revoke the token of the verification login
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ verify_openbao_namespace }}
+              exec -i {{ _verify_openbao_pod }}
+              -- sh -c '
+              IFS= read -r BAO_TOKEN;
+              export BAO_TOKEN;
+              bao token revoke -self'
+            stdin: "{{ _verify_eso_auth.client_token }}\n"
+          changed_when: false
+          no_log: true
+
+        - name: Request a token for the wrong ServiceAccount
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ verify_eso_namespace }}"
+              - create
+              - token
+              - default
+              - --duration
+              - 10m
+              - --audience
+              - "{{ verify_eso_audience }}"
+          register: _verify_wrong_sa_jwt
+          changed_when: false
+          no_log: true
+
+        - name: Request a token with the wrong audience
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ verify_eso_namespace }}"
+              - create
+              - token
+              - "{{ verify_eso_service_account }}"
+              - --duration
+              - 10m
+              - --audience
+              - "{{ verify_eso_audience }}-wrong"
+          register: _verify_wrong_aud_jwt
+          changed_when: false
+          no_log: true
+
+        # A name unique to this run. `kubectl create` fails when the namespace exists,
+        # so the probe never adopts a namespace it did not create. The flag records
+        # that this run created it, and only then does the cleanup delete it.
+        - name: Choose a namespace name unique to this run
+          ansible.builtin.set_fact:
+            _verify_run_id: "{{ lookup('ansible.builtin.pipe', 'date -u +%s') }}{{ 99999 | random }}"
+            _verify_wrong_ns_created: false
+
+        - name: Name the probe namespace
+          ansible.builtin.set_fact:
+            _verify_wrong_namespace: "dmf-verify-{{ _verify_run_id }}"
+
+        - name: Create the probe namespace
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - create
+              - namespace
+              - "{{ _verify_wrong_namespace }}"
+          changed_when: true
+
+        - name: Record that this run created the probe namespace
+          ansible.builtin.set_fact:
+            _verify_wrong_ns_created: true
+
+        - name: Create a ServiceAccount of ESO's name in the probe namespace
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ _verify_wrong_namespace }}"
+              - create
+              - serviceaccount
+              - "{{ verify_eso_service_account }}"
+          changed_when: true
+
+        - name: Request a token for ESO's account name in the wrong namespace
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ _verify_wrong_namespace }}"
+              - create
+              - token
+              - "{{ verify_eso_service_account }}"
+              - --duration
+              - 10m
+              - --audience
+              - "{{ verify_eso_audience }}"
+          register: _verify_wrong_ns_jwt
+          changed_when: false
+          no_log: true
+
+        - name: Try to log in with each wrong token
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ verify_openbao_namespace }}
+              exec -i {{ _verify_openbao_pod }}
+              -- sh -c '
+              exec bao write -format=json auth/kubernetes/login
+              role={{ verify_eso_k8s_role | quote }} jwt=-'
+            stdin: "{{ item.jwt }}"
+            stdin_add_newline: false
+          register: _verify_wrong_logins
+          changed_when: false
+          failed_when: false
+          no_log: true
+          loop:
+            - { case: wrong ServiceAccount, jwt: "{{ _verify_wrong_sa_jwt.stdout | trim }}" }
+            - { case: wrong namespace, jwt: "{{ _verify_wrong_ns_jwt.stdout | trim }}" }
+            - { case: wrong audience, jwt: "{{ _verify_wrong_aud_jwt.stdout | trim }}" }
+          loop_control:
+            label: "{{ item.case }}"
+
+        - name: Assert every wrong token is refused
+          ansible.builtin.assert:
+            that:
+              - item.rc != 0
+              - "'client_token' not in item.stdout"
+            fail_msg: "OpenBao accepted a login with the {{ item.item.case }} token."
+          loop: "{{ _verify_wrong_logins.results }}"
+          loop_control:
+            label: "{{ item.item.case }}"
+
+        - name: Try to write the Kubernetes auth config as each standing identity
+          # The body holds a public key that cannot parse. A token that may write
+          # the config gets a validation error and nothing changes; a token that
+          # may not gets 403 before the body is read.
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ verify_openbao_namespace }}
+              exec -i {{ _verify_openbao_pod }}
+              -- sh -c '
+              IFS= read -r BAO_TOKEN;
+              export BAO_TOKEN;
+              bao write auth/kubernetes/config pem_keys=not-a-public-key'
+            stdin: >-
+              {{
+                {
+                  'ops-admin': _verify_token_ops_admin,
+                  'policy-reconciler': _verify_token_policy_reconciler,
+                  'approle-reconciler': _verify_token_approle_reconciler
+                }[item]
+              }}
+          register: _verify_config_writes
+          changed_when: false
+          failed_when: false
+          no_log: true
+          loop: [ops-admin, policy-reconciler, approle-reconciler]
+
+        - name: Assert each standing identity gets 403 on the config write
+          ansible.builtin.assert:
+            that:
+              - item.rc != 0
+              - item.stderr is search('Code: 403|permission denied')
+            fail_msg: "{{ item.item }} did not get 403 when it wrote auth/kubernetes/config."
+          loop: "{{ _verify_config_writes.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: Read the ExternalSecret that the probe refreshes
+          kubernetes.core.k8s_info:
+            kubeconfig: /etc/rancher/k3s/k3s.yaml
+            api_version: external-secrets.io/v1
+            kind: ExternalSecret
+            namespace: "{{ verify_main_store_sync_target.namespace }}"
+            name: "{{ verify_main_store_sync_target.name }}"
+          register: _verify_target_es
+
+        - name: Assert the ExternalSecret reads through the main store
+          ansible.builtin.assert:
+            that:
+              - _verify_target_es.resources | length == 1
+              - _verify_target_es.resources[0].spec.secretStoreRef.name == verify_eso_store_name
+              - _verify_target_es.resources[0].spec.secretStoreRef.kind | default('SecretStore') == 'ClusterSecretStore'
+            fail_msg: >-
+              {{ verify_main_store_sync_target.namespace }}/{{ verify_main_store_sync_target.name }}
+              does not read through the ClusterSecretStore {{ verify_eso_store_name }}.
+              Set verify_main_store_sync_target to an ExternalSecret that does.
+
+        # A successful refresh through the main store after a forced sync: up to three
+        # attempts, each with its own annotation and a threshold taken after the annotation
+        # (playbooks/tasks/verify-main-store-refresh.yml).
+        - name: Force a sync and wait for a later refresh
+          ansible.builtin.include_tasks: tasks/verify-main-store-refresh.yml
+          loop: [1, 2, 3]
+          loop_control:
+            loop_var: _verify_attempt
+          when: not (_verify_refreshed | default(false) | bool)
+
+        - name: Assert a successful refresh through the main store followed a forced sync
+          ansible.builtin.assert:
+            that: _verify_refreshed | default(false) | bool
+            fail_msg: >-
+              {{ verify_main_store_sync_target.namespace }}/{{ verify_main_store_sync_target.name }}
+              showed no Ready refresh after three forced syncs. The main store may not be
+              reading from OpenBao.
+      always:
+        - name: Remove the probe namespace, only if this run created it
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - delete
+              - namespace
+              - "{{ _verify_wrong_namespace }}"
+              - --wait=false
+          changed_when: true
+          when: _verify_wrong_ns_created | default(false) | bool
+
+    # ────────────────────────────────────────────────────────────────
     # Summary
     # ────────────────────────────────────────────────────────────────
     - name: Summarise identity-model verification
@@ -561,6 +897,7 @@
               * {{ p.identity }} → {{ p.path }}: {{ p.expected }}
               {% endfor %}
             - 2 ClusterSecretStores Ready (openbao-openbao-snapshots, openbao-app-backups)
+            - main store auth method: {{ verify_eso_auth_method }}
             - {{ verify_expected_external_secrets | length }} ExternalSecrets Ready across
               {{ verify_expected_external_secrets | map(attribute='namespace') | unique | list | length }}
               namespaces

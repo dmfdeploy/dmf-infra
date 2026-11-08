@@ -1,0 +1,70 @@
+---
+# One case of test-openbao-k8s-auth.yml, part 3: kubernetes-auth-config.yml against
+# the fake bao. The cases run in order and share one state directory, so a rerun
+# sees what the first case wrote.
+- name: "{{ case.name }} — seed an old-style config"
+  ansible.builtin.copy:
+    dest: "{{ _state.path }}/{{ case.dir | default('config') }}/k8s-auth/config.json"
+    content: >-
+      {"kubernetes_host": "https://kubernetes.default.svc.cluster.local",
+       "kubernetes_ca_cert": "-----BEGIN CERTIFICATE-----", "token_reviewer_jwt_set": true,
+       "disable_local_ca_jwt": false}
+    mode: "0600"
+  when: case.check == 'replaced'
+
+- name: "{{ case.name }} — run the config step"
+  block:
+    - name: Run kubernetes-auth-config.yml
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/kubernetes-auth-config.yml
+      vars:
+        openbao_k8s_auth_token: "{{ case.token | default(_root) }}"
+        openbao_pod: openbao-0
+        openbao_eso_auth_method: "{{ case.method | default('kubernetes') }}"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        _outcome: fail
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment: "{{ case.env | default({}) | combine({'FAKE_STATE': _state.path ~ '/' ~ (case.dir | default('config'))}) }}"
+
+- name: "{{ case.name }} — read what the fake kept"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case.dir | default('config') }}/{{ item }}"
+  register: _config_files
+  failed_when: false
+  loop: [k8s-auth/config.json, k8s-auth/role-external-secrets.json, bao-argv.log]
+
+- name: "{{ case.name }} — assert"
+  vars:
+    _cfg_held: "{{ _config_files.results[0].content | default('e30=') | b64decode | from_json }}"
+    _cfg_role: "{{ _config_files.results[1].content | default('e30=') | b64decode | from_json }}"
+    _argv_log: "{{ _config_files.results[2].content | default('') | b64decode }}"
+    _config_writes: "{{ _argv_log | split('\n') | select('match', 'write auth/kubernetes/config ') | list }}"
+  ansible.builtin.assert:
+    that:
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _outcome == 'pass'
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _cfg_held.kubernetes_host == 'https://kubernetes.default.svc'
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _cfg_held.kubernetes_ca_cert == ''
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _cfg_held.token_reviewer_jwt_set == false
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _cfg_held.disable_local_ca_jwt == false
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _cfg_role.bound_service_account_names == ['external-secrets']
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _cfg_role.bound_service_account_namespaces == ['external-secrets']
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _cfg_role.audience == 'openbao'
+      - case.check not in ['fresh', 'rerun', 'replaced'] or _cfg_role.token_policies == ['eso-reader']
+      - case.check not in ['fresh', 'rerun', 'replaced'] or (_cfg_role.token_ttl | int > 0 and _cfg_role.token_ttl | int <= _cfg_role.token_max_ttl | int)
+      # fresh writes once, the rerun adds no write, and the replaced config is written again
+      - case.check != 'fresh' or _config_writes | length == 1
+      - case.check != 'rerun' or _config_writes | length == 1
+      - case.check != 'replaced' or _config_writes | length == 2
+      - case.check != 'ignores' or (_outcome == 'fail' and 'local-file reviewer mode' in _message)
+      - case.check != 'not-root' or _outcome == 'fail'
+      # No token or CA reaches an argument list.
+      - case.check != 'reviewer-only' or (_outcome == 'pass' and _config_writes | length == 1 and 'write auth/kubernetes/role/' not in _argv_log and _cfg_role == {})
+      - _root not in _argv_log
+      - "'BEGIN CERTIFICATE' not in _argv_log"
+    fail_msg: "{{ case.name }}: outcome {{ _outcome }}, message '{{ _message }}', config {{ _cfg_held }}, role {{ _cfg_role }}, writes {{ _config_writes }}"
+    success_msg: "{{ case.name }}: ok"

@@ -1,0 +1,12 @@
+---
+# Apply the ClusterSecretStore tasks of the external-secrets role with one method,
+# against the fake cluster in _dir.
+- name: Apply the store with the method
+  environment:
+    FAKE_STATE: "{{ _dir }}"
+  block:
+    - name: Run cluster-secret-store.yml
+      ansible.builtin.include_tasks: "{{ _eso }}/tasks/cluster-secret-store.yml"
+      vars:
+        eso_openbao_auth_method: "{{ _method }}"
+        eso_openbao_role_id: role-id-1

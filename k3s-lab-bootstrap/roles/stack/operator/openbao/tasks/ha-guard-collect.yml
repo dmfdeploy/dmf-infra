@@ -73,7 +73,6 @@
 - name: Read the Raft state from Autopilot
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ _openbao_guard_asker }}
@@ -81,8 +80,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao read -format=json sys/storage/raft/autopilot/state'
-  environment:
-    OPENBAO_TOKEN: "{{ openbao_guard_token }}"
+    stdin: "{{ openbao_guard_token }}\n"
   register: _openbao_guard_state_raw
   check_mode: false
   changed_when: false

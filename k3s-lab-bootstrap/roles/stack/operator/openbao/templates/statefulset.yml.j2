@@ -30,6 +30,9 @@ spec:
       labels:
         app.kubernetes.io/name: openbao
     spec:
+{% if openbao_kubernetes_reviewer_enabled | bool %}
+      serviceAccountName: "{{ openbao_service_account }}"
+{% endif %}
       securityContext:
         runAsUser: 1000
         runAsGroup: 1000

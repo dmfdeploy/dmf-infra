@@ -24,13 +24,12 @@
 - name: Log in as ops-admin for the data read
   ansible.builtin.shell:
     cmd: >-
-      printf '%s' "$OPENBAO_PASSWORD" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i openbao-0
       -- bao write -format=json auth/userpass/login/{{ openbao_operator_username }} password=-
-  environment:
-    OPENBAO_PASSWORD: "{{ openbao_operator_password }}"
+    stdin: "{{ openbao_operator_password }}"
+    stdin_add_newline: false
   register: _openbao_data_read_login
   changed_when: false
   no_log: true
@@ -38,7 +37,6 @@
 - name: Read the metadata of each path
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i openbao-0
@@ -46,8 +44,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv metadata get -mount=secret -format=json {{ item }}'
-  environment:
-    OPENBAO_TOKEN: "{{ (_openbao_data_read_login.stdout | from_json).auth.client_token }}"
+    stdin: "{{ (_openbao_data_read_login.stdout | from_json).auth.client_token }}\n"
   loop: "{{ openbao_migration_read_paths }}"
   register: _openbao_data_read_raw
   changed_when: false

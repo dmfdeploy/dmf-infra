@@ -1,13 +1,23 @@
 ---
 # External Secrets Operator: install + wire a ClusterSecretStore at OpenBao.
 
+- name: Validate the auth method
+  ansible.builtin.assert:
+    that:
+      - eso_openbao_auth_method in ['approle', 'kubernetes']
+      - eso_openbao_auth_method != 'kubernetes' or openbao_kubernetes_reviewer_enabled | default(false) | bool
+    msg: >-
+      eso_openbao_auth_method must be approle or kubernetes, and kubernetes needs
+      openbao_kubernetes_reviewer_enabled set to true in the site inventory: the
+      login needs the OpenBao ServiceAccount and the local-file reviewer config.
+
 - name: Validate required vars
   ansible.builtin.assert:
     that:
       - eso_openbao_url | length > 0
-      - eso_openbao_role_id | length > 0
-      - eso_openbao_secret_id | length > 0
-    msg: "eso_openbao_url, eso_openbao_role_id and eso_openbao_secret_id must be set (see 24-external-secrets-operator.yml pre_tasks)"
+      - eso_openbao_auth_method == 'kubernetes' or eso_openbao_role_id | length > 0
+      - eso_openbao_auth_method == 'kubernetes' or eso_openbao_secret_id | length > 0
+    msg: "eso_openbao_url must be set. With approle auth, eso_openbao_role_id and eso_openbao_secret_id must be set too (see playbooks/vertical-orchestration/100-eso.yml pre_tasks)"
 
 - name: Create external-secrets namespace
   kubernetes.core.k8s:
@@ -80,6 +90,7 @@
       stringData:
         id: "{{ eso_openbao_secret_id }}"
   no_log: true
+  when: eso_openbao_auth_method == 'approle'
 
 - name: Read OpenBao TLS secret for ESO trust
   kubernetes.core.k8s_info:
@@ -98,30 +109,8 @@
     - eso_openbao_url | default('') is match('^https://')
     - _eso_openbao_tls_secret.resources | length > 0
 
-- name: Create ClusterSecretStore (OpenBao/Vault provider, AppRole)
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    definition:
-      apiVersion: "{{ eso_crd_api_version }}"
-      kind: ClusterSecretStore
-      metadata:
-        name: "{{ eso_cluster_secret_store_name }}"
-      spec:
-        provider:
-          vault:
-            server: "{{ eso_openbao_url }}"
-            path: "{{ eso_openbao_kv_mount }}"
-            version: "{{ eso_openbao_kv_version }}"
-            caBundle: "{{ eso_openbao_ca_bundle | b64encode if eso_openbao_ca_bundle | length > 0 else omit }}"
-            auth:
-              appRole:
-                path: "{{ eso_openbao_approle_mount }}"
-                roleId: "{{ eso_openbao_role_id }}"
-                secretRef:
-                  name: "{{ eso_approle_secret_name }}"
-                  namespace: "{{ eso_namespace }}"
-                  key: id
+- name: Apply the ClusterSecretStore with the selected auth method
+  ansible.builtin.include_tasks: cluster-secret-store.yml
 
 - name: Wait for ClusterSecretStore to become Ready
   kubernetes.core.k8s_info:
@@ -196,7 +185,7 @@
     msg: |
       ESO installed in namespace {{ eso_namespace }} (chart {{ eso_helm_version }})
       ClusterSecretStore: {{ eso_cluster_secret_store_name }} -> {{ eso_openbao_url }}
-      Auth: {{ eso_openbao_auth_method }} (mount={{ eso_openbao_approle_mount }})
+      Auth: {{ eso_openbao_auth_method }} (mount={{ eso_openbao_kubernetes_mount if eso_openbao_auth_method == 'kubernetes' else eso_openbao_approle_mount }})
       KV mount: {{ eso_openbao_kv_mount }} (version={{ eso_openbao_kv_version }})
       {% if eso_smoketest_enabled %}
       Smoke test PASSED -- {{ eso_smoketest_namespace }}/{{ eso_smoketest_target_secret_name }}

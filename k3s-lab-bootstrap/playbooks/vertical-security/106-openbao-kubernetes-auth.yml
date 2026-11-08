@@ -1,0 +1,35 @@
+---
+# playbooks/vertical-security/106-openbao-kubernetes-auth.yml
+# Move an installed environment to the Kubernetes auth reviewer identity and, when
+# eso_openbao_auth_method is kubernetes, to ESO's role. This is a live change: the
+# OpenBao pods restart to run as their own ServiceAccount and are sealed until they
+# are unsealed. Run it only after the rehearsal on a disposable environment and the
+# operator's approval for the environment.
+#
+# It writes only the Kubernetes auth config and ESO's role, with a temporary root
+# token that you give it in the environment:
+#
+#   OPENBAO_TEMP_ROOT_TOKEN=<token from the generate-root procedure>
+#
+# The token never goes in an argument list or a file. Run the play first without a
+# token to move the workload; tasks/kubernetes-auth-existing.yml in the openbao
+# role states the order of runs. A rerun writes nothing when the config and the
+# role match. It needs openbao_kubernetes_reviewer_enabled set to true in the
+# inventory.
+#
+# The play revokes the token before it exits, also when a step fails, and proves
+# that the server refuses it. If the revoke itself fails, the play fails loudly.
+# Then revoke the token by its accessor from a working session
+# (`bao token revoke -accessor <accessor>`) before you do anything else. The play
+# looks up the pod inside the block that owns the token. If that lookup fails, the
+# revoke cannot run: the play then fails and says that the token is not revoked and
+# how to revoke it by its accessor.
+- name: Move an installed environment to Kubernetes auth
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Apply the workload, then write and check the config
+      ansible.builtin.include_role:
+        name: stack/operator/openbao
+        tasks_from: kubernetes-auth-existing.yml

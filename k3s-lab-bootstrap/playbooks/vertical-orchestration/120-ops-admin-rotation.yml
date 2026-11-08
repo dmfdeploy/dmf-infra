@@ -165,7 +165,6 @@
     - name: Submit Shamir shares to generate the temporary root token
       ansible.builtin.shell:
         cmd: >-
-          printf %s "$OPS_ADMIN_SHARE" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ ops_admin_rotation_namespace }}
           exec -i {{ _ops_admin_rotation_openbao_pod }}
@@ -174,6 +173,8 @@
           -nonce={{ _ops_admin_rotation_nonce }}
           -format=json
           -
+        stdin: "{{ item }}"
+        stdin_add_newline: false
       loop: "{{ _ops_admin_rotation_unseal_keys_hex[0:(ops_admin_rotation_threshold | int)] }}"
       loop_control:
         label: "share"
@@ -181,7 +182,6 @@
       changed_when: false
       environment:
         BAO_ADDR: https://127.0.0.1:8200
-        OPS_ADMIN_SHARE: "{{ item }}"
       no_log: true
 
     - name: Extract encoded root token
@@ -200,7 +200,6 @@
     - name: Decode temporary root token
       ansible.builtin.shell:
         cmd: >-
-          printf %s "$OPS_ADMIN_ENCODED_ROOT_TOKEN" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ ops_admin_rotation_namespace }}
           exec -i {{ _ops_admin_rotation_openbao_pod }}
@@ -209,11 +208,12 @@
           -decode=-
           -otp={{ _ops_admin_rotation_otp }}
           -format=json
+        stdin: "{{ _ops_admin_rotation_encoded_root_token }}"
+        stdin_add_newline: false
       register: _ops_admin_rotation_decode_raw
       changed_when: false
       environment:
         BAO_ADDR: https://127.0.0.1:8200
-        OPS_ADMIN_ENCODED_ROOT_TOKEN: "{{ _ops_admin_rotation_encoded_root_token }}"
       no_log: true
 
     - name: Parse temporary root token
@@ -243,7 +243,6 @@
     - name: Update ops-admin password in OpenBao
       ansible.builtin.shell:
         cmd: >-
-          printf '%s\n%s\n' "$OPS_ADMIN_ROOT_TOKEN" "$OPS_ADMIN_NEW_PASSWORD" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ ops_admin_rotation_namespace }}
           exec -i {{ _ops_admin_rotation_openbao_pod }}
@@ -253,11 +252,9 @@
           export BAO_ADDR=https://127.0.0.1:8200;
           export BAO_TOKEN;
           bao write auth/userpass/users/{{ ops_admin_rotation_username }} password="$PW"'
+        stdin: "{{ _ops_admin_rotation_root_token }}\n{{ _ops_admin_rotation_new_password }}\n"
       register: _ops_admin_rotation_password_update
       changed_when: true
-      environment:
-        OPS_ADMIN_NEW_PASSWORD: "{{ _ops_admin_rotation_new_password }}"
-        OPS_ADMIN_ROOT_TOKEN: "{{ _ops_admin_rotation_root_token }}"
       no_log: true
 
     - name: Persist rotated ops-admin password to break-glass file
@@ -277,7 +274,6 @@
     - name: Revoke temporary root token
       ansible.builtin.shell:
         cmd: >-
-          printf %s "$OPS_ADMIN_ROOT_TOKEN" |
           kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
           -n {{ ops_admin_rotation_namespace }}
           exec -i {{ _ops_admin_rotation_openbao_pod }}
@@ -286,8 +282,7 @@
           export BAO_ADDR=https://127.0.0.1:8200;
           export BAO_TOKEN;
           bao token revoke -self'
-      environment:
-        OPS_ADMIN_ROOT_TOKEN: "{{ _ops_admin_rotation_root_token }}"
+        stdin: "{{ _ops_admin_rotation_root_token }}\n"
       changed_when: true
       no_log: true
 

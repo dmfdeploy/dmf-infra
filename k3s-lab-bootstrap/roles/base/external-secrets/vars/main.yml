@@ -1,0 +1,28 @@
+---
+# The auth block of the main ClusterSecretStore, and the key that names its
+# method. Kept here so that a render test can compare the block without a cluster.
+eso_openbao_auth_key: "{{ 'kubernetes' if eso_openbao_auth_method == 'kubernetes' else 'appRole' }}"
+eso_openbao_auth_block: >-
+  {{
+    {
+      'kubernetes': {
+        'mountPath': eso_openbao_kubernetes_mount,
+        'role': eso_openbao_kubernetes_role,
+        'serviceAccountRef': {
+          'name': eso_service_account_name,
+          'namespace': eso_namespace,
+          'audiences': [eso_openbao_kubernetes_audience]
+        }
+      }
+    } if eso_openbao_auth_method == 'kubernetes' else {
+      'appRole': {
+        'path': eso_openbao_approle_mount,
+        'roleId': eso_openbao_role_id,
+        'secretRef': {
+          'name': eso_approle_secret_name,
+          'namespace': eso_namespace,
+          'key': 'id'
+        }
+      }
+    }
+  }}

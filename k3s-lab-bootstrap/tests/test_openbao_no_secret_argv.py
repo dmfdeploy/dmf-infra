@@ -259,7 +259,7 @@ OPENBAO_FAMILY_FILES = sorted(
 # Files whose tasks pass every secret on stdin, except the permanent entries below. The
 # change that converts the OpenBao family lists it in the first name; the change that converts
 # every other file lists them in the second. Once both are in, both names hold their files.
-ENV_CLEAN_OPENBAO_FAMILY = []
+ENV_CLEAN_OPENBAO_FAMILY = OPENBAO_FAMILY_FILES
 
 ENV_CLEAN_OTHER = [
     path
@@ -366,7 +366,8 @@ class OpenBaoNoSecretArgvTest(unittest.TestCase):
         # The API form: a JSON body with a `key` field on stdin of `bao write`.
         self.assertIn("bao write -format=json sys/unseal -", text)
         self.assertIn('{\\"key\\":\\"%s\\"}', text)
-        self.assertIn("OPENBAO_SHARE", text)
+        self.assertIn('stdin: "{{ item }}\\n"', text)
+        self.assertNotIn("OPENBAO_SHARE", text)
         # Not the positional command, which takes `-` as the key itself.
         code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
         self.assertNotRegex(code, r"bao\s+operator\s+unseal")

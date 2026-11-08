@@ -6,7 +6,6 @@
 - name: Read the token's capabilities on the Raft paths
   ansible.builtin.shell:
     cmd: >-
-      printf '%s\n' "$OPENBAO_TOKEN" |
       kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
       -n {{ openbao_namespace }}
       exec -i {{ openbao_caps_pod | default('openbao-0') }}
@@ -14,8 +13,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao token capabilities -format=json {{ item }}'
-  environment:
-    OPENBAO_TOKEN: "{{ openbao_guard_token }}"
+    stdin: "{{ openbao_guard_token }}\n"
   loop:
     - sys/storage/raft/configuration
     - sys/storage/raft/autopilot/state

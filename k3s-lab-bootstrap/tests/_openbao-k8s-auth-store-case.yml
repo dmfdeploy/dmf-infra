@@ -1,0 +1,40 @@
+---
+# One case of test-openbao-k8s-auth.yml, part 2: the store with a method over a store
+# that already holds another one (or none).
+- name: "{{ case.name }} — start from the store the case names"
+  ansible.builtin.include_tasks: _openbao-k8s-auth-store-apply.yml
+  vars:
+    _method: "{{ case.store }}"
+    _dir: "{{ _state.path }}/store-{{ case_index }}"
+  when: case.store != 'new'
+
+- name: "{{ case.name }} — apply the method"
+  ansible.builtin.include_tasks: _openbao-k8s-auth-store-apply.yml
+  vars:
+    _method: "{{ case.method }}"
+    _dir: "{{ _state.path }}/store-{{ case_index }}"
+
+- name: "{{ case.name }} — read what the cluster holds"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/store-{{ case_index }}/k8s/ClusterSecretStore-openbao.json"
+  register: _held
+
+- name: "{{ case.name }} — read the forced replacements"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/store-{{ case_index }}/k8s-force.log"
+  register: _forced
+  failed_when: false
+
+- name: "{{ case.name }} — assert exactly the selected method is held"
+  vars:
+    _object: "{{ _held.content | b64decode | from_json }}"
+    _auth: "{{ _object.spec.provider.vault.auth }}"
+  ansible.builtin.assert:
+    that:
+      - _auth.keys() | list == [('kubernetes' if case.method == 'kubernetes' else 'appRole')]
+      - case.method != 'approle' or (_object | dict2items | rejectattr('key', 'equalto', 'status') | items2dict) == (lookup('ansible.builtin.file', 'fixtures/eso-store-approle-before-kubernetes-auth.json') | from_json)
+      - >-
+        case.method != 'kubernetes' or _auth.kubernetes == {'mountPath': 'kubernetes', 'role': 'external-secrets', 'serviceAccountRef': {'name': 'external-secrets', 'namespace': 'external-secrets', 'audiences': ['openbao']}}
+      # A store is replaced only when it holds another method.
+      - (_forced.content | default('') | b64decode | length > 0) == (case.store not in ['new', case.method])
+    fail_msg: "{{ case.name }}: the store holds {{ _auth }}, forced: {{ _forced.content | default('') | b64decode }}"
