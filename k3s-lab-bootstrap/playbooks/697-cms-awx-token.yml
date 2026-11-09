@@ -795,6 +795,7 @@
               This indicates OpenBao write succeeded but value is not consistent.
               Check OpenBao policies and mount permissions for secret/apps/awx/runtime.
           when: _cms_awx_openbao_verify.rc == 0
+          no_log: true
 
       when: not _cms_awx_token_already_provisioned
 

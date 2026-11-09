@@ -101,6 +101,7 @@
     namespace: "{{ openbao_namespace | default('openbao') }}"
   register: _eso_openbao_tls_secret
   when: eso_openbao_url | default('') is match('^https://')
+  no_log: true
 
 - name: Set ESO OpenBao CA bundle from TLS secret
   ansible.builtin.set_fact:
@@ -179,6 +180,7 @@
   retries: "{{ eso_smoketest_wait_retries }}"
   delay: "{{ eso_smoketest_wait_delay }}"
   when: eso_smoketest_enabled | bool
+  no_log: true
 
 - name: Report ESO deployment summary
   ansible.builtin.debug:

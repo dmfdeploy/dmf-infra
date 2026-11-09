@@ -155,6 +155,7 @@
       args:
         creates: /etc/rancher/k3s/k3s.yaml
       when: not k3s_binary.stat.exists
+      no_log: true
 
     - name: Wait for k3s to be ready
       ansible.builtin.wait_for:
@@ -166,10 +167,12 @@
       ansible.builtin.slurp:
         src: /var/lib/rancher/k3s/server/node-token
       register: node_token
+      no_log: true
 
     - name: Set node token fact
       ansible.builtin.set_fact:
         k3s_node_token: "{{ node_token.content | b64decode | trim }}"
+      no_log: true
 
 - name: Join additional control plane nodes to cluster
   hosts: k3s:!k3s_control

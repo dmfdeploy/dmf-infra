@@ -112,6 +112,7 @@
         namespace: "{{ _ca_namespace }}"
       register: _local_ca_secret
       when: _local_ca | bool
+      no_log: true
 
     - name: Install local CA into the node trust store
       ansible.builtin.copy:

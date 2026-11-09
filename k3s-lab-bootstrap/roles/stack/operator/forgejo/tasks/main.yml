@@ -71,6 +71,7 @@
     namespace: "{{ forgejo_local_ca_namespace }}"
   register: _forgejo_ca_secret
   when: forgejo_local_ca_trust_enabled | bool
+  no_log: true
 
 - name: Publish local CA cert into Forgejo namespace (local-CA lane)
   kubernetes.core.k8s:

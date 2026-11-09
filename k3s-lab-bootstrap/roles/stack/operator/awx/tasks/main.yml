@@ -71,6 +71,7 @@
       type: Opaque
       stringData:
         password: "{{ awx_admin_password }}"
+  no_log: true
 
 - name: Discover Authentik SAML signing certificate for AWX
   ansible.builtin.command:

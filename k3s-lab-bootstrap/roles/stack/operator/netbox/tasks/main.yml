@@ -371,6 +371,7 @@
     namespace: "{{ netbox_local_ca_secret_namespace }}"
   register: _netbox_ca_secret
   when: netbox_local_ca_trust_enabled | bool
+  no_log: true
 
 - name: Publish local CA cert into NetBox namespace (local-CA lane)
   kubernetes.core.k8s:

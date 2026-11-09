@@ -80,6 +80,7 @@
     - _lbt_secret_wait.resources[0].data.AWS_ACCESS_KEY_ID is defined
   retries: 24
   delay: 5
+  no_log: true
 
 # ── Step 2: BackupTarget CR ──────────────────────────────────────────────────
 # Reads the bucket name from the materialized Secret. The ExternalSecret

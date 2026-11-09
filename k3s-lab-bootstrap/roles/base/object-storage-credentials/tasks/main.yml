@@ -393,6 +393,7 @@
     _secret_json: "{{ _os_approle_final_secretids.results[ansible_loop.index0].stdout | from_json }}"
     role_id_val: "{{ _role_json.data.role_id }}"
     secret_id_val: "{{ _secret_json.data.data.secret_id }}"
+  no_log: true
 
 # ── Step 11: Create ESO auth Secrets (role-id + secret-id) ─────────────────
 
@@ -425,6 +426,7 @@
     name: "{{ openbao_tls_secret_name | default('openbao-tls') }}"
     namespace: "{{ openbao_namespace }}"
   register: _os_openbao_tls_secret
+  no_log: true
 
 - name: Set ESO OpenBao CA bundle from TLS secret
   ansible.builtin.set_fact:

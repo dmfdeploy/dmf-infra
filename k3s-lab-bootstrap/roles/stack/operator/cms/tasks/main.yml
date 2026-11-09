@@ -35,6 +35,7 @@
         namespace: "{{ cms_namespace }}"
       register: _cms_runtime_secret_info
       changed_when: false
+      no_log: true
 
     - name: Set existing DMF Console runtime Secret data
       ansible.builtin.set_fact:
