@@ -11,10 +11,13 @@
 #      and cannot mint object-storage AppRole secret-ids; policy-reconciler
 #      cannot mint object-storage AppRole secret-ids; approle-reconciler
 #      cannot write policy and cannot read app secrets.
-#   3. The downstream ESO chain seeded by base/object-storage-credentials is
-#      reconciling — both ClusterSecretStores Ready, and ExternalSecrets in
-#      the six target namespaces (openbao-system, awx, netbox, authentik,
-#      forgejo, zot) report status.conditions[Ready] == True.
+#   3. When object storage is enabled (dmf_object_storage_enabled, true unless
+#      the environment sets it false), the downstream ESO chain seeded by
+#      base/object-storage-credentials is reconciling — both ClusterSecretStores
+#      Ready, and ExternalSecrets in the six target namespaces (openbao-system,
+#      awx, netbox, authentik, forgejo, zot) report status.conditions[Ready] ==
+#      True. Where object storage is off, the role never ran, so this step is
+#      skipped and the run says so.
 #   4. When eso_openbao_auth_method is kubernetes, the main store logs in with
 #      Kubernetes auth: a fresh token with the right audience gets a real
 #      login, an ExternalSecret that reads through the main store refreshes
@@ -549,8 +552,19 @@
         - not (_verify_scheduler_ready | bool)
 
     # ────────────────────────────────────────────────────────────────
-    # Step 4 — ClusterSecretStore Ready (positive)
+    # Step 4 — ClusterSecretStore Ready (positive; only with object storage)
     # ────────────────────────────────────────────────────────────────
+    # Environments without object storage never run
+    # base/object-storage-credentials, so they have neither the two stores
+    # nor the s3-creds-* ExternalSecrets that steps 4 and 5 look for.
+    - name: Say that the object-storage checks are skipped
+      ansible.builtin.debug:
+        msg: >-
+          Skipping the object-storage ClusterSecretStore and ExternalSecret
+          checks (steps 4 and 5): dmf_object_storage_enabled is false, so
+          base/object-storage-credentials did not create them.
+      when: not (dmf_object_storage_enabled | default(true) | bool)
+
     - name: Look up ClusterSecretStores
       kubernetes.core.k8s_info:
         kubeconfig: /etc/rancher/k3s/k3s.yaml
@@ -563,6 +577,7 @@
         - openbao-app-backups
       loop_control:
         label: "{{ item }}"
+      when: dmf_object_storage_enabled | default(true) | bool
 
     - name: Assert each ClusterSecretStore is Ready
       ansible.builtin.assert:
@@ -580,9 +595,11 @@
       loop: "{{ _verify_css_info.results }}"
       loop_control:
         label: "{{ item.item }}"
+      when: dmf_object_storage_enabled | default(true) | bool
 
     # ────────────────────────────────────────────────────────────────
-    # Step 5 — ExternalSecret Ready in the six target namespaces (positive)
+    # Step 5 — ExternalSecret Ready in the six target namespaces (positive;
+    # only with object storage)
     # ────────────────────────────────────────────────────────────────
     - name: Look up ExternalSecrets in target namespaces
       kubernetes.core.k8s_info:
@@ -595,6 +612,7 @@
       loop: "{{ verify_expected_external_secrets }}"
       loop_control:
         label: "{{ item.namespace }}/{{ item.name }}"
+      when: dmf_object_storage_enabled | default(true) | bool
 
     - name: Assert each ExternalSecret is Ready
       ansible.builtin.assert:
@@ -613,6 +631,7 @@
       loop: "{{ _verify_es_info.results }}"
       loop_control:
         label: "{{ item.item.namespace }}/{{ item.item.name }}"
+      when: dmf_object_storage_enabled | default(true) | bool
 
     # ────────────────────────────────────────────────────────────────
     # Step 6 — main store on Kubernetes auth (only when it is selected)
@@ -942,8 +961,16 @@
               {% for p in _verify_active_probes %}
               * {{ p.identity }} → {{ p.path }}: {{ p.expected }}
               {% endfor %}
+            {% if dmf_object_storage_enabled | default(true) | bool %}
             - 2 ClusterSecretStores Ready (openbao-openbao-snapshots, openbao-app-backups)
+            {% else %}
+            - object-storage ClusterSecretStores not checked (dmf_object_storage_enabled is false)
+            {% endif %}
             - main store auth method: {{ verify_eso_auth_method }}
+            {% if dmf_object_storage_enabled | default(true) | bool %}
             - {{ verify_expected_external_secrets | length }} ExternalSecrets Ready across
               {{ verify_expected_external_secrets | map(attribute='namespace') | unique | list | length }}
               namespaces
+            {% else %}
+            - object-storage ExternalSecrets not checked (dmf_object_storage_enabled is false)
+            {% endif %}
