@@ -1,0 +1,108 @@
+---
+# Tests of the policy and CA tasks of the OpenBao Raft snapshot role.
+#
+#   1. The policy task logs in as policy-reconciler, writes the policy when it is
+#      missing, writes nothing on a rerun, and rewrites a stored policy that differs.
+#      A failed write, a login that fails and a token without the grant each fail the
+#      play, never silently.
+#   2. The CA task copies tls.crt of the OpenBao TLS secret into a ConfigMap of the
+#      snapshot namespace, and fails with a message when the secret is missing.
+#
+# The fake kubectl, bao and kubernetes.core modules stand in for the cluster. They
+# are in tests/fixtures. Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
+#   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
+#   ansible-playbook tests/test-openbao-raft-snapshot.yml
+
+- name: OpenBao Raft snapshot policy and CA
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    _role_files: "{{ playbook_dir }}/../roles/base/openbao-raft-snapshot/files/policies"
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-raft-snapshot-
+      register: _state
+      changed_when: false
+
+    - name: Write a break-glass file that holds the policy-reconciler password
+      ansible.builtin.copy:
+        content: '{"policy_reconciler_password": "pw"}'
+        dest: "{{ _state.path }}/breakglass.json"
+        mode: "0600"
+      changed_when: false
+
+    - name: Run the policy cases
+      ansible.builtin.include_tasks: _openbao-raft-snapshot-policy-case.yml
+      loop:
+        - name: policy missing, written
+          expect: pass
+          writes: 1
+        - name: rerun with the policy in place, nothing written
+          state: 0
+          expect: pass
+          writes: 0
+        - name: stored policy differs, rewritten
+          state: 0
+          stored: "path \"sys/storage/raft/snapshot\" {\n  capabilities = [\"read\", \"update\"]\n}\n"
+          expect: pass
+          writes: 1
+        - name: the write fails, the play fails
+          env: {FAKE_POLICY_WRITE_FAILS: "yes"}
+          expect: fail
+          writes: 1
+        - name: the token has no grant on policies, the play fails
+          env: {FAKE_POLICY_WRITER: ""}
+          expect: fail
+          writes: 0
+        - name: the login fails, the play fails
+          env: {FAKE_PASSWORD: other}
+          expect: fail
+          writes: 0
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"
+
+    - name: Assert the outcome of every policy case
+      ansible.builtin.assert:
+        that:
+          - _policy_outcomes | length == 6
+          - _policy_outcomes | rejectattr('ok') | list | length == 0
+        fail_msg: "{{ _policy_outcomes | rejectattr('ok') | list | to_json }}"
+        success_msg: "{{ _policy_outcomes | length }} policy cases behave as specified"
+
+    - name: Run the CA cases
+      ansible.builtin.include_tasks: _openbao-raft-snapshot-ca-case.yml
+      loop:
+        - name: secret present, CA published
+          expect: pass
+        - name: secret missing, the play fails and names the openbao play
+          secret: false
+          expect: fail
+          message: playbooks/vertical-security/100-openbao.yml
+        - name: secret without tls.crt, the play fails
+          secret_data: {"tls.key": "ZmFrZQ=="}
+          expect: fail
+          message: tls.crt is missing
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"
+
+    - name: Assert the outcome of every CA case
+      ansible.builtin.assert:
+        that:
+          - _ca_outcomes | length == 3
+          - _ca_outcomes | rejectattr('ok') | list | length == 0
+        fail_msg: "{{ _ca_outcomes | rejectattr('ok') | list | to_json }}"
+        success_msg: "{{ _ca_outcomes | length }} CA cases behave as specified"
+
+    - name: Remove the state directory
+      ansible.builtin.file:
+        path: "{{ _state.path }}"
+        state: absent
+      changed_when: false

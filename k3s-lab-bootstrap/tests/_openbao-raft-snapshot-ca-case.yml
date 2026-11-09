@@ -1,0 +1,56 @@
+---
+# One case of test-openbao-raft-snapshot.yml: tasks/ca.yml of the snapshot role
+# against the fake cluster.
+- name: "{{ case.name }} — prepare the fake cluster"
+  ansible.builtin.file:
+    path: "{{ _state.path }}/ca-{{ case_index }}/k8s"
+    state: directory
+    mode: "0755"
+  changed_when: false
+
+- name: "{{ case.name }} — give the fake cluster the OpenBao TLS secret"
+  ansible.builtin.copy:
+    content: "{{ {'data': case.secret_data | default({'tls.crt': 'ZmFrZS1jYQ==', 'tls.key': 'ZmFrZQ=='})} | to_json }}"
+    dest: "{{ _state.path }}/ca-{{ case_index }}/k8s/Secret-openbao-tls.json"
+    mode: "0644"
+  when: case.secret | default(true)
+  changed_when: false
+
+- name: "{{ case.name }} — run ca.yml"
+  block:
+    - name: Run ca.yml
+      ansible.builtin.include_role:
+        name: base/openbao-raft-snapshot
+        tasks_from: ca.yml
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        _outcome: fail
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment:
+    FAKE_STATE: "{{ _state.path }}/ca-{{ case_index }}"
+
+- name: "{{ case.name }} — read the published ConfigMap"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/ca-{{ case_index }}/k8s/ConfigMap-openbao-ca.json"
+  register: _ca_raw
+  failed_when: false
+
+- name: "{{ case.name }} — judge the case"
+  ansible.builtin.set_fact:
+    _ca_outcomes: >-
+      {{
+        _ca_outcomes | default([]) + [{
+          'name': case.name,
+          'outcome': _outcome,
+          'message': _message,
+          'ok': (_outcome == case.expect)
+                and (case.message is not defined or case.message in _message)
+                and (case.expect != 'pass' or ((_ca_raw.content | b64decode | from_json).data['ca.crt'] == 'fake-ca'))
+                and (case.expect != 'fail' or _ca_raw.content is not defined)
+        }]
+      }}

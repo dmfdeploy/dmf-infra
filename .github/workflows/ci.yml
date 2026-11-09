@@ -62,6 +62,7 @@ jobs:
           ansible-playbook tests/test-openbao-restart-guard.yml
           ansible-playbook tests/test-openbao-grow-ha.yml
           ansible-playbook tests/test-openbao-k8s-auth.yml
+          ansible-playbook tests/test-openbao-raft-snapshot.yml
       - name: harden fail2ban ignoreip validation (dmfdeploy/dmfdeploy#142)
         run: ansible-playbook tests/test-harden-fail2ban-ignoreip.yml
       - name: whole-index mirror keeps the index digest (dmfdeploy/dmfdeploy#808)

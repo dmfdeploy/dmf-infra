@@ -1,13 +1,14 @@
 ---
 # OpenBao Raft snapshot — daily CronJob role.
-# 1. Creates ServiceAccount + Kubernetes auth role binding in OpenBao.
-# 2. Creates the policy `openbao-raft-snapshot` with read-only on
-#    sys/storage/raft/snapshot (AMENDED per 2026-05-12 brief correction:
-#    `read` only, NOT `update`+`sudo` — snapshot save calls the read
-#    endpoint; update/sudo are for snapshot-auto config).
-# 3. Deploys a CronJob that:
+# 1. Creates the ServiceAccount of the job.
+# 2. Publishes the OpenBao CA to the job's namespace (ca.yml).
+# 3. Writes the policy `openbao-raft-snapshot`, read-only on
+#    sys/storage/raft/snapshot (policy.yml). `bao operator raft snapshot save`
+#    calls the read endpoint; update and sudo belong to the snapshot-auto config.
+# 4. Binds the ServiceAccount to the policy with a Kubernetes-auth role.
+# 5. Deploys a CronJob that:
 #    a. `bao login -method=kubernetes role=openbao-raft-snapshot`
-#    b. `bao operator raft snapshot save /tmp/snapshot.snap`
+#    b. `bao operator raft snapshot save /tmp/openbao-snapshot.snap`
 #    c. Uploads to S3 using mounted Secret credentials (NOT env vars).
 #    d. Cleans up the temp file.
 
@@ -42,43 +43,18 @@
         labels: "{{ openbao_raft_snapshot_labels }}"
 
 # ---------------------------------------------------------------------------
+# CA of the OpenBao listener, for the job to verify the server
+# ---------------------------------------------------------------------------
+
+- name: Publish the OpenBao CA for the snapshot job
+  ansible.builtin.include_tasks: ca.yml
+
+# ---------------------------------------------------------------------------
 # OpenBao policy: openbao-raft-snapshot (read-only on raft snapshot endpoint)
 # ---------------------------------------------------------------------------
 
-- name: Write openbao-raft-snapshot policy HCL in pod
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - |
-        cat > /tmp/openbao-raft-snapshot-policy.hcl << 'HCL'
-        path "sys/storage/raft/snapshot" {
-          capabilities = ["read"]
-        }
-        HCL
-  no_log: true
-
-- name: Apply openbao-raft-snapshot policy
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao policy write openbao-raft-snapshot /tmp/openbao-raft-snapshot-policy.hcl'
-    stdin: "{{ openbao_root_token | default(omit) }}\n"
-  no_log: true
-  failed_when: false  # idempotent — policy may already exist
+- name: Write the openbao-raft-snapshot policy
+  ansible.builtin.include_tasks: policy.yml
 
 # ---------------------------------------------------------------------------
 # Kubernetes auth role binding — binds SA to the policy

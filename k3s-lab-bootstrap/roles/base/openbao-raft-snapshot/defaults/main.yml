@@ -7,6 +7,8 @@
 # Authentication: Kubernetes auth method (NOT AppRole). The CronJob pod
 # uses its ServiceAccount token to `bao login -method=kubernetes` and
 # gets a short-lived token scoped to the openbao-raft-snapshot policy.
+# The job reaches OpenBao over TLS and verifies the server with the CA that
+# tasks/ca.yml copies from the OpenBao TLS secret.
 
 # CronJob schedule — daily at 02:30 UTC (after k3s audit archival at 02:00)
 openbao_raft_snapshot_schedule: "30 2 * * *"
@@ -55,6 +57,23 @@ openbao_raft_snapshot_secret_mount: /etc/s3-creds
 openbao_pod: "openbao-0"
 openbao_namespace: "openbao"
 openbao_is_leader: false
+
+# The job connects to the OpenBao Service by name. The listener certificate
+# covers this name (cert-manager role, cert_manager_openbao_base_dns_names).
+openbao_raft_snapshot_openbao_service_name: openbao
+openbao_raft_snapshot_openbao_port: 8200
+openbao_raft_snapshot_openbao_addr: >-
+  https://{{ openbao_raft_snapshot_openbao_service_name }}.{{ openbao_namespace }}.svc.cluster.local:{{ openbao_raft_snapshot_openbao_port }}
+
+# CA that the job trusts. tasks/ca.yml copies tls.crt of the OpenBao TLS secret
+# into a ConfigMap of the job's namespace, and the CronJob mounts it.
+openbao_raft_snapshot_tls_secret_name: "{{ openbao_tls_secret_name | default('openbao-tls') }}"
+openbao_raft_snapshot_ca_configmap: openbao-ca
+openbao_raft_snapshot_ca_mount: /etc/openbao-ca
+
+# Policy of the job, written by tasks/policy.yml.
+openbao_raft_snapshot_policy_name: openbao-raft-snapshot
+openbao_raft_snapshot_policy_text: "{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/openbao-raft-snapshot.hcl') }}"
 
 # Kubernetes auth method mount path
 openbao_k8s_auth_mount: kubernetes

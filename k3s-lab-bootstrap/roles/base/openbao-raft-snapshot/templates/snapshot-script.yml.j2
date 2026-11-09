@@ -17,6 +17,10 @@ data:
     # is auto-detected by `bao login -method=kubernetes`.
     # Credentials: mounted Secret at /etc/s3-creds/ (NOT env vars per ADR-0007).
     # Object key: timestamp-prefixed — never overwrites a fixed key.
+    #
+    # This script handles an OpenBao token and object-storage keys. Never run it
+    # with trace mode (bash -x or set -x): trace output would put them in the log.
+    # Progress lines name the object, never a token or a key.
 
     MOUNT_DIR="{{ openbao_raft_snapshot_secret_mount }}"
     SNAP_FILE="{{ openbao_raft_snapshot_tmp_file }}"

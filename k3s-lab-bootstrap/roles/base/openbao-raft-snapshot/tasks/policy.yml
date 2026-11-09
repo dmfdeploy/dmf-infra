@@ -1,0 +1,52 @@
+---
+# Write the policy of the snapshot job. The openbao role applies its policies as
+# policy-reconciler on every run after the first. This file does the same: the
+# initial root token is revoked when the openbao role ends, so no root token
+# exists by the time this role runs.
+#
+# The write happens only when the stored policy differs from the file, so a rerun
+# with the policy in place changes nothing. Any failed read or write stops the
+# play.
+
+- name: Establish an OpenBao policy-reconciler session
+  ansible.builtin.include_role:
+    name: common/openbao-session
+  vars:
+    openbao_session_mode: policy-reconciler
+    openbao_session_namespace: "{{ openbao_namespace }}"
+
+- name: Read the openbao-raft-snapshot policy
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ _openbao_session_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json sys/policies/acl/{{ openbao_raft_snapshot_policy_name }}'
+    stdin: "{{ _openbao_session_client_token }}\n"
+  register: _openbao_raft_snapshot_policy_read
+  changed_when: false
+  failed_when:
+    - _openbao_raft_snapshot_policy_read.rc != 0
+    - "'No value found' not in _openbao_raft_snapshot_policy_read.stderr"
+  no_log: true
+
+- name: Write the openbao-raft-snapshot policy
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ _openbao_session_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_raft_snapshot_policy_name }} -'
+    stdin: "{{ _openbao_session_client_token }}\n{{ openbao_raft_snapshot_policy_text }}"
+  changed_when: true
+  no_log: true
+  when: >-
+    _openbao_raft_snapshot_policy_read.rc != 0
+    or ((_openbao_raft_snapshot_policy_read.stdout | from_json).data.policy | trim)
+       != (openbao_raft_snapshot_policy_text | trim)

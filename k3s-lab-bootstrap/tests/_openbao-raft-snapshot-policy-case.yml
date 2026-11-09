@@ -1,0 +1,81 @@
+---
+# One case of test-openbao-raft-snapshot.yml: tasks/policy.yml of the snapshot role
+# against the fake cluster. A case that names another state (state: N) runs on the
+# fake cluster of case N, so a rerun sees what the first run wrote.
+- name: "{{ case.name }} — prepare the fake cluster"
+  ansible.builtin.file:
+    path: "{{ _state.path }}/{{ case.state | default(case_index) }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: [k8s, policies]
+  changed_when: false
+
+- name: "{{ case.name }} — give the fake cluster the OpenBao pod"
+  ansible.builtin.copy:
+    content: '[{"metadata": {"name": "openbao-0"}}]'
+    dest: "{{ _state.path }}/{{ case.state | default(case_index) }}/k8s/Pod-all.json"
+    mode: "0644"
+  changed_when: false
+
+- name: "{{ case.name }} — store a policy that differs"
+  ansible.builtin.copy:
+    content: "{{ case.stored }}"
+    dest: "{{ _state.path }}/{{ case.state | default(case_index) }}/policies/openbao-raft-snapshot"
+    mode: "0644"
+  when: case.stored is defined
+  changed_when: false
+
+- name: "{{ case.name }} — start a new log"
+  ansible.builtin.file:
+    path: "{{ _state.path }}/{{ case.state | default(case_index) }}/events.log"
+    state: absent
+  changed_when: false
+
+- name: "{{ case.name }} — run policy.yml"
+  block:
+    - name: Run policy.yml
+      ansible.builtin.include_role:
+        name: base/openbao-raft-snapshot
+        tasks_from: policy.yml
+      vars:
+        openbao_session_breakglass_file: "{{ _state.path }}/breakglass.json"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        _outcome: fail
+  environment: >-
+    {{ {'FAKE_POLICY_WRITER': 'yes'}
+       | combine(case.env | default({}))
+       | combine({'FAKE_STATE': _state.path ~ '/' ~ (case.state | default(case_index))}) }}
+
+- name: "{{ case.name }} — read the log of the fake bao"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case.state | default(case_index) }}/events.log"
+  register: _events_raw
+  failed_when: false
+
+- name: "{{ case.name }} — read the stored policy"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case.state | default(case_index) }}/policies/openbao-raft-snapshot"
+  register: _stored_raw
+  failed_when: false
+
+- name: "{{ case.name }} — judge the case"
+  vars:
+    _events: "{{ _events_raw.content | default('') | b64decode }}"
+    _expected_policy: "{{ lookup('ansible.builtin.file', _role_files ~ '/openbao-raft-snapshot.hcl') }}"
+  ansible.builtin.set_fact:
+    _policy_outcomes: >-
+      {{
+        _policy_outcomes | default([]) + [{
+          'name': case.name,
+          'outcome': _outcome,
+          'writes': _events | regex_findall('(?m)^bao openbao-0 policy write openbao-raft-snapshot -$') | length,
+          'ok': (_outcome == case.expect)
+                and (_events | regex_findall('(?m)^bao openbao-0 policy write openbao-raft-snapshot -$') | length == case.writes)
+                and (case.expect != 'pass' or ((_stored_raw.content | default('') | b64decode | trim) == (_expected_policy | trim)))
+        }]
+      }}
