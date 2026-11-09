@@ -27,6 +27,9 @@
 #      annotation value embeds the marker text: the compatibility read fails with a message
 #      about the marker, the stale-status collision does not pass, and the read that
 #      decides an attempt counts such an object as not refreshed.
+#   6. The verifier's PKI probe passes when the ESO token has no capability on the PKI
+#      issue path (`deny`, or an empty list) and fails, naming the path, when the token
+#      still holds a grant there. The token reaches the pod on stdin, not as an argument.
 #
 # The fake kubectl, bao and kubernetes.core modules stand in for the cluster. They
 # are in tests/fixtures. Run locally, from k3s-lab-bootstrap:
@@ -591,3 +594,79 @@
       ansible.builtin.assert:
         that: not (_verify_refreshed | bool)
         fail_msg: An object whose metadata could hide the marker counted as the refresh.
+
+    # ── 6. The verifier's PKI probe ─────────────────────────────────────────
+    # The fake bao answers `bao token capabilities` for a token named fake-eso* as
+    # eso-reader would: ["deny"] on the PKI path unless FAKE_ESO_PKI_GRANT sets a grant.
+    - name: PKI probe — set what the verifier holds after the ESO login
+      ansible.builtin.set_fact:
+        verify_openbao_namespace: openbao
+        _verify_openbao_pod: openbao-0
+        verify_eso_pki_probe_path: pki/issue/internal-ca
+        _verify_eso_auth: {client_token: fake-eso-token}
+      no_log: true
+
+    - name: PKI probe — pass when the token has no grant
+      environment:
+        FAKE_STATE: "{{ _state.path }}/pki-none"
+      block:
+        - name: Run verify-eso-no-pki.yml against a token without a grant
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-no-pki.yml
+
+    # The grant that the role's eso-reader policy holds on the PKI mount, read from the
+    # task that writes the policy (tests/fixtures/eso_reader_pki_capabilities.py). A token
+    # of that policy passes only while the policy grants nothing there.
+    - name: PKI probe — read the grant of the policy that the role writes
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/fixtures/eso_reader_pki_capabilities.py"
+      register: _policy_pki_grant
+      changed_when: false
+
+    - name: PKI probe — pass with the policy that the role writes
+      environment:
+        FAKE_STATE: "{{ _state.path }}/pki-policy"
+        FAKE_ESO_PKI_GRANT: "{{ _policy_pki_grant.stdout | trim }}"
+      block:
+        - name: Run verify-eso-no-pki.yml against a token of the role's policy
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-no-pki.yml
+
+    - name: PKI probe — pass when the answer is an empty list
+      environment:
+        FAKE_STATE: "{{ _state.path }}/pki-empty"
+        FAKE_ESO_PKI_GRANT: "[]"
+      block:
+        - name: Run verify-eso-no-pki.yml against an empty answer
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-no-pki.yml
+
+    - name: PKI probe — fail, naming the path, when the token still holds the grant
+      environment:
+        FAKE_STATE: "{{ _state.path }}/pki-grant"
+        FAKE_ESO_PKI_GRANT: '["create", "update"]'
+      block:
+        - name: Run verify-eso-no-pki.yml against a token that holds the grant
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-no-pki.yml
+        - name: PKI probe — fail when the probe passed a token that holds the grant
+          ansible.builtin.fail:
+            msg: The probe passed a token that holds a grant on the PKI issue path.
+      rescue:
+        - name: PKI probe — assert the failure names the path and the grant
+          ansible.builtin.assert:
+            that:
+              - "'pki/issue/internal-ca' in ansible_failed_result.msg"
+              - "'create' in ansible_failed_result.msg"
+              - "'passed a token' not in ansible_failed_result.msg"
+            fail_msg: "The failure did not name the path: {{ ansible_failed_result.msg | default('') }}"
+
+    - name: PKI probe — read the argument lists that the fake bao logged
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/pki-grant/bao-argv.log"
+      register: _pki_argv
+
+    - name: PKI probe — assert the probe asked about the PKI path and sent no token as an argument
+      ansible.builtin.assert:
+        that:
+          - "'token capabilities -format=json pki/issue/internal-ca' in (_pki_argv.content | b64decode)"
+          - "'fake-eso-token' not in (_pki_argv.content | b64decode)"
+        fail_msg: The probe did not ask about the PKI path, or a token reached an argument list.

@@ -20,6 +20,8 @@
 #      login, an ExternalSecret that reads through the main store refreshes
 #      after a forced sync, a wrong ServiceAccount, namespace or audience is
 #      refused, and no standing identity can write auth/kubernetes/config.
+#      The token of that login has no capability on the PKI issue path: ESO
+#      reads KV secrets only.
 #
 # Tokens never appear in argv or logs (ADR-0007). Capability probes pipe the
 # token via stdin into the OpenBao pod's shell; the probe output contains
@@ -52,6 +54,7 @@
     verify_eso_k8s_role: "{{ openbao_eso_kubernetes_role_name | default('external-secrets') }}"
     verify_eso_audience: "{{ openbao_eso_kubernetes_audience | default('openbao') }}"
     verify_eso_store_name: "{{ eso_cluster_secret_store_name | default('openbao') }}"
+    verify_eso_pki_probe_path: "{{ openbao_pki_path | default('pki') }}/issue/internal-ca"
     # An ExternalSecret that reads from the main store, to force a refresh.
     verify_main_store_sync_target:
       namespace: authentik
@@ -650,6 +653,9 @@
               - _verify_eso_auth.lease_duration | int <= 3600
             fail_msg: The ESO login did not return the eso-reader policy with a short token lifetime.
           no_log: true
+
+        - name: Check that the ESO token has no grant on the PKI mount
+          ansible.builtin.include_tasks: tasks/verify-eso-no-pki.yml
 
         - name: Revoke the token of the verification login
           ansible.builtin.shell:

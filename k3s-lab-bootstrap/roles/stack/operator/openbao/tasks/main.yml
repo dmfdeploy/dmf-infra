@@ -896,7 +896,9 @@
   when: openbao_is_initialized | bool
 
 # ---------------------------------------------------------------------------
-# Create eso-reader policy — allows ESO to read app-admin and bootstrap secrets
+# Create eso-reader policy — reads the application secret paths listed below
+# and nothing else. It grants no capability on the PKI mount: ESO reads only
+# KV secrets, so a token that ESO holds must not be able to issue certificates.
 # ---------------------------------------------------------------------------
 
 - name: Write eso-reader policy HCL in pod
@@ -946,12 +948,6 @@
         }
         path "secret/metadata/apps" {
           capabilities = ["list"]
-        }
-        path "{{ openbao_pki_path }}/issue/internal-ca" {
-          capabilities = ["create", "update"]
-        }
-        path "{{ openbao_pki_path }}/cert/ca" {
-          capabilities = ["read"]
         }
         HCL
   no_log: true
