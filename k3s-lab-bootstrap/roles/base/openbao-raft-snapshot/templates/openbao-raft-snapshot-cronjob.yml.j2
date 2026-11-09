@@ -33,9 +33,6 @@ spec:
                       path: token
                       expirationSeconds: 600
                       audience: openbao
-            - name: openbao-ca
-              configMap:
-                name: {{ openbao_raft_snapshot_ca_configmap }}
             - name: snapshot-script
               configMap:
                 name: openbao-raft-snapshot-script
@@ -61,9 +58,7 @@ spec:
               command: ["/bin/bash", "/scripts/snapshot.sh"]
               env:
                 - name: BAO_ADDR
-                  value: "{{ openbao_raft_snapshot_openbao_addr }}"
-                - name: BAO_CACERT
-                  value: "{{ openbao_raft_snapshot_ca_mount }}/ca.crt"
+                  value: "http://{{ openbao_pod }}.{{ openbao_namespace }}.svc.cluster.local:8200"
                 - name: PATH
                   value: "/shared-bin/aws-cli/v2/current/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
               volumeMounts:
@@ -72,9 +67,6 @@ spec:
                   readOnly: true
                 - name: bao-token
                   mountPath: /var/run/secrets/kubernetes.io/serviceaccount
-                  readOnly: true
-                - name: openbao-ca
-                  mountPath: {{ openbao_raft_snapshot_ca_mount }}
                   readOnly: true
                 - name: snapshot-script
                   mountPath: /scripts
