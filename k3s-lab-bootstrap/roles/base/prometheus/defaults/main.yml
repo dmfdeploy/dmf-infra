@@ -9,8 +9,9 @@ prometheus_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
 # - retentionSize controls TSDB blocks only, NOT the WAL
 # - WAL can use ~300MB before compaction (2h default)
 # - 40GB blocks + 1GB WAL + 9GB headroom = 50GB
-# Operator-debug retention only; not a compliance audit trail (those go to
-# Loki + S3 per docs/processes/audit-log-retention-policy.md).
+# Operator-debug retention only; not a compliance audit trail. Audit streams
+# go to Loki (roles/stack/operator/loki), and the k3s API audit log also goes
+# to write-once object storage (roles/base/audit-log-archival).
 prometheus_retention: 30d
 prometheus_retention_size: 40GB
 prometheus_path: /prometheus
