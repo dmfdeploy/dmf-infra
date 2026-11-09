@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Fake kubectl for the OpenBao tests (tests/test-openbao-*.yml). It handles two
+# Fake kubectl for the OpenBao tests (tests/test-openbao-*.yml). It handles three
 # call forms:
 #   kubectl [flags] exec [-i] POD -- COMMAND...
 #     It runs COMMAND here, with the fake bao (tests/fixtures/fake-bao/bao) first on
@@ -10,6 +10,20 @@
 #     It prints the tls.crt of $FAKE_STATE/k8s/Secret-NAME.json, or the text
 #     "stale" (base64) for the first $FAKE_CERT_STALE_READS reads, as a secret that
 #     cert-manager has not replaced yet.
+#   kubectl [flags] -n NAMESPACE annotate --overwrite externalsecret/NAME KEY=VALUE
+#     It sets the annotation on $FAKE_STATE/k8s/ExternalSecret-NAME.json and then
+#     writes the status as ESO does after a successful sync: Ready with reason
+#     SecretSynced and the version that tests/fixtures/eso_sync_version.py computes
+#     for the object's metadata. FAKE_ES_SYNC selects what ESO does:
+#       sync    (default) publishes the version for the annotated metadata.
+#       hold    keeps the status as it was, as for an ExternalSecret that ESO has not
+#               synced or whose sync failed.
+#       other   publishes the version for other metadata, an earlier change without
+#               this annotation, as ESO does while it still processes that change.
+#       scheme  publishes a version that is built differently from ESO's.
+#       collide another writer first cuts the marker text out of every annotation value
+#               that embeds it, then the status stays as it was: the status holds the
+#               version of the metadata as it was rendered with the embedded marker.
 # Every call is logged to $FAKE_STATE/events.log. Any other call fails, so a test
 # notices a new kind of call.
 set -u
@@ -17,6 +31,49 @@ pod=""
 state="${FAKE_STATE:-}"
 log_event() { [ -n "$state" ] && { mkdir -p "$state"; printf '%s\n' "$*" >> "$state/events.log"; }; return 0; }
 case " $* " in
+  *" annotate "*)
+    target=""
+    pair=""
+    for a in "$@"; do
+      case "$a" in
+        externalsecret/*) target="${a#externalsecret/}" ;;
+        *=*) pair="$a" ;;
+      esac
+    done
+    log_event "kubectl annotate externalsecret $target $pair"
+    fixtures="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    python3 - "$state/k8s/ExternalSecret-$target.json" "$pair" "$fixtures" <<'PY'
+import json
+import os
+import sys
+
+path, pair, fixtures = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, fixtures)
+import eso_sync_version
+
+key, value = pair.split("=", 1)
+with open(path) as handle:
+    data = json.load(handle)
+annotations = data["metadata"].setdefault("annotations", {})
+mode = os.environ.get("FAKE_ES_SYNC", "sync")
+if mode == "collide":
+    for name, text in list(annotations.items()):
+        annotations[name] = text.split(" force-sync:")[0]
+annotations[key] = value
+if mode == "sync":
+    data["status"] = eso_sync_version.synced_status(data, refresh_time="2000-01-01T00:00:00Z")
+elif mode == "other":
+    data["status"] = eso_sync_version.synced_status(
+        {"metadata": {**data["metadata"], "annotations": {k: v for k, v in annotations.items() if k != key}}},
+        extra_annotations={"earlier-change": "published"},
+    )
+elif mode == "scheme":
+    data["status"] = eso_sync_version.synced_status(data, scheme="other")
+with open(path, "w") as handle:
+    json.dump(data, handle)
+PY
+    exit 0
+    ;;
   *" get secret "*)
     secret=""
     prev=""

@@ -147,7 +147,7 @@
                 recorded_at: "{{ lookup('ansible.builtin.pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
                 kubernetes_host: "{{ openbao_kubernetes_auth_host }}"
                 reviewer_mode: local-file
-                eso_role_written: "{{ openbao_eso_auth_method == 'kubernetes' }}"
+                eso_role_written: "{{ 'true' if openbao_eso_auth_method == 'kubernetes' else 'false' }}"
                 eso_role: "{{ openbao_eso_kubernetes_role_name }}"
                 bound_service_account: "{{ openbao_eso_namespace }}/{{ openbao_eso_service_account }}"
                 audience: "{{ openbao_eso_kubernetes_audience }}"

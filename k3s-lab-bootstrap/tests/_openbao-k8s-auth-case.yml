@@ -47,6 +47,12 @@
   failed_when: false
   loop: [bao-argv.log, events.log, k8s-mutations.log]
 
+- name: "{{ case.name }} — read the recorded ConfigMap"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case.state | default(case_index) }}/k8s/ConfigMap-openbao-kubernetes-auth-record.json"
+  register: _record
+  failed_when: false
+
 - name: "{{ case.name }} — list the files the fake bao keeps"
   ansible.builtin.find:
     paths: "{{ _state.path }}/{{ case.state | default(case_index) }}"
@@ -80,6 +86,8 @@
                 and (case.expect != 'fail' or ('present ConfigMap openbao-kubernetes-auth-record' not in _mutations))
                 and ((case.config_writes is not defined) or (_argv | regex_findall('(?m)^write auth/kubernetes/config ') | length == case.config_writes))
                 and ((case.records is not defined) or (_mutations | regex_findall('(?m)^present ConfigMap openbao-kubernetes-auth-record') | length == case.records))
+                and ((case.eso_role_written is not defined) or (
+                  (_record.content | default('e30=') | b64decode | from_json).data.eso_role_written | default('') == case.eso_role_written))
                 and ((case.role is not defined) or (('write auth/kubernetes/role/' in _argv) == case.role))
                 and ((case.message is not defined) or (case.message in _message))
                 and ((case.nothing_ran_except_lookup is not defined) or (_argv == '' and _mutations == ''))

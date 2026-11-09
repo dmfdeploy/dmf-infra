@@ -1,60 +1,143 @@
----
 # One attempt of the identity verifier's refresh probe. The caller loops over
-# _verify_attempt and stops after the first attempt that sets _verify_refreshed.
+# _verify_attempt. Ansible evaluates a loop's `when` for every item before any item
+# runs, so the stop is here: once an attempt has set _verify_refreshed to true, every
+# later attempt skips its tasks and leaves it true. The probe passes when any attempt
+# saw its refresh.
 #
-# The annotation value is unique to this run and attempt. The threshold is taken after
-# the annotation has been applied. The attempt passes when it finds a Ready
-# ExternalSecret that carries this annotation and whose status.refreshTime is
-# strictly later than the threshold: a successful refresh through the main store
-# after a forced sync. The refresh time has a resolution of one second, so a
-# refresh that lands in the threshold's own second fails the attempt, and the
-# next attempt forces another sync.
+# The annotation value is unique to this run and attempt. ESO v2.3.0 writes
+# status.syncedResourceVersion only after a successful sync, and writes it as
+# "<generation>-<hash>", where the hash covers the object's annotations and labels
+# (pkg/controllers/util/util.go: GetResourceVersion and HashMeta; the hash is
+# SHA3-224 of Go's "%+v" rendering of the two maps, in runtime/esutils/utils.go:
+# ObjectHash). The probe computes that version from the object it reads, so the
+# version that ESO writes for metadata that carries this attempt's annotation is known
+# in advance. The attempt passes when one read of the ExternalSecret shows this
+# attempt's annotation, a status version that equals the version computed from that
+# same read, and Ready with reason SecretSynced. A sync of other metadata, for
+# example an earlier change that ESO is still processing, leaves a different version.
+# A failed sync leaves the old version in place. Both sides of the comparison come from
+# the same object and no timestamp is compared, so the clocks of the play host and the
+# controller cannot affect the result, and a scheduled refresh cannot pass for the
+# forced one.
+#
+# Go prints map keys and values without quotes, so two different annotation maps can
+# render as the same text: {"a": "x force-sync:verify-1-1"} and
+# {"a": "x", "force-sync": "verify-1-1"} get the same version. The probe therefore
+# refuses an object that has an annotation or label, other than the force-sync
+# annotation itself, with a key or a value that contains the text "force-sync". The
+# compatibility read below fails on such an object, and the read that decides an
+# attempt counts it as not refreshed. The probe does not defend against a writer that
+# edits this ExternalSecret during the probe and knows the run's marker: it is a health
+# check, not a security boundary.
+#
+# Before its first annotation the probe waits until the status equals the version
+# computed for the object's current metadata. If it never does, this ESO version builds
+# the value differently and the probe cannot judge, so it fails with that message.
 
-- name: Set a force-sync annotation that is unique to this run and attempt
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ verify_main_store_sync_target.namespace }}"
-      - annotate
-      - --overwrite
-      - "externalsecret/{{ verify_main_store_sync_target.name }}"
-      - "force-sync=verify-{{ _verify_run_id }}-{{ _verify_attempt }}"
-  changed_when: true
-
-- name: Record the threshold after the annotation was applied
-  ansible.builtin.set_fact:
-    _verify_refresh_after: "{{ lookup('ansible.builtin.pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ') }}"
-
-- name: Wait for a later refresh through the main store
-  kubernetes.core.k8s_info:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    api_version: external-secrets.io/v1
-    kind: ExternalSecret
-    namespace: "{{ verify_main_store_sync_target.namespace }}"
-    name: "{{ verify_main_store_sync_target.name }}"
-  register: _verify_main_es
-  until: >-
-    _verify_main_es.resources | default([]) | length > 0
-    and (_verify_main_es.resources[0].metadata.annotations | default({}))['force-sync'] | default('')
-        == 'verify-' ~ _verify_run_id ~ '-' ~ _verify_attempt
-    and (_verify_main_es.resources[0].status.refreshTime | default('')) > _verify_refresh_after
-    and (_verify_main_es.resources[0].status.conditions | default([])
-         | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length) > 0
-  retries: 6
-  delay: 5
-  failed_when: false
-
-- name: Note whether this attempt saw the refresh
-  ansible.builtin.set_fact:
-    _verify_refreshed: >-
-      {{
-        _verify_main_es.resources | default([]) | length > 0
-        and (_verify_main_es.resources[0].metadata.annotations | default({}))['force-sync'] | default('')
-            == 'verify-' ~ _verify_run_id ~ '-' ~ _verify_attempt
-        and (_verify_main_es.resources[0].status.refreshTime | default('')) > _verify_refresh_after
-        and (_verify_main_es.resources[0].status.conditions | default([])
-             | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length) > 0
+- name: Attempt a forced sync unless an earlier attempt already saw its refresh
+  when: not (_verify_refreshed | default(false) | bool)
+  vars:
+    _verify_es_object: "{{ _verify_main_es.resources | default([]) | first | default({}) }}"
+    # Go prints a map as map[key:value key:value] with the keys in byte order, and
+    # map[] for an empty or absent map.
+    _verify_es_version: >-
+      {%- set meta = _verify_es_object.get('metadata', {}) -%}
+      {{ meta.get('generation', 0) }}-{{
+        ('{annotations:map[' ~ (meta.get('annotations') | default({}, true) | dictsort(case_sensitive=true) | map('join', ':') | join(' '))
+         ~ '] labels:map[' ~ (meta.get('labels') | default({}, true) | dictsort(case_sensitive=true) | map('join', ':') | join(' '))
+         ~ ']}') | hash('sha3_224')
       }}
+    _verify_es_metadata_hides_marker: >-
+      {%- set meta = _verify_es_object.get('metadata', {}) -%}
+      {%- set found = namespace(hidden=false) -%}
+      {%- for key, value in meta.get('annotations') | default({}, true) | dictsort if key != 'force-sync' -%}
+        {%- if 'force-sync' in key or 'force-sync' in value -%}{%- set found.hidden = true -%}{%- endif -%}
+      {%- endfor -%}
+      {%- for key, value in meta.get('labels') | default({}, true) | dictsort -%}
+        {%- if 'force-sync' in key or 'force-sync' in value -%}{%- set found.hidden = true -%}{%- endif -%}
+      {%- endfor -%}
+      {{ found.hidden }}
+    _verify_es_status_version: "{{ _verify_es_object.get('status', {}).get('syncedResourceVersion', '') }}"
+    _verify_es_synced_ready: >-
+      {{
+        (_verify_es_object.get('status', {}).get('conditions', [])
+         | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True')
+         | selectattr('reason', 'equalto', 'SecretSynced') | list | length) > 0
+      }}
+    _verify_es_settled: "{{ _verify_es_object | length > 0 and _verify_es_status_version == _verify_es_version }}"
+    _verify_es_refresh_seen: >-
+      {{
+        _verify_es_object | length > 0
+        and not (_verify_es_metadata_hides_marker | bool)
+        and (_verify_es_object.get('metadata', {}).get('annotations') | default({}, true)).get('force-sync', '')
+            == 'verify-' ~ _verify_run_id ~ '-' ~ _verify_attempt
+        and _verify_es_status_version == _verify_es_version
+        and _verify_es_synced_ready
+      }}
+  block:
+    - name: Wait until the synced resource version matches the current metadata
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: external-secrets.io/v1
+        kind: ExternalSecret
+        namespace: "{{ verify_main_store_sync_target.namespace }}"
+        name: "{{ verify_main_store_sync_target.name }}"
+      register: _verify_main_es
+      until: _verify_es_settled | bool or _verify_es_metadata_hides_marker | bool
+      retries: "{{ _verify_refresh_retries | default(6) }}"
+      delay: "{{ _verify_refresh_delay | default(5) }}"
+      failed_when: false
+      when: _verify_attempt | int == 1
+
+    - name: Assert that no annotation or label could hide this run's marker
+      ansible.builtin.assert:
+        that: not (_verify_es_metadata_hides_marker | bool)
+        fail_msg: >-
+          The probe cannot judge {{ verify_main_store_sync_target.namespace }}/{{ verify_main_store_sync_target.name }}
+          because its metadata could hide the marker: an annotation or label other than
+          force-sync has a key or a value that contains the text force-sync, and Go prints
+          map keys and values without quotes, so other metadata could render as this
+          probe's annotation. Remove that text from the metadata and run the verifier again.
+      when: _verify_attempt | int == 1
+
+    - name: Assert that this ESO version builds the synced resource version as the probe does
+      ansible.builtin.assert:
+        that: _verify_es_settled | bool
+        fail_msg: >-
+          {{ verify_main_store_sync_target.namespace }}/{{ verify_main_store_sync_target.name }}
+          never showed a status.syncedResourceVersion equal to the version computed from its
+          generation, annotations and labels. This ESO version probably builds the value
+          differently from v2.3.0, so the probe cannot judge a refresh. Compare the value in
+          the status with pkg/controllers/util/util.go of the installed ESO version.
+      when: _verify_attempt | int == 1
+
+    - name: Set a force-sync annotation that is unique to this run and attempt
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ verify_main_store_sync_target.namespace }}"
+          - annotate
+          - --overwrite
+          - "externalsecret/{{ verify_main_store_sync_target.name }}"
+          - "force-sync=verify-{{ _verify_run_id }}-{{ _verify_attempt }}"
+      changed_when: true
+
+    - name: Wait for the synced resource version of the annotated metadata
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: external-secrets.io/v1
+        kind: ExternalSecret
+        namespace: "{{ verify_main_store_sync_target.namespace }}"
+        name: "{{ verify_main_store_sync_target.name }}"
+      register: _verify_main_es
+      until: _verify_es_refresh_seen | bool
+      retries: "{{ _verify_refresh_retries | default(6) }}"
+      delay: "{{ _verify_refresh_delay | default(5) }}"
+      failed_when: false
+
+    - name: Note whether this attempt saw the refresh
+      ansible.builtin.set_fact:
+        _verify_refreshed: "{{ _verify_es_refresh_seen | bool }}"

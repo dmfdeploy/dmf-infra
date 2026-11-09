@@ -369,8 +369,8 @@
         _verify_scheduler_account_missing: >-
           {{
             _verify_scheduler_jwt.rc != 0
-            and '(NotFound)' in _verify_scheduler_jwt.stderr
             and 'serviceaccounts' in _verify_scheduler_jwt.stderr
+            and ' not found' in _verify_scheduler_jwt.stderr
           }}
         _verify_scheduler_role_missing: >-
           {{
@@ -825,7 +825,7 @@
           ansible.builtin.assert:
             that:
               - item.rc != 0
-              - item.stderr is search('Code: 403|permission denied')
+              - "item.stderr is search('Code: 403|permission denied')"
             fail_msg: "{{ item.item }} did not get 403 when it wrote auth/kubernetes/config."
           loop: "{{ _verify_config_writes.results }}"
           loop_control:
@@ -852,14 +852,14 @@
               Set verify_main_store_sync_target to an ExternalSecret that does.
 
         # A successful refresh through the main store after a forced sync: up to three
-        # attempts, each with its own annotation and a threshold taken after the annotation
+        # attempts, each with its own annotation, passing when ESO publishes the version
+        # computed for the annotated metadata. An attempt after a success does nothing
         # (playbooks/tasks/verify-main-store-refresh.yml).
         - name: Force a sync and wait for a later refresh
           ansible.builtin.include_tasks: tasks/verify-main-store-refresh.yml
           loop: [1, 2, 3]
           loop_control:
             loop_var: _verify_attempt
-          when: not (_verify_refreshed | default(false) | bool)
 
         - name: Assert a successful refresh through the main store followed a forced sync
           ansible.builtin.assert:

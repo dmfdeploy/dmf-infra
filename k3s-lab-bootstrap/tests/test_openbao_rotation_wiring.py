@@ -279,7 +279,8 @@ class VerifierTests(unittest.TestCase):
         self.assertIn("approle_rotation_engine_enabled | default(false) | bool", ready)
         self.assertIn("'could not be found'", ready)
         self.assertIn("'invalid role name'", ready)
-        self.assertIn("'(NotFound)'", ready)
+        self.assertIn("' not found'", ready)
+        self.assertNotIn("(NotFound)", ready)
         self.assertIn("'serviceaccounts'", ready)
         self.assertNotIn("serviceaccounts", task(VERIFY, "Work out whether the token request failed for another reason"))
         guard = task(VERIFY, "Assert the rotation scheduler can log in when it is expected to")
@@ -310,7 +311,8 @@ SCHEDULER_TASKS = [
     "Assert the rotation scheduler can log in when it is expected to",
     "Say that the rotation scheduler is not set up yet",
 ]
-SA_MISSING = 'Error from server (NotFound): serviceaccounts "approle-rotation-scheduler" not found'
+# What `kubectl create token` prints for a ServiceAccount that does not exist.
+SA_MISSING = 'error: failed to create token: serviceaccounts "approle-rotation-scheduler" not found'
 
 
 @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is not installed")
