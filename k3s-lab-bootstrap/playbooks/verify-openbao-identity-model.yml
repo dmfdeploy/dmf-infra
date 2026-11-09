@@ -26,10 +26,11 @@
 #      mount and grants only read and list. In AppRole mode, ESO's AppRole role
 #      carries the eso-reader policy and no other, so nothing adds a grant to an
 #      ESO token. The AppRole checks read the policy and the role with identities
-#      that this playbook already logs in as. The playbook never logs in as ESO
-#      with AppRole and never reads or uses ESO's SecretID: a failed AppRole login
-#      counts toward the lockout of ESO's role, and a locked role stops every
-#      ExternalSecret.
+#      that this playbook already logs in as. If the rotation scheduler cannot log
+#      in, AppRole mode fails, because nothing else can read the role. The
+#      playbook never logs in as ESO with AppRole and never reads or uses ESO's
+#      SecretID: a failed AppRole login counts toward the lockout of ESO's role,
+#      and a locked role stops every ExternalSecret.
 #
 # Tokens never appear in argv or logs (ADR-0007). Capability probes pipe the
 # token via stdin into the OpenBao pod's shell; the probe output contains
@@ -521,7 +522,8 @@
     # ────────────────────────────────────────────────────────────────
     # Step 3b — what an ESO token can do, without logging in as ESO. The policy
     # is checked in both modes. In AppRole mode the role's policy list is checked
-    # too, when the rotation scheduler (the identity that can read that role) is set up.
+    # too, with the rotation scheduler (the identity that can read that role). When the
+    # scheduler cannot log in, AppRole mode fails: the role cannot be checked.
     # ────────────────────────────────────────────────────────────────
     - name: Check that the live eso-reader policy grants no capability on the PKI mount
       ansible.builtin.include_tasks: tasks/verify-eso-reader-policy.yml
@@ -532,12 +534,16 @@
         - verify_eso_auth_method == 'approle'
         - _verify_scheduler_ready | bool
 
-    - name: Say that ESO's AppRole role was not checked
-      ansible.builtin.debug:
+    - name: Fail when ESO's AppRole role cannot be checked
+      ansible.builtin.fail:
         msg: >-
-          The rotation scheduler is not set up, and it is the only identity that
-          can read ESO's AppRole role, so the role's policy list was not checked.
-          Set up the scheduler identity to turn this check on.
+          ESO's AppRole role ({{ verify_eso_approle_role }}) could not be checked,
+          because the rotation scheduler cannot log in, and it is the only identity
+          that can read that role. An extra policy on the role, such as one that
+          grants PKI issue, would go unnoticed. To fix this, run
+          playbooks/vertical-security/100-openbao.yml, then
+          playbooks/vertical-security/106-openbao-kubernetes-auth.yml with a
+          temporary root token, and run this verifier again.
       when:
         - verify_eso_auth_method == 'approle'
         - not (_verify_scheduler_ready | bool)
