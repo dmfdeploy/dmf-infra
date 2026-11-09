@@ -1,0 +1,21 @@
+---
+# One failing case of the verifier's eso-reader policy check. The caller sets _case.name
+# (the file of the live policy variant in the state directory) and _case.expect (text that
+# the failure message must hold). The check must fail, and its message must name what it found.
+- name: "Policy check — {{ _case.name }} fails and names what it found"
+  environment:
+    FAKE_STATE: "{{ _state.path }}/read-policy-{{ _case.name }}"
+    FAKE_ESO_POLICY_FILE: "{{ _state.path }}/{{ _case.name }}.hcl"
+  block:
+    - name: "Run verify-eso-reader-policy.yml against the {{ _case.name }} policy"
+      ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-reader-policy.yml
+    - name: "Fail when the policy check passed the {{ _case.name }} policy"
+      ansible.builtin.fail:
+        msg: The policy check passed a policy that grants too much.
+  rescue:
+    - name: "Assert the failure for {{ _case.name }} names what it found"
+      ansible.builtin.assert:
+        that:
+          - _case.expect in ansible_failed_result.msg
+          - "'passed a policy' not in ansible_failed_result.msg"
+        fail_msg: "The failure did not name {{ _case.expect }}: {{ ansible_failed_result.msg | default('') }}"

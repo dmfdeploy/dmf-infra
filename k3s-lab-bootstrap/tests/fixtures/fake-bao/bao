@@ -36,6 +36,11 @@
 #   FAKE_CAPS_JSON       capability list for every other path (default ["read"])
 #   FAKE_ESO_PKI_GRANT   capability list that a token named fake-eso* holds on pki/*
 #                        (default ["deny"], a path without a grant)
+#   FAKE_ESO_POLICY_FILE file whose text `bao read sys/policies/acl/eso-reader` returns as
+#                        data.policy, for a token named fake-policy*
+#   FAKE_ESO_ROLE_POLICIES  JSON list that `bao read auth/approle/role/external-secrets`
+#                        returns as data.token_policies, for a token named fake-scheduler*
+#                        (default ["eso-reader"])
 #   FAKE_KV_MODE         ok | absent | denied | transport  (file $FAKE_STATE/kv-mode wins)
 #   FAKE_KV_VERSION      version that `kv metadata get` reports (file kv-version wins)
 #   FAKE_K8S_IGNORES_REVIEWER_FIELDS  set: an old mount, whose config read has no
@@ -297,6 +302,16 @@ role = {"bound_service_account_names": as_list(fields["bound_service_account_nam
 json.dump(role, open(path, "w"))
 PY
     exit $?
+    ;;
+  "read -format=json sys/policies/acl/eso-reader")
+    case "${BAO_TOKEN:-}" in fake-policy*) ;; *) forbidden "reading sys/policies/acl/eso-reader" ;; esac
+    python3 -c 'import json,sys; print(json.dumps({"data": {"name": "eso-reader", "policy": open(sys.argv[1]).read()}}))' "${FAKE_ESO_POLICY_FILE:?FAKE_ESO_POLICY_FILE is not set}"
+    exit 0
+    ;;
+  "read -format=json auth/approle/role/external-secrets")
+    case "${BAO_TOKEN:-}" in fake-scheduler*) ;; *) forbidden "reading auth/approle/role/external-secrets" ;; esac
+    printf '{"data":{"token_policies":%s,"token_ttl":3600}}\n' "${FAKE_ESO_ROLE_POLICIES:-[\"eso-reader\"]}"
+    exit 0
     ;;
   "read -format=json sys/policies/acl/"*)
     token_ok && is_root || forbidden "reading sys/policies/acl"

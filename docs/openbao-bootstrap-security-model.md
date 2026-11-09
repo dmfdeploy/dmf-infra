@@ -482,8 +482,14 @@ External Secrets Operator authenticates to OpenBao through the ESO AppRole. The
 AppRole receives the `eso-reader` policy. The policy reads the application
 secret paths that ESO materializes into Kubernetes Secrets, and it grants
 nothing else. In particular, it grants no capability on the PKI mount. The
-identity verifier checks this: it logs in as ESO and fails if the token holds
-any capability on `pki/issue/internal-ca`.
+identity verifier checks this in both ESO auth modes. It reads the live policy
+and fails if a path stanza covers the PKI mount or a capability other than
+`read` and `list` appears. In AppRole mode it also reads the ESO AppRole role
+and fails if the role's `token_policies` is anything other than `eso-reader`.
+The verifier never logs in as ESO with AppRole and never reads or uses ESO's
+`secret_id`, because a failed AppRole login counts toward the lockout of ESO's
+role. In Kubernetes mode it also logs in as ESO and fails if the token holds any
+capability on `pki/issue/internal-ca`.
 
 ESO's `secret_id` has a configured TTL, currently defaulting to `720h`. Rotation
 should be handled by the ESO rotation playbook, not by manually editing

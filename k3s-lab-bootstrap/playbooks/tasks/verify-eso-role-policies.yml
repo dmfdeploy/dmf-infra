@@ -1,0 +1,36 @@
+# The verifier's check of ESO's AppRole role, in AppRole mode. The role's token_policies
+# must equal ["eso-reader"], so no second policy can add a grant to an ESO token.
+#
+# The verifier does not log in as ESO here. A failed AppRole login counts toward the
+# lockout of ESO's role, and a locked role stops every ExternalSecret; the check also
+# never reads, uses or rotates ESO's SecretID. It reads the role's configuration with the
+# rotation-scheduler identity, whose policy grants read on that role and on no other
+# role outside the rotation registry. The caller holds its token in
+# _verify_token_rotation_scheduler and runs this file only when the scheduler logged in.
+
+- name: Read ESO's AppRole role
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json auth/approle/role/{{ verify_eso_approle_role | quote }}'
+    stdin: "{{ _verify_token_rotation_scheduler }}\n"
+  register: _verify_eso_role_read
+  changed_when: false
+  no_log: true
+
+- name: Assert ESO's AppRole role carries the eso-reader policy only
+  vars:
+    _verify_eso_role_policies: "{{ (_verify_eso_role_read.stdout | from_json).data.token_policies | default([]) }}"
+  ansible.builtin.assert:
+    that:
+      - _verify_eso_role_policies == [verify_eso_policy_name]
+    fail_msg: >-
+      The AppRole role {{ verify_eso_approle_role }} has token_policies
+      {{ _verify_eso_role_policies }}. It must hold only [{{ verify_eso_policy_name }}],
+      so that no second policy adds a grant to an ESO token. Reconcile the role from
+      the OpenBao role.
