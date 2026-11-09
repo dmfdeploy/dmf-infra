@@ -6,6 +6,7 @@
 #   - `bao status` exits 0 unsealed and 2 sealed (command/status.go).
 #   - `bao write PATH -` reads a JSON object from stdin, and `key=-` reads the
 #     whole of stdin as the value (go-secure-stdlib kv-builder v0.1.2, builder.go).
+#   - `bao write -format=json auth/userpass/login/NAME -` reads {"password": ...} from stdin.
 #   - `bao operator unseal KEY` takes the key as its positional argument.
 #   - `bao kv metadata get` prints "No value found at ..." and exits 2 for a
 #     missing path, and exits 2 with "Error reading ..." for other failures
@@ -46,6 +47,9 @@
 #   FAKE_K8S_IGNORES_REVIEWER_FIELDS  set: an old mount, whose config read has no
 #                        token_reviewer_jwt_set field
 #   FAKE_K8S_WRITE_FAILS set: a write to auth/kubernetes/role/* fails
+#   FAKE_POLICY_WRITER   set: a live token that is not root may read and write
+#                        sys/policies/acl/* (the policy-reconciler grant)
+#   FAKE_POLICY_WRITE_FAILS  set: `bao policy write NAME -` fails
 # Kubernetes auth: the config and the roles are files under $state/k8s-auth. A token
 # whose name starts with fake-root is a root token and may read and write
 # auth/kubernetes/*; every other token gets 403 on a write. A token revoked with
@@ -55,7 +59,8 @@
 # permission check. A role write takes its fields as key=value arguments or, with `-`,
 # as a JSON object on stdin, where a TTL is a number of seconds or a duration such as
 # 5m. A root token reads sys/policies/acl/NAME: the policy exists when the file
-# $state/policies/NAME does.
+# $state/policies/NAME does, and the read returns the text of that file.
+# `bao policy write NAME -` stores its standard input in that file.
 set -u
 state="${FAKE_STATE:?FAKE_STATE is not set}"
 pod="${FAKE_POD:-openbao-0}"
@@ -120,6 +125,12 @@ sys.exit(1) if not isinstance(k,str) or not k else print(k)' 2>/dev/null)" || { 
     pw="$(cat)"
     if [ "$pw" != "${FAKE_PASSWORD:-pw}" ]; then echo "Error writing data: invalid credentials" >&2; exit 2; fi
     printf '{"auth":{"client_token":"fake-ops-token"}}\n'
+    exit 0
+    ;;
+  "write -format=json auth/userpass/login/"*" -")
+    pw="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("password", ""), end="")')"
+    if [ "$pw" != "${FAKE_PASSWORD:-pw}" ]; then echo "Error writing data: invalid credentials" >&2; exit 2; fi
+    printf '{"auth":{"client_token":"fake-reconciler-token"}}\n'
     exit 0
     ;;
   "read -format=json sys/storage/raft/autopilot/state"|"operator raft autopilot state -format=json")
@@ -227,6 +238,9 @@ esac
 k8s_auth_dir="$state/k8s-auth"
 token_ok() { [ -n "${BAO_TOKEN:-}" ] && [ ! -f "$state/revoked-$BAO_TOKEN" ]; }
 is_root() { case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac; return 1; }
+# The policy paths take a root token, or any live token when FAKE_POLICY_WRITER is set:
+# the policy-reconciler identity holds a grant on sys/policies/acl/*.
+policy_ok() { token_ok && { is_root || [ -n "${FAKE_POLICY_WRITER:-}" ]; }; }
 forbidden() { printf 'Error %s: Error making API request.\n\nCode: 403. Errors:\n\n* 1 error occurred:\n\t* permission denied\n' "$1" >&2; exit 2; }
 case "$*" in
   "token lookup -format=json")
@@ -314,10 +328,18 @@ PY
     exit 0
     ;;
   "read -format=json sys/policies/acl/"*)
-    token_ok && is_root || forbidden "reading sys/policies/acl"
+    policy_ok || forbidden "reading sys/policies/acl"
     name="${3#sys/policies/acl/}"
     [ -f "$state/policies/$name" ] || { echo "No value found at sys/policies/acl/$name" >&2; exit 2; }
-    printf '{"data":{"name":"%s","policy":""}}\n' "$name"
+    python3 -c 'import json,sys; print(json.dumps({"data": {"name": sys.argv[1], "policy": open(sys.argv[2]).read()}}))' "$name" "$state/policies/$name"
+    exit 0
+    ;;
+  "policy write "*" -")
+    policy_ok || forbidden "uploading policy"
+    [ -z "${FAKE_POLICY_WRITE_FAILS:-}" ] || { echo "Error uploading policy: internal error" >&2; exit 2; }
+    mkdir -p "$state/policies"
+    cat > "$state/policies/$3"
+    echo "Success! Uploaded policy: $3"
     exit 0
     ;;
   "read -format=json auth/kubernetes/role/"*)

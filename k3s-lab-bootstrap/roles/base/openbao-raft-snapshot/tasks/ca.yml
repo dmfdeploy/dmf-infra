@@ -1,0 +1,41 @@
+---
+# Publish the certificate authority of the OpenBao listener to the namespace of
+# the snapshot job, so that the job verifies the server. The listener's
+# certificate is self-signed, so it is its own authority: the same tls.crt of the
+# OpenBao TLS secret that the external-secrets role passes to the
+# ClusterSecretStore as its caBundle.
+
+- name: Read the OpenBao TLS secret
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ openbao_raft_snapshot_tls_secret_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_raft_snapshot_tls_secret
+  no_log: true
+
+- name: Stop when the OpenBao TLS secret has no certificate
+  ansible.builtin.assert:
+    that:
+      - _openbao_raft_snapshot_tls_secret.resources | default([]) | length > 0
+      - "'tls.crt' in (_openbao_raft_snapshot_tls_secret.resources[0].data | default({}))"
+    fail_msg: >-
+      The snapshot job verifies OpenBao with the certificate in the secret
+      {{ openbao_raft_snapshot_tls_secret_name }} of namespace {{ openbao_namespace }},
+      and the secret or its tls.crt is missing. Run playbooks/vertical-security/100-openbao.yml
+      first, then run this play again.
+
+- name: Publish the OpenBao CA to the snapshot namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ openbao_raft_snapshot_ca_configmap }}"
+        namespace: "{{ openbao_raft_snapshot_namespace }}"
+        labels: "{{ openbao_raft_snapshot_labels }}"
+      data:
+        ca.crt: "{{ _openbao_raft_snapshot_tls_secret.resources[0].data['tls.crt'] | b64decode }}"
