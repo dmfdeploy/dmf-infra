@@ -30,6 +30,12 @@
 #   6. The verifier's PKI probe passes when the ESO token has no capability on the PKI
 #      issue path (`deny`, or an empty list) and fails, naming the path, when the token
 #      still holds a grant there. The token reaches the pod on stdin, not as an argument.
+#   7. The verifier's reads of the policy and the role, which need no ESO login. The
+#      policy check passes with the policy text that the role writes, and fails, naming
+#      the stanza or the capability, when the live policy holds a PKI stanza or a
+#      capability beyond read and list. The role check passes with token_policies equal
+#      to ["eso-reader"] and fails, naming the policies, with a second policy. Neither
+#      check sends a token as an argument or calls the AppRole login or a SecretID path.
 #
 # The fake kubectl, bao and kubernetes.core modules stand in for the cluster. They
 # are in tests/fixtures. Run locally, from k3s-lab-bootstrap:
@@ -670,3 +676,127 @@
           - "'token capabilities -format=json pki/issue/internal-ca' in (_pki_argv.content | b64decode)"
           - "'fake-eso-token' not in (_pki_argv.content | b64decode)"
         fail_msg: The probe did not ask about the PKI path, or a token reached an argument list.
+
+    # ── 7. The verifier's policy and role reads (no ESO login) ──────────────
+    # The policy text comes from the task that writes it
+    # (tests/fixtures/eso_reader_policy_hcl.py). The fake bao serves it to the
+    # policy-reconciler token and serves the role's token_policies to the scheduler token.
+    - name: ESO reads — set what the verifier holds
+      ansible.builtin.set_fact:
+        verify_openbao_namespace: openbao
+        _verify_openbao_pod: openbao-0
+        verify_eso_pki_mount: pki
+        verify_eso_policy_name: eso-reader
+        verify_eso_approle_role: external-secrets
+        _verify_token_policy_reconciler: fake-policy-token
+        _verify_token_rotation_scheduler: fake-scheduler-token
+      no_log: true
+
+    - name: ESO reads — read the policy that the role writes
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/fixtures/eso_reader_policy_hcl.py"
+      register: _role_policy
+      changed_when: false
+
+    - name: ESO reads — write the live policy variants
+      ansible.builtin.copy:
+        dest: "{{ _state.path }}/{{ item.key }}.hcl"
+        content: "{{ item.value }}\n"
+        mode: "0600"
+      loop: "{{ _variants | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+      vars:
+        _variants:
+          role: "{{ _role_policy.stdout | trim }}"
+          pki-stanza: |-
+            {{ _role_policy.stdout | trim }}
+            path "pki/issue/internal-ca" {
+              capabilities = ["create", "update"]
+            }
+          pki-glob: |-
+            {{ _role_policy.stdout | trim }}
+            path "+/issue/internal-ca" {
+              capabilities = ["read"]
+            }
+          wide-capability: |-
+            {{ _role_policy.stdout | trim }}
+            path "secret/data/apps/extra" {
+              capabilities = ["read", "update"]
+            }
+          commented-pki: |-
+            {{ _role_policy.stdout | trim }}
+            # path "pki/issue/internal-ca" is not granted
+          empty: "# no stanzas"
+
+    - name: ESO reads — the policy check passes with the policy that the role writes
+      environment:
+        FAKE_STATE: "{{ _state.path }}/read-policy-ok"
+        FAKE_ESO_POLICY_FILE: "{{ _state.path }}/role.hcl"
+      block:
+        - name: Run verify-eso-reader-policy.yml against the role's policy
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-reader-policy.yml
+
+    - name: ESO reads — the policy check passes when a comment mentions a PKI path
+      environment:
+        FAKE_STATE: "{{ _state.path }}/read-policy-comment"
+        FAKE_ESO_POLICY_FILE: "{{ _state.path }}/commented-pki.hcl"
+      block:
+        - name: Run verify-eso-reader-policy.yml against a policy with a PKI comment
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-reader-policy.yml
+
+    - name: ESO reads — the policy check fails for each live policy that grants too much
+      ansible.builtin.include_tasks: _openbao-eso-policy-fail-case.yml
+      loop:
+        - {name: pki-stanza, expect: "pki/issue/internal-ca"}
+        - {name: pki-glob, expect: "+/issue/internal-ca"}
+        - {name: wide-capability, expect: "update"}
+        - {name: empty, expect: "0 path stanzas"}
+      loop_control:
+        loop_var: _case
+        label: "{{ _case.name }}"
+
+    - name: ESO reads — the role check passes with only eso-reader
+      environment:
+        FAKE_STATE: "{{ _state.path }}/read-role-ok"
+      block:
+        - name: Run verify-eso-role-policies.yml against a role with eso-reader only
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-role-policies.yml
+
+    - name: ESO reads — the role check fails with a second policy, naming it
+      environment:
+        FAKE_STATE: "{{ _state.path }}/read-role-two"
+        FAKE_ESO_ROLE_POLICIES: '["eso-reader", "default"]'
+      block:
+        - name: Run verify-eso-role-policies.yml against a role with two policies
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-role-policies.yml
+        - name: ESO reads — fail when the role check passed two policies
+          ansible.builtin.fail:
+            msg: The role check passed a role with a second policy.
+      rescue:
+        - name: ESO reads — assert the failure names the policies
+          ansible.builtin.assert:
+            that:
+              - "'default' in ansible_failed_result.msg"
+              - "'passed a role' not in ansible_failed_result.msg"
+            fail_msg: "The failure did not name the policies: {{ ansible_failed_result.msg | default('') }}"
+
+    - name: ESO reads — read the argument lists that the fake bao logged
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/{{ item }}/bao-argv.log"
+      register: _eso_reads_argv
+      loop: [read-policy-ok, read-role-ok]
+
+    - name: ESO reads — assert no token reached an argument and no ESO login was made
+      ansible.builtin.assert:
+        that:
+          - "'read -format=json sys/policies/acl/eso-reader' in (_eso_reads_argv.results[0].content | b64decode)"
+          - "'read -format=json auth/approle/role/external-secrets' in (_eso_reads_argv.results[1].content | b64decode)"
+          - "'fake-policy-token' not in (_eso_reads_argv.results[0].content | b64decode)"
+          - "'fake-scheduler-token' not in (_eso_reads_argv.results[1].content | b64decode)"
+          - "'login' not in (_eso_reads_argv.results[0].content | b64decode)"
+          - "'login' not in (_eso_reads_argv.results[1].content | b64decode)"
+          - "'secret-id' not in (_eso_reads_argv.results[1].content | b64decode)"
+        fail_msg: A token reached an argument list, or a read did not ask for the object, or an ESO login or SecretID path was called.

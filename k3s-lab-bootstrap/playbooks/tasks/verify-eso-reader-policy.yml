@@ -1,0 +1,76 @@
+# The verifier's check of the live eso-reader policy, in both ESO auth modes. ESO reads
+# KV secrets only, so the policy holds no path stanza on the PKI mount and grants
+# nothing but read and list. The policy is one object in OpenBao whichever auth method
+# ESO logs in with, so this check does not log in as ESO.
+#
+# The policy-reconciler identity reads the policy text (its policy grants read on
+# sys/policies/acl/*, and nothing narrower can read it). The check parses the stanzas
+# that the server returns: it collects the quoted path of every `path` stanza and every
+# capability list, after it drops whole-line comments. A path covers the PKI mount when
+# it is the mount, lies under it, ends in `*` over the mount's prefix, or starts with
+# the `+` segment.
+#
+# The caller holds the identity's token in _verify_token_policy_reconciler.
+
+- name: Read the live eso-reader policy
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json sys/policies/acl/{{ verify_eso_policy_name | quote }}'
+    stdin: "{{ _verify_token_policy_reconciler }}\n"
+  register: _verify_eso_policy_read
+  changed_when: false
+  no_log: true
+
+- name: Work out what the live eso-reader policy grants
+  ansible.builtin.set_fact:
+    _verify_eso_policy_paths: "{{ _verify_eso_policy_text | regex_findall('path\\s+\"([^\"]*)\"') }}"
+    _verify_eso_policy_caps: >-
+      {{
+        _verify_eso_policy_text
+        | regex_findall('capabilities\s*=\s*\[([^\]]*)\]')
+        | join(',')
+        | regex_findall('"([^"]+)"')
+        | unique
+      }}
+  vars:
+    _verify_eso_policy_text: >-
+      {{
+        (_verify_eso_policy_read.stdout | from_json).data.policy
+        | regex_replace('(?m)^[ \t]*(#|//).*$', '')
+      }}
+  no_log: true
+
+- name: Work out which stanzas of the live eso-reader policy cover the PKI mount
+  ansible.builtin.set_fact:
+    _verify_eso_policy_pki_paths: >-
+      {%- set ns = namespace(found=[]) -%}
+      {%- for p in _verify_eso_policy_paths -%}
+      {%- if p == verify_eso_pki_mount
+            or p.startswith(verify_eso_pki_mount ~ '/')
+            or p.startswith('+/')
+            or (p.endswith('*') and (verify_eso_pki_mount ~ '/').startswith(p[:-1])) -%}
+      {%- set ns.found = ns.found + [p] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.found }}
+  no_log: true
+
+- name: Assert the live eso-reader policy reads KV secrets and nothing else
+  ansible.builtin.assert:
+    that:
+      - _verify_eso_policy_paths | length > 0
+      - _verify_eso_policy_pki_paths | length == 0
+      - _verify_eso_policy_caps | difference(['read', 'list']) | length == 0
+    fail_msg: >-
+      The live {{ verify_eso_policy_name }} policy has {{ _verify_eso_policy_paths | length }}
+      path stanzas. Stanzas that cover the PKI mount {{ verify_eso_pki_mount }}:
+      {{ _verify_eso_policy_pki_paths }}. Capabilities other than read and list:
+      {{ _verify_eso_policy_caps | difference(['read', 'list']) }}.
+      ESO reads KV secrets only, so the policy must grant nothing on the PKI mount and
+      nothing beyond read and list. Reconcile the policy from the OpenBao role.
