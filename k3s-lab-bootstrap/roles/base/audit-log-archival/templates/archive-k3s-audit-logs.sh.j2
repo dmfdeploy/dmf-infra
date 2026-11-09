@@ -1,9 +1,13 @@
 #!/bin/sh
 # Managed by Ansible — roles/base/audit-log-archival.
-# Daily k3s API audit log archival to an S3-compatible Object Lock bucket.
-# Server-side encryption (provider-managed key) + Object Lock
-# {{ audit_log_object_lock_mode if audit_log_object_lock_enabled else 'disabled' }} retention
-# for {{ audit_log_object_lock_days }} days (roles/base/audit-log-archival/defaults/main.yml).
+# Daily k3s API audit log archival to an S3-compatible bucket.
+# Server-side encryption (provider-managed key).
+{% if audit_log_object_lock_enabled | bool %}
+# Object Lock {{ audit_log_object_lock_mode }} retention for {{ audit_log_object_lock_days }} days
+# (roles/base/audit-log-archival/defaults/main.yml).
+{% else %}
+# Object Lock retention is off (audit_log_object_lock_enabled is false).
+{% endif %}
 #
 # Credentials come from /root/.aws/credentials profile
 # `{{ audit_log_aws_profile }}` via AWS SDK. They are NOT loaded into the
