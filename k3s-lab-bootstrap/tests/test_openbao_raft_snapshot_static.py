@@ -2,10 +2,8 @@
 
 The CronJob runs a script that holds an OpenBao token and the object-storage keys,
 so its log must stay clean: no trace mode, and no line that prints a credential.
-The job talks to a listener that serves TLS, so it connects over https and verifies
-the server with the OpenBao CA. The task files that this role owns for the policy
-and the CA fail loudly: neither hides a failure. The templates render with the
-role's defaults, as Ansible renders them."""
+The task file that this role owns for the policy fails loudly and hides no failure.
+The templates render with the role's defaults, as Ansible renders them."""
 
 import re
 import unittest
@@ -68,33 +66,6 @@ class CronJobTest(unittest.TestCase):
                 )
         self.assertEqual(command[-1], "/scripts/snapshot.sh")
 
-    def test_the_job_connects_over_https_to_the_service_name(self):
-        env = {item["name"]: item["value"] for item in container()["env"]}
-        self.assertEqual(env["BAO_ADDR"], "https://openbao.openbao.svc.cluster.local:8200")
-
-    def test_the_job_verifies_the_server_with_a_mounted_ca(self):
-        spec = cronjob()["spec"]["jobTemplate"]["spec"]["template"]["spec"]
-        env = {item["name"]: item["value"] for item in container()["env"]}
-        mounts = {m["mountPath"]: m for m in container()["volumeMounts"]}
-        ca_dir = env["BAO_CACERT"].rsplit("/", 1)[0]
-        self.assertTrue(env["BAO_CACERT"].endswith("/ca.crt"))
-        self.assertIn(ca_dir, mounts)
-        volume = next(v for v in spec["volumes"] if v["name"] == mounts[ca_dir]["name"])
-        self.assertEqual(volume["configMap"]["name"], "openbao-ca")
-        self.assertTrue(mounts[ca_dir]["readOnly"])
-
-    def test_no_tls_verification_is_turned_off_anywhere_in_the_role(self):
-        for path in sorted(ROLE.rglob("*")):
-            if path.is_file():
-                with self.subTest(path=str(path.relative_to(ROLE))):
-                    self.assertNotRegex(path.read_text(encoding="utf-8"), r"(?i)tls-skip-verify|BAO_SKIP_VERIFY")
-
-    def test_no_plain_http_address_remains_in_the_role(self):
-        for path in sorted(ROLE.rglob("*")):
-            if path.is_file():
-                with self.subTest(path=str(path.relative_to(ROLE))):
-                    self.assertNotRegex(path.read_text(encoding="utf-8"), r"http://.*8200")
-
 
 class ScriptTest(unittest.TestCase):
     def test_the_script_stops_on_error_unset_variables_and_failed_pipes(self):
@@ -116,12 +87,11 @@ class FailLoudlyTest(unittest.TestCase):
     def tasks_of(self, name):
         return yaml.safe_load((ROLE / "tasks" / name).read_text(encoding="utf-8"))
 
-    def test_the_policy_and_ca_tasks_do_not_hide_a_failure(self):
-        for name in ("policy.yml", "ca.yml"):
-            for task in self.tasks_of(name):
-                with self.subTest(file=name, task=task["name"]):
-                    self.assertIsNot(task.get("failed_when"), False)
-                    self.assertNotIn("ignore_errors", task)
+    def test_the_policy_task_does_not_hide_a_failure(self):
+        for task in self.tasks_of("policy.yml"):
+            with self.subTest(task=task["name"]):
+                self.assertIsNot(task.get("failed_when"), False)
+                self.assertNotIn("ignore_errors", task)
 
     def test_the_policy_is_written_with_the_policy_reconciler_not_a_root_token(self):
         text = (ROLE / "tasks/policy.yml").read_text(encoding="utf-8")

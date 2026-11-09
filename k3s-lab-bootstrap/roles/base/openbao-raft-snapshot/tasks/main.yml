@@ -1,12 +1,11 @@
 ---
 # OpenBao Raft snapshot — daily CronJob role.
 # 1. Creates the ServiceAccount of the job.
-# 2. Publishes the OpenBao CA to the job's namespace (ca.yml).
-# 3. Writes the policy `openbao-raft-snapshot`, read-only on
+# 2. Writes the policy `openbao-raft-snapshot`, read-only on
 #    sys/storage/raft/snapshot (policy.yml). `bao operator raft snapshot save`
 #    calls the read endpoint; update and sudo belong to the snapshot-auto config.
-# 4. Binds the ServiceAccount to the policy with a Kubernetes-auth role.
-# 5. Deploys a CronJob that:
+# 3. Binds the ServiceAccount to the policy with a Kubernetes-auth role.
+# 4. Deploys a CronJob that:
 #    a. `bao login -method=kubernetes role=openbao-raft-snapshot`
 #    b. `bao operator raft snapshot save /tmp/openbao-snapshot.snap`
 #    c. Uploads to S3 using mounted Secret credentials (NOT env vars).
@@ -41,13 +40,6 @@
         name: "{{ openbao_raft_snapshot_service_account }}"
         namespace: "{{ openbao_raft_snapshot_namespace }}"
         labels: "{{ openbao_raft_snapshot_labels }}"
-
-# ---------------------------------------------------------------------------
-# CA of the OpenBao listener, for the job to verify the server
-# ---------------------------------------------------------------------------
-
-- name: Publish the OpenBao CA for the snapshot job
-  ansible.builtin.include_tasks: ca.yml
 
 # ---------------------------------------------------------------------------
 # OpenBao policy: openbao-raft-snapshot (read-only on raft snapshot endpoint)

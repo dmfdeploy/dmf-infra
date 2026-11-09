@@ -54,15 +54,13 @@ when this role runs. The task reads the stored policy first and writes only when
 differs from the file, so a rerun changes nothing. A failed read or write stops the
 play.
 
-## TLS
+## Open design questions
 
-The OpenBao listener serves TLS with a self-signed certificate. The job connects to
-`https://openbao.<namespace>.svc.cluster.local:8200`, a name that the certificate
-covers, and verifies the server with `BAO_CACERT`. `tasks/ca.yml` copies `tls.crt`
-from the OpenBao TLS secret into the ConfigMap `openbao-ca` of the job's
-namespace, and the CronJob mounts it at `/etc/openbao-ca`. This is the same source
-that the external-secrets role passes to the ClusterSecretStore as its `caBundle`.
-The play stops when the secret or its `tls.crt` is missing.
+The job still connects to OpenBao over plain HTTP. It also can't reach OpenBao
+today: the NetworkPolicy admits only the `openbao` and `external-secrets`
+namespaces, and the job runs in `openbao-system`. Both questions, with the
+object-storage credentials that the upload needs, are open in the umbrella issue
+for the snapshot job.
 
 ## Job log
 
@@ -104,7 +102,3 @@ bao operator raft snapshot restore /path/to/snapshot.snap
 | `openbao_raft_snapshot_namespace` | `openbao-system` |
 | `openbao_raft_snapshot_secret_name` | `s3-creds-openbao-snapshots` |
 | `openbao_raft_snapshot_retention_days` | 90 |
-| `openbao_raft_snapshot_openbao_service_name` | `openbao` |
-| `openbao_raft_snapshot_tls_secret_name` | `openbao_tls_secret_name`, else `openbao-tls` |
-| `openbao_raft_snapshot_ca_configmap` | `openbao-ca` |
-| `openbao_raft_snapshot_ca_mount` | `/etc/openbao-ca` |
