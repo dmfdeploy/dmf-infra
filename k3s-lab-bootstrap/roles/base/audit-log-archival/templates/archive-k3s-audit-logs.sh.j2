@@ -72,7 +72,7 @@ sse_args="--server-side-encryption {{ audit_log_sse_algorithm }}"
 {% endif %}
 
 lock_args=""
-{% if audit_log_object_lock_enabled %}
+{% if audit_log_object_lock_enabled | bool %}
 retain_until="$(date -u -d '+{{ audit_log_object_lock_days }} days' +%Y-%m-%dT%H:%M:%SZ)"
 lock_args="--object-lock-mode {{ audit_log_object_lock_mode }} --object-lock-retain-until-date ${retain_until}"
 {% endif %}
