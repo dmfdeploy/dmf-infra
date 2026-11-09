@@ -1,0 +1,72 @@
+---
+# Look at one standing Kubernetes-auth role for kubernetes-auth-standing-roles.yml:
+# whether its ServiceAccount, its policy and the role itself exist. The caller sets
+# _openbao_standing, one mapping of openbao_standing_k8s_auth_roles, and
+# openbao_k8s_auth_token. The result is one entry added to _openbao_standing_plan.
+#
+# OpenBao answers a read of a missing path with the text "No value found" and a
+# non-zero exit. Any other failed read stops the play: it does not tell whether the
+# object exists.
+
+- name: Read the ServiceAccount of {{ _openbao_standing.name }}
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: ServiceAccount
+    name: "{{ _openbao_standing.service_account }}"
+    namespace: "{{ _openbao_standing.namespace }}"
+  register: _openbao_standing_sa
+
+- name: Read the policy of {{ _openbao_standing.name }}
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json sys/policies/acl/{{ _openbao_standing.policy }}'
+    stdin: "{{ openbao_k8s_auth_token }}\n"
+  register: _openbao_standing_policy
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Read the role {{ _openbao_standing.name }}
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json auth/kubernetes/role/{{ _openbao_standing.name }}'
+    stdin: "{{ openbao_k8s_auth_token }}\n"
+  register: _openbao_standing_role
+  changed_when: false
+  failed_when: false
+  no_log: true
+
+- name: Refuse a read that does not say whether the object exists
+  ansible.builtin.assert:
+    that:
+      - _openbao_standing_policy.rc == 0 or 'No value found' in _openbao_standing_policy.stderr
+      - _openbao_standing_role.rc == 0 or 'No value found' in _openbao_standing_role.stderr
+    fail_msg: >-
+      The read of the policy {{ _openbao_standing.policy }} or of the role
+      {{ _openbao_standing.name }} failed for a reason other than a missing path.
+      No role was written.
+
+- name: Add the result to the plan
+  ansible.builtin.set_fact:
+    _openbao_standing_plan: >-
+      {{
+        _openbao_standing_plan + [{
+          'role': _openbao_standing,
+          'service_account_present': _openbao_standing_sa.resources | default([]) | length > 0,
+          'policy_present': _openbao_standing_policy.rc == 0,
+          'role_present': _openbao_standing_role.rc == 0
+        }]
+      }}

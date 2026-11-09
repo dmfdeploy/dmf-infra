@@ -1,0 +1,24 @@
+---
+# Write one Kubernetes-auth role of the OpenBao mount. Included by
+# setup-issuer.yml and setup-rotation-scheduler.yml on a fresh install, and by
+# kubernetes-auth-standing-roles.yml on an installed environment, so both paths
+# write the same fields.
+#
+# The caller sets openbao_k8s_auth_role (one of the openbao_*_k8s_auth_role
+# mappings in defaults/main.yml) and openbao_k8s_auth_token, a root token. The
+# token and the request body go to the pod on stdin: the first line is the token,
+# the rest is the JSON body that `bao write PATH -` reads.
+
+- name: Write the Kubernetes-auth role {{ openbao_k8s_auth_role.name }}
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao write auth/kubernetes/role/{{ openbao_k8s_auth_role.name }} -'
+    stdin: "{{ openbao_k8s_auth_token }}\n{{ {'bound_service_account_names': [openbao_k8s_auth_role.service_account], 'bound_service_account_namespaces': [openbao_k8s_auth_role.namespace], 'audience': openbao_k8s_auth_role.audience, 'token_policies': [openbao_k8s_auth_role.policy], 'token_ttl': openbao_k8s_auth_role.token_ttl, 'token_max_ttl': openbao_k8s_auth_role.token_max_ttl} | to_json }}\n"
+  no_log: true
+  changed_when: true

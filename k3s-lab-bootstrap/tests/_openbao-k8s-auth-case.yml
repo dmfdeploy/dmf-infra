@@ -11,6 +11,61 @@
     mode: preserve
   changed_when: false
 
+# The openbao role creates the ServiceAccounts and the policies of the standing identities.
+# A case that lists one in missing_sa or missing_policy leaves it out. A case that lists a
+# role name in roles_present starts with that role in the mount, with the TTL given in
+# present_role_ttl, so a rewrite shows. After the run, every standing role in the mount
+# must equal its whole body: the seeded body for a role that was present, the body of its
+# mapping for a role the case wrote (standing_role_writes above 0), and no role otherwise.
+- name: "{{ case.name }} — make the directories the fakes keep state in"
+  ansible.builtin.file:
+    path: "{{ _state.path }}/{{ case.state | default(case_index) }}/{{ item }}"
+    state: directory
+    mode: "0755"
+  loop: [policies, k8s-auth]
+  changed_when: false
+
+- name: "{{ case.name }} — give the fake cluster the ServiceAccounts"
+  ansible.builtin.copy:
+    content: '{"metadata": {"name": "{{ item.service_account }}"}}'
+    dest: "{{ _state.path }}/{{ case.state | default(case_index) }}/k8s/ServiceAccount-{{ item.service_account }}.json"
+    mode: "0644"
+  loop: "{{ openbao_standing_k8s_auth_roles }}"
+  loop_control:
+    label: "{{ item.service_account }}"
+  when: item.service_account not in case.missing_sa | default([])
+  changed_when: false
+
+- name: "{{ case.name }} — give the fake bao the policies"
+  ansible.builtin.copy:
+    content: "path {}\n"
+    dest: "{{ _state.path }}/{{ case.state | default(case_index) }}/policies/{{ item.policy }}"
+    mode: "0644"
+  loop: "{{ openbao_standing_k8s_auth_roles }}"
+  loop_control:
+    label: "{{ item.policy }}"
+  when: item.policy not in case.missing_policy | default([])
+  changed_when: false
+
+- name: "{{ case.name }} — start with roles in the mount"
+  ansible.builtin.copy:
+    content: >-
+      {{ {
+        'bound_service_account_names': [item.service_account],
+        'bound_service_account_namespaces': [item.namespace],
+        'audience': item.audience,
+        'token_policies': [item.policy],
+        'token_ttl': case.present_role_ttl | default(1),
+        'token_max_ttl': 2
+      } | to_json }}
+    dest: "{{ _state.path }}/{{ case.state | default(case_index) }}/k8s-auth/role-{{ item.name }}.json"
+    mode: "0600"
+  loop: "{{ openbao_standing_k8s_auth_roles }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when: item.name in case.roles_present | default([])
+  changed_when: false
+
 - name: "{{ case.name }} — take the pod away"
   ansible.builtin.file:
     path: "{{ _state.path }}/{{ case.state | default(case_index) }}/k8s/Pod-openbao-0.json"
@@ -60,12 +115,32 @@
     recurse: true
   register: _kept
 
+- name: "{{ case.name }} — read the standing roles the fake bao keeps"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case.state | default(case_index) }}/k8s-auth/role-{{ item.name }}.json"
+  register: _standing_roles
+  failed_when: false
+  loop: "{{ openbao_standing_k8s_auth_roles }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 - name: "{{ case.name }} — set the facts the asserts read"
   ansible.builtin.set_fact:
     _argv: "{{ _logs.results[0].content | default('') | b64decode }}"
     _events: "{{ _logs.results[1].content | default('') | b64decode | split('\n') }}"
     _mutations: "{{ _logs.results[2].content | default('') | b64decode }}"
     _revoked: "{{ _kept.files | map(attribute='path') | select('search', 'revoked-') | map('basename') | list }}"
+    _standing_roles_kept: >-
+      {% set kept = [] %}{% for r in _standing_roles.results %}{% set _ = kept.append(r.content | default('') | b64decode | default('null', true) | from_json) %}{% endfor %}{{ kept | to_json }}
+    _standing_roles_expected: >-
+      {% set seconds = {'s': 1, 'm': 60, 'h': 3600} %}{% set expected = [] %}{% for item in openbao_standing_k8s_auth_roles %}{% if item.name in case.roles_present | default([]) or case.standing_role_writes | default(0) > 0 %}{% set _ = expected.append({
+        'bound_service_account_names': [item.service_account],
+        'bound_service_account_namespaces': [item.namespace],
+        'audience': item.audience,
+        'token_policies': [item.policy],
+        'token_ttl': (case.present_role_ttl | default(1)) if item.name in case.roles_present | default([]) else (item.token_ttl[:-1] | int * seconds[item.token_ttl[-1]]),
+        'token_max_ttl': 2 if item.name in case.roles_present | default([]) else (item.token_max_ttl[:-1] | int * seconds[item.token_max_ttl[-1]])
+      }) %}{% else %}{% set _ = expected.append(None) %}{% endif %}{% endfor %}{{ expected | to_json }}
     _config_written: "{{ _kept.files | map(attribute='path') | select('search', 'config.json') | list | length > 0 }}"
 
 - name: "{{ case.name }} — judge the case"
@@ -88,7 +163,10 @@
                 and ((case.records is not defined) or (_mutations | regex_findall('(?m)^present ConfigMap openbao-kubernetes-auth-record') | length == case.records))
                 and ((case.eso_role_written is not defined) or (
                   (_record.content | default('e30=') | b64decode | from_json).data.eso_role_written | default('') == case.eso_role_written))
-                and ((case.role is not defined) or (('write auth/kubernetes/role/' in _argv) == case.role))
+                and ((case.role is not defined) or (('write auth/kubernetes/role/' ~ openbao_eso_kubernetes_role_name ~ ' ') in _argv) == case.role)
+                and ((case.standing_role_writes is not defined) or (
+                  _argv | regex_findall('(?m)^write auth/kubernetes/role/(?:setup-issuer|approle-rotation-scheduler) -$') | length == case.standing_role_writes))
+                and (_standing_roles_kept | from_json == _standing_roles_expected | from_json)
                 and ((case.message is not defined) or (case.message in _message))
                 and ((case.nothing_ran_except_lookup is not defined) or (_argv == '' and _mutations == ''))
                 and (not (case.rbac | default(false)) or (

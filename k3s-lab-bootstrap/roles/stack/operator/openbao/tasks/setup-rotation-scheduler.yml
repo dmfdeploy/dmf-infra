@@ -71,27 +71,16 @@
   when: openbao_is_initialized | bool
 
 # Writing a Kubernetes-auth role needs a privileged token, as for the setup
-# issuer: a fresh install writes the role with the initial root token, and a
-# rerun leaves it as it is. The identity verifier fails when the role is
-# missing.
+# issuer: a fresh install writes the role here with the initial root token. An
+# installed environment gets it from
+# playbooks/vertical-security/106-openbao-kubernetes-auth.yml, which writes it with
+# a temporary root token when it is missing. A rerun of this role leaves the role
+# as it is. The identity verifier fails when the role is missing.
 - name: Write the rotation scheduler Kubernetes-auth role
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao write auth/kubernetes/role/{{ openbao_rotation_scheduler_k8s_role }}
-      bound_service_account_names={{ openbao_rotation_scheduler_service_account }}
-      bound_service_account_namespaces={{ openbao_namespace }}
-      audience={{ openbao_rotation_scheduler_audience }}
-      token_policies={{ openbao_rotation_scheduler_policy_name }}
-      token_ttl={{ openbao_rotation_scheduler_token_ttl }}
-      token_max_ttl={{ openbao_rotation_scheduler_token_max_ttl }}'
-    stdin: "{{ openbao_root_token }}\n"
-  no_log: true
+  ansible.builtin.include_tasks: kubernetes-auth-role.yml
+  vars:
+    openbao_k8s_auth_role: "{{ openbao_rotation_scheduler_k8s_auth_role }}"
+    openbao_k8s_auth_token: "{{ openbao_root_token }}"
   when:
     - openbao_init_raw is defined
     - openbao_init_raw.changed | default(false)

@@ -286,3 +286,29 @@ openbao_rotation_scheduler_policy_name: approle-rotation-scheduler
 openbao_rotation_scheduler_audience: openbao
 openbao_rotation_scheduler_token_ttl: 20m
 openbao_rotation_scheduler_token_max_ttl: 30m
+
+# The Kubernetes-auth roles of the two standing identities above, one mapping each.
+# A fresh install writes them in setup-issuer.yml and setup-rotation-scheduler.yml.
+# An installed environment gets the missing ones from
+# playbooks/vertical-security/106-openbao-kubernetes-auth.yml. Both paths write a
+# role from these mappings through tasks/kubernetes-auth-role.yml, so a fresh
+# install and an installed environment end with the same roles.
+openbao_setup_issuer_k8s_auth_role:
+  name: "{{ openbao_setup_issuer_k8s_role }}"
+  service_account: "{{ openbao_setup_issuer_service_account }}"
+  namespace: "{{ openbao_namespace }}"
+  audience: "{{ openbao_setup_issuer_audience }}"
+  policy: "{{ openbao_setup_issuer_policy_name }}"
+  token_ttl: "{{ openbao_setup_issuer_token_ttl }}"
+  token_max_ttl: "{{ openbao_setup_issuer_token_max_ttl }}"
+openbao_rotation_scheduler_k8s_auth_role:
+  name: "{{ openbao_rotation_scheduler_k8s_role }}"
+  service_account: "{{ openbao_rotation_scheduler_service_account }}"
+  namespace: "{{ openbao_namespace }}"
+  audience: "{{ openbao_rotation_scheduler_audience }}"
+  policy: "{{ openbao_rotation_scheduler_policy_name }}"
+  token_ttl: "{{ openbao_rotation_scheduler_token_ttl }}"
+  token_max_ttl: "{{ openbao_rotation_scheduler_token_max_ttl }}"
+openbao_standing_k8s_auth_roles:
+  - "{{ openbao_setup_issuer_k8s_auth_role }}"
+  - "{{ openbao_rotation_scheduler_k8s_auth_role }}"
