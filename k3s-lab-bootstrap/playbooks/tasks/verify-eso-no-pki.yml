@@ -1,0 +1,40 @@
+# The verifier's check that ESO's token has no capability on the PKI mount. ESO reads
+# KV secrets only, so the eso-reader policy grants nothing on the PKI mount; a token
+# that can still issue from it carries a grant that nothing uses. The caller has just
+# logged in as ESO and holds the token in _verify_eso_auth.client_token. It revokes the
+# token after this file runs.
+#
+# `bao token capabilities` asks OpenBao for the capabilities of the calling token on one
+# path (sys/capabilities-self). The token goes in on stdin, as in the other probes, and
+# the output holds only a capability list. A path with no grant answers `deny`.
+
+- name: Read the ESO token's capabilities on the PKI issue path
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao token capabilities -format=json {{ verify_eso_pki_probe_path | quote }}'
+    stdin: "{{ _verify_eso_auth.client_token }}\n"
+  register: _verify_eso_pki_probe
+  changed_when: false
+  no_log: true
+
+- name: Assert the ESO token has no capability on the PKI issue path
+  vars:
+    _verify_eso_pki_answer: "{{ _verify_eso_pki_probe.stdout | from_json }}"
+    _verify_eso_pki_caps: >-
+      {{
+        _verify_eso_pki_answer.capabilities | default([])
+        if _verify_eso_pki_answer is mapping else _verify_eso_pki_answer
+      }}
+  ansible.builtin.assert:
+    that:
+      - _verify_eso_pki_caps == ['deny'] or _verify_eso_pki_caps | length == 0
+    fail_msg: >-
+      The ESO token holds {{ _verify_eso_pki_caps }} on {{ verify_eso_pki_probe_path }}.
+      ESO reads KV secrets only, so eso-reader must grant nothing on the PKI mount.
+      Reconcile the eso-reader policy from the OpenBao role.

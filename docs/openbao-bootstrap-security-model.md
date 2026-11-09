@@ -479,8 +479,11 @@ run a Shamir-backed privileged recovery ceremony or rebuild.
 ### ESO AppRole
 
 External Secrets Operator authenticates to OpenBao through the ESO AppRole. The
-AppRole receives the `eso-reader` policy and should be read-only for the
-application secret paths that ESO materializes into Kubernetes Secrets.
+AppRole receives the `eso-reader` policy. The policy reads the application
+secret paths that ESO materializes into Kubernetes Secrets, and it grants
+nothing else. In particular, it grants no capability on the PKI mount. The
+identity verifier checks this: it logs in as ESO and fails if the token holds
+any capability on `pki/issue/internal-ca`.
 
 ESO's `secret_id` has a configured TTL, currently defaulting to `720h`. Rotation
 should be handled by the ESO rotation playbook, not by manually editing
@@ -567,7 +570,7 @@ items:
 | `ops-admin` password is lost | Use a privileged recovery procedure to reset it, or rebuild if recovery material is unavailable |
 | `policy-reconciler` password is lost | Use a privileged recovery procedure to restore policy-write access, or rebuild |
 | `approle-reconciler` password is lost | Use a privileged recovery procedure to create the userpass user and update break-glass JSON, or rebuild. Object-storage AppRole reconciliation will fail until resolved. |
-| ESO cannot read secrets | Check ESO AppRole Secret, TTL/rotation state, `eso-reader` policy, and ClusterSecretStore status |
+| ESO cannot read secrets | Check ESO AppRole Secret, TTL/rotation state, `eso-reader` policy (it reads the application secret paths and grants nothing on the PKI mount), and ClusterSecretStore status |
 | Break-glass JSON is lost but Shamir quorum remains | Use a documented privileged recovery ceremony to recreate operational identities |
 | Shamir quorum is lost | Ultimate access is not preserved; restore from separate backup or rebuild and reseed secrets |
 | OpenBao PVC/data is lost | Restore OpenBao storage from backup, or rebuild and reseed all secrets |
