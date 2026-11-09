@@ -164,17 +164,61 @@ class VerifierTest(unittest.TestCase):
         self.assertIn("spec.secretStoreRef.name == verify_eso_store_name", self.verify)
         self.assertNotIn("new data", self.verify)
 
-    def test_the_refresh_threshold_comes_after_the_annotation_and_is_strict(self):
+    def test_the_refresh_probe_compares_the_status_with_the_version_it_computes(self):
         attempt = text(ROOT / "playbooks/tasks/verify-main-store-refresh.yml")
-        self.assertLess(attempt.index("Set a force-sync annotation"), attempt.index("Record the threshold after the annotation"))
-        self.assertLess(attempt.index("Record the threshold after the annotation"), attempt.index("Wait for a later refresh"))
-        # Both the wait and the verdict compare strictly.
-        self.assertEqual(attempt.count("status.refreshTime | default('')) > _verify_refresh_after"), 2)
-        self.assertNotIn(">= _verify_refresh_after", attempt)
+        order = [
+            "Wait until the synced resource version matches the current metadata",
+            "Assert that no annotation or label could hide this run's marker",
+            "Assert that this ESO version builds the synced resource version",
+            "Set a force-sync annotation",
+            "Wait for the synced resource version of the annotated metadata",
+            "Note whether this attempt saw the refresh",
+        ]
+        positions = [attempt.index(name) for name in order]
+        self.assertEqual(positions, sorted(positions))
+        # The version is computed once, from the object that the same read returned.
+        self.assertEqual(attempt.count("hash('sha3_224')"), 1)
+        self.assertIn("_verify_es_status_version == _verify_es_version", attempt)
+        self.assertEqual(attempt.count("_verify_es_status_version == _verify_es_version"), 2)
+        # The verdict needs this attempt's annotation and a Ready status with the sync reason.
+        self.assertIn("== 'verify-' ~ _verify_run_id ~ '-' ~ _verify_attempt", attempt)
+        self.assertIn("selectattr('reason', 'equalto', 'SecretSynced')", attempt)
+        self.assertIn("selectattr('status', 'equalto', 'True')", attempt)
+        # No value recorded before the annotation takes part in the verdict.
+        self.assertNotIn("_verify_synced_before", attempt)
+        self.assertIn("until: _verify_es_refresh_seen | bool", attempt)
+        self.assertIn('_verify_refreshed: "{{ _verify_es_refresh_seen | bool }}"', attempt)
+        # The compatibility check runs before the first annotation only.
+        self.assertEqual(attempt.count("when: _verify_attempt | int == 1"), 3)
+        # Metadata that could hide the marker is refused by the compatibility read and by the
+        # read that decides an attempt.
+        self.assertEqual(attempt.count("_verify_es_metadata_hides_marker | bool"), 3)
+        self.assertIn("until: _verify_es_settled | bool or _verify_es_metadata_hides_marker | bool", attempt)
+        self.assertIn("that: not (_verify_es_metadata_hides_marker | bool)", attempt)
+        self.assertIn("because its metadata could hide the marker", attempt)
         self.assertIn("force-sync=verify-{{ _verify_run_id }}-{{ _verify_attempt }}", attempt)
-        self.assertNotRegex(attempt + self.verify, r"(?m)^\s+- sleep$")
-        self.assertNotIn("Let the clock pass", self.verify)
-        self.assertIn("a successful refresh through the main store", attempt)
+        self.assertRegex(attempt, r"probably builds the value\s+differently from v2\.3\.0")
+        # The bounds of the waits stay as they were.
+        self.assertIn("_verify_refresh_retries | default(6)", attempt)
+        self.assertIn("_verify_refresh_delay | default(5)", attempt)
+
+    def test_the_refresh_tasks_read_no_clock_and_compare_no_time(self):
+        attempt = text(ROOT / "playbooks/tasks/verify-main-store-refresh.yml")
+        tasks = "\n".join(line for line in attempt.splitlines() if not line.lstrip().startswith("#"))
+        for clock in ["refreshTime", "ansible.builtin.pipe", "ansible_date_time", "now()", "- date", "date -u", "sleep"]:
+            self.assertNotIn(clock, tasks)
+        self.assertNotRegex(tasks, r"_verify_refresh_after|_verify_clock")
+
+    def test_an_attempt_after_a_success_does_nothing(self):
+        attempt = text(ROOT / "playbooks/tasks/verify-main-store-refresh.yml")
+        guard = "  when: not (_verify_refreshed | default(false) | bool)\n"
+        self.assertIn(guard, attempt)
+        # Every task of the attempt sits inside the guarded block.
+        self.assertRegex(attempt, r"(?m)^  block:\n")
+        self.assertNotRegex(attempt[attempt.index(guard) + len(guard):], r"(?m)^- name:")
+        # The caller's loop item does not carry the guard: Ansible would evaluate it
+        # for every item before the first attempt ran.
+        self.assertNotIn("when: not (_verify_refreshed", self.verify)
 
     def test_verifier_has_each_negative_login(self):
         for case in ["wrong ServiceAccount", "wrong namespace", "wrong audience"]:

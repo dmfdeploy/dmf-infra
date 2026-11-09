@@ -13,6 +13,16 @@
 #      it back, writes nothing on a rerun, and fails when the mount ignores the fields.
 #   4. The installed-environment path writes with a temporary root token and revokes it
 #      before it exits, also when a step fails; with no token it writes nothing.
+#   5. The verifier's refresh probe passes when ESO publishes the synced resource version
+#      that it computes for the annotated metadata, with Ready, and then the later
+#      attempts set no further annotation. It fails after its attempts when the status
+#      stays as it was, and when the status carries the version of other metadata. It
+#      fails before the first annotation, with a message about the ESO version, when the
+#      status does not equal the version that the probe computes for the current
+#      metadata. No clock is part of the comparison. It refuses an ExternalSecret whose
+#      annotation value embeds the marker text: the compatibility read fails with a message
+#      about the marker, the stale-status collision does not pass, and the read that
+#      decides an attempt counts such an object as not refreshed.
 #
 # The fake kubectl, bao and kubernetes.core modules stand in for the cluster. They
 # are in tests/fixtures. Run locally, from k3s-lab-bootstrap:
@@ -133,6 +143,7 @@
           config_writes: 1
           records: 1
           role: true
+          eso_role_written: "true"
         - name: rerun with a new token writes and records nothing more
           state: 0
           token: fake-root-token-2
@@ -243,3 +254,301 @@
           - "'present StatefulSet openbao' in (_workload_off.content | b64decode)"
           - "'ServiceAccount' not in (_workload_off.content | b64decode)"
           - "'ClusterRole' not in (_workload_off.content | b64decode)"
+
+    # ── 5. The verifier's refresh probe ─────────────────────────────────────
+    # The fake kubectl writes the status as ESO does after a sync, as it annotates the
+    # ExternalSecret. FAKE_ES_SYNC selects the behavior (see the fake kubectl). Each case
+    # has its own fake cluster. The fixtures start with the status that ESO has written
+    # for the object as it is: the probe's first check requires it.
+    - name: Refresh probe — make the fake clusters' directories
+      ansible.builtin.file:
+        path: "{{ _state.path }}/{{ item }}/k8s"
+        state: directory
+        mode: "0755"
+      loop: [refresh, refresh-held, refresh-other, refresh-scheme, refresh-hidden, refresh-collide, refresh-hidden-late]
+      changed_when: false
+
+    - name: Refresh probe — write the ExternalSecrets
+      ansible.builtin.copy:
+        content: >-
+          {{
+            {
+              'metadata': {'name': 'probe-target', 'namespace': 'probe-ns', 'generation': 1, 'annotations': item.annotations},
+              'spec': {'secretStoreRef': {'name': 'openbao', 'kind': 'ClusterSecretStore'}}
+            } | to_json
+          }}
+        dest: "{{ _state.path }}/{{ item.dir }}/k8s/ExternalSecret-probe-target.json"
+        mode: "0644"
+      loop:
+        - {dir: refresh, annotations: {}}
+        - {dir: refresh-held, annotations: {}}
+        - {dir: refresh-other, annotations: {}}
+        - {dir: refresh-scheme, annotations: {}}
+        - {dir: refresh-hidden, annotations: {a: "x force-sync:verify-1-1"}}
+        - {dir: refresh-collide, annotations: {a: "x force-sync:verify-1-1"}}
+        - {dir: refresh-hidden-late, annotations: {a: "x force-sync:verify-1-2"}}
+      changed_when: false
+
+    # The refreshTime of the synced status is later than any threshold that a clock-based
+    # probe could take.
+    - name: Refresh probe — give them the status that ESO writes after a sync
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ playbook_dir }}/fixtures/eso_sync_version.py"
+          - "{{ _state.path }}/{{ item.dir }}/k8s/ExternalSecret-probe-target.json"
+          - "{{ item.scheme }}"
+      loop:
+        - {dir: refresh, scheme: eso}
+        - {dir: refresh-held, scheme: eso}
+        - {dir: refresh-other, scheme: eso}
+        - {dir: refresh-scheme, scheme: other}
+        - {dir: refresh-hidden, scheme: eso}
+        - {dir: refresh-collide, scheme: eso}
+        - {dir: refresh-hidden-late, scheme: eso}
+      changed_when: false
+
+    - name: Refresh probe — run the attempts as the verifier does
+      environment:
+        FAKE_STATE: "{{ _state.path }}/refresh"
+      block:
+        - name: Run verify-main-store-refresh.yml
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-main-store-refresh.yml
+          loop: [1, 2, 3]
+          loop_control:
+            loop_var: _verify_attempt
+          vars:
+            verify_main_store_sync_target: {namespace: probe-ns, name: probe-target}
+            _verify_run_id: "1"
+
+    - name: Refresh probe — read the calls to kubectl
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/refresh/events.log"
+      register: _refresh_events
+
+    - name: Refresh probe — assert the refresh was seen after the annotation
+      ansible.builtin.assert:
+        that:
+          - _verify_refreshed | bool
+          - "'kubectl annotate externalsecret probe-target force-sync=verify-1-1' in (_refresh_events.content | b64decode)"
+        fail_msg: A sync after the forced annotation was not counted.
+
+    - name: Refresh probe — assert a first-attempt success sets exactly one annotation
+      ansible.builtin.assert:
+        that:
+          - (_refresh_events.content | b64decode).splitlines() | select('search', '^kubectl annotate ') | list | length == 1
+        fail_msg: An attempt after a successful refresh set another force-sync annotation.
+
+    # The annotation lands and the status stays as it was, with Ready from before: the
+    # probe makes all three attempts and fails.
+    - name: Refresh probe — clear the verdict of the first run
+      ansible.builtin.set_fact:
+        _verify_refreshed: false
+
+    - name: Refresh probe — run the attempts against a store that does not sync
+      environment:
+        FAKE_STATE: "{{ _state.path }}/refresh-held"
+        FAKE_ES_SYNC: hold
+      block:
+        - name: Run verify-main-store-refresh.yml with the status held
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-main-store-refresh.yml
+          loop: [1, 2, 3]
+          loop_control:
+            loop_var: _verify_attempt
+          vars:
+            verify_main_store_sync_target: {namespace: probe-ns, name: probe-target}
+            _verify_run_id: "1"
+            _verify_refresh_retries: 2
+            _verify_refresh_delay: 1
+
+    - name: Refresh probe — read the calls to kubectl when the status is held
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/refresh-held/events.log"
+      register: _held_events
+
+    - name: Refresh probe — assert a held status is not a refresh
+      ansible.builtin.assert:
+        that:
+          - not (_verify_refreshed | bool)
+          - (_held_events.content | b64decode).splitlines() | select('search', '^kubectl annotate ') | list | length == 3
+        fail_msg: A forced sync that left the status as it was counted as a refresh, or an attempt did not run.
+
+    # ESO publishes the version of an earlier change while the probe's annotation waits:
+    # the status differs from the one before the annotation and is Ready, and the probe
+    # still fails because the version is not the one for the annotated metadata.
+    - name: Refresh probe — clear the verdict of the held run
+      ansible.builtin.set_fact:
+        _verify_refreshed: false
+
+    - name: Refresh probe — run the attempts against a store that publishes other metadata
+      environment:
+        FAKE_STATE: "{{ _state.path }}/refresh-other"
+        FAKE_ES_SYNC: other
+      block:
+        - name: Run verify-main-store-refresh.yml with the version of other metadata
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-main-store-refresh.yml
+          loop: [1, 2, 3]
+          loop_control:
+            loop_var: _verify_attempt
+          vars:
+            verify_main_store_sync_target: {namespace: probe-ns, name: probe-target}
+            _verify_run_id: "1"
+            _verify_refresh_retries: 2
+            _verify_refresh_delay: 1
+
+    - name: Refresh probe — read the calls to kubectl when ESO publishes other metadata
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/refresh-other/events.log"
+      register: _other_events
+
+    - name: Refresh probe — assert the version of other metadata is not a refresh
+      ansible.builtin.assert:
+        that:
+          - not (_verify_refreshed | bool)
+          - (_other_events.content | b64decode).splitlines() | select('search', '^kubectl annotate ') | list | length == 3
+        fail_msg: A status for other metadata counted as the refresh, or an attempt did not run.
+
+    # The status starts with a version that the probe does not compute: it fails before
+    # it sets an annotation, with the message about the ESO version.
+    - name: Refresh probe — run the first attempt against a store with another hash scheme
+      environment:
+        FAKE_STATE: "{{ _state.path }}/refresh-scheme"
+        FAKE_ES_SYNC: scheme
+      block:
+        - name: Run verify-main-store-refresh.yml with another hash scheme
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-main-store-refresh.yml
+          loop: [1]
+          loop_control:
+            loop_var: _verify_attempt
+          vars:
+            verify_main_store_sync_target: {namespace: probe-ns, name: probe-target}
+            _verify_run_id: "1"
+            _verify_refresh_retries: 2
+            _verify_refresh_delay: 1
+        - name: Refresh probe — fail when the probe judged a status it cannot compute
+          ansible.builtin.fail:
+            msg: The probe ran against a status with another hash scheme without failing.
+      rescue:
+        - name: Refresh probe — assert the failure names the ESO version
+          ansible.builtin.assert:
+            that:
+              - "'probably builds the value differently from v2.3.0' in ansible_failed_result.msg"
+            fail_msg: "The failure did not name the ESO version: {{ ansible_failed_result.msg | default('') }}"
+
+    - name: Refresh probe — assert the scheme check failed before any annotation
+      ansible.builtin.stat:
+        path: "{{ _state.path }}/refresh-scheme/events.log"
+      register: _scheme_events
+
+    - name: Refresh probe — assert nothing was annotated
+      ansible.builtin.assert:
+        that: not _scheme_events.stat.exists
+        fail_msg: The probe set an annotation although it could not judge the status.
+
+    # An annotation value embeds the marker text, so other metadata could render as this
+    # run's annotation. The compatibility read refuses the object with a message about the
+    # marker, before any annotation.
+    - name: Refresh probe — run the first attempt against metadata that embeds the marker
+      environment:
+        FAKE_STATE: "{{ _state.path }}/refresh-hidden"
+      block:
+        - name: Run verify-main-store-refresh.yml with metadata that embeds the marker
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-main-store-refresh.yml
+          loop: [1]
+          loop_control:
+            loop_var: _verify_attempt
+          vars:
+            verify_main_store_sync_target: {namespace: probe-ns, name: probe-target}
+            _verify_run_id: "1"
+            _verify_refresh_retries: 2
+            _verify_refresh_delay: 1
+        - name: Refresh probe — fail when the probe judged metadata that embeds the marker
+          ansible.builtin.fail:
+            msg: The probe ran against metadata that embeds the marker without failing.
+      rescue:
+        - name: Refresh probe — assert the failure says the metadata could hide the marker
+          ansible.builtin.assert:
+            that:
+              - "'because its metadata could hide the marker' in ansible_failed_result.msg"
+            fail_msg: "The failure did not name the marker: {{ ansible_failed_result.msg | default('') }}"
+
+    - name: Refresh probe — look for calls to kubectl when the metadata embeds the marker
+      ansible.builtin.stat:
+        path: "{{ _state.path }}/refresh-hidden/events.log"
+      register: _hidden_events
+
+    - name: Refresh probe — assert nothing was annotated when the metadata embeds the marker
+      ansible.builtin.assert:
+        that: not _hidden_events.stat.exists
+        fail_msg: The probe set an annotation although the metadata could hide the marker.
+
+    # The stale-status collision: the status is Ready with the version of the metadata that
+    # embeds the marker, and another writer cuts the marker text out of the value as the
+    # probe annotates, so the status equals the version of the metadata that the probe then
+    # reads. The probe must not pass.
+    - name: Refresh probe — clear the verdict
+      ansible.builtin.set_fact:
+        _verify_refreshed: false
+
+    - name: Refresh probe — run the attempts against a stale status that collides
+      environment:
+        FAKE_STATE: "{{ _state.path }}/refresh-collide"
+        FAKE_ES_SYNC: collide
+      block:
+        - name: Run verify-main-store-refresh.yml with a status that collides
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-main-store-refresh.yml
+          loop: [1, 2, 3]
+          loop_control:
+            loop_var: _verify_attempt
+          vars:
+            verify_main_store_sync_target: {namespace: probe-ns, name: probe-target}
+            _verify_run_id: "1"
+            _verify_refresh_retries: 2
+            _verify_refresh_delay: 1
+        - name: Refresh probe — fail when the collision counted as a refresh
+          ansible.builtin.fail:
+            msg: A stale status that collides with the annotated metadata counted as the refresh.
+          when: _verify_refreshed | bool
+      rescue:
+        - name: Refresh probe — assert the collision was refused by the compatibility read
+          ansible.builtin.assert:
+            that:
+              - not (_verify_refreshed | bool)
+              - "'because its metadata could hide the marker' in ansible_failed_result.msg"
+            fail_msg: "The collision was not refused: {{ ansible_failed_result.msg | default('') }}"
+
+    - name: Refresh probe — look for calls to kubectl when the status collides
+      ansible.builtin.stat:
+        path: "{{ _state.path }}/refresh-collide/events.log"
+      register: _collide_events
+
+    - name: Refresh probe — assert nothing was annotated when the status collides
+      ansible.builtin.assert:
+        that: not _collide_events.stat.exists
+        fail_msg: The probe set an annotation although the metadata could hide the marker.
+
+    # A later attempt skips the compatibility read. The read that decides the attempt still
+    # refuses metadata that embeds the marker, though the status equals the computed version.
+    - name: Refresh probe — clear the verdict of the collision run
+      ansible.builtin.set_fact:
+        _verify_refreshed: false
+
+    - name: Refresh probe — run a later attempt against metadata that embeds the marker
+      environment:
+        FAKE_STATE: "{{ _state.path }}/refresh-hidden-late"
+      block:
+        - name: Run verify-main-store-refresh.yml for attempt 2 with metadata that embeds the marker
+          ansible.builtin.include_tasks: ../playbooks/tasks/verify-main-store-refresh.yml
+          loop: [2]
+          loop_control:
+            loop_var: _verify_attempt
+          vars:
+            verify_main_store_sync_target: {namespace: probe-ns, name: probe-target}
+            _verify_run_id: "1"
+            _verify_refresh_retries: 2
+            _verify_refresh_delay: 1
+
+    - name: Refresh probe — assert metadata that embeds the marker is not a refresh
+      ansible.builtin.assert:
+        that: not (_verify_refreshed | bool)
+        fail_msg: An object whose metadata could hide the marker counted as the refresh.

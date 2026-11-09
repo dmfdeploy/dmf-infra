@@ -19,6 +19,11 @@ run of the grow-HA play reads back.
   that holds the DNS names of the Certificate, as cert-manager replaces the secret.
   The fake openssl prints those names, so a test sees the names that the play
   rendered.
+- Applying a ConfigMap whose data holds a value that is not a string, or a Secret whose
+  stringData does, fails with the API server's message, as the API server does:
+  the fields take strings only, so a template that renders a boolean or a number
+  fails here too.
+- Applying a ConfigMap writes k8s/ConfigMap-<name>.json with its data.
 """
 import base64
 import json
@@ -52,6 +57,10 @@ def main():
     with open(os.path.join(state, "events.log"), "a") as handle:
         handle.write("k8s %s %s %s\n" % (p["state"], kind, name))
     objects = os.path.join(state, "k8s")
+    if p["state"] == "present" and isinstance(p["definition"], dict):
+        check_string_fields(module, kind, p["definition"])
+    if p["state"] == "present" and kind == "ConfigMap":
+        write_object(objects, "ConfigMap-" + name, {"data": (p["definition"] or {}).get("data") or {}})
     if p["force"]:
         with open(os.path.join(state, "k8s-force.log"), "a") as handle:
             handle.write("%s %s\n" % (kind, name))
@@ -99,6 +108,30 @@ def main():
                 os.remove(os.path.join(state, stale))
         open(os.path.join(state, "sealed-%s" % name), "w").close()
     module.exit_json(changed=True)
+
+
+def check_string_fields(module, kind, definition):
+    field = {"ConfigMap": "data", "Secret": "stringData"}.get(kind)
+    values = definition.get(field) if field else None
+    if not isinstance(values, dict):
+        return
+    for key, value in values.items():
+        if not isinstance(value, str):
+            module.fail_json(
+                msg='%s in version "v1" cannot be handled as a %s: json: cannot unmarshal %s into Go struct field %s.%s of type string (400 Bad Request)'
+                % (kind, kind, json_type(value), kind, field))
+
+
+def json_type(value):
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, list):
+        return "array"
+    if isinstance(value, dict):
+        return "object"
+    return "null"
 
 
 def merge(old, new):

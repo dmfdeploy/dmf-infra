@@ -1,0 +1,16 @@
+[
+ {
+  "generation": 1,
+  "annotations": null,
+  "labels": null,
+  "syncedResourceVersion": "1-f47fe3c0b255b6dd8047cdffa772587bb829efe7a1cb70febeda2eb2"
+ },
+ {
+  "generation": 1,
+  "annotations": {
+   "force-sync": "verify-17942073608221-1"
+  },
+  "labels": null,
+  "syncedResourceVersion": "1-4c55fc9c941499b0f0711ca903039b476a40873bee6308b2f66b5033"
+ }
+]
