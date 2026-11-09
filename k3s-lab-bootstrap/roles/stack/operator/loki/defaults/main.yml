@@ -9,7 +9,8 @@ loki_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
 # disk with the rest of the stack.
 loki_single_node: "{{ (dmf_release_profile | default('')) == 'sandbox-single-node' }}"
 # Default retention (also used as the floor for any stream without an explicit
-# rule): 30 days for operator activity and general application logs.
+# rule) for operator activity and general application logs: 30 days, or 72 hours
+# on the single-node sandbox profile.
 # Single-node: local-path enforces no quota, so loki_storage_size is only a
 # request and the chunk store can grow until the node hits disk pressure
 # (32G on a 5Gi PVC, umbrella #289). Retention is the effective bound there.
