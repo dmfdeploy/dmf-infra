@@ -9,7 +9,6 @@
 # any S3-compatible endpoint (Backblaze B2, MinIO, etc).
 #
 # See:
-#   - docs/processes/audit-log-retention-policy.md
 #   - roles/base/audit-log-archival/defaults/main.yml
 - name: Configure k3s audit log archival
   hosts: k3s_control

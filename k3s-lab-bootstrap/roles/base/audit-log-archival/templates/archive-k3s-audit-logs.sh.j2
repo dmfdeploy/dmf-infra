@@ -3,7 +3,7 @@
 # Daily k3s API audit log archival to an S3-compatible Object Lock bucket.
 # Server-side encryption (provider-managed key) + Object Lock
 # {{ audit_log_object_lock_mode if audit_log_object_lock_enabled else 'disabled' }} retention
-# per docs/processes/audit-log-retention-policy.md.
+# for {{ audit_log_object_lock_days }} days (roles/base/audit-log-archival/defaults/main.yml).
 #
 # Credentials come from /root/.aws/credentials profile
 # `{{ audit_log_aws_profile }}` via AWS SDK. They are NOT loaded into the

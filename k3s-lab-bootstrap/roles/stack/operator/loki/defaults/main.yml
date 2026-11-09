@@ -2,15 +2,14 @@
 loki_namespace: monitoring
 # 50 GiB sized for 30-day operator retention + 6-month security-stream retention
 # on a single-binary lab cluster. Recompute when stream volume changes
-# materially. See audit-log-retention-policy.md for the retention contract.
+# materially. loki_retention and loki_security_retention below set the values.
 loki_storage_size: 50Gi
 loki_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
 # True on the single-node sandbox profile, where Loki shares one node and one
 # disk with the rest of the stack.
 loki_single_node: "{{ (dmf_release_profile | default('')) == 'sandbox-single-node' }}"
 # Default retention (also used as the floor for any stream without an explicit
-# rule). Aligns with operator activity retention in
-# docs/processes/audit-log-retention-policy.md (30 days).
+# rule): 30 days for operator activity and general application logs.
 # Single-node: local-path enforces no quota, so loki_storage_size is only a
 # request and the chunk store can grow until the node hits disk pressure
 # (32G on a 5Gi PVC, umbrella #289). Retention is the effective bound there.

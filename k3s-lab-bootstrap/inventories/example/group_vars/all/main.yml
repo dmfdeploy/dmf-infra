@@ -74,8 +74,7 @@ postgres_pgdata: "/var/lib/postgresql/data/pgdata"
 monitoring_namespace: monitoring
 
 # Prometheus — operator-debug retention only (not a compliance trail).
-# See docs/processes/audit-log-retention-policy.md and
-# roles/base/prometheus/defaults/main.yml. 40GB blocks + 1GB WAL + 9GB
+# See roles/base/prometheus/defaults/main.yml. 40GB blocks + 1GB WAL + 9GB
 # headroom fits inside a 50Gi PVC.
 prometheus_storage_size: "50Gi"
 prometheus_retention: "30d"

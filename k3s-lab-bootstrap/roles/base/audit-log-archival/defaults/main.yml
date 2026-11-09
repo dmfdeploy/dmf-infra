@@ -20,7 +20,7 @@ audit_log_archive_cron_hour: "2"
 
 # Object Lock (WORM) controls. Bucket-level Object Lock must be enabled out
 # of band (provider console or Terraform) for retain-until to take effect.
-# Per docs/processes/audit-log-retention-policy.md the contract is 12 months.
+# The k3s API audit log is kept for 12 months, write-once, in the archive bucket.
 audit_log_object_lock_enabled: true
 audit_log_object_lock_mode: COMPLIANCE
 audit_log_object_lock_days: 365
