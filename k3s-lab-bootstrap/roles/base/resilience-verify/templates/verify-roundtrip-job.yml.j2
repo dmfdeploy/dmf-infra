@@ -30,7 +30,8 @@ spec:
             - pipefail
             - -c
             - |
-              set -x
+              # This script exports an object-storage key. Never turn on shell
+              # trace mode: it would print the key into the job log.
               MOUNT=/etc/s3-creds
               BUCKET="$(cat $MOUNT/bucket)"
               ENDPOINT="$(cat $MOUNT/endpoint)"

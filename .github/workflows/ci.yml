@@ -43,6 +43,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_openbao_*.py' -v
       - name: tasks that carry a secret set no_log
         run: python3 -m unittest discover -s tests -p 'test_no_log_secrets.py' -v
+      - name: job and script templates that handle a secret never turn on trace mode
+        run: python3 -m unittest discover -s tests -p 'test_secret_jobs_no_trace_mode.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
