@@ -6,16 +6,25 @@
 # are unsealed. Run it only after the rehearsal on a disposable environment and the
 # operator's approval for the environment.
 #
-# It writes only the Kubernetes auth config and ESO's role, with a temporary root
-# token that you give it in the environment:
+# It writes only the Kubernetes auth config, ESO's role, and the Kubernetes-auth roles
+# of the setup issuer and the rotation scheduler when they are missing, with a
+# temporary root token that you give it in the environment:
 #
 #   OPENBAO_TEMP_ROOT_TOKEN=<token from the generate-root procedure>
 #
-# The token never goes in an argument list or a file. Run the play first without a
+# The token never goes in an argument list, and the play writes it to no file. Each
+# task that uses it sends it to the pod on stdin. SSH pipelining is off in
+# ansible.cfg, so Ansible stages every task's arguments, stdin included, in a
+# temporary file on the node and removes that file when the task ends; an
+# interrupted run or ANSIBLE_KEEP_REMOTE_FILES can leave it behind, and
+# ANSIBLE_DEBUG prints module arguments. Run the play first without a
 # token to move the workload; tasks/kubernetes-auth-existing.yml in the openbao
-# role states the order of runs. A rerun writes nothing when the config and the
-# role match. It needs openbao_kubernetes_reviewer_enabled set to true in the
-# inventory.
+# role states the order of runs. A rerun writes nothing when the config and every
+# role match, and it leaves an existing role as it is. A role needs its
+# ServiceAccount and its policy: when one is missing, the play writes no role of the
+# setup issuer or the rotation scheduler and fails with the names. Run
+# playbooks/vertical-security/100-openbao.yml first, then this play again. It needs
+# openbao_kubernetes_reviewer_enabled set to true in the inventory.
 #
 # The play revokes the token before it exits, also when a step fails, and proves
 # that the server refuses it. If the revoke itself fails, the play fails loudly.
@@ -23,7 +32,9 @@
 # (`bao token revoke -accessor <accessor>`) before you do anything else. The play
 # looks up the pod inside the block that owns the token. If that lookup fails, the
 # revoke cannot run: the play then fails and says that the token is not revoked and
-# how to revoke it by its accessor.
+# how to revoke it by its accessor. If the run ends with the host UNREACHABLE, Ansible
+# skips the revoke and prints no warning: the token is NOT revoked. Revoke it by its
+# accessor the same way before you do anything else.
 - name: Move an installed environment to Kubernetes auth
   hosts: k3s_control[0]
   become: true

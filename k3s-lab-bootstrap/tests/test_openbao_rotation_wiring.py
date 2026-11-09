@@ -100,20 +100,29 @@ class SchedulerIdentityTests(unittest.TestCase):
         self.assertEqual(names, {rotation.SCHEDULER_ROLE})
 
     def test_the_policy_reaches_openbao_on_stdin_and_the_task_logs_nothing(self):
-        for name in ("Write the rotation scheduler policy", "Write the rotation scheduler Kubernetes-auth role"):
-            with self.subTest(task=name):
-                body = task(SCHEDULER, name)
-                self.assertIn("no_log: true", body)
-                self.assertRegex(body, r"(?m)^\s+stdin: \"\{\{ \w+ \}\}\\n")
-                self.assertNotRegex(body, r"(?m)^\s+environment:")
+        body = task(SCHEDULER, "Write the rotation scheduler policy")
+        self.assertIn("no_log: true", body)
+        self.assertRegex(body, r"(?m)^\s+stdin: \"\{\{ \w+ \}\}\\n")
+        self.assertNotRegex(body, r"(?m)^\s+environment:")
+        role = (OPENBAO_ROLE / "tasks/kubernetes-auth-role.yml").read_text(encoding="utf-8")
+        self.assertIn("no_log: true", role)
+        self.assertRegex(role, r"(?m)^\s+stdin: \"\{\{ openbao_k8s_auth_token \}\}\\n\{\{ \{")
+        self.assertNotRegex(role, r"(?m)^\s+environment:")
 
-    def test_the_kubernetes_auth_role_is_written_on_a_fresh_install_only(self):
+    def test_the_kubernetes_auth_role_is_written_on_a_fresh_install_with_the_shared_body(self):
         body = task(SCHEDULER, "Write the rotation scheduler Kubernetes-auth role")
         self.assertIn("openbao_init_raw.changed", body)
         self.assertIn("{{ openbao_root_token }}", body)
-        self.assertIn("bound_service_account_names={{ openbao_rotation_scheduler_service_account }}", body)
-        self.assertIn("bound_service_account_namespaces={{ openbao_namespace }}", body)
-        self.assertIn("token_policies={{ openbao_rotation_scheduler_policy_name }}", body)
+        self.assertIn("kubernetes-auth-role.yml", body)
+        self.assertIn('openbao_k8s_auth_role: "{{ openbao_rotation_scheduler_k8s_auth_role }}"', body)
+        mapping = re.search(r"(?ms)^openbao_rotation_scheduler_k8s_auth_role:\n(.*?)^\S", DEFAULTS + "\nend").group(1)
+        for line in (
+            'name: "{{ openbao_rotation_scheduler_k8s_role }}"',
+            'service_account: "{{ openbao_rotation_scheduler_service_account }}"',
+            'namespace: "{{ openbao_namespace }}"',
+            'policy: "{{ openbao_rotation_scheduler_policy_name }}"',
+        ):
+            self.assertIn(line, mapping)
         self.assertNotIn("generate-root", code(SCHEDULER))
 
     def test_the_identity_rbac_is_rendered_from_the_registry_and_applied(self):

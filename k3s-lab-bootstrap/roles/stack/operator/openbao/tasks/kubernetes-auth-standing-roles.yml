@@ -1,0 +1,44 @@
+---
+# Write the Kubernetes-auth roles of the setup issuer and the rotation scheduler on an
+# installed environment, with the temporary root token of
+# kubernetes-auth-existing.yml. A fresh install writes them in main.yml with the
+# initial root token.
+#
+# The caller sets openbao_k8s_auth_token and openbao_pod. A role is written only when
+# it is missing: an existing role stays as it is. A role needs its ServiceAccount and
+# its policy, which the openbao role creates. When either is missing for any of the
+# roles, this file writes no role and fails with the names of what is missing. It
+# never creates a ServiceAccount or a policy.
+
+- name: Start the plan for the standing roles
+  ansible.builtin.set_fact:
+    _openbao_standing_plan: []
+
+- name: Look at each standing role, its ServiceAccount and its policy
+  ansible.builtin.include_tasks: kubernetes-auth-standing-role-inspect.yml
+  loop: "{{ openbao_standing_k8s_auth_roles }}"
+  loop_control:
+    loop_var: _openbao_standing
+    label: "{{ _openbao_standing.name }}"
+
+- name: Stop when a ServiceAccount or a policy is missing
+  ansible.builtin.fail:
+    msg: >-
+      A Kubernetes-auth role needs its ServiceAccount and its policy, and the
+      openbao role creates both. Missing ServiceAccounts in namespace
+      {{ openbao_namespace }}: {{ _openbao_standing_plan | rejectattr('service_account_present') | map(attribute='role.service_account') | list | join(', ') or 'none' }}.
+      Missing policies: {{ _openbao_standing_plan | rejectattr('policy_present') | map(attribute='role.policy') | list | join(', ') or 'none' }}.
+      No role was written. Run playbooks/vertical-security/100-openbao.yml first,
+      then run this play again.
+  when: >-
+    _openbao_standing_plan | rejectattr('service_account_present') | list | length > 0
+    or _openbao_standing_plan | rejectattr('policy_present') | list | length > 0
+
+- name: Write each missing standing role
+  ansible.builtin.include_tasks: kubernetes-auth-role.yml
+  vars:
+    openbao_k8s_auth_role: "{{ _openbao_standing.role }}"
+  loop: "{{ _openbao_standing_plan | rejectattr('role_present') | list }}"
+  loop_control:
+    loop_var: _openbao_standing
+    label: "{{ _openbao_standing.role.name }}"

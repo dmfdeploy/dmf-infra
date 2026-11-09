@@ -45,7 +45,10 @@
 # `bao token revoke -self` (file revoked-<token>) is refused everywhere. A config
 # write rebuilds the config from its fields, as the mount does, and token_reviewer_jwt
 # set to "" stores no token. A pem_keys value that does not parse fails after the
-# permission check.
+# permission check. A role write takes its fields as key=value arguments or, with `-`,
+# as a JSON object on stdin, where a TTL is a number of seconds or a duration such as
+# 5m. A root token reads sys/policies/acl/NAME: the policy exists when the file
+# $state/policies/NAME does.
 set -u
 state="${FAKE_STATE:?FAKE_STATE is not set}"
 pod="${FAKE_POD:-openbao-0}"
@@ -253,18 +256,39 @@ PY
     mkdir -p "$k8s_auth_dir"
     name="${2#auth/kubernetes/role/}"
     shift 2
-    python3 - "$k8s_auth_dir/role-$name.json" "$@" <<'PY'
-import json, sys
-path, fields = sys.argv[1], dict(a.split("=", 1) for a in sys.argv[2:])
-role = {"bound_service_account_names": fields["bound_service_account_names"].split(","),
-        "bound_service_account_namespaces": fields["bound_service_account_namespaces"].split(","),
+    body=""
+    [ "${1:-}" = "-" ] && { body="$(cat)"; shift; }
+    FAKE_ROLE_BODY="$body" python3 - "$k8s_auth_dir/role-$name.json" "$@" <<'PY'
+import json, os, sys
+path, args = sys.argv[1], sys.argv[2:]
+fields = dict(a.split("=", 1) for a in args)
+if os.environ.get("FAKE_ROLE_BODY"):
+    fields.update(json.loads(os.environ["FAKE_ROLE_BODY"]))
+
+def as_list(value):
+    return value if isinstance(value, list) else str(value).split(",")
+
+def seconds(value):
+    text = str(value or "0")
+    units = {"s": 1, "m": 60, "h": 3600}
+    return int(text[:-1]) * units[text[-1]] if text[-1] in units else int(text)
+
+role = {"bound_service_account_names": as_list(fields["bound_service_account_names"]),
+        "bound_service_account_namespaces": as_list(fields["bound_service_account_namespaces"]),
         "audience": fields.get("audience", ""),
-        "token_policies": fields.get("token_policies", "").split(","),
-        "token_ttl": int(fields.get("token_ttl", "0")),
-        "token_max_ttl": int(fields.get("token_max_ttl", "0"))}
+        "token_policies": as_list(fields.get("token_policies", "")),
+        "token_ttl": seconds(fields.get("token_ttl")),
+        "token_max_ttl": seconds(fields.get("token_max_ttl"))}
 json.dump(role, open(path, "w"))
 PY
     exit $?
+    ;;
+  "read -format=json sys/policies/acl/"*)
+    token_ok && is_root || forbidden "reading sys/policies/acl"
+    name="${3#sys/policies/acl/}"
+    [ -f "$state/policies/$name" ] || { echo "No value found at sys/policies/acl/$name" >&2; exit 2; }
+    printf '{"data":{"name":"%s","policy":""}}\n' "$name"
+    exit 0
     ;;
   "read -format=json auth/kubernetes/role/"*)
     token_ok && is_root || forbidden "reading auth/kubernetes/role"

@@ -227,3 +227,52 @@ class VerifierTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StandingRolesTest(unittest.TestCase):
+    """The installed-environment path writes the setup issuer and rotation scheduler roles
+    from the same mappings and the same task as a fresh install."""
+
+    role = text(OPENBAO / "tasks/kubernetes-auth-role.yml")
+    standing = text(OPENBAO / "tasks/kubernetes-auth-standing-roles.yml")
+    inspect = text(OPENBAO / "tasks/kubernetes-auth-standing-role-inspect.yml")
+    existing = text(OPENBAO / "tasks/kubernetes-auth-existing.yml")
+
+    def test_both_paths_write_through_the_one_task_file(self):
+        for path in ["setup-issuer.yml", "setup-rotation-scheduler.yml", "kubernetes-auth-standing-roles.yml"]:
+            with self.subTest(path=path):
+                self.assertIn("kubernetes-auth-role.yml", text(OPENBAO / "tasks" / path))
+        self.assertEqual(self.role.count("bao write auth/kubernetes/role/"), 1)
+        for path in ["setup-issuer.yml", "setup-rotation-scheduler.yml", "kubernetes-auth-standing-roles.yml"]:
+            with self.subTest(path=path):
+                self.assertNotIn("bao write", text(OPENBAO / "tasks" / path))
+
+    def test_the_installed_path_reads_the_mappings_the_fresh_install_uses(self):
+        defaults = text(OPENBAO / "defaults/main.yml")
+        self.assertIn('  - "{{ openbao_setup_issuer_k8s_auth_role }}"', defaults)
+        self.assertIn('  - "{{ openbao_rotation_scheduler_k8s_auth_role }}"', defaults)
+        self.assertIn("openbao_standing_k8s_auth_roles", self.standing)
+        self.assertIn('openbao_k8s_auth_role: "{{ openbao_setup_issuer_k8s_auth_role }}"', text(OPENBAO / "tasks/setup-issuer.yml"))
+
+    def test_the_request_body_goes_on_stdin_after_the_token(self):
+        self.assertRegex(self.role, r"bao write auth/kubernetes/role/\{\{ openbao_k8s_auth_role\.name \}\} -'")
+        self.assertRegex(self.role, r"(?m)^    stdin: \"\{\{ openbao_k8s_auth_token \}\}\\n\{\{ \{")
+        self.assertNotRegex(self.role, r"\w+=\{\{")
+
+    def test_every_task_that_carries_the_token_logs_nothing(self):
+        for name, body in [("role", self.role), ("inspect", self.inspect)]:
+            for chunk in re.split(r"(?m)^- name: ", body)[1:]:
+                if "openbao_k8s_auth_token" in chunk and "stdin:" in chunk:
+                    with self.subTest(file=name, task=chunk.splitlines()[0]):
+                        self.assertIn("no_log: true", chunk)
+
+    def test_the_play_writes_roles_inside_the_block_that_revokes_the_token(self):
+        include = self.existing.index("kubernetes-auth-standing-roles.yml")
+        self.assertLess(self.existing.index("  block:\n"), include)
+        self.assertLess(include, self.existing.index("  always:\n"))
+
+    def test_a_missing_serviceaccount_or_policy_stops_before_any_write(self):
+        self.assertLess(self.standing.index("Stop when a ServiceAccount or a policy is missing"), self.standing.index("Write each missing standing role"))
+        self.assertIn("playbooks/vertical-security/100-openbao.yml", self.standing)
+        for forbidden in ["kubernetes.core.k8s:", "bao policy write", "state: present"]:
+            self.assertNotIn(forbidden, self.standing + self.inspect)
