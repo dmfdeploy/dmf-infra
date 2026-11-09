@@ -399,6 +399,51 @@ class SchedulerDecisionTests(unittest.TestCase):
                 self.assert_fails(0, "", (2, "Error making API request.\n* permission denied"), switch, mentions="could not log in")
 
 
+@unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is not installed")
+class EsoRoleCheckGateTests(unittest.TestCase):
+    """Run the verifier's task for an unverifiable ESO AppRole role with each
+    auth mode and scheduler state."""
+
+    TASK = "Fail when ESO's AppRole role cannot be checked"
+
+    def run_case(self, method, ready):
+        play = (
+            "- hosts: localhost\n  connection: local\n  gather_facts: false\n  vars:\n"
+            f"    verify_eso_auth_method: {method}\n"
+            "    verify_eso_approle_role: external-secrets\n"
+            f"    _verify_scheduler_ready: {str(ready).lower()}\n"
+            f"  tasks:\n    - name: {self.TASK}\n" + task(VERIFY, self.TASK)
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "play.yml")
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(play)
+            env = dict(os.environ, ANSIBLE_LOCAL_TEMP=tmp, ANSIBLE_HOME=tmp, ANSIBLE_NOCOLOR="1")
+            done = subprocess.run(
+                ["ansible-playbook", "-i", "localhost,", path], capture_output=True, text=True, env=env, cwd=tmp, check=False
+            )
+        return done.returncode, " ".join((done.stdout + done.stderr).split())
+
+    def test_approle_mode_fails_when_the_scheduler_cannot_log_in(self):
+        rc, out = self.run_case("approle", False)
+        self.assertNotEqual(rc, 0, out)
+        self.assertIn("ESO's AppRole role (external-secrets) could not be checked", out)
+        self.assertIn("rotation scheduler cannot log in", out)
+        self.assertIn("would go unnoticed", out)
+        self.assertIn("playbooks/vertical-security/100-openbao.yml, then playbooks/vertical-security/106-openbao-kubernetes-auth.yml", out)
+        self.assertIn("temporary root token", out)
+
+    def test_approle_mode_passes_the_gate_when_the_scheduler_is_ready(self):
+        rc, out = self.run_case("approle", True)
+        self.assertEqual(rc, 0, out)
+
+    def test_kubernetes_mode_is_unchanged(self):
+        for ready in (False, True):
+            with self.subTest(ready=ready):
+                rc, out = self.run_case("kubernetes", ready)
+                self.assertEqual(rc, 0, out)
+
+
 class PolicyAgainstProbesTests(unittest.TestCase):
     def test_the_permitted_helper_agrees_with_the_verifier_for_the_allowed_probes(self):
         for path, expected in VerifierTests.PROBES:
