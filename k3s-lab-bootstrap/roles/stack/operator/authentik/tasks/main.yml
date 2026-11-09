@@ -241,6 +241,7 @@
     - (_authentik_runtime_secret_info.resources[0].data | default({})) | dict2items | selectattr('key', 'equalto', 'AUTHENTIK_BOOTSTRAP_PASSWORD') | list | length > 0
   retries: 24
   delay: 5
+  no_log: true
 
 - name: Wait for Authentik break-glass secret to materialize
   kubernetes.core.k8s_info:
@@ -255,6 +256,7 @@
     - (_authentik_breakglass_secret_info.resources[0].data | default({})) | dict2items | selectattr('key', 'equalto', 'password') | list | length > 0
   retries: 24
   delay: 5
+  no_log: true
 
 - name: Discover Authentik blueprint files in repo
   ansible.builtin.set_fact:

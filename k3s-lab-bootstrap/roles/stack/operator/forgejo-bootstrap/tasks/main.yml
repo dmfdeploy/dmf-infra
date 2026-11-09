@@ -75,6 +75,7 @@
   when: forgejo_svc_password | length == 0
   delegate_to: localhost
   become: false
+  no_log: true
 
 - name: Set effective Forgejo service credentials
   ansible.builtin.set_fact:
@@ -163,6 +164,7 @@
     status_code: 201
   register: forgejo_admin_token_created
   when: forgejo_admin_token_effective | length == 0
+  no_log: true
 
 - name: Set admin token from API response
   ansible.builtin.set_fact:

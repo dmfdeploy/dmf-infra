@@ -492,6 +492,7 @@
       loop: "{{ _netbox_sot_monitoring_choice_sets }}"
       loop_control:
         label: "{{ item.name }}"
+      no_log: true
 
     - name: Create missing NetBox monitoring choice set {{ item.item.name }}
       ansible.builtin.uri:
@@ -509,6 +510,7 @@
       loop_control:
         label: "{{ item.item.name }}"
       when: item.json.count | int == 0
+      no_log: true
 
     - name: Refresh NetBox monitoring choice set lookups
       ansible.builtin.uri:
@@ -522,6 +524,7 @@
       loop: "{{ _netbox_sot_monitoring_choice_sets }}"
       loop_control:
         label: "{{ item.name }}"
+      no_log: true
 
     - name: Reconcile NetBox monitoring choice set extra choices
       ansible.builtin.uri:
@@ -539,6 +542,7 @@
       when:
         - item.json.count | int > 0
         - (item.json.results | first).extra_choices | default([]) != item.item.extra_choices
+      no_log: true
 
     - name: Build NetBox monitoring choice set id map (name -> id)
       ansible.builtin.set_fact:
@@ -567,6 +571,7 @@
       loop: "{{ _netbox_sot_monitoring_cf_defs }}"
       loop_control:
         label: "{{ item.name }}"
+      no_log: true
 
     - name: Create missing NetBox monitoring custom field {{ item.item.name }}
       ansible.builtin.uri:
@@ -599,6 +604,7 @@
       loop_control:
         label: "{{ item.item.name }}"
       when: item.json.count | int == 0
+      no_log: true
 
     - name: Warn on NetBox monitoring custom-field type drift
       ansible.builtin.debug:
@@ -623,6 +629,7 @@
     return_content: true
     status_code: 200
   register: netbox_sot_awx_group_lookup
+  no_log: true
 
 - name: Create AWX group
   ansible.builtin.uri:
@@ -638,6 +645,7 @@
     status_code: 201
   when: netbox_sot_awx_group_lookup.json.count | int == 0
   register: netbox_sot_awx_group_created
+  no_log: true
 
 - name: Refresh AWX group lookup after create
   ansible.builtin.uri:
@@ -649,6 +657,7 @@
     status_code: 200
   register: netbox_sot_awx_group_lookup_after_create
   when: netbox_sot_awx_group_lookup.json.count | int == 0
+  no_log: true
 
 - name: Set AWX group id
   ansible.builtin.set_fact:
@@ -671,6 +680,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_promsd_group_lookup
+      no_log: true
 
     - name: Create PromSD group
       ansible.builtin.uri:
@@ -686,6 +696,7 @@
         status_code: 201
       when: netbox_sot_promsd_group_lookup.json.count | int == 0
       register: netbox_sot_promsd_group_created
+      no_log: true
 
     - name: Set PromSD group id
       ansible.builtin.set_fact:
@@ -752,6 +763,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_promsd_user_lookup
+      no_log: true
 
     - name: Create PromSD service user
       ansible.builtin.uri:
@@ -786,6 +798,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_promsd_user_detail
+      no_log: true
 
     - name: Set PromSD user group ids
       ansible.builtin.set_fact:
@@ -807,6 +820,7 @@
           groups: "{{ netbox_sot_promsd_user_group_ids | union([netbox_sot_promsd_group_id | int]) }}"
         status_code: 200
       when: netbox_sot_promsd_group_id | int not in (netbox_sot_promsd_user_group_ids | list)
+      no_log: true
 
 - name: Ensure LibreNMS group exists when enabled
   when: netbox_sot_librenms_enabled | bool
@@ -820,6 +834,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_librenms_group_lookup
+      no_log: true
 
     - name: Create LibreNMS group
       ansible.builtin.uri:
@@ -834,6 +849,7 @@
         status_code: 201
       when: netbox_sot_librenms_group_lookup.json.count | int == 0
       register: netbox_sot_librenms_group_created
+      no_log: true
 
     - name: Set LibreNMS group id
       ansible.builtin.set_fact:
@@ -980,6 +996,7 @@
     return_content: true
     status_code: 200
   register: netbox_sot_awx_user_lookup
+  no_log: true
 
 - name: Create AWX service user
   ansible.builtin.uri:
@@ -1014,6 +1031,7 @@
     return_content: true
     status_code: 200
   register: netbox_sot_awx_user_detail
+  no_log: true
 
 - name: Set AWX user group ids
   ansible.builtin.set_fact:
@@ -1051,6 +1069,7 @@
       groups: "{{ netbox_sot_awx_user_group_ids | union([netbox_sot_awx_group_id_effective | int]) }}"
     status_code: 200
   when: netbox_sot_awx_group_id_effective | int not in (netbox_sot_awx_user_group_ids | list)
+  no_log: true
 
 - name: Ensure LibreNMS service user exists when enabled
   when: netbox_sot_librenms_enabled | bool
@@ -1064,6 +1083,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_librenms_user_lookup
+      no_log: true
 
     - name: Create LibreNMS service user
       ansible.builtin.uri:
@@ -1098,6 +1118,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_librenms_user_detail
+      no_log: true
 
     - name: Set LibreNMS user group ids
       ansible.builtin.set_fact:
@@ -1121,6 +1142,7 @@
                | union([netbox_sot_librenms_group_id | int]) }}
         status_code: 200
       when: netbox_sot_librenms_group_id | int not in netbox_sot_librenms_user_group_ids
+      no_log: true
 
 # ── DMF CMS service account: group, permissions, user (Option C) ──────────
 # netbox-sot owns the NetBox permission model for dmf-cms-svc.
@@ -1138,6 +1160,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_cms_group_lookup
+      no_log: true
 
     - name: Create CMS group
       ansible.builtin.uri:
@@ -1153,6 +1176,7 @@
         status_code: 201
       when: netbox_sot_cms_group_lookup.json.count | int == 0
       register: netbox_sot_cms_group_created
+      no_log: true
 
     - name: Set CMS group id
       ansible.builtin.set_fact:
@@ -1236,6 +1260,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_cms_user_lookup
+      no_log: true
 
     - name: Create CMS service user
       ansible.builtin.uri:
@@ -1270,6 +1295,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_cms_user_detail
+      no_log: true
 
     - name: Set CMS user group ids
       ansible.builtin.set_fact:
@@ -1291,6 +1317,7 @@
           groups: "{{ netbox_sot_cms_user_group_ids | union([netbox_sot_cms_group_id | int]) }}"
         status_code: 200
       when: netbox_sot_cms_group_id | int not in (netbox_sot_cms_user_group_ids | list)
+      no_log: true
 
 # ── DMF catalog writer service account: group, scoped perms, user (ADR-0032) ─
 # netbox-sot owns the NetBox permission model for dmf-catalog-svc. The token is
@@ -1311,6 +1338,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_catalog_group_lookup
+      no_log: true
 
     - name: Create catalog writer group
       ansible.builtin.uri:
@@ -1326,6 +1354,7 @@
         status_code: 201
       when: netbox_sot_catalog_group_lookup.json.count | int == 0
       register: netbox_sot_catalog_group_created
+      no_log: true
 
     - name: Set catalog writer group id
       ansible.builtin.set_fact:
@@ -1428,6 +1457,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_catalog_user_lookup
+      no_log: true
 
     - name: Create catalog writer service user
       ansible.builtin.uri:
@@ -1462,6 +1492,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_catalog_user_detail
+      no_log: true
 
     - name: Set catalog writer user group ids
       ansible.builtin.set_fact:
@@ -1483,6 +1514,7 @@
           groups: "{{ netbox_sot_catalog_user_group_ids | union([netbox_sot_catalog_group_id | int]) }}"
         status_code: 200
       when: netbox_sot_catalog_group_id | int not in (netbox_sot_catalog_user_group_ids | list)
+      no_log: true
 
 # ── Retire Amendment-2-era delete permission entries (Amendment 3) ─────────
 # Removing catalog-service-delete/catalog-tag-delete from
@@ -1584,6 +1616,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_catalog_purge_group_lookup
+      no_log: true
 
     - name: Create catalog purge group
       ansible.builtin.uri:
@@ -1599,6 +1632,7 @@
         status_code: 201
       when: netbox_sot_catalog_purge_group_lookup.json.count | int == 0
       register: netbox_sot_catalog_purge_group_created
+      no_log: true
 
     - name: Set catalog purge group id
       ansible.builtin.set_fact:
@@ -1687,6 +1721,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_catalog_purge_user_lookup
+      no_log: true
 
     - name: Create catalog purge service user
       ansible.builtin.uri:
@@ -1721,6 +1756,7 @@
         return_content: true
         status_code: 200
       register: netbox_sot_catalog_purge_user_detail
+      no_log: true
 
     - name: Set catalog purge user group ids
       ansible.builtin.set_fact:
@@ -1742,6 +1778,7 @@
           groups: "{{ netbox_sot_catalog_purge_user_group_ids | union([netbox_sot_catalog_purge_group_id | int]) }}"
         status_code: 200
       when: netbox_sot_catalog_purge_group_id | int not in (netbox_sot_catalog_purge_user_group_ids | list)
+      no_log: true
 
 # ── AWX token idempotency gate ──────────────────────────────────────────────
 # Reuse the OpenBao-persisted AWX inventory-source token when NetBox still has

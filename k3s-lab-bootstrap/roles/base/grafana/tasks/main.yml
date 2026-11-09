@@ -65,6 +65,7 @@
     namespace: "{{ grafana_local_ca_secret_namespace }}"
   register: _grafana_ca_secret
   when: grafana_local_ca_trust_enabled | bool
+  no_log: true
 
 - name: Publish local CA cert into monitoring namespace (local-CA lane)
   kubernetes.core.k8s:

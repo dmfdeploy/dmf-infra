@@ -1569,6 +1569,7 @@
   retries: "{{ _gate_uri_retry | default(6) }}"
   delay: "{{ _gate_uri_delay | default(5) }}"
   register: awx_integration_runbook_exists
+  no_log: true
 
 - name: Push eso-openbao-health-check runbook to Forgejo awx-automation repo
   ansible.builtin.uri:
@@ -1590,6 +1591,7 @@
   delay: "{{ _gate_uri_delay | default(5) }}"
   register: _gate_uri_result_18
   when: awx_integration_runbook_exists.status == 404
+  no_log: true
 
 - name: Sync AWX project to pick up the new runbook
   ansible.builtin.uri:

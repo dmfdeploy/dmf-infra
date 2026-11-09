@@ -33,6 +33,7 @@
     - openbao_tls_secret.resources[0].data['tls.key'] is defined
   retries: 60
   delay: 5
+  no_log: true
 
 - name: Count cluster nodes for the pod anti-affinity rule
   kubernetes.core.k8s_info:

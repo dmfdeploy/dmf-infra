@@ -162,6 +162,7 @@
         namespace: "{{ cms_namespace | default('dmf-cms') }}"
       register: _cms_runtime_secret_current
       when: _cms_authentik_token_data.changed | default(false) | bool
+      no_log: true
 
     - name: Compute new runtime Secret checksum including Authentik token
       ansible.builtin.set_fact:

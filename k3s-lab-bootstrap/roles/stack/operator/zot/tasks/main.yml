@@ -313,6 +313,7 @@
     namespace: "{{ zot_local_ca_namespace }}"
   register: _zot_ca_secret
   when: zot_local_ca_trust_enabled | bool
+  no_log: true
 
 - name: Publish local CA cert into Zot namespace (local-CA lane)
   kubernetes.core.k8s:
