@@ -8,7 +8,10 @@
 #   1. In-cluster DNS — a `coredns-custom` ConfigMap maps each app host to the
 #      node IP via an explicit `hosts` block, so in-cluster OIDC consumers
 #      (Forgejo -> Authentik back-channel) resolve the app hostnames. Explicit
-#      per-host entries, NOT a DNS wildcard.
+#      per-host entries, NOT a DNS wildcard. A name under the base domain that
+#      the `hosts` plugin doesn't answer is forwarded to the node's resolvers
+#      and resolves when they resolve it (for example a new ingress host for
+#      an ACME self-check).
 #   2. Node /etc/hosts — so the bootstrap's own external verify steps (and the
 #      operator on the node) reach https://<app>.<base-domain>.
 #   3. Node CA trust — install the cert-manager local root CA into the node
@@ -51,7 +54,10 @@
 
     # k3s CoreDNS imports /etc/coredns/custom/*.server as additional server
     # blocks. A dedicated <base-domain>:53 block answers the explicit app hosts
-    # from the `hosts` plugin and falls through for anything else.
+    # from the `hosts` plugin and falls through to `forward` for anything else.
+    # Without the `forward`, CoreDNS answers SERVFAIL for names the `hosts`
+    # plugin doesn't answer, because this block replaces the main server block
+    # for the zone.
     - name: Apply coredns-custom ConfigMap for the local base domain
       kubernetes.core.k8s:
         kubeconfig: /etc/rancher/k3s/k3s.yaml
@@ -69,6 +75,7 @@
               {{ _coredns_hosts_block | indent(8, true) }}
                       fallthrough
                   }
+                  forward . /etc/resolv.conf
               }
       register: _coredns_custom
       when: _local_ca | bool
