@@ -96,36 +96,8 @@
 # Check if already initialized — before password generation to gate fresh-init-only credentials
 # ---------------------------------------------------------------------------
 
-- name: Check OpenBao init status
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ openbao_pod }}"
-      - --
-      - bao
-      - status
-      - -format=json
-  register: openbao_status_cmd
-  changed_when: false
-  failed_when: false
-
-- name: Parse OpenBao status
-  ansible.builtin.set_fact:
-    openbao_is_initialized: >-
-      {{ (openbao_status_cmd.stdout | from_json).initialized | default(false) }}
-  when:
-    - openbao_status_cmd.stdout | default('') | length > 0
-    - openbao_status_cmd.stdout | default('') | from_json is mapping
-
-- name: Default init status if status check failed
-  ansible.builtin.set_fact:
-    openbao_is_initialized: false
-  when: openbao_is_initialized is not defined
+- name: Read the OpenBao init status
+  ansible.builtin.include_tasks: read-init-status.yml
 
 # ---------------------------------------------------------------------------
 # Load existing break-glass JSON if present — rerun idempotency path.

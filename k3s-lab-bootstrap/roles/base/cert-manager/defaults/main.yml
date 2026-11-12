@@ -39,7 +39,17 @@ cert_manager_certificate_wait_delay: 10
 # OpenBao internal TLS certificate.
 cert_manager_openbao_enabled: true
 cert_manager_openbao_namespace: openbao
+# The self-signed Issuer that signs the CA certificate once.
 cert_manager_openbao_issuer_name: openbao-selfsigned
+# The CA: a root Certificate, the Secret that holds it and the CA Issuer that
+# signs the OpenBao certificate. The root lasts ten years and renews a year
+# early, and keeps its key on renewal.
+cert_manager_openbao_ca_certificate_name: openbao-ca
+cert_manager_openbao_ca_secret_name: openbao-ca-tls
+cert_manager_openbao_ca_issuer_name: openbao-ca
+cert_manager_openbao_ca_common_name: openbao-ca
+cert_manager_openbao_ca_duration: 87600h
+cert_manager_openbao_ca_renew_before: 8760h
 cert_manager_openbao_certificate_name: openbao
 cert_manager_openbao_tls_secret_name: openbao-tls
 cert_manager_openbao_common_name: openbao.openbao.svc.cluster.local
@@ -72,6 +82,13 @@ cert_manager_openbao_ip_addresses:
   - 127.0.0.1
 cert_manager_openbao_wait_retries: 60
 cert_manager_openbao_wait_delay: 5
+# Reload the listener certificate of the running OpenBao pods after each issuance
+# (SIGHUP to the server). The projection wait covers the delay of the kubelet.
+cert_manager_openbao_reload_enabled: true
+cert_manager_openbao_projection_retries: 30
+cert_manager_openbao_projection_delay: 10
+cert_manager_openbao_reload_retries: 12
+cert_manager_openbao_reload_delay: 5
 
 # --- Local CA lane (dmf_tls_mode == 'local-ca'; sandbox-single-node) ---
 # When there is no public DNS + ACME (offline / sandbox), build a self-signed

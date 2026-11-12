@@ -195,8 +195,8 @@ How the cluster is built:
   advertises that name and joins its peers with `retry_join` over TLS. The
   `openbao` Service stays the address that clients use.
 - The certificate that every pod serves covers the headless Service and the pod
-  names under it (`*.openbao-internal.openbao.svc.cluster.local`). The same
-  certificate is the trust anchor for `retry_join`.
+  names under it (`*.openbao-internal.openbao.svc.cluster.local`). The CA that
+  signed it (`ca.crt` in the same Secret) is the trust anchor for `retry_join`.
 - A pod is ready only when it is initialized and unsealed. A sealed pod leaves
   the `openbao` Service, and it counts against the PodDisruptionBudget
   (`maxUnavailable: 1`), so a node drain waits while a pod is sealed.
@@ -285,9 +285,9 @@ reads or changes anything.
    server after a stabilization period). It then reads the same paths again and
    fails when they differ.
 4. Run the ESO play (`vertical-orchestration/100-eso.yml`) right after the play.
-   The issuer is self-signed, so the reissued certificate is a new trust anchor.
-   Between the reissue and the ESO play, the `ClusterSecretStore` is not ready.
-   The ExternalSecrets keep their last values meanwhile.
+   The CA signs the reissued certificate, so a site that already uses the CA
+   keeps its trust. A site that still runs the older self-signed certificate must
+   first move to the CA (see "Move An Existing Environment To The CA").
 5. Prove the recovery shares. Restart one standby pod with
    `103-openbao-restart-pod.yml` and unseal it with the recovery shares.
 
@@ -306,8 +306,9 @@ For every stop point, start with `bin/unseal-openbao.sh <env> --status-all`, whi
 shows each pod and whether it is sealed. To see the Raft peers, run `bao operator
 raft list-peers` in a pod that is unsealed, with an `ops-admin` token. If every
 `bao` call in pod 0 fails with an `x509` error, the reissued certificate is in
-place and pod 0 still serves the old one. Skip the peer check and follow step 1: a
-restart of pod 0 clears the error.
+place and pod 0 still serves the old one, because the reload in the certificate
+task file did not finish. Skip the peer check and follow step 1: a restart of pod 0
+clears the error.
 
 Node 1 is at the wrong address when `list-peers` shows it at
 `openbao.openbao.svc.cluster.local:8201` (the Service). It must be at
@@ -328,15 +329,16 @@ The stop points are in the order that the play reaches them:
 
 1. **The certificate has the peer names, and the StatefulSet is still the
    single-replica one.** The play stopped after it reissued the certificate and
-   before it deleted the StatefulSet. Pod 0 still serves the old certificate, so
-   the `bao` CLI in the pod fails with an `x509` error, and a new run of the play
-   fails its own status check. Repair it:
+   before it deleted the StatefulSet. If the reload in the certificate task file
+   did not finish, pod 0 still serves the old certificate, so the `bao` CLI in the
+   pod fails with an `x509` error, and a new run of the play fails its own status
+   check. Repair it:
    1. Delete pod 0 with `kubectl -n openbao delete pod openbao-0`, so that it
       loads the new certificate. Wait for the StatefulSet to recreate it.
    2. Unseal it with `OPENBAO_POD=openbao-0 bin/unseal-openbao.sh <env>`.
    3. Run the ESO play, `vertical-orchestration/100-eso.yml`. It reads the
-      certificate from the OpenBao TLS secret and sets it as the `caBundle` of
-      the `ClusterSecretStore`, so ESO trusts the new certificate.
+      CA certificate from the CA's own Secret and sets it as the `caBundle` of
+      the `ClusterSecretStore`, so ESO trusts the CA that signed the certificate.
    4. Run `vertical-security/104-openbao-grow-ha.yml` again. It finishes the
       migration, so you do not need the later steps. Run the ESO play again when
       it ends, as the play says.
@@ -408,6 +410,81 @@ at step 6 continues at step 8.
 The play unseals with the automation file, as the role does on every rerun. Step
 5 of "Grow A Single Replica To A Raft Cluster" is the check that the ADR-0009
 shares still work after the migration.
+
+### Certificate Authority For OpenBao TLS
+
+OpenBao serves a certificate that a CA in the `openbao` namespace signs. The
+cert-manager role creates a self-signed bootstrap Issuer (`openbao-selfsigned`),
+a root Certificate (`openbao-ca`, ten years, renewed a year early, Secret
+`openbao-ca-tls`), and a CA Issuer (`openbao-ca`) that signs the `openbao`
+Certificate. The `openbao-tls` Secret keeps its name and holds `ca.crt` beside
+`tls.crt` and `tls.key`.
+
+Each client trusts a CA certificate, never the OpenBao certificate:
+
+- The pods use `ca.crt` from the `openbao-tls` Secret, mounted in the pod, for
+  `BAO_CACERT` and for `leader_ca_cert_file` of `retry_join`.
+- The ClusterSecretStores that the ESO and object-storage-credentials roles
+  create use the certificate in the CA's own Secret (`openbao-ca-tls`), after a
+  wait that proves the CA Certificate is Ready for its current generation. They
+  do not read the `openbao-tls` Secret. When the cluster has no OpenBao CA
+  Certificate yet, both roles stop and say to run `320-cert-manager.yml` first.
+  A site that points a store at an endpoint with other trust sets
+  `eso_openbao_external_trust` (the main store, which then uses
+  `eso_openbao_ca_bundle` if it is set) or
+  `object_storage_eso_openbao_external_trust` (the per-class stores, which then
+  carry no bundle). To move an existing store from the CA to external trust,
+  delete the store first: a merge keeps the bundle that it already holds.
+
+A renewal of the OpenBao certificate changes nothing that a client trusts. The
+root Certificate keeps its private key when it renews (`rotationPolicy: Never`),
+so a renewed root has the same subject and key. Leaves signed before the renewal
+and bundles that hold the old root keep verifying until the old root expires.
+cert-manager does not reissue leaves when the root renews, so after a renewal
+of the root the OpenBao certificate keeps the `ca.crt` of the root that signed it
+until it is reissued. The renewed root verifies that certificate (same key and
+subject), so the plays keep working in the meantime. The runbook (section "Renew
+the CA") gives the order of the plays before the old root expires.
+
+What the certificate task file proves before anything uses the new certificate:
+the Certificate is Ready for its current generation, the Secret names the CA
+Issuer as its issuer, `tls.crt` is not the CA's certificate, and the certificate
+verifies against the current certificate in the CA's Secret. A
+self-signed certificate from before the move can already hold a `ca.crt` that
+equals itself, so a key that is present proves nothing.
+
+OpenBao reads its listener certificate at startup and again on `SIGHUP` (OpenBao
+v2.5.2, `website/content/docs/configuration/listener/tcp.mdx`, lines 32 and
+133-147). The option `tls_auto_reload` is not in v2.5.2, so the configuration
+does not set it. The kubelet writes a renewed certificate into the pods within
+about a minute, but a running server keeps its old certificate until it reloads.
+The certificate task file runs the reload in each running pod every time it runs:
+it waits until the pod holds the Secret's files, sends `SIGHUP` to the server,
+and checks three things. A TLS client on the node connects to the pod's own
+address (the pod IP and port 8200) and compares the certificate it receives with
+the projected certificate. A client that holds the projected `ca.crt` verifies the
+certificate the server serves, and the pod's own CLI works. The comparison is the
+one that proves the reload: a renewed certificate and the one before it verify
+against the same CA. A renewal therefore reaches
+the servers the next time `320-cert-manager.yml` runs, and the old certificate
+stays valid for the days that remain after the renewal. Pods that run on the CA
+trust `ca.crt`, so a renewal does not break their CLI in the meantime.
+
+#### Move An Existing Environment To The CA
+
+An environment that runs the older self-signed certificate moves in four plays:
+the certificate play (`320-cert-manager.yml`), the ESO play, the object-storage
+play and the OpenBao play, followed by a pod-by-pod restart on a Raft cluster.
+The order matters, and a pod that restarts comes back sealed. For the steps, the
+checks and the recovery, follow the umbrella runbook
+[OpenBao Listener Certificate](https://github.com/dmfdeploy/dmfdeploy/blob/main/docs/runbooks/openbao-listener-certificate.md).
+
+Until a pod reloads, its CLI can fail with an `x509` error, because the old pods
+name the certificate file as their trust (`BAO_CACERT` points at `tls.crt`) and
+that file holds the new certificate once the kubelet projects it. The certificate
+task file does not use the CLI before the reload. The stores stay not ready from
+the reload until the ESO and object-storage plays finish, because they still hold
+the old self-signed certificate. A fresh bootstrap needs no extra step.
 
 ### Break-Glass JSON
 

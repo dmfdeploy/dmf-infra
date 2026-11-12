@@ -1,0 +1,42 @@
+---
+# The fake cluster of one case: three running pods that serve the self-signed
+# certificate and name the certificate file as their trust (the install before the
+# move to the CA), and the self-signed Secret that holds a ca.crt equal to its own
+# certificate. A case replaces files with `files`, or has no pod with `no_pods`.
+- name: Make the fake object directory
+  ansible.builtin.file:
+    path: "{{ _case_dir }}/k8s"
+    state: directory
+    mode: "0700"
+
+- name: Describe the files of the case
+  ansible.builtin.set_fact:
+    _files: >-
+      {{ _default_files | combine(case.files | default({})) }}
+  vars:
+    _pods: >-
+      {{ [] if (case.no_pods | default(false)) else
+         [{'metadata': {'name': 'openbao-0'}, 'status': {'phase': 'Running', 'podIP': '192.0.2.10'}},
+          {'metadata': {'name': 'openbao-1'}, 'status': {'phase': 'Running', 'podIP': '192.0.2.11'}},
+          {'metadata': {'name': 'openbao-2'}, 'status': {'phase': 'Running', 'podIP': '192.0.2.12'}}] }}
+    _default_files:
+      Secret-openbao-tls.json: >-
+        {"metadata": {"annotations": {"cert-manager.io/issuer-name": "openbao-selfsigned", "cert-manager.io/issuer-kind": "Issuer"}},
+         "data": {"tls.crt": "{{ 'old-selfsigned' | b64encode }}", "tls.key": "ZmFrZQ==", "ca.crt": "{{ 'old-selfsigned' | b64encode }}"}}
+      Certificate-openbao.json: '{"metadata": {"generation": 1}, "status": {"conditions": [{"type": "Ready", "status": "True", "observedGeneration": 1}]}}'
+      Pod-all.json: "{{ _pods | to_json }}"
+      served-openbao-0: old-selfsigned
+      served-openbao-1: old-selfsigned
+      served-openbao-2: old-selfsigned
+      pod-cacert-openbao-0: /openbao/config/tls/tls.crt
+      pod-cacert-openbao-1: /openbao/config/tls/tls.crt
+      pod-cacert-openbao-2: /openbao/config/tls/tls.crt
+
+- name: Write the files of the case
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "{{ _case_dir }}/{{ 'k8s/' if item.key is search('^(Secret|Certificate|Issuer|Pod)-') else '' }}{{ item.key }}"
+    mode: "0600"
+  loop: "{{ _files | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"

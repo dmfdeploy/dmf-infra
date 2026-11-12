@@ -1,0 +1,138 @@
+---
+# One case of test-openbao-ca-bundle.yml.
+- name: "{{ case.name }} — set the case directory"
+  ansible.builtin.set_fact:
+    _case_dir: "{{ _state.path }}/{{ case_index }}"
+    eso_openbao_ca_bundle: "{{ case.main_bundle | default('') }}"
+    eso_openbao_external_trust: "{{ case.external | default(false) }}"
+    object_storage_eso_openbao_external_trust: "{{ case.external | default(false) }}"
+
+- name: "{{ case.name }} — make the fake object directory"
+  ansible.builtin.file:
+    path: "{{ _case_dir }}/k8s"
+    state: directory
+    mode: "0700"
+
+- name: "{{ case.name }} — write the fake objects"
+  ansible.builtin.copy:
+    content: "{{ item.value | to_json }}"
+    dest: "{{ _case_dir }}/k8s/{{ item.key }}.json"
+    mode: "0600"
+  loop: "{{ _objects | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    _gate: "{{ case.ca_condition | default('current') }}"
+    _ca_objects:
+      Certificate-openbao-ca:
+        metadata: {generation: 3}
+        status:
+          conditions:
+            - {type: Ready, status: 'True', observedGeneration: "{{ 2 if _gate == 'stale' else 3 }}"}
+      Secret-openbao-ca-tls:
+        data:
+          tls.crt: "{{ (case.ca_tls_crt | default(_ca_old)) | b64encode }}"
+          ca.crt: "{{ (case.ca_tls_crt | default(_ca_old)) | b64encode }}"
+    _objects: >-
+      {{ {'Secret-openbao-tls': {'metadata': {'annotations': {'cert-manager.io/issuer-name': 'openbao-ca'}},
+                                 'data': {'tls.crt': (_leaf | b64encode), 'tls.key': 'ZmFrZQ==', 'ca.crt': (case.leaf_ca_crt | b64encode)}}}
+         | combine({} if (case.no_ca | default(false)) else _ca_objects) }}
+
+# Stores that exist already hold an old bundle. A run that stops must leave them as
+# they are.
+- name: "{{ case.name }} — write the stores that exist"
+  ansible.builtin.copy:
+    content: >-
+      {{ {'metadata': {'resourceVersion': '1'},
+          'spec': {'provider': {'vault': {'caBundle': ('T0xELUJVTkRMRQ==' ), 'auth': {'appRole': {}}}}}} | to_json }}
+    dest: "{{ _case_dir }}/k8s/ClusterSecretStore-{{ item }}.json"
+    mode: "0600"
+  loop: [openbao, openbao-zot, openbao-backups]
+  when: case.existing_stores | default(false)
+
+# The ESO tasks and the object-storage tasks run on their own, so a stop in one does
+# not hide the other.
+- name: "{{ case.name }} — run the ESO tasks"
+  block:
+    - name: Read the CA for ESO and apply the main store
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/base/external-secrets/tasks/{{ item }}"
+      loop: [openbao-trust.yml, cluster-secret-store.yml]
+      vars:
+        cert_manager_openbao_wait_retries: 2
+        cert_manager_openbao_wait_delay: 0
+        eso_openbao_role_id: role-id-1
+        eso_openbao_secret_id: secret-id-1
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome_eso: pass
+        _message_eso: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome_eso: refuse
+        _message_eso: "{{ ansible_failed_result.msg | default('') }}"
+  environment:
+    FAKE_STATE: "{{ _case_dir }}"
+
+- name: "{{ case.name }} — run the object-storage tasks"
+  block:
+    - name: Apply the object-storage stores
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/base/object-storage-credentials/tasks/cluster-secret-stores.yml"
+      vars:
+        cert_manager_openbao_wait_retries: 2
+        cert_manager_openbao_wait_delay: 0
+        _os_credentials:
+          - {logical: zot, logical_dashed: zot, role_id: role-zot}
+          - {logical: backups, logical_dashed: backups, role_id: role-backups}
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome_os: pass
+        _message_os: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome_os: refuse
+        _message_os: "{{ ansible_failed_result.msg | default('') }}"
+  environment:
+    FAKE_STATE: "{{ _case_dir }}"
+
+- name: "{{ case.name }} — each role's outcome is the expected one"
+  ansible.builtin.assert:
+    that:
+      - _outcome_eso == case.expect
+      - _outcome_os == case.expect
+      - case.message is not defined or case.message in _message_eso
+      - case.message is not defined or case.message in _message_os
+    fail_msg: "{{ case.name }}: ESO {{ _outcome_eso }} '{{ _message_eso }}', object storage {{ _outcome_os }} '{{ _message_os }}'"
+
+- name: "{{ case.name }} — read each store that was written"
+  ansible.builtin.slurp:
+    src: "{{ _case_dir }}/k8s/ClusterSecretStore-{{ item }}.json"
+  register: _stores
+  failed_when: false
+  loop: [openbao, openbao-zot, openbao-backups]
+
+- name: "{{ case.name }} — each store holds exactly the CA, or no bundle when there is no CA"
+  ansible.builtin.assert:
+    that:
+      - (item.content | b64decode | from_json).spec.provider.vault.caBundle | default('') == (_expected | b64encode if _expected | length > 0 else '')
+    fail_msg: >-
+      {{ item.item }} holds '{{ (item.content | b64decode | from_json).spec.provider.vault.caBundle | default('') | b64decode }}',
+      expected '{{ _expected }}'
+  loop: "{{ _stores.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  vars:
+    _expected: "{{ (case.main_bundle if item.item == 'openbao' else case.bundle) if case.main_bundle is defined else case.bundle }}"
+  when: case.expect == 'pass'
+
+- name: "{{ case.name }} — no store was written, and a store that existed is as it was"
+  ansible.builtin.assert:
+    that: >-
+      (item.content is not defined) if not (case.existing_stores | default(false)) else
+      ((item.content | b64decode | from_json).spec.provider.vault.caBundle == 'T0xELUJVTkRMRQ=='
+       and (item.content | b64decode | from_json).metadata.resourceVersion == '1')
+  loop: "{{ _stores.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: case.expect == 'refuse'

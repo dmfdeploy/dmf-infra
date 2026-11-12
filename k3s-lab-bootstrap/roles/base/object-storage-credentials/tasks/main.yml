@@ -416,55 +416,10 @@
     label: "{{ item.logical }}"
   no_log: true
 
-# ── Step 12: Read OpenBao TLS secret for ESO trust ─────────────────────────
+# ── Steps 12-13: Read the OpenBao CA certificate and create the ClusterSecretStores
 
-- name: Read OpenBao TLS secret for ESO trust
-  kubernetes.core.k8s_info:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    api_version: v1
-    kind: Secret
-    name: "{{ openbao_tls_secret_name | default('openbao-tls') }}"
-    namespace: "{{ openbao_namespace }}"
-  register: _os_openbao_tls_secret
-  no_log: true
-
-- name: Set ESO OpenBao CA bundle from TLS secret
-  ansible.builtin.set_fact:
-    _os_ca_b64: >-
-      {{ _os_openbao_tls_secret.resources[0].data['tls.crt']
-         if (_os_openbao_tls_secret.resources | default([]) | length > 0)
-         else '' }}
-
-# ── Step 13: Create ClusterSecretStores ─────────────────────────────────────
-
-- name: Create ClusterSecretStore
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    definition:
-      apiVersion: "{{ object_storage_eso_crd_api_version }}"
-      kind: ClusterSecretStore
-      metadata:
-        name: "openbao-{{ item.logical_dashed }}"
-      spec:
-        provider:
-          vault:
-            server: "{{ object_storage_eso_openbao_url }}"
-            path: "{{ object_storage_openbao_kv_mount }}"
-            version: "{{ object_storage_openbao_kv_version }}"
-            caBundle: "{{ _os_ca_b64 if _os_ca_b64 | length > 0 else omit }}"
-            auth:
-              appRole:
-                path: "{{ object_storage_openbao_approle_mount }}"
-                roleId: "{{ item.role_id }}"
-                secretRef:
-                  name: "{{ item.logical_dashed }}-openbao-approle"
-                  namespace: "{{ object_storage_eso_namespace }}"
-                  key: id
-  loop: "{{ _os_credentials }}"
-  loop_control:
-    label: "{{ item.logical }}"
-  no_log: true
+- name: Create the ClusterSecretStores with the OpenBao CA certificate
+  ansible.builtin.include_tasks: cluster-secret-stores.yml
 
 - name: Wait for ClusterSecretStore to become Ready
   kubernetes.core.k8s_info:

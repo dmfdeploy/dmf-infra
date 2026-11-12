@@ -50,6 +50,11 @@
 #   FAKE_POLICY_WRITER   set: a live token that is not root may read and write
 #                        sys/policies/acl/* (the policy-reconciler grant)
 #   FAKE_POLICY_WRITE_FAILS  set: `bao policy write NAME -` fails
+#   FAKE_TLS_MODEL      set: model TLS as the comment before tls_ok describes
+#   FAKE_INITIALIZED    false: `bao status` reports a server that is not initialized
+#   FAKE_STATUS_FAIL_COUNT  with FAKE_STATUS_FAILS: how many status calls fail (default all)
+#   FAKE_STATUS_FAILS   text that `bao status` prints on stderr before it exits 1 (the
+#                        word "garbage" prints non-JSON text on stdout instead)
 # Kubernetes auth: the config and the roles are files under $state/k8s-auth. A token
 # whose name starts with fake-root is a root token and may read and write
 # auth/kubernetes/*; every other token gets 403 on a write. A token revoked with
@@ -89,8 +94,42 @@ count_call() { # count_call NAME -> prints the number of earlier calls, then rec
   printf '%s' "$n"
 }
 
+# TLS (FAKE_TLS_MODEL set): the server answers over TLS with the certificate in
+# $state/served-POD, and the client verifies it against the file that BAO_CACERT names
+# (the pod's own environment, state file pod-cacert-POD, when the call sets none). The
+# file holds what the kubelet projects from k8s/Secret-openbao-tls.json. A certificate
+# verifies against a CA file that holds it, or the CA that the fake kubernetes.core wrote
+# into its text ("|issuer=" followed by the CA's identity, its text up to a "#"). A
+# failure prints the Go error and
+# exits 1 with nothing on stdout, as bao does.
+projected_text() {
+  python3 -c 'import base64,json,sys; print(base64.b64decode(json.load(open(sys.argv[1]))["data"].get(sys.argv[2], "")).decode(), end="")' "$state/k8s/Secret-openbao-tls.json" "$1"
+}
+tls_ok() {
+  [ -n "${FAKE_TLS_MODEL:-}" ] || return 0
+  local served cafile bundle
+  served="$(cat "$state/served-$pod" 2>/dev/null || projected_text tls.crt)"
+  cafile="${BAO_CACERT:-$(cat "$state/pod-cacert-$pod" 2>/dev/null || echo /openbao/config/tls/ca.crt)}"
+  bundle="$(projected_text "$(basename "$cafile")")"
+  [ "$served" = "$bundle" ] || [ "${served%|issuer=${bundle%%#*}}" != "$served" ]
+}
+if [ "${1:-}" = status ] && [ -n "${FAKE_STATUS_FAILS:-}" ] && [ "$(count_call statusfail)" -lt "${FAKE_STATUS_FAIL_COUNT:-1000000}" ]; then
+  case "$FAKE_STATUS_FAILS" in
+    garbage) echo 'not json at all'; exit 1 ;;
+    *) echo "$FAKE_STATUS_FAILS" >&2; exit 1 ;;
+  esac
+fi
+if [ "${1:-}" = status ] && ! tls_ok; then
+  echo 'Error checking seal status: Get "https://127.0.0.1:8200/v1/sys/seal-status": tls: failed to verify certificate: x509: certificate signed by unknown authority' >&2
+  exit 1
+fi
+
 case "$*" in
   "status -format=json")
+    if [ "${FAKE_INITIALIZED:-true}" = false ]; then
+      printf '{"initialized":false,"sealed":true,"t":0,"n":0,"progress":0}\n'
+      exit 2
+    fi
     if is_sealed; then
       printf '{"initialized":true,"sealed":true,"t":3,"n":5,"progress":%s}\n' "$(cat "$progress_file" 2>/dev/null || echo 0)"
       exit 2

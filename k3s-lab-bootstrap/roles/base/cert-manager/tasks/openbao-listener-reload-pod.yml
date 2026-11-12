@@ -1,0 +1,158 @@
+---
+# Reload the listener certificate of one pod (cert_manager_openbao_pod_object), then
+# prove that the pod serves the projected certificate itself, and that the CA and the
+# pod's own CLI verify it. A CA-signed renewal verifies against the same CA as the
+# certificate before it, so only a comparison with the projected certificate shows
+# that the server reloaded. A pod that does not get there stops the play.
+- name: Name the pod and its cluster-internal address
+  ansible.builtin.set_fact:
+    cert_manager_openbao_pod: "{{ cert_manager_openbao_pod_object.metadata.name }}"
+    cert_manager_openbao_pod_ip: "{{ cert_manager_openbao_pod_object.status.podIP | default('') }}"
+
+- name: Stop when a running pod has no address
+  ansible.builtin.fail:
+    msg: "{{ cert_manager_openbao_pod }} runs but has no pod IP, so the play cannot check the certificate it serves."
+  when: cert_manager_openbao_pod_ip | length == 0
+
+- name: Reload the listener certificate and check what the pod serves
+  block:
+    # The kubelet projects a changed Secret into the pod after a delay. A reload
+    # before that would load the old files.
+    - name: Wait until the pod holds the certificate and the CA of the Secret
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ cert_manager_openbao_namespace }}"
+          - exec
+          - "{{ cert_manager_openbao_pod }}"
+          - --
+          - cat
+          - /openbao/config/tls/tls.crt
+          - /openbao/config/tls/ca.crt
+      register: cert_manager_openbao_projected
+      changed_when: false
+      until: >-
+        cert_manager_openbao_projected.rc == 0
+        and (cert_manager_openbao_projected.stdout | trim)
+            == ((cert_manager_openbao_leaf_secret.data['tls.crt'] | b64decode)
+                ~ (cert_manager_openbao_leaf_secret.data['ca.crt'] | b64decode)) | trim
+      retries: "{{ cert_manager_openbao_projection_retries }}"
+      delay: "{{ cert_manager_openbao_projection_delay }}"
+      no_log: true
+
+    - name: Signal the server to reload its listener certificate
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ cert_manager_openbao_namespace }}"
+          - exec
+          - "{{ cert_manager_openbao_pod }}"
+          - --
+          - sh
+          - -c
+          - kill -HUP 1
+      changed_when: true
+
+    # The TLS client runs on the node and connects to the pod's own address (the pod
+    # IP and the API port), never to a public name. It reads the certificate that the
+    # server sends and compares its fingerprint with the projected certificate's.
+    - name: Wait until the pod serves the projected certificate
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          want="$(printf '%s\n' "$OPENBAO_LEAF_CERT" | openssl x509 -outform DER | openssl dgst -sha256)"
+          got="$(openssl s_client -connect "$OPENBAO_POD_IP:8200" -servername "$OPENBAO_SNI" </dev/null 2>/dev/null | openssl x509 -outform DER | openssl dgst -sha256)"
+          [ -n "$want" ] && [ "$want" = "$got" ]
+        executable: /bin/sh
+      environment:
+        OPENBAO_LEAF_CERT: "{{ cert_manager_openbao_leaf_secret.data['tls.crt'] | b64decode }}"
+        OPENBAO_POD_IP: "{{ cert_manager_openbao_pod_ip }}"
+        OPENBAO_SNI: "{{ cert_manager_openbao_common_name }}"
+      register: cert_manager_openbao_served_fingerprint
+      changed_when: false
+      until: cert_manager_openbao_served_fingerprint.rc == 0
+      retries: "{{ cert_manager_openbao_reload_retries }}"
+      delay: "{{ cert_manager_openbao_reload_delay }}"
+      no_log: true
+
+    # bao status exits 2 on a sealed pod and prints the status. It exits 1 and
+    # prints nothing when the TLS handshake fails, so the output is what counts.
+    - name: Wait until the pod serves a certificate that the projected CA verifies
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ cert_manager_openbao_namespace }}"
+          - exec
+          - "{{ cert_manager_openbao_pod }}"
+          - --
+          - sh
+          - -c
+          - BAO_ADDR=https://127.0.0.1:8200 BAO_CACERT=/openbao/config/tls/ca.crt bao status -format=json
+      register: cert_manager_openbao_served
+      changed_when: false
+      failed_when: false
+      until:
+        - cert_manager_openbao_served.stdout | default('') is match('(?s)\s*\{')
+        - cert_manager_openbao_served.stdout | default('') | from_json is mapping
+      retries: "{{ cert_manager_openbao_reload_retries }}"
+      delay: "{{ cert_manager_openbao_reload_delay }}"
+      no_log: true
+
+    # A task with failed_when: false that runs out of tries does not fail, so the
+    # result is checked here.
+    - name: Check that the pod serves a certificate that the projected CA verifies
+      ansible.builtin.assert:
+        that:
+          - cert_manager_openbao_served.stdout | default('') is match('(?s)\s*\{')
+          - cert_manager_openbao_served.stdout | default('') | from_json is mapping
+
+    # The CLI that the role, the restart guard and the runbooks run in the pod
+    # uses the trust that the pod's own environment names. An older pod names the
+    # certificate file, and that file holds the new certificate now, so this call
+    # proves that path too.
+    - name: Wait until the pod's own CLI works
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ cert_manager_openbao_namespace }}"
+          - exec
+          - "{{ cert_manager_openbao_pod }}"
+          - --
+          - bao
+          - status
+          - -format=json
+      register: cert_manager_openbao_cli
+      changed_when: false
+      failed_when: false
+      until:
+        - cert_manager_openbao_cli.stdout | default('') is match('(?s)\s*\{')
+        - cert_manager_openbao_cli.stdout | default('') | from_json is mapping
+      retries: "{{ cert_manager_openbao_reload_retries }}"
+      delay: "{{ cert_manager_openbao_reload_delay }}"
+      no_log: true
+
+    - name: Check that the pod's own CLI works
+      ansible.builtin.assert:
+        that:
+          - cert_manager_openbao_cli.stdout | default('') is match('(?s)\s*\{')
+          - cert_manager_openbao_cli.stdout | default('') | from_json is mapping
+  rescue:
+    - name: Stop because the pod does not serve the CA-signed certificate
+      ansible.builtin.fail:
+        msg: >-
+          {{ cert_manager_openbao_pod }} does not serve the projected certificate after the
+          reload, a certificate that the CA verifies, or its own CLI fails TLS. Check that the kubelet projected the new openbao-tls
+          Secret into the pod, that the pod runs, and that OpenBao received the
+          reload signal. Do not apply the new pod spec or restart the pod until it does.

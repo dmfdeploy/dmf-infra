@@ -1,0 +1,21 @@
+---
+# Wait until a Certificate (cert_manager_openbao_wait_certificate) is Ready for
+# its current generation. The Ready condition carries the generation that it was
+# set for, so a condition from before a change of the spec does not count.
+- name: Wait for the Certificate to be Ready for its current generation
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ cert_manager_openbao_wait_certificate }}"
+    namespace: "{{ cert_manager_openbao_namespace }}"
+  register: cert_manager_openbao_certificate_status
+  until: >-
+    cert_manager_openbao_certificate_status.resources | length > 0
+    and ((cert_manager_openbao_certificate_status.resources[0].status | default({})).conditions | default([]))
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | selectattr('observedGeneration', 'equalto', cert_manager_openbao_certificate_status.resources[0].metadata.generation)
+        | list | length > 0
+  retries: "{{ cert_manager_openbao_wait_retries }}"
+  delay: "{{ cert_manager_openbao_wait_delay }}"

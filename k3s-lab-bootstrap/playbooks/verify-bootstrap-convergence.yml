@@ -257,7 +257,7 @@
           - -c
           - >-
             BAO_ADDR=https://127.0.0.1:8200
-            BAO_CACERT=/openbao/config/tls/tls.crt
+            BAO_CACERT=/openbao/config/tls/ca.crt
             bao status -format=json
       register: _bootstrap_convergence_status_raw
       changed_when: false

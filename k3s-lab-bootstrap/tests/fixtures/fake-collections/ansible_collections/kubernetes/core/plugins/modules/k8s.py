@@ -15,10 +15,13 @@ run of the grow-HA play reads back.
   stored one. A create and an update without force do not check it.
 - Deleting a Pod writes k8s/Pod-<name>.json with a new UID, as the StatefulSet
   recreates the pod, and marks the pod sealed for the fake bao.
-- Creating a Certificate writes k8s/Secret-<secretName>.json with a certificate
-  that holds the DNS names of the Certificate, as cert-manager replaces the secret.
-  The fake openssl prints those names, so a test sees the names that the play
-  rendered.
+- Creating a Certificate writes k8s/Certificate-<name>.json (generation, and a Ready
+  condition for that generation) and k8s/Secret-<secretName>.json with a certificate
+  that holds the DNS names of the Certificate and names its issuer, as cert-manager
+  replaces the secret. The secret's annotations name the issuer, and ca.crt is the
+  certificate of a CA issuer's Secret, or the certificate itself for a self-signed
+  one. The fake openssl prints the DNS names, so a test sees the names that the play
+  rendered. Creating an Issuer writes k8s/Issuer-<name>.json, Ready.
 - Applying a ConfigMap whose data holds a value that is not a string, or a Secret whose
   stringData does, fails with the API server's message, as the API server does:
   the fields take strings only, so a template that renders a boolean or a number
@@ -89,14 +92,11 @@ def main():
         new.setdefault("metadata", {})["resourceVersion"] = str(version)
         new["status"] = {"conditions": [{"type": "Ready", "status": "True"}]}
         write_object(objects, stem, new)
+    if p["state"] == "present" and kind == "Issuer":
+        write_object(objects, "Issuer-" + name, {"metadata": {"name": name}, "spec": (p["definition"] or {}).get("spec", {}) or {},
+                                                 "status": {"conditions": [{"type": "Ready", "status": "True"}]}})
     if p["state"] == "present" and kind == "Certificate":
-        spec = (p["definition"] or {}).get("spec", {}) or {}
-        names = spec.get("dnsNames", [])
-        if isinstance(names, str):
-            names = [names]
-        crt = "dnsNames:" + ",".join(names)
-        write_object(objects, "Secret-" + spec.get("secretName", "tls"),
-                     {"data": {"tls.crt": base64.b64encode(crt.encode()).decode(), "tls.key": "ZmFrZQ=="}})
+        issue_certificate(objects, p["definition"] or {}, name)
     if p["state"] == "absent" and kind == "Pod":
         restarts = os.path.join(state, "restarts-%s" % name)
         count = int(open(restarts).read()) + 1 if os.path.exists(restarts) else 1
@@ -107,7 +107,72 @@ def main():
             if os.path.exists(os.path.join(state, stale)):
                 os.remove(os.path.join(state, stale))
         open(os.path.join(state, "sealed-%s" % name), "w").close()
+        if os.environ.get("FAKE_TLS_MODEL"):
+            # The new pod has the new pod spec (the CA file as its trust) and loads the
+            # files that are projected now.
+            with open(os.path.join(state, "pod-cacert-%s" % name), "w") as handle:
+                handle.write("/openbao/config/tls/ca.crt")
+            with open(os.path.join(state, "served-%s" % name), "w") as handle:
+                handle.write(projected(objects, "tls.crt"))
     module.exit_json(changed=True)
+
+
+def read_object(directory, stem):
+    path = os.path.join(directory, stem + ".json")
+    if not os.path.exists(path):
+        return None
+    with open(path) as handle:
+        return json.load(handle)
+
+
+def projected(objects, key):
+    data = (read_object(objects, "Secret-openbao-tls") or {}).get("data", {})
+    return base64.b64decode(data.get(key, "")).decode()
+
+
+def issue_certificate(objects, definition, name):
+    """cert-manager: the Certificate gets a new generation on every apply, a Ready condition
+    for that generation, and a Secret that the issuer signed. A self-signed issuer gives a
+    Secret whose ca.crt is the certificate itself. FAKE_CERT_ISSUANCE=stuck keeps the old
+    Secret of a leaf Certificate (a CA Certificate is still issued) while the condition says
+    Ready for the new generation, as cert-manager does before it has reissued.
+    FAKE_CA_SECRET_KEEP keeps an existing CA Secret. FAKE_CERT_CONDITION=stale keeps the condition one generation behind."""
+    spec = definition.get("spec", {}) or {}
+    old = read_object(objects, "Certificate-" + name) or {}
+    generation = int((old.get("metadata") or {}).get("generation", 0)) + 1
+    observed = generation - 1 if os.environ.get("FAKE_CERT_CONDITION") == "stale" else generation
+    write_object(objects, "Certificate-" + name, {
+        "metadata": {"name": name, "generation": generation},
+        "spec": spec,
+        "status": {"conditions": [{"type": "Ready", "status": "True", "observedGeneration": observed}]},
+    })
+    if os.environ.get("FAKE_CERT_ISSUANCE") == "stuck" and not spec.get("isCA"):
+        return
+    # FAKE_CA_SECRET_KEEP keeps a CA Secret that the test wrote, such as a renewed one.
+    if os.environ.get("FAKE_CA_SECRET_KEEP") and spec.get("isCA") and read_object(objects, "Secret-" + spec.get("secretName", "tls")):
+        return
+    issuer = spec.get("issuerRef", {}).get("name", "")
+    annotations = {"cert-manager.io/issuer-name": issuer, "cert-manager.io/issuer-kind": spec.get("issuerRef", {}).get("kind", "Issuer"),
+                   "cert-manager.io/issuer-group": "cert-manager.io"}
+    names = spec.get("dnsNames", [])
+    if isinstance(names, str):
+        names = [names]
+    issuer_spec = (read_object(objects, "Issuer-" + issuer) or {}).get("spec", {})
+    if spec.get("isCA"):
+        crt = "ca:" + name
+        ca = crt
+    elif "ca" in issuer_spec:
+        ca_secret = read_object(objects, "Secret-" + issuer_spec["ca"]["secretName"]) or {"data": {}}
+        ca = base64.b64decode(ca_secret["data"].get("tls.crt", "")).decode()
+        crt = "dnsNames:" + ",".join(names) + "|issuer=" + ca.split("#")[0]
+    else:
+        crt = "dnsNames:" + ",".join(names) + "|issuer=self"
+        ca = crt
+    encoded = lambda text: base64.b64encode(text.encode()).decode()
+    write_object(objects, "Secret-" + spec.get("secretName", "tls"), {
+        "metadata": {"annotations": annotations},
+        "data": {"tls.crt": encoded(crt), "tls.key": "ZmFrZQ==", "ca.crt": encoded(ca)},
+    })
 
 
 def check_string_fields(module, kind, definition):

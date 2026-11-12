@@ -49,7 +49,7 @@ You need:
    ```
 
 3. Unseal from inside the OpenBao pod. The pod already sets `BAO_ADDR` to
-   `https://127.0.0.1:8200` and `BAO_CACERT` to the certificate it serves, so
+   `https://127.0.0.1:8200` and `BAO_CACERT` to the CA that signed its certificate, so
    the `bao` tool verifies TLS with no extra flags. Run the command as many
    times as your threshold, and enter one share at each prompt:
 
@@ -76,12 +76,12 @@ You need:
    The output shows `Sealed: false` when the unseal succeeded.
 
 To run the `bao` tool from your own machine instead, port-forward the service
-and trust the self-signed certificate from the `openbao-tls` secret, which
-cert-manager issues for `127.0.0.1` and the service DNS names:
+and trust the CA in the `openbao-tls` secret. cert-manager issues the
+certificate for `127.0.0.1` and the service DNS names:
 
 ```bash
 kubectl -n openbao get secret openbao-tls \
-  -o jsonpath='{.data.tls\.crt}' | base64 -d > <ca-file>
+  -o jsonpath='{.data.ca\.crt}' | base64 -d > <ca-file>
 kubectl -n openbao port-forward svc/openbao 8200:8200 &
 export BAO_ADDR=https://127.0.0.1:8200
 export BAO_CACERT=<ca-file>

@@ -1,0 +1,66 @@
+---
+# Test of the read of `bao status` that decides whether the openbao role runs
+# `bao operator init` (roles/stack/operator/openbao/tasks/read-init-status.yml). A
+# status that cannot be read must stop the play. It must never count as "not
+# initialized": the play would then try to init a server that is initialized, and
+# every step that follows a wrong answer is a step on a guess.
+#
+# Cases: an initialized server, unsealed and sealed (exit code 2), reports true; a
+# server that is not initialized reports false; a call that fails once and then works
+# (a pod that is still starting) is tried again; a TLS error, a pod that does not
+# exist, and output that is not JSON stop the play. Every failing case ends with no
+# `operator init` call.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections" \
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-init-status.yml
+
+- name: Test of the OpenBao init status read
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars_files:
+    - ../roles/stack/operator/openbao/defaults/main.yml
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-status-
+      register: _state
+      changed_when: false
+
+    - name: Run the cases
+      ansible.builtin.include_tasks: _openbao-init-status-case.yml
+      loop:
+        - name: Initialized and unsealed
+          expect: pass
+          initialized: true
+        - name: Initialized and sealed (bao status exits 2)
+          expect: pass
+          initialized: true
+          env: {FAKE_SEALED: openbao-0}
+        - name: Not initialized
+          expect: pass
+          initialized: false
+          env: {FAKE_INITIALIZED: 'false'}
+        - name: A pod that is still starting
+          expect: pass
+          initialized: true
+          env: {FAKE_STATUS_FAILS: 'connection refused', FAKE_STATUS_FAIL_COUNT: '2'}
+        - name: The server's certificate does not verify
+          expect: refuse
+          message: certificate signed by unknown authority
+          also: BAO_CACERT
+          tls_mismatch: true
+        - name: The pod does not exist
+          expect: refuse
+          message: Cannot read the OpenBao status
+          env: {FAKE_MISSING: openbao-0}
+        - name: Output that is not JSON
+          expect: refuse
+          message: Cannot read the OpenBao status
+          env: {FAKE_STATUS_FAILS: garbage}
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"

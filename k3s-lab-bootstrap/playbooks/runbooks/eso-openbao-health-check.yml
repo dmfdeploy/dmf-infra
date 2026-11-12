@@ -53,7 +53,7 @@
           - --
           - sh
           - -c
-          - "BAO_ADDR=https://127.0.0.1:8200 BAO_CACERT=/openbao/config/tls/tls.crt bao status -format=json"
+          - "BAO_ADDR=https://127.0.0.1:8200 BAO_CACERT=/openbao/config/tls/ca.crt bao status -format=json"
       register: openbao_health
       changed_when: false
       no_log: true
@@ -108,7 +108,7 @@
           exec -i pod/{{ openbao_pods.resources[0].metadata.name }}
           -- sh -c '
           BAO_ADDR=https://127.0.0.1:8200
-          BAO_CACERT=/openbao/config/tls/tls.crt
+          BAO_CACERT=/openbao/config/tls/ca.crt
           bao write -format=json auth/userpass/login/{{ _ops_admin_username }} -'
         stdin: "{{ {'password': _ops_admin_password} | to_json }}\n"
       register: _ops_admin_login
@@ -135,7 +135,7 @@
           IFS= read -r BAO_TOKEN;
           export BAO_TOKEN;
           BAO_ADDR=https://127.0.0.1:8200;
-          BAO_CACERT=/openbao/config/tls/tls.crt;
+          BAO_CACERT=/openbao/config/tls/ca.crt;
           export BAO_ADDR BAO_CACERT;
           bao token capabilities -format=json secret/data/apps/zot/admin'
         stdin: "{{ _ops_admin_token }}\n"

@@ -1,0 +1,125 @@
+---
+# One case of test-openbao-cert-issuance.yml: set up the fake cluster, run the
+# certificate task file, read the ordered log of every call, check the case.
+- name: "{{ case.name }} — set the case directory"
+  ansible.builtin.set_fact:
+    _case_dir: "{{ _state.path }}/{{ case_index }}"
+
+- name: "{{ case.name }} — set up the fake cluster"
+  ansible.builtin.include_tasks: _openbao-cert-issuance-setup.yml
+
+- name: "{{ case.name }} — run the certificate task file"
+  block:
+    - name: Run openbao-certificate.yml (the real file)
+      ansible.builtin.include_role:
+        name: base/cert-manager
+        tasks_from: openbao-certificate.yml
+      # The waits are short, and a case can change them or switch the reload off.
+      vars:
+        cert_manager_openbao_wait_retries: "{{ (case.vars | default({})).get('cert_manager_openbao_wait_retries', 3) }}"
+        cert_manager_openbao_wait_delay: 0
+        cert_manager_openbao_projection_retries: "{{ (case.vars | default({})).get('cert_manager_openbao_projection_retries', 3) }}"
+        cert_manager_openbao_projection_delay: 0
+        cert_manager_openbao_reload_retries: "{{ (case.vars | default({})).get('cert_manager_openbao_reload_retries', 3) }}"
+        cert_manager_openbao_reload_delay: 0
+        cert_manager_openbao_reload_enabled: "{{ (case.vars | default({})).get('cert_manager_openbao_reload_enabled', true) }}"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }} {{ ansible_failed_result.stdout | default('') }}"
+  environment: >-
+    {{ {'FAKE_STATE': _case_dir, 'FAKE_TLS_MODEL': '1'} | combine(case.env | default({})) }}
+
+- name: "{{ case.name }} — read the event log"
+  ansible.builtin.slurp:
+    src: "{{ _case_dir }}/events.log"
+  register: _events_raw
+  failed_when: false
+
+- name: "{{ case.name }} — list the events"
+  ansible.builtin.set_fact:
+    _events: "{{ (_events_raw.content | default('') | b64decode).splitlines() }}"
+
+- name: "{{ case.name }} — assert the outcome"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      - case.message is not defined or case.message in _message
+    fail_msg: "{{ case.name }}: outcome {{ _outcome }}, message '{{ _message }}'"
+    success_msg: "{{ case.name }}: {{ _outcome }}"
+
+- name: "{{ case.name }} — these calls happened"
+  ansible.builtin.assert:
+    that: item in _events
+    fail_msg: "'{{ item }}' is not in {{ _events }}"
+  loop: "{{ case.present | default([]) }}"
+
+- name: "{{ case.name }} — these calls did not happen"
+  ansible.builtin.assert:
+    that: _events | select('search', item) | list | length == 0
+    fail_msg: "A call that matches '{{ item }}' happened: {{ _events | select('search', item) | list }}"
+  loop: "{{ case.absent | default([]) }}"
+
+# Each event comes after the one before it in the list.
+- name: "{{ case.name }} — the calls happened in this order"
+  ansible.builtin.assert:
+    that:
+      - item.1 in _events
+      - item.0 == 0 or (_events.index(item.1) > _events.index(case.order[item.0 - 1]))
+    fail_msg: "'{{ item.1 }}' is missing or out of order in {{ _events }}"
+  loop: "{{ range(case.order | length) | zip(case.order) | list }}"
+  when: case.order is defined
+
+- name: "{{ case.name }} — the Secret was read until the pod held it, before the signal"
+  ansible.builtin.assert:
+    that: >-
+      _events[:_events.index('kubectl exec openbao-0 sighup')]
+      | select('equalto', 'kubectl exec openbao-0 cat /openbao/config/tls/tls.crt /openbao/config/tls/ca.crt')
+      | list | length == case.cat_before_hup
+  when: case.cat_before_hup is defined
+
+- name: "{{ case.name }} — read what each pod serves"
+  ansible.builtin.slurp:
+    src: "{{ _case_dir }}/served-{{ item.key }}"
+  register: _served
+  loop: "{{ (case.served | default({})) | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+
+# "leaf" is the text of the leaf that the fake cert-manager issued from the CA.
+- name: "{{ case.name }} — each pod serves what the case expects"
+  ansible.builtin.assert:
+    that: >-
+      (item.content | b64decode) ==
+      ('dnsNames:openbao,openbao.openbao,openbao.openbao.svc,openbao.openbao.svc.cluster.local|issuer=ca:openbao-ca'
+       if item.item.value == 'leaf' else
+       'old-selfsigned' if item.item.value == 'old' else item.item.value)
+    fail_msg: "{{ item.item.key }} serves '{{ item.content | b64decode }}'"
+  loop: "{{ _served.results }}"
+  loop_control:
+    label: "{{ item.item.key }}"
+
+# The CLI that the role, the restart guard and the runbooks run in the pod.
+- name: "{{ case.name }} — run the pod's own CLI"
+  ansible.builtin.command:
+    argv: [kubectl, exec, openbao-0, --, bao, status, -format=json]
+  register: _cli
+  changed_when: false
+  failed_when: false
+  environment:
+    FAKE_STATE: "{{ _case_dir }}"
+    FAKE_TLS_MODEL: "1"
+  when: case.cli is defined
+
+- name: "{{ case.name }} — the CLI works or fails as the case expects"
+  ansible.builtin.assert:
+    that:
+      - (_cli.rc == 0) == (case.cli == 'works')
+      - case.cli == 'works' or 'x509' in _cli.stderr
+    fail_msg: "rc {{ _cli.rc }}, stderr {{ _cli.stderr }}"
+  when: case.cli is defined

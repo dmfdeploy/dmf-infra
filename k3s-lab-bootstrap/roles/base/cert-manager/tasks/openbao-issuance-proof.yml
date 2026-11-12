@@ -1,0 +1,85 @@
+---
+# Prove that the OpenBao certificate in the leaf Secret came from the CA Issuer.
+# A self-signed certificate from before the move can already hold a ca.crt that
+# equals its own certificate, so a key that is present proves nothing. The proof
+# needs all of these:
+#   - cert-manager recorded the CA Issuer as the issuer of the Secret;
+#   - tls.crt is not the CA certificate;
+#   - the certificate verifies against the current certificate in the CA Secret.
+# The proof does not compare ca.crt with the CA Secret. After a renewal of the CA,
+# a leaf keeps the ca.crt of the root that signed it until cert-manager reissues
+# it. The renewed root has the same key and subject, so it still verifies that leaf.
+# It sets cert_manager_openbao_leaf_secret and cert_manager_openbao_ca_secret for
+# the tasks that follow.
+- name: Prove that the CA issued the certificate in the leaf Secret
+  block:
+    - name: Read the OpenBao CA Secret
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ cert_manager_openbao_ca_secret_name }}"
+        namespace: "{{ cert_manager_openbao_namespace }}"
+      register: cert_manager_openbao_ca_secret_read
+      until:
+        - cert_manager_openbao_ca_secret_read.resources | length > 0
+        - "'tls.crt' in cert_manager_openbao_ca_secret_read.resources[0].data"
+      retries: "{{ cert_manager_openbao_wait_retries }}"
+      delay: "{{ cert_manager_openbao_wait_delay }}"
+      no_log: true
+
+    - name: Read the OpenBao leaf Secret until the CA Issuer has issued it
+      kubernetes.core.k8s_info:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        api_version: v1
+        kind: Secret
+        name: "{{ cert_manager_openbao_tls_secret_name }}"
+        namespace: "{{ cert_manager_openbao_namespace }}"
+      register: cert_manager_openbao_leaf_secret_read
+      vars:
+        _leaf: "{{ cert_manager_openbao_leaf_secret_read.resources[0] }}"
+        _ca: "{{ cert_manager_openbao_ca_secret_read.resources[0] }}"
+      until:
+        - cert_manager_openbao_leaf_secret_read.resources | length > 0
+        - (_leaf.metadata.annotations | default({}))['cert-manager.io/issuer-name'] | default('') == cert_manager_openbao_ca_issuer_name
+        - (_leaf.metadata.annotations | default({}))['cert-manager.io/issuer-kind'] | default('') == 'Issuer'
+        - _leaf.data['tls.crt'] | default('') != _ca.data['tls.crt']
+      retries: "{{ cert_manager_openbao_wait_retries }}"
+      delay: "{{ cert_manager_openbao_wait_delay }}"
+      no_log: true
+
+    - name: Verify the OpenBao certificate against the CA certificate
+      ansible.builtin.shell:
+        cmd: |
+          set -eu
+          dir="$(mktemp -d)"
+          trap 'rm -rf "$dir"' EXIT
+          printf '%s\n' "$OPENBAO_CA_CERT" > "$dir/ca.pem"
+          printf '%s\n' "$OPENBAO_LEAF_CERT" > "$dir/leaf.pem"
+          openssl verify -CAfile "$dir/ca.pem" "$dir/leaf.pem"
+        executable: /bin/sh
+      environment:
+        OPENBAO_CA_CERT: "{{ cert_manager_openbao_ca_secret_read.resources[0].data['tls.crt'] | b64decode }}"
+        OPENBAO_LEAF_CERT: "{{ cert_manager_openbao_leaf_secret_read.resources[0].data['tls.crt'] | b64decode }}"
+      register: cert_manager_openbao_verify
+      changed_when: false
+      retries: "{{ cert_manager_openbao_wait_retries }}"
+      delay: "{{ cert_manager_openbao_wait_delay }}"
+      until: cert_manager_openbao_verify.rc == 0
+  rescue:
+    - name: Stop because the CA did not issue the OpenBao certificate
+      ansible.builtin.fail:
+        msg: >-
+          The {{ cert_manager_openbao_tls_secret_name }} Secret does not hold a certificate
+          that the {{ cert_manager_openbao_ca_issuer_name }} Issuer issued: the issuer
+          annotations or the signature of the certificate do not match the CA
+          Secret {{ cert_manager_openbao_ca_secret_name }}. cert-manager may not have
+          reissued yet. Check the Certificate {{ cert_manager_openbao_certificate_name }}
+          and the Issuer in the {{ cert_manager_openbao_namespace }} namespace, then run
+          this play again. Nothing was signalled or restarted.
+
+- name: Keep the proven Secrets for the tasks that follow
+  ansible.builtin.set_fact:
+    cert_manager_openbao_leaf_secret: "{{ cert_manager_openbao_leaf_secret_read.resources[0] }}"
+    cert_manager_openbao_ca_secret: "{{ cert_manager_openbao_ca_secret_read.resources[0] }}"
+  no_log: true

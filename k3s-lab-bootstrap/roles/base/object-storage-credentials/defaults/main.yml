@@ -59,6 +59,11 @@ object_storage_openbao_approle_mount: "approle"
 # OpenBao target URL — default is in-cluster service over TLS
 object_storage_eso_openbao_url: "https://openbao.openbao.svc.cluster.local:8200"
 
+# The endpoint's certificate is trusted another way: an external OpenBao. The stores
+# then carry no bundle. Leave it false for the in-cluster OpenBao: the role then stops
+# when the cluster has no OpenBao CA yet.
+object_storage_eso_openbao_external_trust: false
+
 # OpenBao connection facts (injected by common/openbao-session or caller)
 openbao_pod: "openbao-0"
 openbao_namespace: "openbao"

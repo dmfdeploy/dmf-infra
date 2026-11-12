@@ -11,14 +11,12 @@
 #   2. Set openbao_replicas: 3 in the site inventory.
 #
 # After the play, run the ESO play (vertical-orchestration/100-eso.yml). The play
-# reissues the OpenBao certificate with the Raft peer names. The certificate is
-# self-signed, so the new one is a new trust anchor: the ClusterSecretStore is not
-# ready between the reissue and the ESO play, and the ExternalSecrets keep their
-# last values.
-#
-# The in-pod bao CLI trusts the mounted certificate. After the reissue it fails
-# TLS against the old server certificate that pod 0 still serves, so no in-pod bao
-# call may run between the reissue and the restart of pod 0.
+# reissues the OpenBao certificate with the Raft peer names. The CA signs the new
+# certificate, so clients that trust the CA keep trusting it. On a site that still
+# runs the older self-signed certificate, run 320-cert-manager.yml first: this
+# play does not move a site to the CA. The reissue also reloads the listener
+# certificate of the running pod, so pod 0 serves the new certificate before it
+# restarts below.
 #
 # The play supports exactly three replicas and does not support check mode.
 #
@@ -140,11 +138,9 @@
       again. Nothing has changed.
 
 # Reissue the certificate with the Raft peer names. The Certificate definition is
-# the cert-manager role's, so the DNS name list has one source. The self-signed
-# issuer makes the new certificate a new trust anchor: the ClusterSecretStore is
-# not ready until the ESO play runs after this one. Pod 0 still serves the old
-# certificate until it restarts below, so no in-pod bao call may run from here
-# until pod 0 is unsealed.
+# the cert-manager role's, so the DNS name list has one source. The task file
+# proves that the CA issued the new certificate and reloads the running pod, so
+# the pod's own CLI works after it.
 - name: Reissue the OpenBao certificate with the Raft peer names
   ansible.builtin.include_role:
     name: base/cert-manager

@@ -18,7 +18,17 @@ external endpoint:
 - `eso_openbao_role_id` / `eso_openbao_secret_id` — injected by the caller for
   `approle`; never persisted to disk on cluster nodes. With `kubernetes` they
   are not needed, and they stay available for a rollback.
-- `eso_openbao_ca_bundle` — optional PEM CA bundle for HTTPS targets
+- `eso_openbao_ca_bundle`: optional PEM CA bundle for HTTPS targets. For the
+  in-cluster OpenBao the role sets it from the certificate in the OpenBao CA's
+  own Secret (`openbao-ca-tls`), after it waits for the CA `Certificate` to be
+  Ready. The store never trusts the OpenBao leaf. When the cluster has no OpenBao
+  CA `Certificate` yet, the role stops and says to run `320-cert-manager.yml`
+  first.
+- `eso_openbao_external_trust`: default `false`. Set it to `true` when the
+  endpoint's certificate is trusted another way, such as an external OpenBao. The
+  role then does not read the cluster's OpenBao CA, and the store uses
+  `eso_openbao_ca_bundle` if you set it. To move an existing store from the CA to
+  external trust, delete the store first: a merge keeps the bundle it holds.
 - `eso_crd_api_version` — `external-secrets.io/v1` (v1beta1 is NOT served by
   chart 2.x; don't flip without verifying `kubectl api-resources`)
 

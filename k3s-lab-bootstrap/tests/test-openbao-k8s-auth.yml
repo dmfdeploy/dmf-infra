@@ -290,6 +290,8 @@
           vars:
             openbao_eso_auth_method: approle
             openbao_kubernetes_reviewer_enabled: false
+            openbao_tls_secret_wait_retries: 2
+            openbao_tls_secret_wait_delay: 0
 
     - name: Variable off — read the calls to the cluster
       ansible.builtin.slurp:
@@ -302,6 +304,58 @@
           - "'present StatefulSet openbao' in (_workload_off.content | b64decode)"
           - "'ServiceAccount' not in (_workload_off.content | b64decode)"
           - "'ClusterRole' not in (_workload_off.content | b64decode)"
+
+    # The workload waits for the TLS secret that the CA issued. The secret from before
+    # the move to the CA is self-signed and holds a ca.crt that equals its own
+    # certificate: the wait must refuse it, and the StatefulSet must not apply.
+    - name: Self-signed TLS secret — prepare the fake cluster
+      ansible.builtin.copy:
+        src: fixtures/k8s-seed/
+        dest: "{{ _state.path }}/workload-selfsigned/k8s/"
+        mode: preserve
+      changed_when: false
+
+    - name: Self-signed TLS secret — put the old secret in place
+      ansible.builtin.copy:
+        content: >-
+          {{ {'metadata': {'annotations': {'cert-manager.io/issuer-name': 'openbao-selfsigned'}},
+              'data': {'tls.crt': ('old-selfsigned' | b64encode), 'tls.key': 'ZmFrZQ==', 'ca.crt': ('old-selfsigned' | b64encode)}} | to_json }}
+        dest: "{{ _state.path }}/workload-selfsigned/k8s/Secret-openbao-tls.json"
+        mode: "0644"
+      changed_when: false
+
+    - name: Self-signed TLS secret — apply the workload
+      environment:
+        FAKE_STATE: "{{ _state.path }}/workload-selfsigned"
+      block:
+        - name: Run workload.yml
+          ansible.builtin.include_role:
+            name: stack/operator/openbao
+            tasks_from: workload.yml
+          vars:
+            openbao_eso_auth_method: approle
+            openbao_kubernetes_reviewer_enabled: false
+            openbao_tls_secret_wait_retries: 2
+            openbao_tls_secret_wait_delay: 0
+        - name: Record a pass
+          ansible.builtin.set_fact:
+            _selfsigned_outcome: pass
+      rescue:
+        - name: Record the refusal
+          ansible.builtin.set_fact:
+            _selfsigned_outcome: refuse
+
+    - name: Self-signed TLS secret — read the calls to the cluster
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/workload-selfsigned/k8s-mutations.log"
+      register: _workload_selfsigned
+      failed_when: false
+
+    - name: Self-signed TLS secret — the workload refuses and applies no StatefulSet
+      ansible.builtin.assert:
+        that:
+          - _selfsigned_outcome == 'refuse'
+          - "'present StatefulSet openbao' not in (_workload_selfsigned.content | default('') | b64decode)"
 
     # ── 5. The verifier's refresh probe ─────────────────────────────────────
     # The fake kubectl writes the status as ESO does after a sync, as it annotates the
