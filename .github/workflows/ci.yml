@@ -12,7 +12,9 @@ concurrency:
 jobs:
   ansible:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # The playbook tests run against fakes, one after another; together they take
+    # well over 15 minutes, so allow 30.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: k3s-lab-bootstrap
