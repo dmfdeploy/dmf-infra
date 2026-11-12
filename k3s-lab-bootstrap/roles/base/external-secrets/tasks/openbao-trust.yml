@@ -1,0 +1,23 @@
+---
+# Set eso_openbao_ca_bundle to the OpenBao CA certificate. The CA's names and the
+# wait for the CA come from the cert-manager role, so the CA is named once. The
+# namespace follows the openbao role's variable, as the other OpenBao tasks do.
+# A site that trusts the endpoint another way (an external OpenBao, or a bundle of
+# its own in eso_openbao_ca_bundle) sets eso_openbao_external_trust, and this file
+# changes nothing. Without it, a site that has no OpenBao CA yet stops with the
+# instruction to run 320-cert-manager.yml.
+- name: Read the OpenBao CA certificate
+  ansible.builtin.include_role:
+    name: base/cert-manager
+    tasks_from: openbao-ca-bundle.yml
+  vars:
+    cert_manager_openbao_namespace: "{{ openbao_namespace | default('openbao') }}"
+  when: not (eso_openbao_external_trust | bool)
+
+- name: Set ESO OpenBao CA bundle from the CA certificate
+  ansible.builtin.set_fact:
+    eso_openbao_ca_bundle: "{{ cert_manager_openbao_ca_bundle_pem }}"
+  when:
+    - not (eso_openbao_external_trust | bool)
+    - cert_manager_openbao_ca_bundle_pem | length > 0
+  no_log: true

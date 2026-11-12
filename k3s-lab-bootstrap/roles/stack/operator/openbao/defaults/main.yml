@@ -56,10 +56,22 @@ openbao_resources:
 openbao_service_port: 8200
 openbao_service_name: openbao
 
-# TLS — cert-manager-issued self-signed cert for internal service DNS and
-# loopback access. The secret is created in the openbao namespace and mounted
+# TLS — cert-manager-issued cert for internal service DNS and loopback access,
+# signed by a CA in the openbao namespace. ca.crt in the same secret is the
+# trust anchor. The secret is created in the openbao namespace and mounted
 # into the OpenBao pod.
 openbao_tls_secret_name: openbao-tls
+# The issuer that must have issued the certificate in that secret before the
+# workload applies. The cert-manager role names it with the same default
+# (cert_manager_openbao_ca_issuer_name), and the two defaults must stay equal.
+openbao_tls_issuer_name: openbao-ca
+openbao_tls_secret_wait_retries: 60
+openbao_tls_secret_wait_delay: 5
+
+# Reads of `bao status` before init: a pod that is still starting gets this many
+# tries, this many seconds apart. Anything else stops the play.
+openbao_status_retries: 12
+openbao_status_delay: 5
 
 # Shamir init
 # Number of key shares and threshold. Default: 5 shares, threshold 3.

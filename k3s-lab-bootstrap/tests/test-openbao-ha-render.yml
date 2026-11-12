@@ -75,7 +75,7 @@
           - _cfg3 | regex_findall('retry_join \{') | length == 3
           - _cfg3 is search('leader_api_addr     = "https://openbao-0.openbao-internal.openbao.svc.cluster.local:8200"')
           - _cfg3 is search('leader_api_addr     = "https://openbao-2.openbao-internal.openbao.svc.cluster.local:8200"')
-          - _cfg3 | regex_findall('leader_ca_cert_file = "/openbao/config/tls/tls.crt"') | length == 3
+          - _cfg3 | regex_findall('leader_ca_cert_file = "/openbao/config/tls/ca.crt"') | length == 3
         fail_msg: The three-replica ConfigMap does not join the peers.
 
     - name: Three replicas — assert the certificate covers every pod name

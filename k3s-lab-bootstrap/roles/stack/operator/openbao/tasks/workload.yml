@@ -19,21 +19,8 @@
       data:
         config.hcl: "{{ lookup('ansible.builtin.template', 'config.hcl.j2') }}"
 
-- name: Wait for OpenBao TLS secret to be present
-  kubernetes.core.k8s_info:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    api_version: v1
-    kind: Secret
-    name: "{{ openbao_tls_secret_name }}"
-    namespace: "{{ openbao_namespace }}"
-  register: openbao_tls_secret
-  until:
-    - openbao_tls_secret.resources | length > 0
-    - openbao_tls_secret.resources[0].data['tls.crt'] is defined
-    - openbao_tls_secret.resources[0].data['tls.key'] is defined
-  retries: 60
-  delay: 5
-  no_log: true
+- name: Wait for the OpenBao TLS secret that the CA issued
+  ansible.builtin.include_tasks: wait-tls-secret.yml
 
 - name: Count cluster nodes for the pod anti-affinity rule
   kubernetes.core.k8s_info:

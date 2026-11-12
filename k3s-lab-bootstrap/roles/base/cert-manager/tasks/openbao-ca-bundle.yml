@@ -1,0 +1,54 @@
+---
+# Read the OpenBao CA certificate for a client outside the pods (ESO and the
+# object-storage stores). It sets cert_manager_openbao_ca_bundle_pem to the
+# certificate in the CA's own Secret, which is the certificate that signs the
+# OpenBao certificate. After a renewal of the CA, the next run picks up the new
+# certificate without a reissue of the OpenBao certificate. A site that has no
+# OpenBao CA Certificate has not moved to the CA, so the tasks stop and say so: a
+# client that skipped the CA would get no trust anchor for the internal endpoint.
+# A client that points at an endpoint with other trust does not include this file.
+- name: Look for the OpenBao CA Certificate
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ cert_manager_openbao_ca_certificate_name }}"
+    namespace: "{{ cert_manager_openbao_namespace }}"
+  register: cert_manager_openbao_ca_certificate_lookup
+
+- name: Stop when the OpenBao CA Certificate does not exist
+  ansible.builtin.fail:
+    msg: >-
+      The OpenBao CA Certificate {{ cert_manager_openbao_ca_certificate_name }} does
+      not exist in the {{ cert_manager_openbao_namespace }} namespace. This site has
+      not moved to the OpenBao CA yet: run 320-cert-manager.yml first. If this store
+      points at an external endpoint whose certificate is trusted another way, set
+      eso_openbao_external_trust (ESO) or object_storage_eso_openbao_external_trust
+      (object storage) to true.
+  when: cert_manager_openbao_ca_certificate_lookup.resources | length == 0
+
+- name: Wait for the OpenBao CA Certificate to be Ready for its current generation
+  ansible.builtin.include_tasks: openbao-wait-certificate.yml
+  vars:
+    cert_manager_openbao_wait_certificate: "{{ cert_manager_openbao_ca_certificate_name }}"
+
+- name: Read the OpenBao CA Secret
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ cert_manager_openbao_ca_secret_name }}"
+    namespace: "{{ cert_manager_openbao_namespace }}"
+  register: cert_manager_openbao_ca_bundle_secret
+  until:
+    - cert_manager_openbao_ca_bundle_secret.resources | length > 0
+    - "'tls.crt' in cert_manager_openbao_ca_bundle_secret.resources[0].data"
+  retries: "{{ cert_manager_openbao_wait_retries }}"
+  delay: "{{ cert_manager_openbao_wait_delay }}"
+  no_log: true
+
+- name: Set the OpenBao CA bundle
+  ansible.builtin.set_fact:
+    cert_manager_openbao_ca_bundle_pem: >-
+      {{ cert_manager_openbao_ca_bundle_secret.resources[0].data['tls.crt'] | b64decode }}
+  no_log: true

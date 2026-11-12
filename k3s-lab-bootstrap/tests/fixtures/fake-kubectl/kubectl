@@ -24,6 +24,13 @@
 #       collide another writer first cuts the marker text out of every annotation value
 #               that embeds it, then the status stays as it was: the status holds the
 #               version of the metadata as it was rendered with the embedded marker.
+#   Inside `exec`, two commands do not run here. `cat /openbao/config/tls/FILE...`
+#   prints what the kubelet projects from k8s/Secret-openbao-tls.json (tls.crt, tls.key,
+#   ca.crt); for the first $FAKE_PROJECTION_LAG calls to a pod it prints the text
+#   "stale-projection" instead, as a pod whose volume has not been updated yet.
+#   `sh -c 'kill -HUP 1'` is the reload signal. With FAKE_TLS_MODEL set it makes the
+#   pod serve the projected tls.crt (state file served-POD), unless FAKE_HUP_IGNORED is
+#   set. The fake never runs `kill`: a real one would signal the host.
 # Every call is logged to $FAKE_STATE/events.log. Any other call fails, so a test
 # notices a new kind of call.
 set -u
@@ -119,6 +126,31 @@ if [ $# -eq 3 ] && [ "$1" = sh ] && [ "$2" = -c ] && [ "${3#cat > /}" != "$3" ];
   mkdir -p "$state/pod-fs/$pod$(dirname "$dest")"
   cat > "$state/pod-fs/$pod$dest"
   log_event "kubectl exec $pod write $dest"
+  exit 0
+fi
+projected() { # projected KEY -> the decoded value in the projected secret
+  python3 -c 'import base64,json,sys; print(base64.b64decode(json.load(open(sys.argv[1]))["data"].get(sys.argv[2], "")).decode(), end="")' "$state/k8s/Secret-openbao-tls.json" "$1"
+}
+if [ "$1" = cat ] && [ "${2#/openbao/config/tls/}" != "$2" ]; then
+  shift
+  log_event "kubectl exec $pod cat $*"
+  n=0
+  [ -f "$state/count-projection-$pod" ] && n="$(cat "$state/count-projection-$pod")"
+  echo $((n + 1)) > "$state/count-projection-$pod"
+  if [ "$n" -lt "${FAKE_PROJECTION_LAG:-0}" ]; then
+    printf 'stale-projection'
+    exit 0
+  fi
+  for f in "$@"; do
+    projected "$(basename "$f")"
+  done
+  exit 0
+fi
+if [ $# -eq 3 ] && [ "$1" = sh ] && [ "$2" = -c ] && [ "$3" = "kill -HUP 1" ]; then
+  log_event "kubectl exec $pod sighup"
+  if [ -n "${FAKE_TLS_MODEL:-}" ] && [ -z "${FAKE_HUP_IGNORED:-}" ]; then
+    projected tls.crt > "$state/served-$pod"
+  fi
   exit 0
 fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

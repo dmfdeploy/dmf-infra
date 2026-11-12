@@ -98,9 +98,9 @@ that re-keys lowercase → uppercase.
 | `object_storage_consumer_namespaces` | (see defaults) | Per-logical namespace list |
 | `object_storage_managed_consumer_namespaces` | `["openbao-system"]` | Consumer namespaces this role may create |
 | `object_storage_eso_openbao_url` | `https://openbao.openbao.svc.cluster.local:8200` | OpenBao server URL |
+| `object_storage_eso_openbao_external_trust` | `false` | Set to `true` for an endpoint whose certificate is trusted another way, such as an external OpenBao. The stores then carry no CA bundle. When `false`, the stores use the certificate in the OpenBao CA's own Secret (`openbao-ca-tls`), and the role stops when the cluster has no OpenBao CA yet: run `320-cert-manager.yml` first |
 | `openbao_namespace` | `openbao` | OpenBao K8s namespace |
 | `openbao_pod` | `openbao-0` | OpenBao pod name |
-| `openbao_tls_secret_name` | `openbao-tls` | TLS secret name for CA bundle |
 
 ## Playbook
 

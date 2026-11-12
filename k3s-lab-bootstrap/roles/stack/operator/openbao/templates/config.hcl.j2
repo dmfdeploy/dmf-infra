@@ -6,7 +6,7 @@ storage "raft" {
 
   retry_join {
     leader_api_addr     = "https://openbao-{{ _ordinal }}.{{ openbao_headless_service_name }}.{{ openbao_namespace }}.svc.cluster.local:8200"
-    leader_ca_cert_file = "/openbao/config/tls/tls.crt"
+    leader_ca_cert_file = "/openbao/config/tls/ca.crt"
   }
 {% endfor %}
 {% else %}

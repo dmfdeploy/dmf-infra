@@ -1,0 +1,24 @@
+---
+# Make every running OpenBao server serve the certificate that the leaf Secret
+# holds now. OpenBao reads the listener certificate at startup and again on
+# SIGHUP, and a pod keeps its old certificate until then. A pod that still serves
+# a certificate from before the move to the CA fails the in-pod CLI as soon as
+# the Secret changes under it, and so does the restart guard. This file runs
+# every time the certificate task file runs, so a renewal is picked up by the
+# next run too. It does nothing when no pod runs, as on a fresh install.
+- name: List the OpenBao pods
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ cert_manager_openbao_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=openbao"
+  register: cert_manager_openbao_pods
+
+- name: Reload the listener certificate in each running pod
+  ansible.builtin.include_tasks: openbao-listener-reload-pod.yml
+  loop: "{{ cert_manager_openbao_pods.resources | selectattr('status.phase', 'equalto', 'Running') | list }}"
+  loop_control:
+    loop_var: cert_manager_openbao_pod_object
+    label: "{{ cert_manager_openbao_pod_object.metadata.name }}"

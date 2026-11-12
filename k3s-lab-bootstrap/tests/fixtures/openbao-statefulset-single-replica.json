@@ -39,7 +39,7 @@
               },
               {
                 "name": "BAO_CACERT",
-                "value": "/openbao/config/tls/tls.crt"
+                "value": "/openbao/config/tls/ca.crt"
               },
               {
                 "name": "BAO_LOCAL_ADDRESS",

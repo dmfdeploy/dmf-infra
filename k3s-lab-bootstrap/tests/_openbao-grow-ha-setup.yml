@@ -20,9 +20,13 @@
     dest: "{{ _case_dir }}/k8s/StatefulSet-openbao.json"
     mode: "0600"
 
+# The secret that the install had before the move to the CA: self-signed, so its
+# ca.crt is its own certificate.
 - name: Write the fake TLS secret
   ansible.builtin.copy:
-    content: '{"data": {"tls.crt": "ZmFrZQ==", "tls.key": "ZmFrZQ=="}}'
+    content: >-
+      {"metadata": {"annotations": {"cert-manager.io/issuer-name": "openbao-selfsigned", "cert-manager.io/issuer-kind": "Issuer"}},
+       "data": {"tls.crt": "ZmFrZQ==", "tls.key": "ZmFrZQ==", "ca.crt": "ZmFrZQ=="}}
     dest: "{{ _case_dir }}/k8s/Secret-openbao-tls.json"
     mode: "0600"
 
@@ -36,7 +40,7 @@
 
 - name: Write the fake OpenBao Certificate
   ansible.builtin.copy:
-    content: '{"status": {"conditions": [{"type": "Ready", "status": "True"}]}}'
+    content: '{"metadata": {"generation": 1}, "status": {"conditions": [{"type": "Ready", "status": "True", "observedGeneration": 1}]}}'
     dest: "{{ _case_dir }}/k8s/Certificate-openbao.json"
     mode: "0600"
 

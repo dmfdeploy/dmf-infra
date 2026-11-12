@@ -1,0 +1,54 @@
+---
+# Set openbao_is_initialized from `bao status` in openbao_pod. The play inits only
+# when the server says it is not initialized, so a read that fails must stop the
+# play and never count as "not initialized": a failed init on a running server
+# changes nothing useful, and a rotation that follows a wrong answer does harm.
+# bao status exits 2 on a sealed pod and prints the status, so the output decides,
+# not the exit code. A pod that is still starting gets a few tries.
+- name: Check OpenBao init status
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ openbao_pod }}"
+      - --
+      - bao
+      - status
+      - -format=json
+  register: openbao_status_cmd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  until:
+    - openbao_status_cmd.stdout | default('') is match('(?s)\s*\{')
+    - openbao_status_cmd.stdout | default('') | from_json is mapping
+    - "'initialized' in (openbao_status_cmd.stdout | from_json)"
+  retries: "{{ openbao_status_retries }}"
+  delay: "{{ openbao_status_delay }}"
+  ignore_errors: true
+
+- name: Stop when the init status cannot be read
+  ansible.builtin.fail:
+    msg: >-
+      Cannot read the OpenBao status in {{ openbao_pod }}
+      (exit code {{ openbao_status_cmd.rc | default('unknown') }}):
+      {{ (openbao_status_cmd.stderr | default('') | trim)[:300] or 'no error text' }}.
+      The play does not guess whether OpenBao is initialized. A TLS error such
+      as "certificate signed by unknown authority" means the pod's BAO_CACERT file
+      does not verify the certificate that the server serves, for example after
+      the certificate moved to the OpenBao CA and the server has not reloaded it.
+      Run 320-cert-manager.yml, which reloads the listener certificate, then run
+      this play again. For another error, check that the pod runs and that
+      `kubectl exec` works.
+  when: >-
+    openbao_status_cmd.stdout | default('') is not match('(?s)\s*\{')
+    or openbao_status_cmd.stdout | default('') | from_json is not mapping
+    or 'initialized' not in (openbao_status_cmd.stdout | from_json)
+
+- name: Set the OpenBao init status
+  ansible.builtin.set_fact:
+    openbao_is_initialized: "{{ (openbao_status_cmd.stdout | from_json).initialized | bool }}"

@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
-# Fake openssl for tests/test-openbao-grow-ha.yml. It answers only
-# `openssl x509 -noout -ext subjectAltName` and reads the certificate on stdin:
+# Fake openssl for the OpenBao tests. It answers `openssl x509 -noout -ext
+# subjectAltName` and `openssl verify`. The first reads the certificate on stdin:
 #   - "dnsNames:a,b" (written by the fake kubernetes.core when the play creates the
 #     Certificate): it prints those names, so the test sees what the play rendered;
 #   - "stale": a certificate that does not cover the Raft peers yet;
 #   - anything else (the certificate that the install had before): the names of a
 #     single-replica install.
+# It also answers `openssl verify -CAfile CA CERT`, on files that hold the fake
+# certificates: the certificate verifies against a CA when it is the CA certificate
+# itself (as a self-signed certificate is its own anchor), or when its text ends in
+# "|issuer=" followed by the CA's identity, as the fake kubernetes.core writes it. The
+# identity is the CA text up to a "#": a CA text "ca:name#renewed" is a renewal of the
+# CA "ca:name" with the same key and subject, so it verifies what the earlier one signed.
+# `x509 -outform DER` passes its input through, `dgst -sha256` hashes it, and `s_client
+# -connect IP:PORT` prints the certificate that the pod with that IP serves (the state
+# file served-POD, found through status.podIP in k8s/Pod-all.json); an unknown IP fails.
 # The macOS openssl is LibreSSL, which has no `-ext` option, and the migration's
 # certificate check runs on a Linux node.
 case "$*" in
@@ -13,7 +22,7 @@ case "$*" in
     crt="$(cat)"
     case "$crt" in
       dnsNames:*)
-        names="$(printf '%s' "${crt#dnsNames:}" | sed 's/,/, DNS:/g')"
+        names="$(printf '%s' "${crt#dnsNames:}" | sed 's/|issuer=.*//; s/,/, DNS:/g')"
         printf 'X509v3 Subject Alternative Name: \n    DNS:%s\n' "$names"
         ;;
       *)
@@ -23,5 +32,37 @@ case "$*" in
     exit 0
     ;;
 esac
+if [ "$*" = "x509 -outform DER" ]; then
+  cat
+  exit 0
+fi
+if [ "$*" = "dgst -sha256" ]; then
+  python3 -c 'import hashlib,sys; print("SHA2-256(stdin)= " + hashlib.sha256(sys.stdin.buffer.read().rstrip(b"\n")).hexdigest())'
+  exit 0
+fi
+if [ "${1:-}" = s_client ] && [ "${2:-}" = -connect ]; then
+  ip="${3%%:*}"
+  pod="$(python3 -c 'import json,sys
+for p in json.load(open(sys.argv[1])):
+    if p.get("status", {}).get("podIP") == sys.argv[2]:
+        print(p["metadata"]["name"])' "${FAKE_STATE:-/nonexistent}/k8s/Pod-all.json" "$ip" 2>/dev/null)"
+  if [ -z "${FAKE_TLS_MODEL:-}" ] || [ -z "$pod" ] || [ ! -f "$FAKE_STATE/served-$pod" ]; then
+    echo "fake openssl: no pod serves $3" >&2
+    exit 1
+  fi
+  printf '%s' "$(cat "$FAKE_STATE/served-$pod")"
+  exit 0
+fi
+if [ "${1:-}" = verify ] && [ "${2:-}" = -CAfile ] && [ $# -eq 4 ]; then
+  ca="$(cat "$3")"
+  crt="$(cat "$4")"
+  id="${ca%%#*}"
+  if [ "$crt" = "$ca" ] || [ "${crt%|issuer=$id}" != "$crt" ]; then
+    echo "$4: OK"
+    exit 0
+  fi
+  echo "error: certificate does not verify against the CA" >&2
+  exit 2
+fi
 echo "fake openssl: unexpected call: $*" >&2
 exit 1

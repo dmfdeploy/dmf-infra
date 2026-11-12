@@ -1,11 +1,14 @@
 ---
-# The OpenBao certificate: namespace, self-signed Issuer, Certificate and the wait
-# for it. main.yml includes this file, and the OpenBao grow-HA play includes it
-# alone (include_role with tasks_from) to reissue the certificate with the Raft
-# peer names from the same definition.
+# The OpenBao certificate: namespace, the CA that signs it, the leaf Certificate
+# and the wait for it. main.yml includes this file, and the OpenBao grow-HA play
+# includes it alone (include_role with tasks_from) to reissue the certificate
+# with the Raft peer names from the same definition.
 
-# OpenBao TLS is internal-only. Use a self-signed issuer so the OpenBao pod and
-# in-cluster clients can trust the same certificate without depending on ACME.
+# OpenBao TLS is internal-only, so the CA lives in the OpenBao namespace and does
+# not depend on ACME or on the TLS mode of the site. A self-signed Issuer signs
+# the CA certificate once, and a CA Issuer backed by it signs the leaf. Clients
+# trust the CA (ca.crt in the leaf Secret), never the leaf, so a leaf renewal
+# changes nothing they trust.
 
 - name: Create OpenBao namespace for TLS Issuer
   kubernetes.core.k8s:
@@ -18,7 +21,7 @@
         name: "{{ cert_manager_openbao_namespace }}"
   when: cert_manager_openbao_enabled | bool
 
-- name: Create OpenBao self-signed Issuer
+- name: Create OpenBao bootstrap Issuer
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
@@ -30,6 +33,73 @@
         namespace: "{{ cert_manager_openbao_namespace }}"
       spec:
         selfSigned: {}
+  when: cert_manager_openbao_enabled | bool
+
+# The root keeps its private key when it renews (rotationPolicy Never). A
+# renewed root then has the same subject and key as the old one, so leaves
+# signed before the renewal and client bundles that hold the old root stay valid.
+- name: Create OpenBao CA Certificate
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ cert_manager_openbao_ca_certificate_name }}"
+        namespace: "{{ cert_manager_openbao_namespace }}"
+      spec:
+        isCA: true
+        secretName: "{{ cert_manager_openbao_ca_secret_name }}"
+        commonName: "{{ cert_manager_openbao_ca_common_name }}"
+        duration: "{{ cert_manager_openbao_ca_duration }}"
+        renewBefore: "{{ cert_manager_openbao_ca_renew_before }}"
+        privateKey:
+          algorithm: ECDSA
+          size: 256
+          rotationPolicy: Never
+        issuerRef:
+          name: "{{ cert_manager_openbao_issuer_name }}"
+          kind: Issuer
+  when: cert_manager_openbao_enabled | bool
+
+- name: Wait for the OpenBao CA Certificate to be Ready for its current generation
+  ansible.builtin.include_tasks: openbao-wait-certificate.yml
+  vars:
+    cert_manager_openbao_wait_certificate: "{{ cert_manager_openbao_ca_certificate_name }}"
+  when: cert_manager_openbao_enabled | bool
+
+- name: Create OpenBao CA Issuer
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Issuer
+      metadata:
+        name: "{{ cert_manager_openbao_ca_issuer_name }}"
+        namespace: "{{ cert_manager_openbao_namespace }}"
+      spec:
+        ca:
+          secretName: "{{ cert_manager_openbao_ca_secret_name }}"
+  when: cert_manager_openbao_enabled | bool
+
+- name: Wait for the OpenBao CA Issuer to be Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Issuer
+    name: "{{ cert_manager_openbao_ca_issuer_name }}"
+    namespace: "{{ cert_manager_openbao_namespace }}"
+  register: cert_manager_openbao_issuer_status
+  until: >-
+    cert_manager_openbao_issuer_status.resources | length > 0
+    and ((cert_manager_openbao_issuer_status.resources[0].status | default({})).conditions | default([]))
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length > 0
+  retries: "{{ cert_manager_openbao_wait_retries }}"
+  delay: "{{ cert_manager_openbao_wait_delay }}"
   when: cert_manager_openbao_enabled | bool
 
 - name: Create OpenBao Certificate
@@ -48,24 +118,25 @@
         dnsNames: "{{ cert_manager_openbao_dns_names }}"
         ipAddresses: "{{ cert_manager_openbao_ip_addresses }}"
         issuerRef:
-          name: "{{ cert_manager_openbao_issuer_name }}"
+          name: "{{ cert_manager_openbao_ca_issuer_name }}"
           kind: Issuer
   when: cert_manager_openbao_enabled | bool
 
-- name: Wait for OpenBao Certificate to become Ready
-  kubernetes.core.k8s_info:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    api_version: cert-manager.io/v1
-    kind: Certificate
-    name: "{{ cert_manager_openbao_certificate_name }}"
-    namespace: "{{ cert_manager_openbao_namespace }}"
-  register: cert_manager_openbao_certificate_status
-  until: >-
-    cert_manager_openbao_certificate_status.resources | length > 0
-    and (cert_manager_openbao_certificate_status.resources[0].status.conditions | default([]))
-        | selectattr('type', 'equalto', 'Ready')
-        | selectattr('status', 'equalto', 'True')
-        | list | length > 0
-  retries: "{{ cert_manager_openbao_wait_retries }}"
-  delay: "{{ cert_manager_openbao_wait_delay }}"
+# A Ready condition from before the issuer changed can still be true while
+# cert-manager has not reissued. The wait accepts a condition only for the
+# current generation of the Certificate, and the proof reads the Secret itself.
+- name: Wait for the OpenBao Certificate to be Ready for its current generation
+  ansible.builtin.include_tasks: openbao-wait-certificate.yml
+  vars:
+    cert_manager_openbao_wait_certificate: "{{ cert_manager_openbao_certificate_name }}"
   when: cert_manager_openbao_enabled | bool
+
+- name: Prove that the CA issued the OpenBao certificate
+  ansible.builtin.include_tasks: openbao-issuance-proof.yml
+  when: cert_manager_openbao_enabled | bool
+
+- name: Make the running OpenBao servers serve the new certificate
+  ansible.builtin.include_tasks: openbao-listener-reload.yml
+  when:
+    - cert_manager_openbao_enabled | bool
+    - cert_manager_openbao_reload_enabled | bool

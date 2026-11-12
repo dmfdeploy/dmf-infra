@@ -1,0 +1,168 @@
+---
+# Test of the OpenBao certificate task file, roles/base/cert-manager/tasks/
+# openbao-certificate.yml, against a fake kubectl, a fake bao, a fake openssl and a
+# fake kubernetes.core (tests/fixtures). The fakes model what cert-manager does:
+# a Ready condition for a generation, a Secret that names its issuer, a ca.crt that
+# is the certificate itself for a self-signed issuer. With FAKE_TLS_MODEL they also
+# model a server that serves one certificate until it is signalled, and a client
+# that verifies it against the CA file the pod's environment names.
+#
+# Cases:
+#   migration           an install that has the self-signed certificate: the old
+#                       pods serve it and name the certificate file as their trust.
+#                       The play issues from the CA, waits for the projection,
+#                       signals each pod, and checks what each pod serves and that
+#                       its own CLI works. Nothing in a pod is used before that.
+#   no_reload           the same without the reload: the pods' own CLI fails TLS,
+#                       which is the failure that the reload prevents
+#   renewal             a pod that already runs on the CA gets a renewed
+#                       certificate: the reload runs again and the pod serves it
+#   fresh               no pod runs: nothing is run in a pod
+#   stuck               cert-manager says Ready but has not reissued: the Secret is
+#                       still the self-signed one, whose ca.crt is its own
+#                       certificate, and the play must not accept it
+#   stale_condition     the Ready condition is for an older generation
+#   projection_lag      the kubelet projects the Secret late: the play waits
+#   projection_never    it never does: the play stops before the signal
+#   hup_ignored         the server does not reload: the play stops
+#   renewal_hup_ignored a CA-signed renewal, and the server ignores the signal: the
+#                       old and the new certificate verify against the same CA, so
+#                       only the comparison with the projected certificate stops the play
+#   ca_renewed          the CA Secret holds a renewed root (same key and subject) and
+#                       the OpenBao certificate is still the one that the previous root
+#                       signed: the proof passes, and the pods keep serving it
+#
+# Run locally, from k3s-lab-bootstrap:
+#   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections" \
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-cert-issuance.yml
+
+- name: Test of the OpenBao certificate issuance and reload
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-cert-
+      register: _state
+      changed_when: false
+
+    - name: Run the cases
+      ansible.builtin.include_tasks: _openbao-cert-issuance-case.yml
+      loop:
+        - name: Migration from the self-signed certificate
+          id: migration
+          expect: pass
+          order:
+            - k8s present Issuer openbao-selfsigned
+            - k8s present Certificate openbao-ca
+            - k8s present Issuer openbao-ca
+            - k8s present Certificate openbao
+            - kubectl exec openbao-0 cat /openbao/config/tls/tls.crt /openbao/config/tls/ca.crt
+            - kubectl exec openbao-0 sighup
+          served: &leaf_served
+            openbao-0: leaf
+            openbao-1: leaf
+            openbao-2: leaf
+          cli: works
+        - name: Migration without the reload
+          id: no_reload
+          expect: pass
+          vars: {cert_manager_openbao_reload_enabled: false}
+          absent: ['sighup']
+          served:
+            openbao-0: old
+            openbao-1: old
+            openbao-2: old
+          cli: fails
+        - name: Renewal on a pod that runs on the CA
+          id: renewal
+          expect: pass
+          files: &renewal_files
+            Secret-openbao-ca-tls.json: '{"data": {"tls.crt": "{{ "ca:openbao-ca" | b64encode }}", "ca.crt": "{{ "ca:openbao-ca" | b64encode }}"}}'
+            Secret-openbao-tls.json: >-
+              {"metadata": {"annotations": {"cert-manager.io/issuer-name": "openbao-ca", "cert-manager.io/issuer-kind": "Issuer"}},
+               "data": {"tls.crt": "{{ "dnsNames:renewed|issuer=ca:openbao-ca" | b64encode }}", "tls.key": "ZmFrZQ==", "ca.crt": "{{ "ca:openbao-ca" | b64encode }}"}}
+            served-openbao-0: "dnsNames:previous|issuer=ca:openbao-ca"
+            served-openbao-1: "dnsNames:previous|issuer=ca:openbao-ca"
+            served-openbao-2: "dnsNames:previous|issuer=ca:openbao-ca"
+            pod-cacert-openbao-0: /openbao/config/tls/ca.crt
+            pod-cacert-openbao-1: /openbao/config/tls/ca.crt
+            pod-cacert-openbao-2: /openbao/config/tls/ca.crt
+          env: {FAKE_CERT_ISSUANCE: stuck, FAKE_CA_SECRET_KEEP: '1'}
+          present:
+            - kubectl exec openbao-0 sighup
+            - kubectl exec openbao-1 sighup
+            - kubectl exec openbao-2 sighup
+          served:
+            openbao-0: "dnsNames:renewed|issuer=ca:openbao-ca"
+            openbao-1: "dnsNames:renewed|issuer=ca:openbao-ca"
+            openbao-2: "dnsNames:renewed|issuer=ca:openbao-ca"
+          cli: works
+        - name: A fresh install has no pod
+          id: fresh
+          expect: pass
+          no_pods: true
+          absent: ['kubectl exec', 'sighup']
+        - name: Ready without a reissue
+          id: stuck
+          expect: refuse
+          env: {FAKE_CERT_ISSUANCE: stuck}
+          message: does not hold a certificate that the openbao-ca Issuer issued
+          absent: ['sighup', 'kubectl exec']
+        - name: Condition for an older generation
+          id: stale_condition
+          expect: refuse
+          env: {FAKE_CERT_CONDITION: stale}
+          absent: ['sighup', 'kubectl exec']
+        - name: The projection is late
+          id: projection_lag
+          expect: pass
+          env: {FAKE_PROJECTION_LAG: '2'}
+          present: ['kubectl exec openbao-0 sighup']
+          cat_before_hup: 3
+          served: *leaf_served
+        - name: The projection never arrives
+          id: projection_never
+          expect: refuse
+          env: {FAKE_PROJECTION_LAG: '100'}
+          message: does not serve the projected certificate
+          absent: ['sighup']
+        - name: The server ignores the reload signal
+          id: hup_ignored
+          expect: refuse
+          env: {FAKE_HUP_IGNORED: '1'}
+          message: does not serve the projected certificate
+          present: ['kubectl exec openbao-0 sighup']
+        - name: A CA-signed renewal that the server does not load
+          id: renewal_hup_ignored
+          expect: refuse
+          files: *renewal_files
+          env: {FAKE_CERT_ISSUANCE: stuck, FAKE_CA_SECRET_KEEP: '1', FAKE_HUP_IGNORED: '1'}
+          message: does not serve the projected certificate
+          present: ['kubectl exec openbao-0 sighup']
+          served:
+            openbao-0: "dnsNames:previous|issuer=ca:openbao-ca"
+        - name: The CA is renewed and the certificate is the one the previous root signed
+          id: ca_renewed
+          expect: pass
+          files:
+            Secret-openbao-ca-tls.json: '{"data": {"tls.crt": "{{ "ca:openbao-ca#renewed" | b64encode }}", "ca.crt": "{{ "ca:openbao-ca#renewed" | b64encode }}"}}'
+            Secret-openbao-tls.json: >-
+              {"metadata": {"annotations": {"cert-manager.io/issuer-name": "openbao-ca", "cert-manager.io/issuer-kind": "Issuer"}},
+               "data": {"tls.crt": "{{ "dnsNames:valid|issuer=ca:openbao-ca" | b64encode }}", "tls.key": "ZmFrZQ==", "ca.crt": "{{ "ca:openbao-ca" | b64encode }}"}}
+            served-openbao-0: "dnsNames:valid|issuer=ca:openbao-ca"
+            served-openbao-1: "dnsNames:valid|issuer=ca:openbao-ca"
+            served-openbao-2: "dnsNames:valid|issuer=ca:openbao-ca"
+            pod-cacert-openbao-0: /openbao/config/tls/ca.crt
+            pod-cacert-openbao-1: /openbao/config/tls/ca.crt
+            pod-cacert-openbao-2: /openbao/config/tls/ca.crt
+          env: {FAKE_CERT_ISSUANCE: stuck, FAKE_CA_SECRET_KEEP: '1'}
+          served:
+            openbao-0: "dnsNames:valid|issuer=ca:openbao-ca"
+          cli: works
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"

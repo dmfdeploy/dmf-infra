@@ -1,0 +1,69 @@
+---
+# One case of test-openbao-init-status.yml.
+# The marker stays when the read stops: the play never set an answer.
+- name: "{{ case.name }} — set the case"
+  ansible.builtin.set_fact:
+    _case_dir: "{{ _state.path }}/{{ case_index }}"
+    openbao_pod: openbao-0
+    openbao_namespace: openbao
+    openbao_status_retries: 3
+    openbao_status_delay: 0
+    openbao_is_initialized: no-answer
+
+- name: "{{ case.name }} — make the fake object directory"
+  ansible.builtin.file:
+    path: "{{ _case_dir }}/k8s"
+    state: directory
+    mode: "0700"
+
+# A pod that serves the old self-signed certificate while the Secret holds the CA
+# and a CA-signed certificate, and trusts the certificate file: the CLI fails TLS.
+- name: "{{ case.name }} — set up a pod whose certificate does not verify"
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "{{ _case_dir }}/{{ item.key }}"
+    mode: "0600"
+  loop: "{{ {'k8s/Secret-openbao-tls.json': tls_secret, 'served-openbao-0': 'old-selfsigned', 'pod-cacert-openbao-0': '/openbao/config/tls/tls.crt'} | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    tls_secret: >-
+      {"data": {"tls.crt": "{{ 'dnsNames:openbao|issuer=ca:openbao-ca' | b64encode }}", "ca.crt": "{{ 'ca:openbao-ca' | b64encode }}"}}
+  when: case.tls_mismatch | default(false)
+
+- name: "{{ case.name }} — read the status"
+  block:
+    - name: Run read-init-status.yml (the real file)
+      ansible.builtin.include_tasks: "{{ playbook_dir }}/../roles/stack/operator/openbao/tasks/read-init-status.yml"
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        _outcome: refuse
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment: >-
+    {{ {'FAKE_STATE': _case_dir, 'FAKE_TLS_MODEL': ('1' if case.tls_mismatch | default(false) else '')}
+       | combine(case.env | default({})) }}
+
+- name: "{{ case.name }} — the outcome is the expected one"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.expect
+      - case.message is not defined or case.message in _message
+      - case.also is not defined or case.also in _message
+      - case.expect == 'refuse' or openbao_is_initialized == case.initialized
+      - case.expect == 'pass' or openbao_is_initialized == 'no-answer'
+    fail_msg: "{{ case.name }}: outcome {{ _outcome }}, message '{{ _message }}'"
+
+- name: "{{ case.name }} — read the log of bao calls"
+  ansible.builtin.slurp:
+    src: "{{ _case_dir }}/events.log"
+  register: _events_raw
+  failed_when: false
+
+- name: "{{ case.name }} — nothing here ran `bao operator init`"
+  ansible.builtin.assert:
+    that: "'operator init' not in (_events_raw.content | default('') | b64decode)"

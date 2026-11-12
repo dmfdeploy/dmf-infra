@@ -1,0 +1,98 @@
+---
+# Test of what the ClusterSecretStores trust. It runs the real ESO tasks
+# (roles/base/external-secrets/tasks/openbao-trust.yml and cluster-secret-store.yml)
+# and the real object-storage task file (roles/base/object-storage-credentials/tasks/
+# cluster-secret-stores.yml) against the fake cluster, then reads the caBundle of each
+# store that the fake kubernetes.core kept. The CA and the OpenBao certificate in the
+# fixtures differ, so a store that trusts the certificate cannot equal the CA.
+#
+# Cases:
+#   self_signed_leaf    the certificate Secret is the one from before the move: a
+#                       ca.crt that equals its own certificate. Each store holds the CA.
+#   ca_signed_leaf      the certificate Secret is CA-signed. Each store holds the CA.
+#   ca_renewed          the CA Secret holds a renewed CA and the certificate Secret is
+#                       unchanged. The next run puts the renewed CA in each store.
+#   ca_not_ready        the CA Certificate's condition is for an older generation: the
+#                       tasks stop and write no store
+#   no_ca_new_store     the site has no OpenBao CA Certificate and a store does not
+#                       exist yet: the tasks stop and say to run 320-cert-manager.yml,
+#                       and write no store
+#   no_ca_old_store     the same with stores that exist and hold a bundle: the tasks
+#                       stop and leave each store as it was
+#   external_trust      the site sets the external-trust variable: no OpenBao CA is
+#                       read, the object-storage stores carry no bundle, and the main
+#                       store carries the bundle in eso_openbao_ca_bundle when set
+#
+# Run locally, from k3s-lab-bootstrap:
+#   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections" \
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-ca-bundle.yml
+
+- name: Test of the OpenBao CA bundle in the ClusterSecretStores
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars_files:
+    - ../roles/base/external-secrets/defaults/main.yml
+    - ../roles/base/external-secrets/vars/main.yml
+    - ../roles/base/object-storage-credentials/defaults/main.yml
+  vars:
+    _ca_old: "-----BEGIN CERTIFICATE-----\nOPENBAO-CA-ROOT\n-----END CERTIFICATE-----\n"
+    _ca_new: "-----BEGIN CERTIFICATE-----\nOPENBAO-CA-ROOT-RENEWED\n-----END CERTIFICATE-----\n"
+    _leaf: "-----BEGIN CERTIFICATE-----\nOPENBAO-LEAF\n-----END CERTIFICATE-----\n"
+    _custom: "-----BEGIN CERTIFICATE-----\nCUSTOM-TRUST\n-----END CERTIFICATE-----\n"
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-bundle-
+      register: _state
+      changed_when: false
+
+    - name: Run the cases
+      ansible.builtin.include_tasks: _openbao-ca-bundle-case.yml
+      loop:
+        - name: The certificate Secret is self-signed
+          expect: pass
+          bundle: "{{ _ca_old }}"
+          leaf_ca_crt: "{{ _leaf }}"
+        - name: The certificate Secret is CA-signed
+          expect: pass
+          bundle: "{{ _ca_old }}"
+          leaf_ca_crt: "{{ _ca_old }}"
+        - name: The CA is renewed
+          expect: pass
+          bundle: "{{ _ca_new }}"
+          ca_tls_crt: "{{ _ca_new }}"
+          leaf_ca_crt: "{{ _ca_old }}"
+        - name: The CA Certificate is not Ready for its current generation
+          expect: refuse
+          ca_condition: stale
+          leaf_ca_crt: "{{ _ca_old }}"
+        - name: No OpenBao CA Certificate, and no store yet
+          expect: refuse
+          message: run 320-cert-manager.yml first
+          no_ca: true
+          leaf_ca_crt: "{{ _leaf }}"
+        - name: No OpenBao CA Certificate, and stores that exist
+          expect: refuse
+          message: run 320-cert-manager.yml first
+          no_ca: true
+          existing_stores: true
+          leaf_ca_crt: "{{ _leaf }}"
+        - name: External trust, with no bundle of its own
+          expect: pass
+          bundle: ""
+          no_ca: true
+          external: true
+          leaf_ca_crt: "{{ _leaf }}"
+        - name: External trust, with a bundle of its own for the main store
+          expect: pass
+          bundle: ""
+          main_bundle: "{{ _custom }}"
+          no_ca: true
+          external: true
+          leaf_ca_crt: "{{ _leaf }}"
+      loop_control:
+        loop_var: case
+        index_var: case_index
+        label: "{{ case.name }}"
