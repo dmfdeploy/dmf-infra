@@ -140,10 +140,17 @@
     loop_var: dmf_node_name
   vars:
     dmf_node_host: "{{ hostvars[dmf_node_name] }}"
+    # On a 1:1-NAT node the default-route address is the internal one. The
+    # resolver records the declared (public) address in
+    # k3s_node_nat_declared_ip when it rebinds the node; use that address, and
+    # otherwise keep the default-route address.
     dmf_node_public_ip: >-
       {{
-        dmf_node_host.ansible_default_ipv4.address
-        | default(dmf_node_host.ansible_host, true)
+        dmf_node_host.k3s_node_nat_declared_ip
+        | default(
+            dmf_node_host.ansible_default_ipv4.address
+            | default(dmf_node_host.ansible_host, true)
+          )
       }}
     dmf_node_public_iface: >-
       {{
