@@ -199,6 +199,13 @@ command needs `--node-ip {{ k3s_node_ip }}` and `--advertise-address {{ k3s_node
 per node. This change goes into `dmf-infra` as a generic variable (`k3s_node_ip`
 defaults to `ansible_host` if not set — backwards compatible).
 
+On a 1:1-NAT node (for example Aliyun), the inventory may hold the public
+address in `k3s_node_ip`. That address is not a local interface, so the plays
+that need the node's internal address run `tasks/resolve-k3s-node-ip.yml`, which
+replaces `k3s_node_ip` with the default-route address, keeps the declared
+address in `k3s_node_nat_declared_ip`, and leaves an `k3s_node_external_ip` that
+is already set as it is.
+
 ---
 
 ## 5. Development Workflow

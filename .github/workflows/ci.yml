@@ -45,6 +45,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_openbao_*.py' -v
       - name: CoreDNS custom zone forwards unlisted names
         run: python3 -m unittest discover -s tests -p 'test_coredns_custom_zone.py' -v
+      - name: local-CA zone and born-inventory use the node's internal address on a NAT node
+        run: python3 -m unittest discover -s tests -p 'test_local_ca_node_address.py' -v
       - name: tasks that carry a secret set no_log
         run: python3 -m unittest discover -s tests -p 'test_no_log_secrets.py' -v
       - name: job and script templates that handle a secret never turn on trace mode

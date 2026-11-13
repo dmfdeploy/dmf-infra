@@ -6,20 +6,27 @@
 # public DNS + a publicly-trusted ACME cert. Three pieces:
 #
 #   1. In-cluster DNS — a `coredns-custom` ConfigMap maps each app host to the
-#      node IP via an explicit `hosts` block, so in-cluster OIDC consumers
-#      (Forgejo -> Authentik back-channel) resolve the app hostnames. Explicit
-#      per-host entries, NOT a DNS wildcard. A name under the base domain that
-#      the `hosts` plugin doesn't answer is forwarded to the node's resolvers
-#      and resolves when they resolve it (for example a new ingress host for
-#      an ACME self-check).
+#      node's internal address via an explicit `hosts` block, so in-cluster
+#      OIDC consumers (Forgejo -> Authentik back-channel) resolve the app
+#      hostnames. Explicit per-host entries, NOT a DNS wildcard. A name under
+#      the base domain that the `hosts` plugin doesn't answer is forwarded to
+#      the node's resolvers and resolves when they resolve it (for example a
+#      new ingress host for an ACME self-check).
 #   2. Node /etc/hosts — so the bootstrap's own external verify steps (and the
-#      operator on the node) reach https://<app>.<base-domain>.
+#      operator on the node) reach https://<app>.<base-domain>. It uses the
+#      same internal address.
 #   3. Node CA trust — install the cert-manager local root CA into the node
 #      trust store so validate_certs:true verify steps + operator curl succeed.
 #
 # Runs AFTER 320-cert-manager (the local CA must already exist) and BEFORE the
 # post-seed apps that resolve/trust those hosts. Entirely no-op unless
 # dmf_tls_mode == 'local-ca'.
+#
+# The internal address comes from tasks/resolve-k3s-node-ip.yml, the same
+# resolver 300-k3s uses. On a 1:1-NAT node the inventory's k3s_node_ip is the
+# public address (the SSH target), which is not a local interface. The play
+# resolves it itself, so the result is the same when it runs on its own as when
+# it runs after 300 in one run.
 # ---------------------------------------------------------------------------
 
 - name: Local-CA lane — in-cluster DNS + node resolution & trust
@@ -32,7 +39,8 @@
     _node_ip: "{{ k3s_node_ip | default(k3s_advertise_address | default(ansible_host)) }}"
     _ca_namespace: "{{ cert_manager_namespace | default('cert-manager') }}"
     _ca_secret: "{{ cert_manager_local_ca_secret | default('dmf-local-ca') }}"
-    # App hosts to map -> node IP. Each is optional; absent ones are dropped.
+    # App hosts to map -> the node's internal address. Each is optional; absent
+    # ones are dropped.
     _app_hosts: >-
       {{ [authentik_host | default(''),
           forgejo_host | default(''),
@@ -44,6 +52,22 @@
           _base_domain]
          | reject('equalto', '') | unique | list }}
   tasks:
+    # The resolver reads the node's local addresses and default route, and this
+    # play does not gather facts.
+    - name: Gather network facts to find the node's internal address
+      ansible.builtin.setup:
+        gather_subset:
+          - network
+      when:
+        - _local_ca | bool
+        - k3s_node_ip is defined
+
+    - name: Resolve the node's internal address (same resolver as 300-k3s)
+      ansible.builtin.import_tasks: ../tasks/resolve-k3s-node-ip.yml
+      when:
+        - _local_ca | bool
+        - k3s_node_ip is defined
+
     - name: Render coredns hosts entries (app host -> node IP)
       ansible.builtin.set_fact:
         _coredns_hosts_block: |-

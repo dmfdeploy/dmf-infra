@@ -1,4 +1,9 @@
 ---
+# Born-inventory survey. Run on its own, the first play gathers the network
+# facts and resolves each node's internal address, so a standalone run records
+# the same addresses as a full bootstrap run: the default-route address as
+# public_ip on a node that is not behind NAT, and the declared address on a
+# node that is.
 - name: Gather host facts for born-inventory survey
   hosts: k3s
   gather_facts: false
@@ -7,6 +12,20 @@
     - network
     - hardware
     - mounts
+  tasks:
+    # The survey records k3s_node_ip as each node's private address. On a
+    # 1:1-NAT node the inventory holds the public address, so resolve it as
+    # 300-k3s does. The resolver reads the node's local addresses and default
+    # route, and this play does not gather facts on its own.
+    - name: Gather network facts to find each node's internal address
+      ansible.builtin.setup:
+        gather_subset:
+          - network
+      when: k3s_node_ip is defined
+
+    - name: Resolve the node's internal address (same resolver as 300-k3s)
+      ansible.builtin.import_tasks: ../tasks/resolve-k3s-node-ip.yml
+      when: k3s_node_ip is defined
 
 - name: Register the deployed cluster in NetBox
   hosts: k3s_control[0]

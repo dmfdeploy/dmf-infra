@@ -62,6 +62,16 @@
           NAT case: 203.0.113.9 NOT in k3s_server_tls_sans — got
           {{ k3s_server_tls_sans }}.
 
+    - name: NAT case — assert the resolver recorded the declared address
+      ansible.builtin.assert:
+        that:
+          - k3s_node_nat_declared_ip == "203.0.113.9"
+        success_msg: >-
+          NAT case: k3s_node_nat_declared_ip is 203.0.113.9.
+        fail_msg: >-
+          NAT case: k3s_node_nat_declared_ip is not the declared address — got
+          {{ k3s_node_nat_declared_ip | default('undefined') }}.
+
     - name: NAT case — discriminator (original IP was not local)
       ansible.builtin.assert:
         that:
@@ -73,10 +83,38 @@
           NAT case: 203.0.113.9 IS in ansible_all_ipv4_addresses — the test
           fixture is wrong (not a NAT scenario).
 
+    # ── NAT case, external IP already set ───────────────────────────────────
+    - name: NAT case with an external IP already set — fixture vars
+      ansible.builtin.set_fact:
+        k3s_node_ip: "203.0.113.9"
+        k3s_node_external_ip: "198.51.100.10"
+        k3s_node_nat_declared_ip: ""
+        ansible_all_ipv4_addresses:
+          - "198.51.100.5"
+        ansible_default_ipv4:
+          address: "198.51.100.5"
+          interface: "eth0"
+
+    - name: NAT case with an external IP already set — import resolve-k3s-node-ip.yml
+      ansible.builtin.import_tasks: ../tasks/resolve-k3s-node-ip.yml
+
+    - name: NAT case with an external IP already set — assert the declared address is kept apart
+      ansible.builtin.assert:
+        that:
+          - k3s_node_external_ip == "198.51.100.10"
+          - k3s_node_nat_declared_ip == "203.0.113.9"
+        success_msg: >-
+          External IP case: k3s_node_external_ip stays 198.51.100.10 and
+          k3s_node_nat_declared_ip holds the declared 203.0.113.9.
+        fail_msg: >-
+          External IP case: got k3s_node_external_ip={{ k3s_node_external_ip }},
+          k3s_node_nat_declared_ip={{ k3s_node_nat_declared_ip | default('undefined') }}.
+
     # ── non-NAT case ────────────────────────────────────────────────────────
     - name: Non-NAT case — fixture vars (node IP is already local)
       ansible.builtin.set_fact:
         k3s_node_ip: "198.51.100.5"
+        k3s_node_nat_declared_ip: ""
         ansible_all_ipv4_addresses:
           - "198.51.100.5"
         ansible_default_ipv4:
@@ -95,6 +133,16 @@
         fail_msg: >-
           Non-NAT case: k3s_node_ip was changed — got {{ k3s_node_ip }},
           expected 198.51.100.5.
+
+    - name: Non-NAT case — assert the resolver did not record a declared address
+      ansible.builtin.assert:
+        that:
+          - (k3s_node_nat_declared_ip | default('')) | length == 0
+        success_msg: >-
+          Non-NAT case: k3s_node_nat_declared_ip stays empty.
+        fail_msg: >-
+          Non-NAT case: k3s_node_nat_declared_ip was set — got
+          {{ k3s_node_nat_declared_ip | default('undefined') }}.
 
     # ── NAT fail-fast guard case ────────────────────────────────────────────
     - name: NAT guard case — fixture vars (public IP not local, no default route)
