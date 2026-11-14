@@ -1,0 +1,10 @@
+# Python packages that the playbooks and the unit tests need on the machine that
+# runs Ansible. Install them into the same Python environment as Ansible:
+#
+#   python3 -m pip install -r requirements.txt
+#
+# Collections are separate: ansible-galaxy collection install -r requirements.yml
+# (The AWX execution environment image has its own list in ee/requirements.txt.)
+
+# The json_query filter in community.general needs jmespath.
+jmespath>=1.0.1,<2

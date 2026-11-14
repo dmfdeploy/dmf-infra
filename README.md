@@ -143,6 +143,9 @@ sudo apt update && sudo apt install -y ansible git
 
 # Or using pip
 pip install ansible
+
+# Python packages the playbooks and tests need (jmespath), in the same environment as Ansible
+pip install -r k3s-lab-bootstrap/requirements.txt
 ```
 
 ### 4. Create Your Inventory Repo
