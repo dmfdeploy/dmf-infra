@@ -112,6 +112,20 @@ class PreflightRunTests(unittest.TestCase):
         self.assertIn("present StatefulSet openbao", self.mutations(state))
         self.assertTrue((state / "revoked-fake-ops-token").exists())
 
+    def test_the_check_reads_the_eso_break_glass_file_when_it_is_set(self) -> None:
+        # The key path points at nothing, so only the override can supply the credentials.
+        override = Path(tempfile.mkdtemp(prefix="image-preflight-override-"))
+        self.addCleanup(shutil.rmtree, override, ignore_errors=True)
+        (override / "elsewhere.json").write_text(json.dumps({"ops_admin_username": "ops-admin", "ops_admin_password": "pw"}))
+        result, state = self.run_workload(env={"FAKE_OPS_POLICIES": WITH_POLICY}, extra_vars={
+            "openbao_key_path": str(override / "missing"),
+            "eso_openbao_breakglass_file": str(override / "elsewhere.json"),
+        })
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.logged_in(state))
+        self.assertIn("present StatefulSet openbao", self.mutations(state))
+
     def test_an_unchanged_image_skips_the_check(self) -> None:
         result, state = self.run_workload(target=OLD)
 
