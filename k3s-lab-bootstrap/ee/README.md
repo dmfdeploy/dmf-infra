@@ -34,7 +34,7 @@ zot.zot.svc.cluster.local:5000/dmf/awx-ee:<tag>  (runtime registry — Lane A co
 |---|---|
 | `execution-environment.yml` | ansible-builder v3 spec (base + deps + labels) |
 | `requirements.yml` | Ansible Galaxy collections (kubernetes.core, community.general, ansible.posix, community.docker) |
-| `requirements.txt` | Python packages (kubernetes, openshift, jsonpatch) |
+| `requirements.txt` | Python packages (kubernetes, openshift, jsonpatch, pynetbox, jmespath) |
 | `bindep.txt` | System packages (helm, git, ca-certificates) |
 | `scripts/build.sh` | Wraps `ansible-builder build` with the right `DOCKER_HOST`, IMAGE_VERSION, VCS_REF |
 | `scripts/publish-to-ghcr.sh` | Operator-side push to `ghcr.io/dmfdeploy/awx-ee` (token via stdin, isolated DOCKER_CONFIG) |

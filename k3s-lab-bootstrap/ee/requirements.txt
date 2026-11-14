@@ -11,3 +11,8 @@ jsonpatch
 # requirements.yml). Required so the NetBox dynamic inventory resolves
 # offline from the EE — no public galaxy/pip fetch at job time.
 pynetbox>=7.0.0,<8.0.0
+
+# The json_query filter in community.general needs jmespath. The pinned base
+# image already ships jmespath 1.0.1; the pin keeps it when the base image
+# changes. The playbook host needs it too: see ../requirements.txt.
+jmespath>=1.0.1,<2
