@@ -82,11 +82,12 @@ whether it worked, stop and go to Recovery. Do not submit the share again.
 Find the active pod first. A standby answers the legacy generate-root endpoint of OpenBao
 2.5.2 with a 500, so every call below must go to the active pod. `bao status` needs no
 token and prints `"is_self": true` on the active node only (the field is left out on a
-standby, and a sealed pod has none):
+standby, and a sealed pod has none). The loop asks every pod with the OpenBao label, so it
+covers any replica count:
 
 ```bash
-for p in openbao-0 openbao-1 openbao-2; do
-  kubectl -n openbao exec "$p" -- bao status -format=json | jq -e '.is_self == true' >/dev/null && echo "$p"
+for p in $(kubectl -n openbao get pods -l app.kubernetes.io/name=openbao -o name); do
+  kubectl -n openbao exec "$p" -- bao status -format=json | jq -e '.is_self == true' >/dev/null && echo "${p#pod/}"
 done
 ```
 
