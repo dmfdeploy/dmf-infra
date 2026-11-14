@@ -36,11 +36,12 @@ ROOT = Path(__file__).resolve().parent.parent
 FILES = sorted(
     list((ROOT / "roles/stack/operator/openbao/tasks").glob("*.yml"))
     + list((ROOT / "playbooks/vertical-security").glob("10*-openbao*.yml"))
+    + [ROOT / "playbooks/vertical-orchestration/120-ops-admin-rotation.yml"]
 )
 JINJA = re.compile(r"\{\{(.*?)\}\}")
 # A credential key set to an expanded shell variable: password="$P", secret_id="$S".
 SHELL_CREDENTIAL = re.compile(r"\b[a-z_]*(?:password|secret_id|token|key)=\"?\$[A-Za-z_{]", re.I)
-SECRET = re.compile(r"unseal_key|root_token|_token|password|secret_id|share_|_share", re.I)
+SECRET = re.compile(r"unseal_key|root_token|_token|password|secret_id|share_|_share|[a-z]_otp\\b", re.I)
 # Names that look secret but carry none.
 BENIGN = re.compile(r"openbao_shamir_|breakglass_|_name\b|_path\b|_dir\b|_service\b|_ttl\b|openbao_namespace")
 # Known earlier defects of the same class, outside the unseal path and not yet fixed.

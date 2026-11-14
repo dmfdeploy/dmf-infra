@@ -16,7 +16,8 @@
   ansible.builtin.copy:
     content: >-
       {{ {'spec': {'serviceName': ('openbao' if (case.sts | default('single')) == 'single' else 'openbao-internal'),
-                   'replicas': (1 if (case.sts | default('single')) in ['single', 'half'] else 3)}} | to_json }}
+                   'replicas': (1 if (case.sts | default('single')) in ['single', 'half'] else 3),
+                   'template': {'spec': {'containers': [{'name': 'openbao', 'image': case.sts_image}]}} if case.sts_image is defined else {}}} | to_json }}
     dest: "{{ _case_dir }}/k8s/StatefulSet-openbao.json"
     mode: "0600"
 

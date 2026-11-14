@@ -9,6 +9,8 @@ listener "tcp" {
   tls_disable     = 0
   tls_cert_file   = "/openbao/config/tls/tls.crt"
   tls_key_file    = "/openbao/config/tls/tls.key"
+  # Poll the certificate files and load a renewed certificate without a signal.
+  tls_auto_reload = true
   max_request_duration = "60s"
 }
 

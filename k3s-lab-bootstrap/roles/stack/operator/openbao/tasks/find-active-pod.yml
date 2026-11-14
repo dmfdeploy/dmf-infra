@@ -1,0 +1,61 @@
+---
+# Set openbao_active_pod to the one pod that reports itself as the active node.
+#
+# `bao status -format=json` needs no token and prints "is_self": true on the active
+# node of a cluster only. The field is omitted when it is false (command/format.go in
+# v2.5.2, internal/command/format.go in v2.7.2). A caller that needs the active node
+# must not take the first pod of the label selector: a standby answers the legacy
+# generate-root endpoints (OpenBao 2.5.2) with a 500, and a sealed pod reports no
+# is_self at all. Stops when no pod, or more than one, reports itself as active.
+- name: List the OpenBao pods
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ openbao_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name=openbao"
+  register: _openbao_active_pod_list
+
+- name: Ask each pod whether it is the active node
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - "{{ item }}"
+      - --
+      - bao
+      - status
+      - -format=json
+  loop: "{{ _openbao_active_pod_list.resources | default([]) | map(attribute='metadata.name') | list }}"
+  register: _openbao_active_pod_status
+  changed_when: false
+  failed_when: false
+
+- name: Pick the pod that reports itself as active
+  ansible.builtin.set_fact:
+    _openbao_active_pods: >-
+      {%- set out = [] -%}
+      {%- for r in _openbao_active_pod_status.results | default([]) -%}
+      {%- if r.stdout | default('') is match('(?s)\s*\{') and (r.stdout | from_json).is_self | default(false) -%}
+      {%- set _ = out.append(r.item) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+
+- name: Stop unless exactly one pod is active
+  ansible.builtin.fail:
+    msg: >-
+      Expected exactly one active OpenBao pod in namespace {{ openbao_namespace }}, found
+      {{ _openbao_active_pods | length }}
+      (pods: {{ _openbao_active_pod_list.resources | default([]) | map(attribute='metadata.name') | list }}).
+      Unseal every pod, wait until one pod leads, and run the play again.
+  when: _openbao_active_pods | length != 1
+
+- name: Name the active pod
+  ansible.builtin.set_fact:
+    openbao_active_pod: "{{ _openbao_active_pods | first }}"

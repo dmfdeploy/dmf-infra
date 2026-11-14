@@ -116,6 +116,12 @@
       threshold of shares (bin/unseal-openbao.sh), and run this play again.
       Nothing has changed.
 
+# Before the first change: the play deletes the StatefulSet, and a pod that is left
+# behind makes the later workload run look like an install in progress. The check
+# runs while the original StatefulSet and the old certificate are in place.
+- name: Refuse an image change to 2.6 or later before ops-admin holds the generate-root policy
+  ansible.builtin.include_tasks: image-policy-preflight.yml
+
 - name: Check the guard token can read the Raft paths
   ansible.builtin.include_tasks: capabilities-check.yml
 
@@ -184,6 +190,9 @@
 - name: Create the Raft-shaped workload at one replica
   ansible.builtin.include_tasks: workload.yml
   vars:
+    # The check ran at the start of this play. Its workload runs follow the reissue of the
+    # certificate, after which the in-pod CLI fails TLS until pod 0 restarts.
+    openbao_image_policy_checked: true
     openbao_workload_replicas: 1
 
 - name: Read pod 0
@@ -319,6 +328,10 @@
 
 - name: Scale the workload to the full replica count
   ansible.builtin.include_tasks: workload.yml
+  vars:
+    # The check ran at the start of this play. Its workload runs follow the reissue of the
+    # certificate, after which the in-pod CLI fails TLS until pod 0 restarts.
+    openbao_image_policy_checked: true
 
 - name: Unseal the new pods with the existing shares
   ansible.builtin.include_tasks: unseal-pods.yml

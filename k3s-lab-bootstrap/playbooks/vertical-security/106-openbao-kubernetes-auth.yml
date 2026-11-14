@@ -12,6 +12,10 @@
 #
 #   OPENBAO_TEMP_ROOT_TOKEN=<token from the generate-root procedure>
 #
+# The procedure runs as ops-admin with a quorum of unseal shares: OpenBao 2.6 and
+# later accept generate-root only from an authenticated caller. It is written out in
+# the "Root token procedure" of roles/stack/operator/openbao/README.md.
+#
 # The token never goes in an argument list, and the play writes it to no file. Each
 # task that uses it sends it to the pod on stdin. SSH pipelining is off in
 # ansible.cfg, so Ansible stages every task's arguments, stdin included, in a

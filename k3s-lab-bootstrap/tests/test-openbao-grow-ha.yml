@@ -70,6 +70,14 @@
           sts: half
           message: This play does not
           expect_kv_read: false
+        # The play deletes the StatefulSet, and a pod that stays behind would make the
+        # later workload run look like an install in progress. So the check for the
+        # generate-root policy runs before the first change, and the log of changes stays
+        # empty.
+        - name: The image changes to 2.7 and ops-admin lacks the generate-root policy
+          sts_image: openbao/openbao:2.5.2
+          message: Attach the generate-root policy first
+          expect_kv_read: false
         - name: Pod 0 is sealed
           env: {FAKE_SEALED: openbao-0}
           message: openbao-0 is not initialized, unsealed and
@@ -140,6 +148,11 @@
       loop:
         - id: complete
           name: A complete run
+          expect: pass
+        - id: policy_first
+          name: The image changes to 2.7 and ops-admin holds the generate-root policy
+          sts_image: openbao/openbao:2.5.2
+          env: {FAKE_OPS_POLICIES: "app-admin-writer,generate-root"}
           expect: pass
         - id: custom_service
           name: A complete run with another headless Service name

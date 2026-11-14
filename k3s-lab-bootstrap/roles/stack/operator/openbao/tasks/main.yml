@@ -1194,6 +1194,28 @@
   no_log: true
   when: openbao_is_initialized | bool
 
+# ops-admin carries this policy so that `bao operator generate-root` works on
+# OpenBao 2.6 and later (files/policies/generate-root.hcl). The write converges on
+# every run and is valid on older releases, so the policy is in place before the
+# image changes. A fresh install attaches it in the user upsert below. An installed
+# environment attaches it with playbooks/vertical-orchestration/120-ops-admin-rotation.yml
+# and -e ops_admin_rotation_attach_only=true, which sets the policies with a temporary
+# root token and writes no password, because no standing identity may write
+# `auth/userpass/users/*`.
+- name: Write the generate-root policy
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_generate_root_policy_name }} -'
+    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/generate-root.hcl') }}\n"
+  no_log: true
+  when: openbao_is_initialized | bool
+
 - name: Upsert operator userpass user
   ansible.builtin.shell:
     cmd: >-
@@ -1204,7 +1226,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao write auth/userpass/users/{{ openbao_operator_username }} -'
-    stdin: "{{ openbao_root_token }}\n{{ {'password': openbao_operator_password, 'token_policies': openbao_operator_policy_name ~ ',' ~ openbao_operator_runtime_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
+    stdin: "{{ openbao_root_token }}\n{{ {'password': openbao_operator_password, 'token_policies': openbao_operator_policy_name ~ ',' ~ openbao_operator_runtime_policy_name ~ ',' ~ openbao_generate_root_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
   no_log: true
   when:
     - openbao_init_raw is defined

@@ -1,0 +1,206 @@
+---
+# Refuse to roll an installed server to OpenBao 2.6 or later before ops-admin holds
+# the generate-root policy. A 2.6 server accepts root token generation only from a
+# caller that holds the policy, and only a root token can attach it, so a server that
+# runs 2.6 before the attach cannot get a root token to repair that. The check runs
+# first in workload.yml, and the grow-HA play runs it before its first change, so
+# every play that applies or replaces the StatefulSet is covered. The grow-HA play
+# sets openbao_image_policy_checked: its later workload run must not call bao again,
+# because the certificate it reissued breaks the in-pod CLI until pod 0 restarts.
+#
+# An install counts as present when the StatefulSet, the pod openbao-0 or the volume
+# claim data-openbao-0 exists, so an interrupted migration that left only the pod or
+# the volume is not taken for a new install. The check does nothing for a new
+# install, when the image does not change, when it is older than 2.6, or when the
+# server is not initialized. Otherwise it logs in as ops-admin with the password of
+# the break-glass file, reads the policies of the login token, revokes the token,
+# and stops unless the policy is there. The password reaches the pod on stdin.
+- name: Skip the check when the play has run it already
+  ansible.builtin.set_fact:
+    _openbao_preflight_skip: "{{ openbao_image_policy_checked | default(false) | bool }}"
+
+- name: Read what an install leaves behind
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: "{{ item.api_version }}"
+    kind: "{{ item.kind }}"
+    name: "{{ item.name }}"
+    namespace: "{{ openbao_namespace }}"
+  loop:
+    - {api_version: apps/v1, kind: StatefulSet, name: openbao}
+    - {api_version: v1, kind: Pod, name: openbao-0}
+    - {api_version: v1, kind: PersistentVolumeClaim, name: data-openbao-0}
+  loop_control:
+    label: "{{ item.kind }}"
+  register: _openbao_preflight_found
+  when: not (_openbao_preflight_skip | bool)
+
+- name: Work out the installed image
+  ansible.builtin.set_fact:
+    _openbao_preflight_sts_image: >-
+      {{
+        ((((_openbao_preflight_found.results[0].resources | default([{}]) | first | default({})).spec | default({})).template | default({})).spec | default({})).containers
+        | default([{}]) | first | default({}) | json_query('image') | default('', true)
+      }}
+    _openbao_preflight_pod_image: >-
+      {{
+        ((_openbao_preflight_found.results[1].resources | default([{}]) | first | default({})).spec | default({})).containers
+        | default([{}]) | first | default({}) | json_query('image') | default('', true)
+      }}
+    _openbao_preflight_has_sts: "{{ (_openbao_preflight_found.results[0].resources | default([]) | length) > 0 }}"
+    _openbao_preflight_installed: >-
+      {{ _openbao_preflight_found.results | map(attribute='resources') | map('default', []) | map('length') | select('gt', 0) | list | length > 0 }}
+  when: not (_openbao_preflight_skip | bool)
+
+# With a StatefulSet, its image decides, and one whose image cannot be read counts
+# as unchanged. Without one (an interrupted migration), the image of the orphan pod
+# decides, and a pod or volume without a readable image counts as changed.
+- name: Decide whether the image changes to 2.6 or later on an installed server
+  ansible.builtin.set_fact:
+    _openbao_preflight_needed: >-
+      {{
+        _openbao_preflight_installed | bool
+        and (
+          (_openbao_preflight_has_sts | bool and (_openbao_preflight_sts_image | length) > 0 and _openbao_preflight_sts_image != openbao_image)
+          or (not (_openbao_preflight_has_sts | bool) and _openbao_preflight_pod_image != openbao_image)
+        )
+        and (
+          (openbao_image | regex_search(':(\d+)\.(\d+)', '\1', '\2')) is none
+          or (openbao_image | regex_search(':(\d+)\.(\d+)', '\1', '\2'))[0] | int > 2
+          or (
+            (openbao_image | regex_search(':(\d+)\.(\d+)', '\1', '\2'))[0] | int == 2
+            and (openbao_image | regex_search(':(\d+)\.(\d+)', '\1', '\2'))[1] | int >= 6
+          )
+        )
+      }}
+  when: not (_openbao_preflight_skip | bool)
+
+- name: Check the policy of ops-admin before the image changes
+  when: not (_openbao_preflight_skip | bool) and (_openbao_preflight_needed | bool)
+  block:
+    - name: Read the init status of the running server
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ openbao_namespace }}"
+          - exec
+          - openbao-0
+          - --
+          - bao
+          - status
+          - -format=json
+      register: _openbao_preflight_status
+      changed_when: false
+      failed_when: false
+
+    - name: Stop when the status cannot be read
+      ansible.builtin.fail:
+        msg: >-
+          Cannot read the OpenBao status in openbao-0, so the play cannot tell whether
+          the generate-root policy is in place before the image changes to
+          {{ openbao_image }}. Check that the pod runs, then run the play again.
+      when: >-
+        _openbao_preflight_status.stdout | default('') is not match('(?s)\s*\{')
+        or 'initialized' not in (_openbao_preflight_status.stdout | from_json)
+
+    - name: Check the policy of ops-admin on an initialized server
+      when: (_openbao_preflight_status.stdout | from_json).initialized | bool
+      block:
+        - name: Stop while the server is sealed
+          ansible.builtin.fail:
+            msg: >-
+              openbao-0 is sealed. The play logs in as ops-admin to check the
+              generate-root policy before it changes the image, so unseal OpenBao
+              first.
+          when: (_openbao_preflight_status.stdout | from_json).sealed | bool
+
+        - name: Read the break-glass JSON of the operator host
+          ansible.builtin.slurp:
+            src: "{{ openbao_key_path }}.json"
+          register: _openbao_preflight_breakglass
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Log in as ops-admin
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ openbao_namespace }}
+              exec -i openbao-0
+              -- bao write -format=json auth/userpass/login/{{ openbao_operator_username }} password=-
+            stdin: "{{ (_openbao_preflight_breakglass.content | b64decode | from_json).ops_admin_password | default('') }}"
+            stdin_add_newline: false
+          register: _openbao_preflight_login
+          changed_when: false
+          no_log: true
+
+        - name: Keep the login token and its accessor
+          ansible.builtin.set_fact:
+            _openbao_preflight_token: "{{ (_openbao_preflight_login.stdout | from_json).auth.client_token }}"
+            _openbao_preflight_accessor: "{{ (_openbao_preflight_login.stdout | from_json).auth.accessor | default('unknown') }}"
+          no_log: true
+
+        # `bao token lookup` without an argument looks up the token of the caller.
+        - name: Read the policies of the login token
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ openbao_namespace }}
+              exec -i openbao-0
+              -- sh -c '
+              IFS= read -r BAO_TOKEN;
+              export BAO_TOKEN;
+              bao token lookup -format=json'
+            stdin: "{{ _openbao_preflight_token }}\n"
+          register: _openbao_preflight_lookup
+          changed_when: false
+          no_log: true
+      always:
+        - name: Revoke the login token
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ openbao_namespace }}
+              exec -i openbao-0
+              -- sh -c '
+              IFS= read -r BAO_TOKEN;
+              export BAO_TOKEN;
+              bao token revoke -self'
+            stdin: "{{ _openbao_preflight_token }}\n"
+          register: _openbao_preflight_revoke
+          until: _openbao_preflight_revoke.rc == 0
+          retries: 2
+          delay: "{{ openbao_preflight_revoke_delay | default(2) }}"
+          changed_when: true
+          failed_when: false
+          no_log: true
+          when: _openbao_preflight_token is defined
+
+        - name: Stop because the ops-admin login token may still be live
+          ansible.builtin.fail:
+            msg: >-
+              The revoke of the ops-admin login token failed three times, so the token
+              may stay valid until it expires. Its accessor is
+              {{ _openbao_preflight_accessor | default('unknown') }}. Revoke it with
+              `bao token revoke -accessor <accessor>`.
+          when:
+            - _openbao_preflight_token is defined
+            - _openbao_preflight_revoke.rc | default(1) != 0
+
+    - name: Stop until the generate-root policy is attached
+      ansible.builtin.fail:
+        msg: >-
+          The image changes to {{ openbao_image }}, and ops-admin does not hold the
+          {{ openbao_generate_root_policy_name }} policy. OpenBao 2.6 and later accept
+          root token generation only from a caller that holds it. Attach the
+          generate-root policy first: run 120-ops-admin-rotation.yml with
+          -e ops_admin_rotation_attach_only=true, and run this play with
+          -e openbao_image=<the image that runs now> until then. The order of runs is
+          in roles/stack/operator/openbao/README.md.
+      when:
+        - (_openbao_preflight_status.stdout | from_json).initialized | bool
+        - openbao_generate_root_policy_name not in (_openbao_preflight_lookup.stdout | from_json).data.policies
