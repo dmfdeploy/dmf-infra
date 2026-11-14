@@ -117,9 +117,11 @@
               first.
           when: (_openbao_preflight_status.stdout | from_json).sealed | bool
 
+        # The same precedence as the rotation play: the ESO break-glass file when it is
+        # set, otherwise the JSON next to the key path.
         - name: Read the break-glass JSON of the operator host
           ansible.builtin.slurp:
-            src: "{{ openbao_key_path }}.json"
+            src: "{{ eso_openbao_breakglass_file | default((openbao_key_path | default('')) ~ '.json', true) }}"
           register: _openbao_preflight_breakglass
           delegate_to: localhost
           become: false
