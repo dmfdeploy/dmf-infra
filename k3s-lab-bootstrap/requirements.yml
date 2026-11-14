@@ -6,5 +6,5 @@ collections:
   - name: kubernetes.core
   # POSIX modules — authorized_key, firewalld, iptables, etc.
   - name: ansible.posix
-  # General modules — json_query filter (requires jmespath), among others
+  # General modules — json_query filter (requires jmespath; see requirements.txt), among others
   - name: community.general
