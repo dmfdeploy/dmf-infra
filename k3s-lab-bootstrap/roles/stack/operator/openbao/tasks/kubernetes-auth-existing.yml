@@ -10,8 +10,10 @@
 #      the dedicated account, and stops. A single replica restarts by itself and
 #      is sealed afterwards. A Raft cluster restarts one pod at a time with
 #      103-openbao-restart-pod.yml.
-#   2. Unseal, then generate a temporary root token with the generate-root
-#      procedure. Give it to the play in OPENBAO_TEMP_ROOT_TOKEN. The play writes
+#   2. Unseal, then generate a temporary root token with the "Root token procedure"
+#      in roles/stack/operator/openbao/README.md (it logs in as ops-admin, whose
+#      generate-root policy OpenBao 2.6 and later require). Give the token to the
+#      play in OPENBAO_TEMP_ROOT_TOKEN. The play revokes it. The play writes
 #      the Kubernetes auth config and, with ESO on Kubernetes auth, ESO's role. It
 #      then writes the role of the setup issuer and the role of the rotation
 #      scheduler, each only when it is missing, and nothing else. A role needs its
@@ -27,8 +29,9 @@
 # section revokes the token and proves the server refuses it. The revoke needs the
 # pod. When the lookup itself fails, the `always` section cannot revoke, so it
 # fails loudly and says that the token is still valid and how to revoke it by its
-# accessor. The token goes to the pod on stdin only. This play never reads or
-# writes the break-glass file.
+# accessor. The token goes to the pod on stdin only. This play never writes the
+# break-glass file. It reads the file only in the check of workload.yml that stops an
+# image change to 2.6 or later before ops-admin holds the generate-root policy.
 
 - name: Read the temporary root token from the environment, and note that no pod is known yet
   ansible.builtin.set_fact:

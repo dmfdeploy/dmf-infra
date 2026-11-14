@@ -50,6 +50,19 @@
 #   FAKE_POLICY_WRITER   set: a live token that is not root may read and write
 #                        sys/policies/acl/* (the policy-reconciler grant)
 #   FAKE_POLICY_WRITE_FAILS  set: `bao policy write NAME -` fails
+#   FAKE_GENROOT_AUTH   set: `bao operator generate-root` needs a live token, as on OpenBao
+#                        2.6 and later. Unset, it ignores the token, as 2.5.2 does.
+#   FAKE_GENROOT_THRESHOLD  shares that complete a root generation (default 3)
+#   FAKE_ACTIVE_POD     pods that report is_self in `bao status` (unset: all do). Without FAKE_GENROOT_AUTH,
+#                        generate-root on another pod fails with a 500, as on a 2.5.2 standby.
+#   FAKE_OTP            the root generation OTP (default fake-otp); init and decode must carry it
+#   FAKE_DECODE_FAILS   set: the decode of the generated root token fails
+#   FAKE_GENROOT_LOSE_RESPONSE  set: the server records the last share, then the answer is lost
+#   FAKE_REVOKE_FAILS   root, login or both: `bao token revoke -self` fails for that token
+#   FAKE_REVOKE_FAIL_FIRST  number of revoke attempts per token that fail before one works
+#   FAKE_OPS_POLICIES   comma list of the policies that ops-admin holds at the start
+#   FAKE_POLICIES_WRITE_FAILS  set: a write to auth/userpass/users/NAME/policies fails
+#   FAKE_PASSWORD_WRITE_FAILS  set: a write to auth/userpass/users/NAME fails
 #   FAKE_TLS_MODEL      set: model TLS as the comment before tls_ok describes
 #   FAKE_INITIALIZED    false: `bao status` reports a server that is not initialized
 #   FAKE_STATUS_FAIL_COUNT  with FAKE_STATUS_FAILS: how many status calls fail (default all)
@@ -85,6 +98,30 @@ is_sealed() {
   [ -f "$sealed_file" ] && return 0
   pod_in "$pod" "${FAKE_SEALED:-}" && return 0
   return 1
+}
+# The userpass user of the fake, kept in $state/userpass-user.json: its token_policies
+# (FAKE_OPS_POLICIES at the start) and how many password writes it has had.
+userpass_user() { # userpass_user show | write-user | set-policies  (the body on stdin)
+  local body=""
+  [ "$1" = show ] || body="$(cat)"
+  FAKE_BODY="$body" python3 - "$state/userpass-user.json" "${FAKE_OPS_POLICIES:-app-admin-writer,app-runtime-writer}" "$1" <<'PY'
+import json, os, sys
+path, initial, op = sys.argv[1:4]
+def as_list(value):
+    return value if isinstance(value, list) else [p for p in str(value).split(",") if p]
+user = json.load(open(path)) if os.path.exists(path) else {"token_policies": as_list(initial), "password_writes": 0}
+if op in ("write-user", "set-policies"):
+    body = json.loads(os.environ.get("FAKE_BODY") or "{}")
+    if op == "write-user" and "password" in body:
+        user["password_writes"] += 1
+    if "token_policies" in body:
+        user["token_policies"] = as_list(body["token_policies"])
+    elif "policies" in body:
+        user["token_policies"] = as_list(body["policies"])
+    json.dump(user, open(path, "w"))
+else:
+    print(json.dumps(user))
+PY
 }
 read_kv() { [ -f "$state/$1" ] && cat "$state/$1" || printf '%s' "$2"; }
 count_call() { # count_call NAME -> prints the number of earlier calls, then records this one
@@ -124,6 +161,14 @@ if [ "${1:-}" = status ] && ! tls_ok; then
   exit 1
 fi
 
+# Only commands that the real CLI has: the command registry of v2.5.2 (command/commands.go)
+# and of v2.7.2 (internal/command/commands.go). A command that a play invented fails here
+# instead of passing against the fake.
+case "${1:-} ${2:-}" in
+  "status "*|"write "*|"read "*|"list "*|"kv metadata"|"policy write"|"operator unseal"|"operator generate-root"|"operator raft"|"token capabilities"|"token lookup"|"token revoke"|"auth enable"|"secrets enable") ;;
+  *) echo "bao: unknown command: $*" >&2; exit 127 ;;
+esac
+
 case "$*" in
   "status -format=json")
     if [ "${FAKE_INITIALIZED:-true}" = false ]; then
@@ -134,7 +179,13 @@ case "$*" in
       printf '{"initialized":true,"sealed":true,"t":3,"n":5,"progress":%s}\n' "$(cat "$progress_file" 2>/dev/null || echo 0)"
       exit 2
     fi
-    printf '{"initialized":true,"sealed":false,"t":3,"n":5,"progress":0,"is_self":true}\n'
+    # FAKE_ACTIVE_POD (space separated pods) names the pods that report is_self. A standby
+    # leaves the field out, as the real status does. Unset, every pod reports it.
+    if [ -z "${FAKE_ACTIVE_POD+x}" ] || pod_in "$pod" "$FAKE_ACTIVE_POD"; then
+      printf '{"initialized":true,"sealed":false,"t":3,"n":5,"progress":0,"is_self":true}\n'
+    else
+      printf '{"initialized":true,"sealed":false,"t":3,"n":5,"progress":0}\n'
+    fi
     exit 0
     ;;
   "write -format=json sys/unseal -")
@@ -163,7 +214,7 @@ sys.exit(1) if not isinstance(k,str) or not k else print(k)' 2>/dev/null)" || { 
   "write -format=json auth/userpass/login/"*" password=-")
     pw="$(cat)"
     if [ "$pw" != "${FAKE_PASSWORD:-pw}" ]; then echo "Error writing data: invalid credentials" >&2; exit 2; fi
-    printf '{"auth":{"client_token":"fake-ops-token"}}\n'
+    printf '{"auth":{"client_token":"fake-ops-token","accessor":"fake-ops-accessor"}}\n'
     exit 0
     ;;
   "write -format=json auth/userpass/login/"*" -")
@@ -282,13 +333,105 @@ is_root() { case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac; return 1; }
 policy_ok() { token_ok && { is_root || [ -n "${FAKE_POLICY_WRITER:-}" ]; }; }
 forbidden() { printf 'Error %s: Error making API request.\n\nCode: 403. Errors:\n\n* 1 error occurred:\n\t* permission denied\n' "$1" >&2; exit 2; }
 case "$*" in
+  "operator generate-root "*)
+    # With FAKE_GENROOT_AUTH set the call behaves as on OpenBao 2.6 and later: only a
+    # token that the fake issued and has not revoked may make it (the ops-admin login
+    # token or a root token). Without it the call behaves as on 2.5.2, which sends the
+    # legacy unauthenticated request and ignores the token. FAKE_GENROOT_THRESHOLD is
+    # the number of shares that complete the attempt (default 3). The shares go to
+    # $state/genroot-shares.log, one per line. FAKE_OTP is the OTP (default fake-otp):
+    # init and decode must both carry it. FAKE_DECODE_FAILS makes the decode fail after
+    # the token was issued. The decoded token is a root token.
+    # On the 2.5.2 behaviour a standby answers the legacy unauthenticated endpoint with a 500,
+    # because those handlers do not forward to the active node. The authenticated endpoints of
+    # 2.6 and later are forwarded.
+    if [ -z "${FAKE_GENROOT_AUTH:-}" ] && [ -n "${FAKE_ACTIVE_POD+x}" ] && ! pod_in "$pod" "$FAKE_ACTIVE_POD"; then
+      echo "Error getting root generation status: Error making API request." >&2
+      printf 'URL: GET https://127.0.0.1:8200/v1/sys/generate-root/attempt\nCode: 500. Errors:\n\n* node is not active\n' >&2
+      exit 2
+    fi
+    if [ -n "${FAKE_GENROOT_AUTH:-}" ]; then
+      token_ok && case "$BAO_TOKEN" in fake-ops-token|fake-root*) true ;; *) false ;; esac || forbidden "generating the root token"
+    fi
+    shift 2
+    otp="${FAKE_OTP:-fake-otp}"
+    case " $* " in
+      " -cancel ") exit 0 ;;
+      " -generate-otp -format=json ") printf '{"otp":"%s"}\n' "$otp"; exit 0 ;;
+      *" -init "*)
+        case " $* " in *" -otp=$otp "*) ;; *) echo "Error initializing root generation: invalid otp" >&2; exit 2 ;; esac
+        rm -f "$state/genroot-shares.log"
+        printf '{"started":true,"nonce":"fake-nonce"}\n'
+        exit 0
+        ;;
+      " -nonce=fake-nonce -format=json - ")
+        share="$(cat)"
+        [ -n "$share" ] || { echo "Error posting unseal key: empty key" >&2; exit 2; }
+        printf '%s\n' "$share" >> "$state/genroot-shares.log"
+        if [ "$(wc -l < "$state/genroot-shares.log")" -ge "${FAKE_GENROOT_THRESHOLD:-3}" ]; then
+          [ -z "${FAKE_GENROOT_LOSE_RESPONSE:-}" ] || { echo "Error posting unseal key: connection reset by peer" >&2; exit 2; }
+          printf '{"complete":true,"encoded_token":"fake-encoded"}\n'
+        else
+          printf '{"complete":false}\n'
+        fi
+        exit 0
+        ;;
+      *" -decode=- "*)
+        cat > /dev/null
+        case " $* " in *" -otp=$otp "*) ;; *) echo "Error decoding root token: invalid otp" >&2; exit 2 ;; esac
+        [ -z "${FAKE_DECODE_FAILS:-}" ] || { echo "Error decoding root token: internal error" >&2; exit 2; }
+        printf '{"token":"fake-root-genroot"}\n'
+        exit 0
+        ;;
+    esac
+    echo "fake bao: unexpected generate-root call: $*" >&2
+    exit 1
+    ;;
+  "read -format=json auth/userpass/users/"*)
+    token_ok && is_root || forbidden "reading auth/userpass/users"
+    printf '{"data":%s}\n' "$(userpass_user show)"
+    exit 0
+    ;;
+  "write auth/userpass/users/"*"/policies -")
+    # The policies endpoint changes the policy list and nothing else of the user.
+    token_ok && is_root || forbidden "writing data to auth/userpass/users policies"
+    [ -z "${FAKE_POLICIES_WRITE_FAILS:-}" ] || { echo "Error writing data to auth/userpass/users policies: internal error" >&2; exit 2; }
+    userpass_user set-policies
+    exit 0
+    ;;
+  "write auth/userpass/users/"*" -")
+    # The user endpoint applies every field of the body that it is given: a password
+    # counts as a password write, and token_policies (or policies) replaces the list.
+    token_ok && is_root || forbidden "writing data to auth/userpass/users"
+    [ -z "${FAKE_PASSWORD_WRITE_FAILS:-}" ] || { echo "Error writing data to auth/userpass/users: internal error" >&2; exit 2; }
+    userpass_user write-user
+    exit 0
+    ;;
   "token lookup -format=json")
+    # `bao token lookup` without an argument looks up the token of the caller. The
+    # real CLI has no `token lookup-self`.
     token_ok || forbidden "looking up token"
-    if is_root; then printf '{"data":{"policies":["root"]}}\n'; else printf '{"data":{"policies":["default"]}}\n'; fi
+    python3 - "$BAO_TOKEN" "$(userpass_user show)" <<'PY'
+import json, sys
+token, user = sys.argv[1], json.loads(sys.argv[2])
+policies = ["root"] if token.startswith("fake-root") else ["default"] + (user["token_policies"] if token == "fake-ops-token" else [])
+print(json.dumps({"data": {"policies": policies, "accessor": token + "-accessor"}}))
+PY
     exit 0
     ;;
   "token revoke -self")
     token_ok || forbidden "revoking token"
+    # FAKE_REVOKE_FAILS: root, login or both make that token's revoke fail every time.
+    # FAKE_REVOKE_FAIL_FIRST: that many attempts fail for each token, then it works.
+    kind=login; case "$BAO_TOKEN" in fake-root*) kind=root ;; esac
+    attempts="$(count_call "revoke-$kind")"
+    case " ${FAKE_REVOKE_FAILS:-} " in
+      *" $kind "*|*" both "*) echo "Error revoking token: connection refused" >&2; exit 2 ;;
+    esac
+    if [ -n "${FAKE_REVOKE_FAIL_FIRST:-}" ] && [ "$attempts" -lt "$FAKE_REVOKE_FAIL_FIRST" ]; then
+      echo "Error revoking token: connection refused" >&2
+      exit 2
+    fi
     touch "$state/revoked-$BAO_TOKEN"
     exit 0
     ;;

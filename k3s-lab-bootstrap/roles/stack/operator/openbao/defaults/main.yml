@@ -2,8 +2,12 @@
 # OpenBao namespace
 openbao_namespace: openbao
 
-# Image (latest stable; bump as needed)
-openbao_image: "openbao/openbao:2.5.2"
+# Image: a release tag pinned to the digest of its multi-arch index. The
+# snapshot CronJob (roles/base/openbao-raft-snapshot) runs the same reference, so
+# the cluster runs one release. To bump, resolve the new digest with
+# `skopeo inspect --raw docker://docker.io/openbao/openbao:<tag> | shasum -a 256`
+# and change both defaults together.
+openbao_image: "docker.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f"
 
 # Storage
 openbao_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
@@ -196,6 +200,11 @@ openbao_dispose_root_token: true
 openbao_operator_username: ops-admin
 openbao_operator_policy_name: app-admin-writer
 openbao_operator_reader_policy_name: app-admin-reader
+# Narrow policy that lets ops-admin run `bao operator generate-root`. OpenBao
+# 2.6 and later send that command only to the authenticated
+# sys/generate-root-token endpoints. The caller still needs a quorum of unseal
+# shares, so the policy alone creates no token.
+openbao_generate_root_policy_name: generate-root
 openbao_operator_runtime_policy_name: app-runtime-writer
 openbao_eso_policy_name: eso-reader
 openbao_operator_password_length: 32

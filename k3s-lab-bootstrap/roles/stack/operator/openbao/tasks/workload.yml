@@ -6,6 +6,9 @@
 # overrides only the replica count (the grow-HA playbook starts at one pod).
 # ---------------------------------------------------------------------------
 
+- name: Refuse an image change to 2.6 or later before ops-admin holds the generate-root policy
+  ansible.builtin.include_tasks: image-policy-preflight.yml
+
 - name: Create OpenBao config ConfigMap
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml

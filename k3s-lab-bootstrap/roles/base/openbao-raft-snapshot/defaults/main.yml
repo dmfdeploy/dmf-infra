@@ -20,11 +20,13 @@ openbao_raft_snapshot_labels:
   app: openbao-raft-snapshot
   dmftier: "A"
 
-# Image for the snapshot pod — provides the `bao` CLI.
+# Image for the snapshot pod — provides the `bao` CLI. Keep it equal to
+# openbao_image in roles/stack/operator/openbao/defaults/main.yml, so the job
+# runs the release of the server.
 # `aws` CLI is copied in via an initContainer (amazon/aws-cli) into a
 # shared emptyDir on /shared-bin — same pattern as zot-mirror +
 # postgres-backups.
-openbao_raft_snapshot_image: "openbao/openbao:latest"
+openbao_raft_snapshot_image: "docker.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f"
 openbao_raft_snapshot_awscli_image: "amazon/aws-cli:latest"
 
 # S3 bucket coordinates — overridden from manifests or group_vars.

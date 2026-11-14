@@ -176,3 +176,17 @@
       - _events | select('equalto', 'k8s present StatefulSet openbao') | list | length == 1
       - _at_pod_delete | int > 0
   when: case.id == 'service_address'
+
+# The check for the generate-root policy is the only caller of `bao token lookup`. It runs once,
+# before the certificate is reissued and before the StatefulSet is deleted. The workload run
+# after the delete does not repeat it: the in-pod CLI fails TLS after the reissue until pod 0
+# restarts.
+- name: "{{ case.name }} — the policy check runs once, before the first change"
+  ansible.builtin.assert:
+    that:
+      - _lookup_events | length == 1
+      - _events.index(_lookup_events[0]) < _at_reissue | int
+      - _events.index(_lookup_events[0]) < _at_sts_delete | int
+  vars:
+    _lookup_events: "{{ _events | select('equalto', 'bao openbao-0 token lookup -format=json') | list }}"
+  when: case.id == 'policy_first'

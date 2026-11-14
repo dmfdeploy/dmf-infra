@@ -36,6 +36,9 @@
 set -u
 pod=""
 state="${FAKE_STATE:-}"
+# Every call, with its full argument list, goes to $FAKE_STATE/kubectl-argv.log, so a
+# test can prove that no secret reached the arguments of kubectl.
+[ -n "$state" ] && { mkdir -p "$state"; printf '%s\n' "$*" >> "$state/kubectl-argv.log"; }
 log_event() { [ -n "$state" ] && { mkdir -p "$state"; printf '%s\n' "$*" >> "$state/events.log"; }; return 0; }
 case " $* " in
   *" annotate "*)
