@@ -18,6 +18,7 @@ Cases:
 """
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -218,6 +219,16 @@ class RotationRunTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(self.generate_root_pods(state), {"openbao-1"})
+
+    def test_every_kubectl_call_uses_the_namespace_of_the_play(self) -> None:
+        # The active-pod search must look where the rest of the play runs.
+        result, state, _ = self.run_play({"ops_admin_rotation_attach_only": True,
+                                          "ops_admin_rotation_namespace": "vault-elsewhere"})
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        argv = (state / "kubectl-argv.log").read_text()
+        self.assertIn("status -format=json", argv)
+        self.assertEqual(set(re.findall(r"(?:^|\s)-n\s+(\S+)", argv)), {"vault-elsewhere"})
 
     def test_the_play_follows_the_active_pod_when_it_moves(self) -> None:
         result, state, _ = self.run_play({"ops_admin_rotation_attach_only": True},

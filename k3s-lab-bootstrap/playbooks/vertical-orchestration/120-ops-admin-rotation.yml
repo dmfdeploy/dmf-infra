@@ -97,11 +97,20 @@
       no_log: true
 
     # A standby answers the generate-root endpoints of OpenBao 2.5.2 with a 500, so the play
-    # runs every call in the pod that reports itself as the active node.
+    # runs every call in the pod that reports itself as the active node. The search runs in
+    # the namespace of this play. The value is resolved first, because
+    # ops_admin_rotation_namespace defaults to openbao_namespace and passing it straight back
+    # would make a recursive template.
+    - name: Resolve the namespace of the OpenBao pods
+      ansible.builtin.set_fact:
+        _ops_admin_rotation_namespace_resolved: "{{ ops_admin_rotation_namespace }}"
+
     - name: Find the active OpenBao pod
       ansible.builtin.include_role:
         name: stack/operator/openbao
         tasks_from: find-active-pod.yml
+      vars:
+        openbao_namespace: "{{ _ops_admin_rotation_namespace_resolved }}"
 
     - name: Set OpenBao pod fact
       ansible.builtin.set_fact:
