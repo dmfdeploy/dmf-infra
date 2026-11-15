@@ -1,0 +1,108 @@
+---
+# Test of the born-inventory break-glass login against a fake kubectl and a fake bao.
+# The login reads the AppRole role ID and SecretID from the break-glass file and must
+# send them to bao as a JSON body on stdin. The fake accepts only that form, and the
+# test checks that neither value is in any argument list that kubectl or bao received.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   export PATH="$PWD/tests/fixtures/fake-kubectl:$PATH"
+#   export ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections"
+#   ansible-playbook tests/test-born-inventory-breakglass-login.yml
+
+- name: Born-inventory break-glass login test
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars:
+    _role_id: test-born-role-id-0001
+    _secret_id: test-born-secret-id-0002
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: born-inventory-login-
+      register: _state
+      changed_when: false
+
+    - name: Make the fake cluster directory
+      ansible.builtin.file:
+        path: "{{ _state.path }}/k8s"
+        state: directory
+        mode: "0700"
+      changed_when: false
+
+    - name: Give the fake cluster one OpenBao pod
+      ansible.builtin.copy:
+        content: '[{"metadata": {"name": "openbao-0"}}]'
+        dest: "{{ _state.path }}/k8s/Pod-all.json"
+        mode: "0600"
+      changed_when: false
+
+    - name: Write the break-glass file
+      ansible.builtin.copy:
+        content: "{{ {'born_inventory_role_id': _role_id, 'born_inventory_secret_id': _secret_id} | to_json }}"
+        dest: "{{ _state.path }}/breakglass.json"
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Log in and read the NetBox runtime secret with the right credentials
+      block:
+        - name: Run the break-glass tasks
+          ansible.builtin.include_role:
+            name: "{{ playbook_dir }}/../roles/common/dmf-born-inventory"
+            tasks_from: openbao-breakglass.yml
+          vars:
+            dmf_born_inventory_openbao_breakglass_file: "{{ _state.path }}/breakglass.json"
+            dmf_born_inventory_netbox_admin_token: ""
+      environment:
+        FAKE_STATE: "{{ _state.path }}"
+        FAKE_APPROLE_ROLE_ID: "{{ _role_id }}"
+        FAKE_APPROLE_SECRET_ID: "{{ _secret_id }}"
+
+    - name: Read the argument logs
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/{{ item }}"
+      loop: [kubectl-argv.log, bao-argv.log]
+      register: _argv
+      no_log: true
+
+    - name: Assert the login worked and no credential was an argument
+      ansible.builtin.assert:
+        that:
+          - _dmf_born_inventory_openbao_client_token == 'fake-approle-token'
+          - _dmf_born_inventory_netbox_admin_token_from_openbao == 'fake-netbox-admin-token'
+          - _argv.results | map(attribute='content') | map('b64decode') | select('search', 'auth/approle/login') | list | length == 2
+          - _argv.results | map(attribute='content') | map('b64decode') | select('search', _role_id) | list | length == 0
+          - _argv.results | map(attribute='content') | map('b64decode') | select('search', _secret_id) | list | length == 0
+          - _argv.results | map(attribute='content') | map('b64decode') | select('search', 'role_id=|secret_id=') | list | length == 0
+        success_msg: The login sent the credentials on stdin and no argument carried them.
+
+    - name: A SecretID that the fake refuses stops the play
+      block:
+        - name: Log in with a SecretID that is not the issued one
+          ansible.builtin.include_role:
+            name: "{{ playbook_dir }}/../roles/common/dmf-born-inventory"
+            tasks_from: openbao-breakglass.yml
+          vars:
+            dmf_born_inventory_openbao_breakglass_file: "{{ _state.path }}/breakglass.json"
+            dmf_born_inventory_netbox_admin_token: ""
+        - name: Fail when the login was accepted
+          ansible.builtin.fail:
+            msg: The login succeeded with a SecretID that the fake does not accept.
+      rescue:
+        - name: Assert the refusal came from the login
+          ansible.builtin.assert:
+            that:
+              - "'Log into OpenBao with born-inventory AppRole' in ansible_failed_task.name"
+            success_msg: The login refused the wrong SecretID.
+      environment:
+        FAKE_STATE: "{{ _state.path }}"
+        FAKE_APPROLE_ROLE_ID: "{{ _role_id }}"
+        FAKE_APPROLE_SECRET_ID: some-other-secret-id
+
+    - name: Remove the state directory
+      ansible.builtin.file:
+        path: "{{ _state.path }}"
+        state: absent
+      changed_when: false

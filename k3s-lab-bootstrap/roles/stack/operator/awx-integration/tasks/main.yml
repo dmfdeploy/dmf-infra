@@ -61,25 +61,19 @@
       or (awx_integration_netbox_purge_token | default('', true) | length == 0
           and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
-- name: Extract OpenBao credentials for AWX integration
-  ansible.builtin.set_fact:
-    _awx_openbao_eso_role_id: "{{ _awx_openbao_breakglass.eso_role_id | default('') }}"
-    _awx_openbao_eso_secret_id: "{{ _awx_openbao_breakglass.eso_secret_id | default('') }}"
-  run_once: true
-  no_log: true
-  when: _awx_openbao_breakglass is defined
-
-- name: Assert OpenBao AppRole exists for AWX source-token reads
+# The NetBox and Forgejo runtime reads use the operator login below, whose
+# app-runtime-writer policy grants read on secret/data/apps/+/runtime. They never
+# log in with the ESO AppRole: its SecretID rotates, and the copy in the break-glass
+# file is dead after the first rotation.
+- name: Assert the operator login is available for AWX source-token reads
   ansible.builtin.assert:
     that:
-      - _awx_openbao_eso_role_id | default('') | length > 0
-      - _awx_openbao_eso_secret_id | default('') | length > 0
+      - awx_integration_persist_to_openbao | bool
     fail_msg: >-
-      No ESO AppRole credentials found in {{ awx_integration_openbao_breakglass_file }}.
-      AWX integration needs them to read NetBox/Forgejo runtime tokens from
-      in-cluster OpenBao when vault vars are absent.
+      AWX integration reads the NetBox and Forgejo runtime tokens from in-cluster
+      OpenBao with the operator login, which needs the OpenBao break-glass file
+      (eso_openbao_breakglass_file). Set it, or provide the tokens through vault vars.
   run_once: true
-  no_log: true
   when:
     - awx_integration_netbox_token | default('', true) | length == 0
       or awx_integration_forgejo_token | default('', true) | length == 0
@@ -179,37 +173,6 @@
   no_log: true
   when: awx_integration_persist_to_openbao | bool
 
-- name: Log into in-cluster OpenBao for AWX source-token reads
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ awx_integration_openbao_namespace }}
-      exec -i {{ _awx_openbao_pod }}
-      -- sh -c '
-      bao write -format=json auth/approle/login -'
-    stdin: "{{ {'role_id': _awx_openbao_eso_role_id, 'secret_id': _awx_openbao_eso_secret_id} | to_json }}\n"
-  register: _awx_openbao_login_raw
-  changed_when: false
-  run_once: true
-  no_log: true
-  when:
-    - awx_integration_netbox_token | default('', true) | length == 0
-      or awx_integration_forgejo_token | default('', true) | length == 0
-      or (awx_integration_netbox_catalog_token | default('', true) | length == 0
-          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
-      or (awx_integration_netbox_purge_token | default('', true) | length == 0
-          and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
-
-- name: Extract OpenBao client token for AWX source-token reads
-  ansible.builtin.set_fact:
-    _awx_openbao_client_token: "{{ (_awx_openbao_login_raw.stdout | from_json).auth.client_token }}"
-  run_once: true
-  no_log: true
-  when:
-    - _awx_openbao_login_raw is defined
-    - _awx_openbao_login_raw.stdout is defined
-    - _awx_openbao_login_raw.stdout | length > 0
-
 - name: Read NetBox runtime token from in-cluster OpenBao
   ansible.builtin.shell:
     cmd: >-
@@ -220,7 +183,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json {{ awx_integration_netbox_runtime_secret_path | quote }}'
-    stdin: "{{ _awx_openbao_client_token }}\n"
+    stdin: "{{ _awx_openbao_operator_client_token }}\n"
   register: _awx_openbao_netbox_raw
   changed_when: false
   run_once: true
@@ -291,7 +254,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao kv get -format=json {{ awx_integration_forgejo_runtime_secret_path | quote }}'
-    stdin: "{{ _awx_openbao_client_token }}\n"
+    stdin: "{{ _awx_openbao_operator_client_token }}\n"
   register: _awx_openbao_forgejo_raw
   changed_when: false
   run_once: true
@@ -311,23 +274,6 @@
     - _awx_openbao_forgejo_raw is defined
     - _awx_openbao_forgejo_raw.stdout is defined
     - _awx_openbao_forgejo_raw.stdout | length > 0
-
-- name: Revoke OpenBao token after AWX source-token reads
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ awx_integration_openbao_namespace }}
-      exec -i {{ _awx_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao token revoke -self'
-    stdin: "{{ _awx_openbao_client_token }}\n"
-  changed_when: false
-  failed_when: false
-  run_once: true
-  no_log: true
-  when: _awx_openbao_client_token is defined
 
 - name: Assert NetBox and Forgejo tokens exist
   ansible.builtin.assert:

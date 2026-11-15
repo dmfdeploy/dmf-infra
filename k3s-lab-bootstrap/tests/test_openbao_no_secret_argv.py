@@ -385,10 +385,6 @@ PERMANENT_ENVIRONMENT = {
     # environment of the process, so stdin does not replace the entry.
     'roles/base/resilience-verify/tasks/verify-host-audit.yml::Audit verify — synthetic round-trip + Object Lock delete refusal (containerised)::AWS_ACCESS_KEY_ID',
     'roles/base/resilience-verify/tasks/verify-host-audit.yml::Audit verify — synthetic round-trip + Object Lock delete refusal (containerised)::AWS_SECRET_ACCESS_KEY',
-    # The AppRole login that the receipt-driven path replaces; it expands both ids into the
-    # command (see tests/test_openbao_a2a_static.py).
-    'roles/common/dmf-born-inventory/tasks/openbao-breakglass.yml::Log into OpenBao with born-inventory AppRole::OPENBAO_ROLE_ID',
-    'roles/common/dmf-born-inventory/tasks/openbao-breakglass.yml::Log into OpenBao with born-inventory AppRole::OPENBAO_SECRET_ID',
 }
 
 PINNED_ENVIRONMENT = PERMANENT_ENVIRONMENT
@@ -444,18 +440,19 @@ class OpenBaoNoSecretEnvironmentTest(unittest.TestCase):
                 self.assertEqual(environment_findings(text), [])
 
     def test_a_new_secret_entry_in_a_pinned_task_is_not_pinned(self):
-        # A pinned task that gains a second secret entry reports the new key as well, so the
+        # A pinned task that gains a further secret entry reports the new key as well, so the
         # exact-set comparison against the pins fails.
         task = (
-            "- name: Log into OpenBao with born-inventory AppRole\n"
+            "- name: Audit verify — synthetic round-trip + Object Lock delete refusal (containerised)\n"
             "  ansible.builtin.shell:\n    cmd: x\n"
-            "  environment:\n    OPENBAO_ROLE_ID: \"{{ r }}\"\n    OPENBAO_SECRET_ID: \"{{ s }}\"\n"
+            "  environment:\n    AWS_ACCESS_KEY_ID: \"{{ a }}\"\n    AWS_SECRET_ACCESS_KEY: \"{{ s }}\"\n"
             "    EXTRA_VALUE: \"{{ admin_password }}\"\n"
         )
-        entries = {f"roles/common/dmf-born-inventory/tasks/openbao-breakglass.yml::{e}" for e in environment_findings(task)}
+        path = "roles/base/resilience-verify/tasks/verify-host-audit.yml"
+        entries = {f"{path}::{e}" for e in environment_findings(task)}
         self.assertEqual(
             sorted(entries - PINNED_ENVIRONMENT),
-            ["roles/common/dmf-born-inventory/tasks/openbao-breakglass.yml::Log into OpenBao with born-inventory AppRole::EXTRA_VALUE"],
+            [f"{path}::Audit verify — synthetic round-trip + Object Lock delete refusal (containerised)::EXTRA_VALUE"],
         )
 
 

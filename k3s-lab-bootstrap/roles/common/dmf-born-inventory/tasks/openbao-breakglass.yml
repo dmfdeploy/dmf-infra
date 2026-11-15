@@ -95,29 +95,19 @@
     _dmf_born_inventory_openbao_pod: "{{ _dmf_born_inventory_openbao_pod_info.resources[0].metadata.name }}"
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
+# The role ID and SecretID travel as a JSON body on stdin. A command argument or
+# a task `environment:` entry would show them in the process list.
 - name: Log into OpenBao with born-inventory AppRole
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ dmf_born_inventory_openbao_namespace }}"
-      - exec
-      - "{{ _dmf_born_inventory_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - >-
-        bao write -format=json auth/approle/login
-        role_id=$OPENBAO_ROLE_ID
-        secret_id=$OPENBAO_SECRET_ID
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ dmf_born_inventory_openbao_namespace }}
+      exec -i {{ _dmf_born_inventory_openbao_pod }}
+      -- sh -c '
+      bao write -format=json auth/approle/login -'
+    stdin: "{{ {'role_id': _dmf_born_inventory_openbao_role_id, 'secret_id': _dmf_born_inventory_openbao_secret_id} | to_json }}\n"
   register: _dmf_born_inventory_openbao_login_raw
   changed_when: false
-  environment:
-    BAO_ADDR: https://127.0.0.1:8200
-    OPENBAO_ROLE_ID: "{{ _dmf_born_inventory_openbao_role_id }}"
-    OPENBAO_SECRET_ID: "{{ _dmf_born_inventory_openbao_secret_id }}"
   no_log: true
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
