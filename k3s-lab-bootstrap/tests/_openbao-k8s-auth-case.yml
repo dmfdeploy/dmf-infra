@@ -84,6 +84,7 @@
         openbao_kubernetes_reviewer_enabled: "{{ case.reviewer | default(true) }}"
         openbao_k8s_readiness_role: "{{ playbook_dir }}/fixtures/fake-roles/cluster-ready"
         fake_cluster_ready_fails: "{{ case.readiness_fails | default(false) }}"
+        openbao_k8s_write_token_ttl: "{{ case.ttl | default('15m') }}"
     - name: Record a pass
       ansible.builtin.set_fact:
         _outcome: pass
@@ -143,6 +144,26 @@
       }) %}{% else %}{% set _ = expected.append(None) %}{% endif %}{% endfor %}{{ expected | to_json }}
     _config_written: "{{ _kept.files | map(attribute='path') | select('search', 'config.json') | list | length > 0 }}"
 
+# The fake bao records which token made which call, and which tokens `token create`
+# made. fixtures/token_lifecycle.py lists what is wrong with that record: the
+# generate-root token is used for nothing but the policy check, the mint and its own
+# revoke, every write runs with a minted orphan token of 10 to 15 minutes, the
+# generate-root token is revoked before the first write, and the minted token is
+# revoked at the end. A case sets minted (default 1 when it wrote, else 0) and
+# short_revoked (default true) when it differs.
+- name: "{{ case.name }} — check the token lifecycle"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - "{{ playbook_dir }}/fixtures/token_lifecycle.py"
+      - "{{ _state.path }}/{{ case.state | default(case_index) }}"
+      - "{{ case.token | default('none-given') }}"
+      - "{{ case.minted | default(1 if case.wrote else 0) }}"
+      - "{{ 'yes' if case.revoked else 'no' }}"
+      - "{{ 'yes' if case.short_revoked | default(true) else 'no' }}"
+  register: _lifecycle
+  changed_when: false
+
 - name: "{{ case.name }} — judge the case"
   vars:
     _wrote_config: "{{ _config_written | bool }}"
@@ -155,10 +176,11 @@
                 and (_wrote_config == case.wrote)
                 and (case.revoked == (('revoked-' ~ case.token) in _revoked if case.token is defined else false))
                 and ((case.token | default('none-given')) not in _argv)
-                and ((case.token is not defined) or (_events | select('search', ' token revoke -self') | list | length <= (2 if case.state is defined else 1)))
+                and ((case.token is not defined) or (_events | select('search', ' token revoke -self') | list | length <= (case.max_revokes | default(2)) * (2 if case.state is defined else 1)))
+                and (_lifecycle.stdout | from_json | length == 0)
                 and (not (case.wrote and case.revoked) or (
                   (_events | select('search', ' write auth/kubernetes/|token revoke -self') | list | last) is search('token revoke -self')))
-                and (case.expect != 'fail' or ('present ConfigMap openbao-kubernetes-auth-record' not in _mutations))
+                and (case.expect != 'fail' or (case.late_failure | default(false)) or ('present ConfigMap openbao-kubernetes-auth-record' not in _mutations))
                 and ((case.config_writes is not defined) or (_argv | regex_findall('(?m)^write auth/kubernetes/config ') | length == case.config_writes))
                 and ((case.records is not defined) or (_mutations | regex_findall('(?m)^present ConfigMap openbao-kubernetes-auth-record') | length == case.records))
                 and ((case.eso_role_written is not defined) or (
@@ -175,6 +197,7 @@
                   and ('present ClusterRoleBinding openbao-token-review' in _mutations)
                   and ('present StatefulSet openbao' in _mutations))),
           'outcome': _outcome,
-          'message': _message
+          'message': _message,
+          'lifecycle': _lifecycle.stdout | from_json
         }]
       }}

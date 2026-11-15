@@ -27,6 +27,9 @@ run of the grow-HA play reads back.
   the fields take strings only, so a template that renders a boolean or a number
   fails here too.
 - Applying a ConfigMap writes k8s/ConfigMap-<name>.json with its data.
+- When FAKE_K8S_UNREACHABLE is KIND or KIND/NAME and the call is for that object, the
+  call is logged and its result says the host is unreachable, as a lost connection
+  does. Nothing is applied.
 """
 import base64
 import json
@@ -60,6 +63,8 @@ def main():
     with open(os.path.join(state, "events.log"), "a") as handle:
         handle.write("k8s %s %s %s\n" % (p["state"], kind, name))
     objects = os.path.join(state, "k8s")
+    if os.environ.get("FAKE_K8S_UNREACHABLE") in (kind, "%s/%s" % (kind, name)):
+        module.exit_json(unreachable=True, msg="the host is unreachable")
     if p["state"] == "present" and isinstance(p["definition"], dict):
         check_string_fields(module, kind, p["definition"])
     if p["state"] == "present" and kind == "ConfigMap":

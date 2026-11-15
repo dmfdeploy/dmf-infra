@@ -14,6 +14,11 @@
 #     missing path, and exits 2 with "Error reading ..." for other failures
 #     (command/kv_metadata_get.go).
 #   - `bao token capabilities -format=json` prints a JSON list.
+#   - `bao token create` takes -orphan, -policy, -ttl, -renewable and -format, as the
+#     CLI does (command/token_create.go), and refuses any other flag. The caller needs a
+#     root token. The new token is recorded in $FAKE_STATE/token-NAME.json with its
+#     parent, orphan flag, policies and TTL in seconds. A token created without -orphan
+#     is revoked with its parent.
 #   - `bao read -format=json sys/storage/raft/autopilot/state` prints the API
 #     response: the state object, with snake_case keys (healthy, failure_tolerance,
 #     leader, voters, servers), is under "data".
@@ -60,7 +65,10 @@
 #   FAKE_OTP            the root generation OTP (default fake-otp); init and decode must carry it
 #   FAKE_DECODE_FAILS   set: the decode of the generated root token fails
 #   FAKE_GENROOT_LOSE_RESPONSE  set: the server records the last share, then the answer is lost
-#   FAKE_REVOKE_FAILS   root, login or both: `bao token revoke -self` fails for that token
+#   FAKE_REVOKE_FAILS   root, short, login or both (all kinds): `bao token revoke -self` fails
+#                        for that kind of token. A short token is one that `token create`
+#                        made (name fake-root-short-N); root is any other fake-root token.
+#   FAKE_TOKEN_CREATE_FAILS  set: `bao token create` fails
 #   FAKE_REVOKE_FAIL_FIRST  number of revoke attempts per token that fail before one works
 #   FAKE_OPS_POLICIES   comma list of the policies that ops-admin holds at the start
 #   FAKE_POLICIES_WRITE_FAILS  set: a write to auth/userpass/users/NAME/policies fails
@@ -81,11 +89,16 @@
 # 5m. A root token reads sys/policies/acl/NAME: the policy exists when the file
 # $state/policies/NAME does, and the read returns the text of that file.
 # `bao policy write NAME -` stores its standard input in that file.
+# Every call with the token it ran under goes to $FAKE_STATE/bao-calls.log as
+# "TOKEN ARGS" (TOKEN is `none` without one), so a test sees which token made which call.
+# Two outcomes go to the same log, in order, as "TOKEN =revoked" after a revoke that
+# worked and "TOKEN =refused" when the server refuses a revoked token's lookup.
 set -u
 state="${FAKE_STATE:?FAKE_STATE is not set}"
 pod="${FAKE_POD:-openbao-0}"
 mkdir -p "$state"
 printf '%s\n' "$*" >> "$state/bao-argv.log"
+printf '%s %s\n' "${BAO_TOKEN:-none}" "$*" >> "$state/bao-calls.log"
 # One log of every call in order, shared with the fake kubectl and the fake
 # kubernetes.core modules, so a test can check what ran before what.
 printf 'bao %s %s\n' "$pod" "$*" >> "$state/events.log"
@@ -167,7 +180,7 @@ fi
 # and of v2.7.2 (internal/command/commands.go). A command that a play invented fails here
 # instead of passing against the fake.
 case "${1:-} ${2:-}" in
-  "status "*|"write "*|"read "*|"list "*|"kv metadata"|"policy write"|"operator unseal"|"operator generate-root"|"operator raft"|"token capabilities"|"token lookup"|"token revoke"|"auth enable"|"secrets enable") ;;
+  "status "*|"write "*|"read "*|"list "*|"kv metadata"|"policy write"|"operator unseal"|"operator generate-root"|"operator raft"|"token capabilities"|"token create"|"token lookup"|"token revoke"|"auth enable"|"secrets enable") ;;
   *) echo "bao: unknown command: $*" >&2; exit 127 ;;
 esac
 
@@ -433,6 +446,17 @@ case "$*" in
   "token lookup -format=json")
     # `bao token lookup` without an argument looks up the token of the caller. The
     # real CLI has no `token lookup-self`.
+    # FAKE_LOOKUP_TRANSPORT_FAILS: the lookup of a revoked token never reaches the
+    # server, so the play cannot tell that it is revoked. `refused` fails with a lost
+    # connection; `local-denied` fails with a local permission error, which also says
+    # "permission denied" but is not the server's 403.
+    if [ -f "$state/revoked-${BAO_TOKEN:-}" ]; then
+      case "${FAKE_LOOKUP_TRANSPORT_FAILS:-}" in
+        refused) echo "Error looking up token: dial tcp 127.0.0.1:8200: connect: connection refused" >&2; exit 2 ;;
+        local-denied) echo "error: open /etc/rancher/k3s/k3s.yaml: permission denied" >&2; exit 1 ;;
+      esac
+      printf '%s =refused\n' "$BAO_TOKEN" >> "$state/bao-calls.log"
+    fi
     token_ok || forbidden "looking up token"
     python3 - "$BAO_TOKEN" "$(userpass_user show)" <<'PY'
 import json, sys
@@ -442,11 +466,45 @@ print(json.dumps({"data": {"policies": policies, "accessor": token + "-accessor"
 PY
     exit 0
     ;;
+  "token create "*)
+    token_ok && is_root || forbidden "creating a token"
+    [ -z "${FAKE_TOKEN_CREATE_FAILS:-}" ] || { echo "Error creating token: internal error" >&2; exit 2; }
+    shift 2
+    orphan=false; ttl=""; policies=""; renewable=true
+    for flag in "$@"; do
+      case "$flag" in
+        -orphan) orphan=true ;;
+        -orphan=*) orphan="${flag#-orphan=}" ;;
+        -policy=*) policies="$policies ${flag#-policy=}" ;;
+        -ttl=*) ttl="${flag#-ttl=}" ;;
+        -renewable=*) renewable="${flag#-renewable=}" ;;
+        -format=json) ;;
+        *) echo "flag provided but not defined: ${flag%%=*}" >&2; exit 1 ;;
+      esac
+    done
+    # The name starts with fake-root so the fake treats the token as a root token, as a
+    # token with the root policy is.
+    n=$(( $(count_call short-token) + 1 ))
+    name="fake-root-short-$n"
+    python3 - "$state/token-$name.json" "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$policies" "$renewable" <<'PY'
+import json, sys
+path, name, parent, orphan, ttl, policies, renewable = sys.argv[1:8]
+units = {"s": 1, "m": 60, "h": 3600}
+seconds = int(ttl[:-1]) * units[ttl[-1]] if ttl and ttl[-1] in units else int(ttl or 0)
+record = {"parent": parent, "orphan": orphan == "true", "policies": policies.split(), "ttl": seconds,
+          "renewable": renewable == "true"}
+json.dump(record, open(path, "w"))
+print(json.dumps({"auth": {"client_token": name, "accessor": name + "-accessor", "policies": ["default"] + record["policies"],
+                           "lease_duration": seconds, "renewable": record["renewable"], "orphan": record["orphan"]}}))
+PY
+    exit 0
+    ;;
   "token revoke -self")
     token_ok || forbidden "revoking token"
-    # FAKE_REVOKE_FAILS: root, login or both make that token's revoke fail every time.
-    # FAKE_REVOKE_FAIL_FIRST: that many attempts fail for each token, then it works.
-    kind=login; case "$BAO_TOKEN" in fake-root*) kind=root ;; esac
+    # FAKE_REVOKE_FAILS: root, short, login or both make that kind of token's revoke fail
+    # every time. FAKE_REVOKE_FAIL_FIRST: that many attempts fail for each kind, then it works.
+    kind=login
+    case "$BAO_TOKEN" in fake-root-short*) kind=short ;; fake-root*) kind=root ;; esac
     attempts="$(count_call "revoke-$kind")"
     case " ${FAKE_REVOKE_FAILS:-} " in
       *" $kind "*|*" both "*) echo "Error revoking token: connection refused" >&2; exit 2 ;;
@@ -456,6 +514,17 @@ PY
       exit 2
     fi
     touch "$state/revoked-$BAO_TOKEN"
+    printf '%s =revoked\n' "$BAO_TOKEN" >> "$state/bao-calls.log"
+    # A token that was not created as an orphan goes with its parent.
+    for record in "$state"/token-*.json; do
+      [ -f "$record" ] || continue
+      child="$(basename "$record" .json)"; child="${child#token-}"
+      python3 - "$record" "$BAO_TOKEN" <<'PY' && touch "$state/revoked-$child"
+import json, sys
+record = json.load(open(sys.argv[1]))
+sys.exit(0 if record["parent"] == sys.argv[2] and not record["orphan"] else 1)
+PY
+    done
     exit 0
     ;;
   "write auth/kubernetes/config "*)
