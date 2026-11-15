@@ -14,21 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 OPENBAO_ROLE = ROOT / "roles/stack/operator/openbao"
 BORN_ROLE = ROOT / "roles/common/dmf-born-inventory"
 
-# Task files that issue or use credentials on the A.2a path. The legacy
-# break-glass file is the default path and moved out of main.yml unchanged.
+# Task files that issue or use credentials on the A.2a path. The break-glass login
+# is the default path, and it sends the AppRole credentials on stdin.
 ARGV_CHECKED = [
     OPENBAO_ROLE / "tasks/setup-issuer.yml",
     OPENBAO_ROLE / "tasks/setup-rotation-scheduler.yml",
     BORN_ROLE / "tasks/openbao-setup-only.yml",
+    BORN_ROLE / "tasks/openbao-breakglass.yml",
     ROOT / "playbooks/verify-openbao-identity-model.yml",
     ROOT / "playbooks/vertical-orchestration/115-approle-rotation.yml",
     ROOT / "playbooks/vertical-orchestration/110-eso-secret-rotation.yml",
 ]
-LEGACY_ARGV_EXCEPTIONS = {
-    (BORN_ROLE / "tasks/openbao-breakglass.yml", "Log into OpenBao with born-inventory AppRole"): (
-        "the default path, moved verbatim from main.yml; the receipt-driven switch replaces it"
-    ),
-}
 
 # A lifetime or a policy list is configuration, not a credential.
 CREDENTIAL_WORD = r"(token|secret|password|jwt|share|accessor)(?!_(max_)?ttl|_policies|_length)"
@@ -72,12 +68,6 @@ class NoCredentialInArgvTest(unittest.TestCase):
         for path in ARGV_CHECKED:
             with self.subTest(path=path.name):
                 self.assertEqual(argv_findings(path.read_text(encoding="utf-8")), [])
-
-    def test_legacy_exceptions_are_exactly_the_known_ones(self):
-        for (path, name), reason in LEGACY_ARGV_EXCEPTIONS.items():
-            with self.subTest(task=name):
-                self.assertTrue(reason)
-                self.assertEqual(argv_findings(path.read_text(encoding="utf-8")), [name])
 
     def test_detector_flags_each_form_of_credential_argument(self):
         bad = [
@@ -218,6 +208,19 @@ class BornInventorySwitchTest(unittest.TestCase):
             "lookup('file'",
         ):
             self.assertNotIn(forbidden, code)
+
+    def test_the_break_glass_login_sends_the_ids_as_json_on_stdin(self):
+        task = self.BREAKGLASS.split("- name: Log into OpenBao with born-inventory AppRole")[1].split("\n- name:")[0]
+        self.assertIn("bao write -format=json auth/approle/login -'", task)
+        self.assertRegex(
+            task,
+            r"stdin: \"\{\{ \{'role_id': _dmf_born_inventory_openbao_role_id, "
+            r"'secret_id': _dmf_born_inventory_openbao_secret_id\} \| to_json \}\}\\n\"",
+        )
+        self.assertIn("no_log: true", task)
+        self.assertNotIn("environment:", task)
+        self.assertNotIn("$OPENBAO", task)
+        self.assertNotRegex(task, r"(role_id|secret_id)=")
 
     def test_the_shared_validation_in_main_does_not_name_the_break_glass_file(self):
         validate = self.MAIN.split("- name: Validate born-inventory inputs")[1].split("\n- name:")[0]

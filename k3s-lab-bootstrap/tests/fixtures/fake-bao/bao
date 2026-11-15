@@ -7,6 +7,8 @@
 #   - `bao write PATH -` reads a JSON object from stdin, and `key=-` reads the
 #     whole of stdin as the value (go-secure-stdlib kv-builder v0.1.2, builder.go).
 #   - `bao write -format=json auth/userpass/login/NAME -` reads {"password": ...} from stdin.
+#   - `bao write -format=json auth/approle/login -` reads {"role_id": ..., "secret_id": ...}
+#     from stdin and accepts the pair of FAKE_APPROLE_ROLE_ID and FAKE_APPROLE_SECRET_ID.
 #   - `bao operator unseal KEY` takes the key as its positional argument.
 #   - `bao kv metadata get` prints "No value found at ..." and exits 2 for a
 #     missing path, and exits 2 with "Error reading ..." for other failures
@@ -221,6 +223,27 @@ sys.exit(1) if not isinstance(k,str) or not k else print(k)' 2>/dev/null)" || { 
     pw="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("password", ""), end="")')"
     if [ "$pw" != "${FAKE_PASSWORD:-pw}" ]; then echo "Error writing data: invalid credentials" >&2; exit 2; fi
     printf '{"auth":{"client_token":"fake-reconciler-token"}}\n'
+    exit 0
+    ;;
+  "write -format=json auth/approle/login -")
+    # The AppRole login reads {"role_id": ..., "secret_id": ...} from stdin. Arguments
+    # of the form role_id=... or secret_id=... are not a form of this case.
+    creds="$(cat)"
+    if ! FAKE_CREDS="$creds" python3 - "${FAKE_APPROLE_ROLE_ID:-fake-role-id}" "${FAKE_APPROLE_SECRET_ID:-fake-secret-id}" <<'PY'
+import json, os, sys
+body = json.loads(os.environ.get("FAKE_CREDS") or "{}")
+sys.exit(0 if (body.get("role_id"), body.get("secret_id")) == (sys.argv[1], sys.argv[2]) else 1)
+PY
+    then
+      echo "Error making API request: invalid role or secret ID" >&2
+      exit 2
+    fi
+    printf '{"auth":{"client_token":"fake-approle-token"}}\n'
+    exit 0
+    ;;
+  "read -format=json secret/data/apps/netbox/runtime")
+    [ "${BAO_TOKEN:-}" = "fake-approle-token" ] || { echo "Error reading secret/data/apps/netbox/runtime: permission denied" >&2; exit 2; }
+    printf '{"data":{"data":{"netbox_admin_token":"fake-netbox-admin-token"}}}\n'
     exit 0
     ;;
   "read -format=json sys/storage/raft/autopilot/state"|"operator raft autopilot state -format=json")
