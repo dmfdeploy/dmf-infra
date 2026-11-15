@@ -14,9 +14,9 @@ operator-local and reach it through `dmf-env` (ADR-0035). Umbrella: https://gith
 
 ## Build and test
 
-From `k3s-lab-bootstrap/`, run the CI checks: `yamllint .`, `ansible-lint playbooks/ -p`,
-`ansible-playbook playbooks/<name>.yml --syntax-check`, `helm lint charts/<chart>/`.
-Run playbooks from `dmf-env`:
+Setup, the checks CI runs with their run times, the checks CI skips, the hooks and
+the pull request gates are in [CONTRIBUTING.md](CONTRIBUTING.md#develop-and-test).
+That section is the one copy of the commands. Run playbooks from `dmf-env`:
 `bin/run-playbook.sh <env-name> ../dmf-infra/k3s-lab-bootstrap/playbooks/<name>.yml`
 
 ## Rules that are easy to miss

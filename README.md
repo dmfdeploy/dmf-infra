@@ -326,26 +326,14 @@ sudo k3s kubectl get ipaddresspool -n metallb-system
 
 For more detail, see the documents in `k3s-lab-bootstrap/docs/`.
 
-## Contributing
+## For contributors
 
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/my-feature`)
-3. Make your changes (keep them environment-agnostic, with no real IPs or passwords)
-4. Test with `--check --diff` before applying
-5. Submit a pull request
-
-### Guidelines
-
-- No hardcoded IPs, passwords, or site-specific URLs in playbooks or roles
-- Follow existing numbering conventions for new playbooks
-- Document complex deployments (see `docs/netbox-deployment-notes.md` as an example)
-- Keep secrets out of git: use the environment repo’s OpenBao-backed secret path
-- Ensure playbooks are idempotent
-
-## Repository layout note
-
-`AGENTS.md`, `CLAUDE.md` and `QWEN.md` hold instructions for AI coding agents
-that help maintain this repository. You do not need them to use it.
+For setup, the test commands and their run times, the git hooks, and what a pull
+request needs, see [CONTRIBUTING.md](CONTRIBUTING.md). Contributions keep roles
+generic: no real IPs, passwords or site-specific URLs, and secrets come from
+the environment repo's OpenBao-backed path. `AGENTS.md`, `CLAUDE.md` and
+`QWEN.md` hold instructions for AI coding agents that help maintain this
+repository.
 
 ## License
 
