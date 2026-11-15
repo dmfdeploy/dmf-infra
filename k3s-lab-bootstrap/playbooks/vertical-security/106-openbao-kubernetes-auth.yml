@@ -30,15 +30,26 @@
 # playbooks/vertical-security/100-openbao.yml first, then this play again. It needs
 # openbao_kubernetes_reviewer_enabled set to true in the inventory.
 #
-# The play revokes the token before it exits, also when a step fails, and proves
-# that the server refuses it. If the revoke itself fails, the play fails loudly.
-# Then revoke the token by its accessor from a working session
+# The generate-root token has no lifetime, so the play trades it at once. After it
+# checks that the token holds the root policy, it mints an orphan token with the
+# root policy and a lifetime of openbao_k8s_write_token_ttl (15 minutes by default;
+# the play refuses a value outside 10 to 15 minutes and checks the lifetime that
+# OpenBao issued), revokes the generate-root token before the first write, and makes
+# every write with the short token. It revokes the short token before it exits, also
+# when a step fails, and proves that the server refuses both tokens: only a permission
+# error from the server counts as that proof. If a revoke itself fails, the play
+# fails loudly. Then revoke what is left by its accessor from a working session
 # (`bao token revoke -accessor <accessor>`) before you do anything else. The play
-# looks up the pod inside the block that owns the token. If that lookup fails, the
+# looks up the pod inside the block that owns the tokens. If that lookup fails, the
 # revoke cannot run: the play then fails and says that the token is not revoked and
-# how to revoke it by its accessor. If the run ends with the host UNREACHABLE, Ansible
-# skips the revoke and prints no warning: the token is NOT revoked. Revoke it by its
-# accessor the same way before you do anything else.
+# how to revoke it by its accessor.
+#
+# If the run ends with the host UNREACHABLE, Ansible skips the revoke and prints no
+# warning. After the generate-root token was revoked, which happens before the first
+# write, only the short token can be left, and it expires on its own within 15
+# minutes: you need to do nothing. If the host went away before that revoke, the
+# generate-root token can still be valid. Check it, and revoke it by its accessor
+# before you do anything else.
 - name: Move an installed environment to Kubernetes auth
   hosts: k3s_control[0]
   become: true

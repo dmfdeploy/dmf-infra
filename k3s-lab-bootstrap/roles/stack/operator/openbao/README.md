@@ -173,8 +173,10 @@ bao_otp() { local t=$1 o=$2; shift 2; { printf '%s\n%s\n' "$t" "$o"; cat; } | $K
    OPENBAO_TEMP_ROOT_TOKEN="$root" bin/run-playbook.sh <env> <path to>/106-openbao-kubernetes-auth.yml
    ```
 
-   Play 106 owns the root token from here: it revokes the token in an `always` section
-   and proves that the server refuses it, also after a failure.
+   Play 106 owns the root token from here. It mints a short-lived orphan token with the
+   root policy, revokes the generate-root token before the first write, writes with the
+   short token, and revokes the short token in an `always` section, also after a failure.
+   The server refuses each revoked token, and the play proves it.
 9. Check that the token is gone, then clear the variables.
 
    ```bash
@@ -182,8 +184,11 @@ bao_otp() { local t=$1 o=$2; shift 2; { printf '%s\n%s\n' "$t" "$o"; cat; } | $K
    unset root encoded otp login_token
    ```
 
-   If the token is still valid (exit status 0), or 106 ended with `UNREACHABLE` or said
-   that the revoke failed, revoke it by its accessor in Recovery with `$root_accessor`.
+   If the token is still valid (exit status 0), or 106 said that the revoke failed,
+   revoke it by its accessor in Recovery with `$root_accessor`. When 106 ended with
+   `UNREACHABLE`, the same check applies: the token is usually gone already, because 106
+   revokes it before its first write, and the short-lived token that 106 minted expires on
+   its own within 15 minutes.
 
 #### Recovery
 

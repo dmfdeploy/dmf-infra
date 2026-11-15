@@ -82,7 +82,11 @@ class ConfigStepTest(unittest.TestCase):
             self.assertNotIn("KUBERNETES_SERVICE_HOST", text(path))
 
     def test_token_goes_in_by_standard_input_only(self):
-        for path in [OPENBAO / "tasks/kubernetes-auth-config.yml", OPENBAO / "tasks/kubernetes-auth-existing.yml"]:
+        for path in [
+            OPENBAO / "tasks/kubernetes-auth-config.yml",
+            OPENBAO / "tasks/kubernetes-auth-existing.yml",
+            OPENBAO / "tasks/kubernetes-auth-revoke.yml",
+        ]:
             body = text(path)
             self.assertNotRegex(body, r"(?m)^\s+environment:")
             commands = re.findall(r"cmd: >-\n(.*?)\n\s+stdin: ", body, re.S)
@@ -94,10 +98,15 @@ class ConfigStepTest(unittest.TestCase):
 
 class InstalledPathTest(unittest.TestCase):
     existing = text(OPENBAO / "tasks/kubernetes-auth-existing.yml")
+    revoke = text(OPENBAO / "tasks/kubernetes-auth-revoke.yml")
     playbook = text(ROOT / "playbooks/vertical-security/106-openbao-kubernetes-auth.yml")
 
-    def test_token_is_revoked_in_an_always_section(self):
-        self.assertRegex(self.existing, r"(?s)  always:\n.*Revoke the temporary root token.*bao token revoke -self")
+    def test_both_tokens_are_revoked_in_an_always_section(self):
+        always = self.existing[self.existing.index("  always:\n"):]
+        self.assertIn("Revoke the short-lived write token", always)
+        self.assertIn("Revoke the temporary root token when it is still valid", always)
+        self.assertEqual(always.count("kubernetes-auth-revoke.yml"), 2)
+        self.assertIn("bao token revoke -self", self.revoke)
 
     def test_the_pod_lookup_runs_inside_the_block_that_owns_the_token(self):
         block = self.existing.index("  block:\n")
@@ -111,9 +120,15 @@ class InstalledPathTest(unittest.TestCase):
         self.assertIn("The temporary root token was NOT revoked", always)
         self.assertIn("bao token revoke -accessor", always)
         # The revoke tasks need the pod, so they wait for it.
-        for name in ["Revoke the temporary root token", "Prove the server refuses the revoked token"]:
+        for name in ["Revoke the short-lived write token", "Revoke the temporary root token when it is still valid",
+                     "Fail loudly when a token is not revoked"]:
             task = always[always.index(name):]
             self.assertIn("_openbao_k8s_pod_known | default(false) | bool", task.split("\n\n")[0])
+
+    def test_the_revoke_proves_the_server_refuses_the_token(self):
+        self.assertIn("bao token lookup -format=json", self.revoke)
+        self.assertLess(self.revoke.index("bao token revoke -self"), self.revoke.index("bao token lookup"))
+        self.assertIn("until: _openbao_k8s_revoke.rc == 0", self.revoke)
 
     def test_readiness_runs_inside_the_block(self):
         block = self.existing.index("  block:\n")
@@ -223,6 +238,61 @@ class VerifierTest(unittest.TestCase):
     def test_verifier_has_each_negative_login(self):
         for case in ["wrong ServiceAccount", "wrong namespace", "wrong audience"]:
             self.assertIn(case, self.verify)
+
+
+class WriteTokenTest(unittest.TestCase):
+    """The generate-root token has no lifetime and the `always` section does not run
+    when the host is UNREACHABLE, so the play trades the token for a short-lived orphan
+    token before the first write and revokes the generate-root token at once."""
+
+    existing = text(OPENBAO / "tasks/kubernetes-auth-existing.yml")
+    defaults = text(OPENBAO / "defaults/main.yml")
+    block = existing[: existing.index("  always:\n")]
+
+    def at(self, name):
+        return self.block.index("- name: " + name)
+
+    def test_the_mint_is_an_orphan_with_the_root_policy_and_a_ttl(self):
+        mint = self.block[self.at("Mint a short-lived orphan token with the root policy"):self.at("Keep the short-lived token")]
+        for flag in ["bao token create", "-orphan", "-policy=root", "-renewable=false", "-ttl={{ openbao_k8s_write_token_ttl }}", "-format=json"]:
+            self.assertIn(flag, mint)
+        self.assertIn("IFS= read -r BAO_TOKEN", mint)
+        self.assertIn('stdin: "{{ _openbao_k8s_temp_root }}\\n"', mint)
+        self.assertIn("no_log: true", mint)
+
+    def test_the_ttl_is_between_ten_and_fifteen_minutes(self):
+        ttl = re.search(r"(?m)^openbao_k8s_write_token_ttl: (\d+)m$", self.defaults)
+        self.assertIsNotNone(ttl)
+        self.assertTrue(10 <= int(ttl.group(1)) <= 15)
+
+    def test_the_play_bounds_an_overridden_ttl_and_checks_the_issued_lease(self):
+        check = self.block[self.at("Check that the write token lifetime is 10 to 15 minutes"):self.at("Mint a short-lived orphan token with the root policy")]
+        self.assertIn("openbao_k8s_write_token_ttl is match('^1[0-5]m$')", check)
+        lease = self.block[self.at("Assert the mint returned a non-renewable token of 10 to 15 minutes"):self.at("Revoke the generate-root token before any write")]
+        for clause in ["lease_duration | int >= 600", "lease_duration | int <= 900", "auth.renewable | bool"]:
+            self.assertIn(clause, lease)
+
+    def test_only_the_servers_403_proves_a_revoke(self):
+        revoke = text(OPENBAO / "tasks/kubernetes-auth-revoke.yml")
+        self.assertIn("'Code: 403' in (_openbao_k8s_after_revoke.stderr", revoke)
+        self.assertIn("'permission denied' in (_openbao_k8s_after_revoke.stderr", revoke)
+
+    def test_mint_then_revoke_the_generate_root_token_then_write(self):
+        order = [
+            "Assert the token holds the root policy",
+            "Mint a short-lived orphan token with the root policy",
+            "Revoke the generate-root token before any write",
+            "Stop when the generate-root token is not revoked",
+            "Write and check the Kubernetes auth config and ESO's role",
+            "Write the setup issuer and rotation scheduler roles that are missing",
+        ]
+        positions = [self.at(name) for name in order]
+        self.assertEqual(positions, sorted(positions))
+
+    def test_the_writes_use_the_short_token_and_never_the_generate_root_token(self):
+        after_revoke = self.block[self.at("Revoke the generate-root token before any write"):]
+        self.assertNotIn("openbao_k8s_auth_token: \"{{ _openbao_k8s_temp_root }}\"", after_revoke)
+        self.assertEqual(after_revoke.count("openbao_k8s_auth_token: \"{{ _openbao_k8s_write_token }}\""), 2)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 #!/usr/bin/python
 """Fake kubernetes.core.k8s_info: reads objects from $FAKE_STATE/k8s. It fails when
-FAKE_K8S_INFO_FAILS is set. When FAKE_K8S_WRITE_AFTER_READ is set, a read of a
-ClusterSecretStore returns the stored object and then raises its metadata.resourceVersion
-by one, as another writer that changes the store right after the read does."""
+FAKE_K8S_INFO_FAILS is set. When FAKE_K8S_UNREACHABLE is KIND or KIND/NAME and the read
+is of that object, the result says the host is unreachable, as a lost connection does.
+When FAKE_K8S_WRITE_AFTER_READ is set, a read of a ClusterSecretStore returns the stored
+object and then raises its metadata.resourceVersion by one, as another writer that
+changes the store right after the read does."""
 import json
 import os
 
@@ -21,6 +23,9 @@ def main():
         ),
         supports_check_mode=True,
     )
+    unreachable = os.environ.get("FAKE_K8S_UNREACHABLE")
+    if unreachable in (module.params["kind"], "%s/%s" % (module.params["kind"], module.params["name"])):
+        module.exit_json(unreachable=True, msg="the host is unreachable")
     if os.environ.get("FAKE_K8S_INFO_FAILS"):
         module.fail_json(msg="the API server is not reachable")
     state = os.environ.get("FAKE_STATE", "")

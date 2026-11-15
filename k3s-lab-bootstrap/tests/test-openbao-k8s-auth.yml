@@ -11,8 +11,11 @@
 #      store as it was.
 #   3. The config step writes the reviewer config without a CA and a stored token, reads
 #      it back, writes nothing on a rerun, and fails when the mount ignores the fields.
-#   4. The installed-environment path writes with a temporary root token and revokes it
-#      before it exits, also when a step fails; with no token it writes nothing. It writes the
+#   4. The installed-environment path checks a temporary root token, trades it for a
+#      short-lived orphan token with the root policy, revokes the temporary token before
+#      the first write, writes with the short token and revokes that token before it
+#      exits, also when a step fails (fixtures/token_lifecycle.py checks the order and
+#      the token it records); with no token it writes nothing. It writes the
 #      Kubernetes-auth roles of the setup issuer and the rotation scheduler once when they
 #      are missing, writes nothing for roles that exist and leaves them as they are, and, when a
 #      ServiceAccount or a policy is missing, writes no role, fails with the names and revokes
@@ -217,6 +220,58 @@
           revoked: false
           message: was NOT revoked
           nothing_ran_except_lookup: true
+        - name: token, the mint of the short-lived token fails
+          token: "{{ _root }}"
+          env: {FAKE_TOKEN_CREATE_FAILS: "yes"}
+          expect: fail
+          wrote: false
+          revoked: true
+        - name: token, the revoke of the generate-root token fails
+          token: "{{ _root }}"
+          env: {FAKE_REVOKE_FAILS: root}
+          expect: fail
+          wrote: false
+          revoked: false
+          minted: 1
+          max_revokes: 9
+          message: NOT revoked
+        - name: token, the lookup that proves the revoke loses its connection
+          token: "{{ _root }}"
+          env: {FAKE_LOOKUP_TRANSPORT_FAILS: refused}
+          expect: fail
+          wrote: false
+          revoked: true
+          minted: 1
+          max_revokes: 9
+          message: NOT revoked
+        - name: token, the lookup that proves the revoke hits a local permission error
+          token: "{{ _root }}"
+          env: {FAKE_LOOKUP_TRANSPORT_FAILS: local-denied}
+          expect: fail
+          wrote: false
+          revoked: true
+          minted: 1
+          max_revokes: 9
+          message: NOT revoked
+        - name: token, an overridden write token lifetime above 15 minutes
+          token: "{{ _root }}"
+          ttl: 1h
+          expect: fail
+          wrote: false
+          revoked: true
+          minted: 0
+          message: Set it to 10m to 15m
+        - name: token, the revoke of the short-lived token fails
+          token: "{{ _root }}"
+          env: {FAKE_REVOKE_FAILS: short}
+          expect: fail
+          late_failure: true
+          wrote: true
+          revoked: true
+          short_revoked: false
+          standing_role_writes: 2
+          max_revokes: 5
+          message: NOT revoked
         - name: reviewer on, ESO on AppRole, token
           token: "{{ _root }}"
           method: approle
@@ -266,7 +321,7 @@
     - name: Assert the outcome of every installed-environment case
       ansible.builtin.assert:
         that:
-          - _outcomes | length == 15
+          - _outcomes | length == 21
           - _outcomes | rejectattr('ok') | list | length == 0
         fail_msg: "{{ _outcomes | rejectattr('ok') | map(attribute='name') | join('; ') }}"
 

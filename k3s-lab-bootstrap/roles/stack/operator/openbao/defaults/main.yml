@@ -156,10 +156,17 @@ openbao_eso_kubernetes_token_max_ttl: 3600
 openbao_service_account: openbao
 openbao_token_review_cluster_role: openbao-token-review
 
-# The temporary root token that the installed-environment play uses to write the
-# Kubernetes auth config. Pass it in the environment of the play, never as an
-# argument or in a file. The play revokes it before it exits.
+# The temporary root token that the installed-environment play checks and then trades
+# for a short-lived write token. Pass it in the environment of the play, never as an
+# argument or in a file. The play revokes it before the first write.
 openbao_k8s_temp_root_token: "{{ lookup('ansible.builtin.env', 'OPENBAO_TEMP_ROOT_TOKEN') }}"
+
+# The lifetime of the write token that the play mints from the temporary root token. It
+# holds the root policy and expires on its own, so a run that ends with the host
+# UNREACHABLE leaves a token that is valid for at most this long. It has to cover the
+# config and role writes, which start right after the mint and make no long waits:
+# keep it between 10 and 15 minutes.
+openbao_k8s_write_token_ttl: 15m
 
 # The role that waits for the cluster before the installed-environment play uses
 # a token. The play runs it inside the block that revokes the token.
