@@ -181,14 +181,21 @@ class CallerTests(unittest.TestCase):
                 self.assertIn("auth/userpass/login/", login["cmd"])
                 self.assertIn("password=-", login["cmd"])
                 tokens = next(t for t in block["always"] if t["name"] == "Revoke the tokens")
+                # The short-lived write token and the generate-root token go through the
+                # shared revoke of the openbao role, which revokes with `bao token revoke
+                # -self` on stdin and then proves that the server refuses the token.
                 for task, token in [
-                    (tokens["block"][0], "root"),
-                    (tokens["always"][0], "login"),
+                    (tokens["block"][0], "write"),
+                    (tokens["block"][1], "root"),
                 ]:
-                    shell = task["ansible.builtin.shell"]
-                    self.assertIn("bao token revoke -self", shell["cmd"])
-                    self.assertEqual(shell["stdin"], "{{ _ops_admin_rotation_" + token + "_token }}\n")
-                    self.assertEqual(task["when"], "_ops_admin_rotation_" + token + "_token is defined")
+                    role = task["ansible.builtin.include_role"]
+                    self.assertEqual(role["tasks_from"], "kubernetes-auth-revoke.yml")
+                    self.assertEqual(task["vars"]["openbao_k8s_revoke_token"], "{{ _ops_admin_rotation_" + token + "_token }}")
+                    self.assertEqual(task["vars"]["openbao_k8s_revoke_flag"], "_ops_admin_rotation_" + token + "_gone")
+                login = tokens["always"][0]["ansible.builtin.shell"]
+                self.assertIn("bao token revoke -self", login["cmd"])
+                self.assertEqual(login["stdin"], "{{ _ops_admin_rotation_login_token }}\n")
+                self.assertEqual(tokens["always"][0]["when"], "_ops_admin_rotation_login_token is defined")
 
     def test_every_caller_runs_in_the_active_pod(self) -> None:
         for path in self.callers():

@@ -1,8 +1,10 @@
 ---
-# Revoke one token of the installed-environment play, then prove that the server
-# refuses it. Included by kubernetes-auth-existing.yml for the generate-root token and
-# for the short-lived write token. The caller sets openbao_k8s_revoke_token,
-# openbao_k8s_revoke_flag (the name of the fact that this file sets) and openbao_pod.
+# Revoke one token of a play that trades a generate-root token for a short-lived
+# one, then prove that the server refuses it. Included by kubernetes-auth-existing.yml
+# and by playbooks/vertical-orchestration/120-ops-admin-rotation.yml, each for the
+# generate-root token and for the short-lived write token. The caller sets
+# openbao_namespace, openbao_pod, openbao_k8s_revoke_token and
+# openbao_k8s_revoke_flag (the name of the fact that this file sets).
 # The flag is true when the revoke worked and the server refuses the token with a
 # 403. This file never fails: the caller decides what a token that stays
 # valid means. The token goes to the pod on stdin only.

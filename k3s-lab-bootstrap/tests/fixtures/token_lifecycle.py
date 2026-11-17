@@ -1,5 +1,7 @@
-"""Check the token lifecycle that the fake bao recorded for the installed-environment
-play (roles/stack/operator/openbao/tasks/kubernetes-auth-existing.yml).
+"""Check the token lifecycle that the fake bao recorded for a play that trades a
+generate-root token for a short-lived one: the installed-environment play
+(roles/stack/operator/openbao/tasks/kubernetes-auth-existing.yml) and the ops-admin
+rotation (playbooks/vertical-orchestration/120-ops-admin-rotation.yml).
 
 The fake bao keeps $FAKE_STATE/bao-calls.log ("TOKEN ARGS" per call, in order),
 token-NAME.json for each token that `token create` made, and revoked-NAME for each
@@ -12,7 +14,8 @@ revoked token. For one generate-root token, this module lists what is wrong:
   - the number of tokens minted from it differs from what the run should mint,
   - a minted token is not an orphan, lacks the root policy, is renewable, or has a
     lifetime outside 10 to 15 minutes,
-  - a write to auth/kubernetes/ ran with a token that is not one of the minted tokens,
+  - a write (a call under one of the write prefixes, auth/kubernetes/ by default) ran with
+    a token that is not one of the minted tokens,
   - a write that follows the first call of the generate-root token ran before a revoke
     of it that worked and a later lookup that the server refused (the fake logs those
     outcomes as "TOKEN =revoked" and "TOKEN =refused"; when the run revoked it),
@@ -21,6 +24,7 @@ revoked token. For one generate-root token, this module lists what is wrong:
 
 Run as a script: token_lifecycle.py STATE_DIR ROOT_TOKEN MINTED ROOT_REVOKED SHORT_REVOKED
 where MINTED is a count and the last two are yes or no. It prints the problems as JSON.
+A caller of problems() names the calls that count as writes with write_prefixes.
 """
 import json
 import os
@@ -30,9 +34,10 @@ import sys
 MIN_TTL = 600
 MAX_TTL = 900
 ROOT_CALLS = re.compile(r"^token (lookup|create|revoke) ")
+KUBERNETES_WRITES = ("write auth/kubernetes/",)
 
 
-def problems(state, root_token, minted_expected, root_revoked, short_revoked):
+def problems(state, root_token, minted_expected, root_revoked, short_revoked, write_prefixes=KUBERNETES_WRITES):
     found = []
     calls = []
     path = os.path.join(state, "bao-calls.log")
@@ -89,7 +94,7 @@ def problems(state, root_token, minted_expected, root_revoked, short_revoked):
     first = next((i for i, (token, _) in enumerate(calls) if token == root_token), None)
     if first is not None:
         for i, (token, args) in enumerate(calls[first:], start=first):
-            if args.startswith("write auth/kubernetes/"):
+            if args.startswith(tuple(write_prefixes)):
                 if token not in minted:
                     found.append("a write ran with a token that was not minted: " + args)
                 if root_revoked == "yes":

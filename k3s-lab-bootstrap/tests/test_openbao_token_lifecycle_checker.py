@@ -97,6 +97,21 @@ class TokenLifecycleCheckerTest(unittest.TestCase):
     def test_a_long_lifetime_is_reported(self):
         self.assert_names(self.run_checker(GOOD_CALLS, dict(GOOD_RECORD, ttl=3600)), "outside 600 to 900")
 
+    def test_the_write_prefixes_decide_which_calls_count_as_writes(self):
+        userpass = "write auth/userpass/users/ops-admin/policies -"
+        calls = HEAD + [(SHORT, userpass)] + PROOF + TAIL
+        with tempfile.TemporaryDirectory() as state:
+            with open(os.path.join(state, "bao-calls.log"), "w", encoding="utf-8") as handle:
+                handle.write("".join("%s %s\n" % call for call in calls))
+            with open(os.path.join(state, "token-%s.json" % SHORT), "w", encoding="utf-8") as handle:
+                json.dump(GOOD_RECORD, handle)
+            for name in (ROOT, SHORT):
+                open(os.path.join(state, "revoked-" + name), "w").close()
+            default = token_lifecycle.problems(state, ROOT, 1, "yes", "yes")
+            named = token_lifecycle.problems(state, ROOT, 1, "yes", "yes", ("write auth/userpass/users/",))
+        self.assertEqual(default, [])
+        self.assert_names(named, "before the generate-root token was revoked and proved refused")
+
 
 if __name__ == "__main__":
     unittest.main()
