@@ -46,6 +46,10 @@
             - apiGroups: [""]
               resources: ["pods", "pods/exec"]
               verbs: ["get", "list", "create"]
+            # `kubectl exec deploy/<name>` reads the Deployment to find its pod.
+            - apiGroups: ["apps"]
+              resources: ["deployments"]
+              verbs: ["get"]
 
     - name: Create Authentik exec RoleBinding
       kubernetes.core.k8s:
