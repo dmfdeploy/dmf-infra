@@ -161,11 +161,12 @@ openbao_token_review_cluster_role: openbao-token-review
 # argument or in a file. The play revokes it before the first write.
 openbao_k8s_temp_root_token: "{{ lookup('ansible.builtin.env', 'OPENBAO_TEMP_ROOT_TOKEN') }}"
 
-# The lifetime of the write token that the play mints from the temporary root token. It
+# The lifetime of the write token that a play mints from a root token: the temporary
+# root token of the installed-environment play, or the init token of a fresh install. It
 # holds the root policy and expires on its own, so a run that ends with the host
 # UNREACHABLE leaves a token that is valid for at most this long. It has to cover the
-# config and role writes, which start right after the mint and make no long waits:
-# keep it between 10 and 15 minutes.
+# writes that start right after the mint and make no long waits: keep it between 10 and
+# 15 minutes.
 openbao_k8s_write_token_ttl: 15m
 
 # The role that waits for the cluster before the installed-environment play uses
@@ -194,10 +195,10 @@ openbao_internal_url: "https://{{ openbao_service_name }}.{{ openbao_namespace }
 # Self-signed cert is trusted via the mounted CA bundle, so do not skip verify.
 openbao_skip_tls_verify: false
 
-# Root token — will be disposed after bootstrap
-# Root token disposal — set true after bootstrap is complete and app-admin
-# secrets have been written. Once set to true, the root token cannot be used
-# again for app-admin-facts writes.
+# Init token disposal. True: a fresh install trades the init token for a short token
+# (openbao_k8s_write_token_ttl), revokes the init token before the first write, and
+# revokes the short token at the end. False: the install keeps the init token on purpose
+# and trades nothing.
 openbao_dispose_root_token: true
 
 # Operator userpass retrieval path (Phase 5)

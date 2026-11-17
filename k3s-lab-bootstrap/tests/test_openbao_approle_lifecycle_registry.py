@@ -77,7 +77,7 @@ EXCLUDED = {
     "k3s-lab-bootstrap/tests/test_openbao_scheduler_policy.py": "tests the scheduler policy paths and the calls the engine makes",
     "k3s-lab-bootstrap/tasks/eso-secret-rotation-legacy.yml": "mints a SecretID for an existing role, which inherits the role TTL; the earlier ESO procedure, kept while the rotation switch is off",
     "k3s-lab-bootstrap/playbooks/tasks/verify-eso-role-policies.yml": "reads the configuration of ESO's existing role to check its policy list and creates no role",
-    "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": "fake that answers a read of ESO's existing role and creates no role",
+    "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": "fake that answers the reads and the writes of AppRole roles for the fixtures and is no create site of the platform",
     "k3s-lab-bootstrap/tests/test-openbao-k8s-auth.yml": "tests the verifier's read of ESO's existing role and creates no role",
 }
 
@@ -113,7 +113,7 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/tests/test_openbao_scheduler_policy.py": 13,
     "k3s-lab-bootstrap/tasks/eso-secret-rotation-legacy.yml": 1,
     "k3s-lab-bootstrap/playbooks/tasks/verify-eso-role-policies.yml": 1,
-    "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": 3,
+    "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": 7,
     "k3s-lab-bootstrap/tests/test-openbao-k8s-auth.yml": 1,
 }
 

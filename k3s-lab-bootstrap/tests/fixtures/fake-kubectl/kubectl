@@ -124,6 +124,23 @@ fi
 case " ${FAKE_MISSING:-} " in
   *" $pod "*) echo "Error from server (NotFound): pods \"$pod\" not found" >&2; exit 1 ;;
 esac
+# `sh -c "cat > PATH << 'TAG' ... TAG"` (a file written from a here-document): the
+# fake keeps the lines between the first line and the closing TAG as the file.
+if [ $# -eq 3 ] && [ "$1" = sh ] && [ "$2" = -c ] && [ "${3#cat > /}" != "$3" ] && [ "${3#*<< \'}" != "$3" ]; then
+  first="${3%%$'\n'*}"
+  dest="${first#cat > }"; dest="${dest%% *}"
+  mkdir -p "$state/pod-fs/$pod$(dirname "$dest")"
+  printf '%s\n' "$3" | python3 -c '
+import sys
+lines = sys.stdin.read().split("\n")
+tag = lines[0].split("<<")[1].strip().strip("\x27")
+for line in lines[1:]:
+    if line.strip() == tag:
+        break
+    print(line)' > "$state/pod-fs/$pod$dest"
+  log_event "kubectl exec $pod write $dest"
+  exit 0
+fi
 if [ $# -eq 3 ] && [ "$1" = sh ] && [ "$2" = -c ] && [ "${3#cat > /}" != "$3" ]; then
   dest="${3#cat > }"
   mkdir -p "$state/pod-fs/$pod$(dirname "$dest")"

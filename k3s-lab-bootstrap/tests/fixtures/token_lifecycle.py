@@ -1,16 +1,19 @@
 """Check the token lifecycle that the fake bao recorded for a play that trades a
 generate-root token for a short-lived one: the installed-environment play
 (roles/stack/operator/openbao/tasks/kubernetes-auth-existing.yml) and the ops-admin
-rotation (playbooks/vertical-orchestration/120-ops-admin-rotation.yml).
+rotation (playbooks/vertical-orchestration/120-ops-admin-rotation.yml). A fresh install
+of the same role (playbooks/vertical-security/100-openbao.yml) trades its init token
+the same way; this text calls the token that is traded the generate-root token.
 
 The fake bao keeps $FAKE_STATE/bao-calls.log ("TOKEN ARGS" per call, in order),
 token-NAME.json for each token that `token create` made, and revoked-NAME for each
 revoked token. For one generate-root token, this module lists what is wrong:
 
   - the generate-root token made a call other than the policy lookup, the mint, the
-    revoke and the lookup that proves the revoke, or made them out of order: it must
-    mint at most once, only after the policy lookup and before its first revoke, and
-    look itself up after a revoke only to prove that revoke,
+    revoke and the lookup that proves the revoke (and the reads that root_reads names),
+    or made them out of order: it must mint at most once, only after the policy lookup
+    and before its first revoke, look itself up after a revoke only to prove that
+    revoke, and make no read after its first revoke,
   - the number of tokens minted from it differs from what the run should mint,
   - a minted token is not an orphan, lacks the root policy, is renewable, or has a
     lifetime outside 10 to 15 minutes,
@@ -24,7 +27,8 @@ revoked token. For one generate-root token, this module lists what is wrong:
 
 Run as a script: token_lifecycle.py STATE_DIR ROOT_TOKEN MINTED ROOT_REVOKED SHORT_REVOKED
 where MINTED is a count and the last two are yes or no. It prints the problems as JSON.
-A caller of problems() names the calls that count as writes with write_prefixes.
+A caller of problems() names the calls that count as writes with write_prefixes, and the
+reads that the generate-root token may make before its revoke with root_reads.
 """
 import json
 import os
@@ -37,7 +41,7 @@ ROOT_CALLS = re.compile(r"^token (lookup|create|revoke) ")
 KUBERNETES_WRITES = ("write auth/kubernetes/",)
 
 
-def problems(state, root_token, minted_expected, root_revoked, short_revoked, write_prefixes=KUBERNETES_WRITES):
+def problems(state, root_token, minted_expected, root_revoked, short_revoked, write_prefixes=KUBERNETES_WRITES, root_reads=()):
     found = []
     calls = []
     path = os.path.join(state, "bao-calls.log")
@@ -60,10 +64,12 @@ def problems(state, root_token, minted_expected, root_revoked, short_revoked, wr
     for token, args in calls:
         if token == root_token and not args.startswith("="):
             match = ROOT_CALLS.match(args)
-            if not match:
-                found.append("the generate-root token made the call: " + args)
-            else:
+            if match:
                 root_ops.append(match.group(1))
+            elif root_reads and args.startswith(tuple(root_reads)):
+                root_ops.append("read")
+            else:
+                found.append("the generate-root token made the call: " + args)
     if "create" in root_ops and "lookup" not in root_ops[:root_ops.index("create")]:
         found.append("the generate-root token minted a token before the policy lookup")
     if root_ops.count("create") > 1:
@@ -71,6 +77,8 @@ def problems(state, root_token, minted_expected, root_revoked, short_revoked, wr
     first_revoke = root_ops.index("revoke") if "revoke" in root_ops else len(root_ops)
     if "create" in root_ops[first_revoke:]:
         found.append("the generate-root token minted a token after its revoke")
+    if "read" in root_ops[first_revoke:]:
+        found.append("the generate-root token made a read after its revoke")
     for i in range(first_revoke, len(root_ops)):
         if root_ops[i] == "lookup" and root_ops[i - 1] != "revoke":
             found.append("the generate-root token was looked up after its revoke without a revoke just before")
