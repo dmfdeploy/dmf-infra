@@ -87,50 +87,117 @@
         _cms_authentik_exec_sa_token: "{{ _cms_authentik_exec_sa_token_raw.stdout | trim }}"
       no_log: true
 
-    - name: Create Authentik API token for DMF Console
+    # `kubectl --token` would put the service-account token in the process list. The token goes
+    # into a kubeconfig file that only root can read, and the block removes the file in `always`.
+    - name: Read the cluster entry of the admin kubeconfig
+      # The output also holds the admin client credentials, so the task sets no_log and the
+      # play keeps only the cluster entry.
       ansible.builtin.command:
         argv:
-          - sudo
-          - k3s
           - kubectl
-          - --token
-          - "{{ _cms_authentik_exec_sa_token }}"
-          - -n
-          - "{{ authentik_namespace | default('authentik') }}"
-          - exec
-          - deploy/{{ authentik_release_name | default('authentik') }}-server
-          - --
-          - ak
-          - shell
-          - -c
-          - |-
-            import json
-            from datetime import timedelta
-            from django.utils import timezone
-            from authentik.core.models import Token, User
-
-            username = "{{ cms_authentik_api_token_user }}"
-            token_name = "{{ cms_authentik_api_token_name }}"
-
-            user = User.objects.get(username=username)
-
-            # Delete any existing tokens for this name on any user (migration safety)
-            Token.objects.filter(
-                intent="api",
-                description=token_name,
-            ).delete()
-
-            token = Token.objects.create(
-                user=user,
-                intent="api",
-                description=token_name,
-                expiring=True,
-                expires=timezone.now() + timedelta(days=90),
-            )
-            print(json.dumps({"key": token.key, "changed": True}))
-      register: _cms_authentik_token_result
-      changed_when: true
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - config
+          - view
+          - --raw
+          - --minify
+          - -o
+          - json
+      register: _cms_authentik_admin_kubeconfig_raw
+      changed_when: false
       no_log: true
+
+    - name: Keep the cluster entry only
+      ansible.builtin.set_fact:
+        _cms_authentik_cluster: "{{ (_cms_authentik_admin_kubeconfig_raw.stdout | from_json).clusters[0].cluster }}"
+        _cms_authentik_admin_kubeconfig_raw: {}
+      no_log: true
+
+    - name: Create the Authentik API token as the exec service account
+      block:
+        - name: Create a temporary file for the exec service-account kubeconfig
+          ansible.builtin.tempfile:
+            state: file
+            prefix: authentik-exec-kubeconfig.
+          register: _cms_authentik_exec_kubeconfig
+
+        - name: Write the exec service-account kubeconfig with owner-only permissions
+          ansible.builtin.copy:
+            dest: "{{ _cms_authentik_exec_kubeconfig.path }}"
+            owner: root
+            group: root
+            mode: "0600"
+            content: "{{ _cms_authentik_exec_kubeconfig_content | to_json }}"
+          vars:
+            _cms_authentik_exec_kubeconfig_content:
+              apiVersion: v1
+              kind: Config
+              clusters:
+                - name: k3s
+                  cluster: "{{ _cms_authentik_cluster }}"
+              users:
+                - name: authentik-exec
+                  user:
+                    token: "{{ _cms_authentik_exec_sa_token }}"
+              contexts:
+                - name: authentik-exec
+                  context:
+                    cluster: k3s
+                    user: authentik-exec
+              current-context: authentik-exec
+          no_log: true
+
+        - name: Create Authentik API token for DMF Console
+          ansible.builtin.command:
+            argv:
+              - sudo
+              - k3s
+              - kubectl
+              - --kubeconfig
+              - "{{ _cms_authentik_exec_kubeconfig.path }}"
+              - -n
+              - "{{ authentik_namespace | default('authentik') }}"
+              - exec
+              - deploy/{{ authentik_release_name | default('authentik') }}-server
+              - --
+              - ak
+              - shell
+              - -c
+              - |-
+                import json
+                from datetime import timedelta
+                from django.utils import timezone
+                from authentik.core.models import Token, User
+
+                username = "{{ cms_authentik_api_token_user }}"
+                token_name = "{{ cms_authentik_api_token_name }}"
+
+                user = User.objects.get(username=username)
+
+                # Delete any existing tokens for this name on any user (migration safety)
+                Token.objects.filter(
+                    intent="api",
+                    description=token_name,
+                ).delete()
+
+                token = Token.objects.create(
+                    user=user,
+                    intent="api",
+                    description=token_name,
+                    expiring=True,
+                    expires=timezone.now() + timedelta(days=90),
+                )
+                print(json.dumps({"key": token.key, "changed": True}))
+          register: _cms_authentik_token_result
+          changed_when: true
+          no_log: true
+
+      always:
+        - name: Remove the exec service-account kubeconfig
+          ansible.builtin.file:
+            path: "{{ _cms_authentik_exec_kubeconfig.path }}"
+            state: absent
+          when: _cms_authentik_exec_kubeconfig.path is defined
 
     - name: Parse Authentik API token result
       ansible.builtin.set_fact:

@@ -189,6 +189,10 @@
   delay: "{{ awx_migration_wait_delay }}"
 
 - name: Sync AWX admin password to desired secret
+  # `awx-manage update_password` takes the password only as `--password`, which would put it
+  # in the process list of the pod. The task instead runs the same code (UpdatePassword, from
+  # awx/main/management/commands/update_password.py) in `awx-manage shell`, and sends the
+  # script, with the password inside it, on stdin. The `-c` value is fixed text.
   ansible.builtin.command:
     argv:
       - kubectl
@@ -197,13 +201,19 @@
       - -n
       - "{{ awx_namespace }}"
       - exec
+      - -i
       - "deploy/{{ awx_instance_name }}-web"
       - --
       - sh
       - -lc
-      - >-
-        awx-manage update_password --username {{ awx_admin_user | quote }}
-        --password {{ awx_admin_password | quote }}
+      - awx-manage shell -c 'import sys; exec(sys.stdin.read())'
+    stdin: |
+      import base64
+      from awx.main.management.commands.update_password import UpdatePassword
+      UpdatePassword().update_password(
+          base64.b64decode("{{ awx_admin_user | b64encode }}").decode(),
+          base64.b64decode("{{ awx_admin_password | b64encode }}").decode(),
+      )
   register: awx_admin_password_sync
   changed_when: true
   no_log: true

@@ -148,10 +148,14 @@
       when: not k3s_binary.stat.exists
 
     - name: Install k3s on first node (init cluster)
-      ansible.builtin.shell: |
-        INSTALL_K3S_VERSION="{{ k3s_version }}" \
-        K3S_TOKEN="{{ k3s_token }}" \
-        /tmp/k3s-install.sh server --cluster-init {{ k3s_server_args }}
+      # The token goes in on stdin, so it is not in the argument list of the shell.
+      ansible.builtin.shell:
+        cmd: |
+          IFS= read -r K3S_TOKEN
+          export K3S_TOKEN
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          /tmp/k3s-install.sh server --cluster-init {{ k3s_server_args }}
+        stdin: "{{ k3s_token }}\n"
       args:
         creates: /etc/rancher/k3s/k3s.yaml
       when: not k3s_binary.stat.exists
@@ -261,14 +265,19 @@
       when: not k3s_binary.stat.exists
 
     - name: Join node to cluster
-      ansible.builtin.shell: |
-        INSTALL_K3S_VERSION="{{ k3s_version }}" \
-        K3S_TOKEN="{{ hostvars[groups['k3s_control'][0]]['k3s_node_token'] }}" \
-        K3S_URL="{{ k3s_server_url }}" \
-        /tmp/k3s-install.sh server {{ k3s_server_args }}
+      # The token goes in on stdin, so it is not in the argument list of the shell.
+      ansible.builtin.shell:
+        cmd: |
+          IFS= read -r K3S_TOKEN
+          export K3S_TOKEN
+          INSTALL_K3S_VERSION="{{ k3s_version }}" \
+          K3S_URL="{{ k3s_server_url }}" \
+          /tmp/k3s-install.sh server {{ k3s_server_args }}
+        stdin: "{{ hostvars[groups['k3s_control'][0]]['k3s_node_token'] }}\n"
       args:
         creates: /etc/rancher/k3s/k3s.yaml
       when: not k3s_binary.stat.exists
+      no_log: true
 
     - name: Wait for node to be ready
       ansible.builtin.command: k3s kubectl get node {{ inventory_hostname }}

@@ -282,10 +282,15 @@
   no_log: true
 
 - name: Check LibreNMS user count
-  ansible.builtin.command: >
-    sudo k3s kubectl exec -n {{ librenms_namespace }} librenms-mysql-0 -- mysql
-    -u librenms -p'{{ librenms_mysql_password }}' -D librenms -N -B
-    -e "SELECT COUNT(*) FROM users;"
+  # The password goes in on stdin as an option file, so it is not in the argument list of mysql.
+  ansible.builtin.command:
+    cmd: >-
+      sudo k3s kubectl exec -i -n {{ librenms_namespace }} librenms-mysql-0 -- mysql
+      --defaults-extra-file=/dev/stdin -u librenms -D librenms -N -B
+      -e "SELECT COUNT(*) FROM users;"
+    stdin: |
+      [client]
+      password="{{ librenms_mysql_password | replace('\\', '\\\\') | replace('"', '\\"') }}"
   register: librenms_user_count
   changed_when: false
   retries: 10
@@ -311,10 +316,33 @@
   no_log: true
 
 - name: Create LibreNMS admin user if missing
-  ansible.builtin.command: >
-    sudo k3s kubectl exec -n {{ librenms_namespace }} deploy/librenms-frontend -- /bin/sh -c
-    "su -s /bin/sh librenms -c '/opt/librenms/lnms user:add {{ librenms_admin_username }}
-    -p {{ librenms_admin_password_effective }} -r admin -e {{ librenms_admin_email }} -n'"
+  # `lnms user:add` takes the password only as `-p`, which would put it in the process list
+  # of the pod; without `-p` it asks on a terminal. The task instead runs the same
+  # command in a PHP process (the way the `lnms` script does) and sends the script, with the
+  # password inside it, on stdin of `php`.
+  ansible.builtin.command:
+    cmd: >-
+      sudo k3s kubectl exec -i -n {{ librenms_namespace }} deploy/librenms-frontend --
+      /bin/sh -c "su -s /bin/sh librenms -c 'cd /opt/librenms && php'"
+    stdin: |
+      <?php
+      require '/opt/librenms/vendor/autoload.php';
+      $app = require_once '/opt/librenms/bootstrap/app.php';
+      define('ARTISAN_BINARY', 'lnms');
+      $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
+      $status = $kernel->handle(
+          $input = new Symfony\Component\Console\Input\ArrayInput([
+              'command' => 'user:add',
+              'username' => base64_decode('{{ librenms_admin_username | b64encode }}'),
+              '--password' => base64_decode('{{ librenms_admin_password_effective | b64encode }}'),
+              '--role' => ['admin'],
+              '--email' => base64_decode('{{ librenms_admin_email | b64encode }}'),
+              '--no-interaction' => true,
+          ]),
+          new Symfony\Component\Console\Output\ConsoleOutput
+      );
+      $kernel->terminate($input, $status);
+      exit($status);
   when: librenms_user_count.stdout | trim == "0"
   no_log: true
 

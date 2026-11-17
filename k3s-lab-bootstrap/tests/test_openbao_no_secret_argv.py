@@ -1,9 +1,15 @@
 """Static check: no task passes a share, token or password as a command argument.
 
 This is a known defect class: a command argument shows in the process list
-of the node and of the pod. A task passes a secret on stdin instead. The check reads the OpenBao role's task
-files and the OpenBao playbooks as text and reports every Jinja expression that names
-secret material inside an `argv:` list or a `cmd:` string. It also reports a shell
+of the node and of the pod. A task passes a secret on stdin instead. The check reads
+every role, playbook and task file under k3s-lab-bootstrap (the tests directory is
+left out) as text and reports every Jinja expression that names secret material inside
+an `argv:` list, a `cmd:` string or the free-form string of a `command:`, `shell:` or
+`raw:` task. A shell task counts too, because the shell runs as `sh -c <the whole
+script>`, so every secret in the script is in that argument. The check matches a variable
+by name (password, token, secret, key, credential and similar). A name that ends in a
+word such as `_path` or `_ttl` holds no secret. A match that is still not a secret goes
+in `ARGV_ALLOWED` with its reason. It also reports a shell
 variable that is expanded into a credential argument, such as `password="$P"`: the
 shell expands it into the child process's argument list, which any process in the
 pod can read. Send the value on stdin instead (`password=-`, or a JSON body).
@@ -43,7 +49,7 @@ JINJA = re.compile(r"\{\{(.*?)\}\}")
 SHELL_CREDENTIAL = re.compile(r"\b[a-z_]*(?:password|secret_id|token|key)=\"?\$[A-Za-z_{]", re.I)
 SECRET = re.compile(r"unseal_key|root_token|_token|password|secret_id|share_|_share|[a-z]_otp\\b", re.I)
 # Names that look secret but carry none.
-BENIGN = re.compile(r"openbao_shamir_|breakglass_|_name\b|_path\b|_dir\b|_service\b|_ttl\b|openbao_namespace")
+BENIGN = re.compile(r"openbao_shamir_|breakglass_(?:file|path|secret_path|secret_name)|_name\b|_path\b|_dir\b|_service\b|_ttl\b|openbao_namespace")
 # Known earlier defects of the same class, outside the unseal path and not yet fixed.
 # Each entry is an expression that this check tolerates for now. Remove the entry
 # when the task is fixed.
@@ -250,8 +256,58 @@ def secret_expressions(text):
     ]
 
 
+# The keys that hold a command: `argv:` and `cmd:`, and the free-form string of a command task,
+# which is written `ansible.builtin.command: <text>` or as a block under that key. A `script`
+# task counts too: its free-form arguments reach the command line of the script.
+# A free-form key with nothing after it holds a mapping of arguments, not a command.
+LIST_OR_STRING_KEY = r"(?:-\s+)?(?:argv|cmd)"
+FREE_FORM_KEY = r"(?:-\s+)?(?:ansible\.(?:builtin|legacy)\.)?(?:command|shell|raw|script)"
+COMMAND_KEY = r"(?:-\s+)?(?:argv|cmd|(?:ansible\.(?:builtin|legacy)\.)?(?:command|shell|raw|script))"
+
+
+# A name that holds secret material, for the check of every command argument.
+WIDE_SECRET = re.compile(
+    r"password|passwd|token|secret|credential|unseal_key|_otp|share|(?<![a-z])key(?![a-z])", re.I
+)
+IDENTIFIER = re.compile(r"[A-Za-z_][\w.-]*")
+# A variable whose name ends in one of these holds a name, a path, a number or a command text,
+# not the secret.
+NOT_A_VALUE = re.compile(
+    r"(?:_name|_names|_path|_dir|_file|_file_effective|_namespace|_service|_service_account"
+    r"|_ttl|_max_ttl|_bytes|_cmd|_script|_user|_username|_url|_slug|_exists)$"
+)
+# Matches that name no secret although the name looks like one. Each entry is
+# "path::expression" and says why.
+ARGV_ALLOWED = {
+    # `-i <path>` of a private key file, a path on the operator workstation.
+    "playbooks/219-host-verify.yml::verify_ssh_key | expanduser":
+        "the path of the SSH key file, not the key",
+    # The name of the setting that `lnms config:set` writes.
+    "roles/modules/infra-monitoring/librenms/tasks/main.yml::item.key":
+        "the name of a configuration setting",
+}
+
+
+def wide_secret_expressions(text):
+    """Return every Jinja expression in `text` that names a variable that holds a secret."""
+    found = []
+    for expr in JINJA.findall(text):
+        if expr.strip() == "unseal-argument":
+            found.append(expr.strip())
+            continue
+        # A quoted text is not a variable name. A key in square brackets is one, unless an
+        # attribute follows it, because then the attribute names the value.
+        text = re.sub(r"\[(['\"]).*?\1\](?=\.)", "", expr)
+        names = IDENTIFIER.findall(re.sub(r"(?<!\[)(['\"]).*?\1", "", text))
+        for name in names:
+            if WIDE_SECRET.search(name) and not NOT_A_VALUE.search(name) and not BENIGN.search(name):
+                found.append(expr.strip())
+                break
+    return found
+
+
 def argv_and_cmd_lines(path):
-    """Yield (line number, line) for lines inside an argv list or a cmd string.
+    """Yield (line number, line) for lines inside an argv list, a cmd string or a free-form command.
 
     A line that holds any Jinja expression and follows `unseal` in an argv list
     is yielded with a marker, so a loop variable such as `{{ item }}`
@@ -278,9 +334,11 @@ def argv_and_cmd_lines(path):
             else:
                 block.append((number, line))
                 continue
-        if re.match(r"(argv|cmd):\s*(>-|\||>)?\s*$", stripped):
+        if re.match(LIST_OR_STRING_KEY + r":\s*(>-|>\+|\|-|\|\+|\||>)?\s*$", stripped) or re.match(
+            FREE_FORM_KEY + r":\s*(>-|>\+|\|-|\|\+|\||>)\s*$", stripped
+        ):
             block_indent = indent
-        elif re.match(r"(argv|cmd):\s*\S", stripped):
+        elif re.match(COMMAND_KEY + r":\s*\S", stripped):
             yield number, line
     yield from flush()
 
@@ -294,13 +352,63 @@ class OpenBaoNoSecretArgvTest(unittest.TestCase):
 
     def test_no_secret_in_argv_or_cmd(self):
         found = []
-        for path in FILES:
+        for path in ENV_CLEAN:
+            relative = path.relative_to(ROOT)
             for number, line in argv_and_cmd_lines(path):
-                for expr in secret_expressions(line):
-                    if expr in KNOWN:
+                for expr in wide_secret_expressions(line):
+                    if expr in KNOWN or f"{relative}::{expr}" in ARGV_ALLOWED:
                         continue
-                    found.append(f"{path.relative_to(ROOT)}:{number}: {{{{ {expr} }}}}")
+                    found.append(f"{relative}:{number}: {{{{ {expr} }}}}")
         self.assertEqual(found, [], "secret material in a command argument:\n" + "\n".join(found))
+
+    def test_the_check_covers_every_role_and_playbook(self):
+        scanned = {path.relative_to(ROOT).parts[0] for path in ENV_CLEAN}
+        self.assertTrue({"roles", "playbooks", "tasks"} <= scanned, scanned)
+        names = {path.name for path in ENV_CLEAN}
+        for expected in ("main.yml", "300-k3s.yml", "696-cms-authentik-api.yml", "120-ops-admin-rotation.yml"):
+            self.assertIn(expected, names)
+
+    def test_every_allowed_entry_still_matches_a_command_line(self):
+        # An entry that no longer matches hides nothing and only misleads the next reader.
+        used = set()
+        for path in ENV_CLEAN:
+            relative = path.relative_to(ROOT)
+            for number, line in argv_and_cmd_lines(path):
+                for expr in wide_secret_expressions(line):
+                    used.add(f"{relative}::{expr}")
+        self.assertEqual(sorted(set(ARGV_ALLOWED) - used), [])
+
+    def test_the_fixture_with_an_argv_secret_fails_the_check(self):
+        sample = ROOT / "tests" / "fixtures" / "argv-secret-sample.yml"
+        hits = [
+            f"{number}: {expr}"
+            for number, line in argv_and_cmd_lines(sample)
+            for expr in wide_secret_expressions(line)
+        ]
+        # One for each of the five forms: an argv list, a free-form command, a shell script, a
+        # cmd string, which holds two, and the arguments of a script task.
+        self.assertEqual(
+            sorted(hit.split(": ")[1] for hit in hits),
+            ["admin_password", "database_password", "join_token", "monitoring_api_key", "rotation_secret", "service_account_token"],
+        )
+
+    def test_a_name_that_holds_a_path_or_a_number_is_not_a_secret(self):
+        for text in (
+            "{{ openbao_secret_path | quote }}",
+            "{{ authentik_secret_key_bytes | string }}",
+            "{{ cms_runtime_secret_name }}",
+            "{{ netbox_sot_admin_token_cmd }}",
+            "{{ awx_namespace }}",
+        ):
+            self.assertEqual(wide_secret_expressions(text), [], text)
+        for text in (
+            "{{ authentik_breakglass_password }}",
+            "{{ _cms_authentik_exec_sa_token }}",
+            "{{ hostvars[groups['k3s_control'][0]]['k3s_node_token'] }}",
+            "{{ some_api_key }}",
+            "{{ item.key }}",
+        ):
+            self.assertEqual(wide_secret_expressions(text), [text[3:-3].strip()], text)
 
     def test_no_shell_variable_in_a_credential_argument(self):
         found = []

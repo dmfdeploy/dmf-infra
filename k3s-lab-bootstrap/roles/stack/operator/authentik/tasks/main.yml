@@ -517,6 +517,8 @@
   ansible.builtin.include_tasks: ensure_invitation.yml
 
 - name: Create or update Authentik break-glass local user
+  # The password goes in on stdin. The pod's shell reads it into an environment variable of
+  # the `ak` process, so it is in no argument list.
   ansible.builtin.command:
     argv:
       - kubectl
@@ -525,12 +527,16 @@
       - -n
       - "{{ authentik_namespace }}"
       - exec
+      - -i
       - deploy/{{ authentik_release_name }}-server
       - --
+      - sh
+      - -c
+      - IFS= read -r AUTHENTIK_BREAKGLASS_PASSWORD; export AUTHENTIK_BREAKGLASS_PASSWORD; exec "$@"
+      - sh
       - env
       - AUTHENTIK_BREAKGLASS_USERNAME={{ authentik_breakglass_username }}
       - AUTHENTIK_BREAKGLASS_EMAIL={{ authentik_breakglass_email }}
-      - AUTHENTIK_BREAKGLASS_PASSWORD={{ authentik_breakglass_password }}
       - AUTHENTIK_BREAKGLASS_NAME={{ authentik_breakglass_display_name }}
       - AUTHENTIK_BREAKGLASS_PATH={{ authentik_breakglass_user_path }}
       - AUTHENTIK_BREAKGLASS_TYPE={{ authentik_breakglass_user_type }}
@@ -571,6 +577,7 @@
         admin_group_missing and not user.groups.add(admin_group);
         changed = changed or admin_group_missing;
         print("AUTHENTIK_BREAKGLASS_RESULT=" + json.dumps({"changed": changed, "username": user.username, "email": user.email, "type": user.type, "path": user.path, "is_active": user.is_active, "groups": sorted(user.groups.values_list("name", flat=True))}))
+    stdin: "{{ authentik_breakglass_password }}\n"
   register: _authentik_breakglass_sync
   changed_when: >-
     _authentik_breakglass_sync.stdout is search('AUTHENTIK_BREAKGLASS_RESULT=.*"changed": true')
