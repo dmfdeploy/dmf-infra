@@ -96,6 +96,7 @@ Lint, and run the unit tests:
   python3 -m unittest discover -s tests -p 'test_local_ca_node_address.py' -v
   python3 -m unittest discover -s tests -p 'test_no_log_secrets.py' -v
   python3 -m unittest discover -s tests -p 'test_secret_jobs_no_trace_mode.py' -v
+  python3 -m unittest discover -s tests -p 'test_secrets_not_in_argv_render.py' -v
 )
 ```
 
