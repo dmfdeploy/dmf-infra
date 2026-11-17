@@ -4,10 +4,40 @@
 #
 # This playbook logs in as ops-admin, then uses the existing Shamir shares to
 # generate a temporary root token. The ops-admin login token is what OpenBao 2.6
-# and later require for root token generation (policy generate-root). The play
-# sets the policies of the user, updates the userpass password, and rewrites the
-# local break-glass file, all through the temporary root token. It revokes both
-# tokens when it ends, also after a failure.
+# and later require for root token generation (policy generate-root). The
+# generate-root token has no lifetime of its own, so the play trades it at once.
+# After it checks that the token holds the root policy, it mints an orphan token
+# with the root policy and a lifetime of ops_admin_rotation_write_token_ttl (the
+# play refuses a value outside 10 to 15 minutes and checks the lifetime that OpenBao
+# issued), revokes the generate-root token before the first write, and makes every
+# write with the short token. The play sets the policies of the user, updates the
+# userpass password, and rewrites the local break-glass file, all with the short
+# token. It revokes the short token, the generate-root token if it is still valid, and
+# the login token when it ends, also after a failure, and proves that the server
+# refuses the first two: only a permission error from the server counts as that proof.
+# If a revoke itself fails, the play fails loudly. Then revoke what is left by its
+# accessor from a working session (`bao token revoke -accessor <accessor>`) before you
+# do anything else.
+#
+# If the run ends with the host UNREACHABLE, Ansible runs no more tasks on it and
+# prints no warning, so none of the revokes at the end run. What the run can leave
+# depends on where it stopped:
+#   - After the generate-root token was revoked, which happens before the first write,
+#     only the short token and the ops-admin login token can be left. The short token
+#     expires on its own within 15 minutes. The login token expires with its TTL.
+#   - Before that revoke, the generate-root token can still be valid, and it has no
+#     lifetime. A run that stops during or after the mint, but before that revoke, can
+#     leave both the generate-root token and a short token. List the accessors with
+#     `bao list auth/token/accessors`, find the orphan tokens with the root policy, and
+#     revoke the generate-root token (and the short token, to end it sooner) with
+#     `bao token revoke -accessor <accessor>` before you do anything else.
+#
+# If the answer to the mint is lost on its way back, the server may have created the
+# short token while the play never saw it. The play then cannot revoke it. It says so
+# in the `always` section, ends failed after it revoked the other tokens, and the token
+# expires on its own within ops_admin_rotation_write_token_ttl. To end it sooner, list
+# the accessors, look each up, and revoke the orphan token with the root policy by its
+# accessor.
 #
 # To give an installed user the generate-root policy without a new password, run
 # the play with -e ops_admin_rotation_attach_only=true while the server still runs
@@ -30,14 +60,19 @@
     ops_admin_rotation_username: "{{ openbao_operator_username | default('ops-admin') }}"
     ops_admin_rotation_threshold: "{{ openbao_shamir_threshold | default(3) }}"
     ops_admin_rotation_password_length: "{{ openbao_operator_password_length | default(32) }}"
+    # The lifetime of the token that makes the writes. The play refuses a value outside
+    # 10m to 15m: a token with the root policy may outlive an unreachable run by that
+    # long, and no longer. Every write of the play runs well inside it.
+    ops_admin_rotation_write_token_ttl: 10m
     # true: set the policies of the user and stop, with no password change.
     ops_admin_rotation_attach_only: false
     # The policy that the play adds to the policies the user holds now. The play writes
     # the union through the policies endpoint of the userpass mount, which leaves the
     # password as it is and keeps every policy that an operator added.
     ops_admin_rotation_attach_policy: "{{ openbao_generate_root_policy_name | default('generate-root') }}"
-    # A failed revoke is tried again this many times, with this many seconds between
-    # the tries.
+    # A failed revoke of the login token is tried again this many times, with this many
+    # seconds between the tries. The revokes of the other two tokens follow the retries
+    # of tasks/kubernetes-auth-revoke.yml in the openbao role.
     ops_admin_rotation_revoke_retries: 2
     ops_admin_rotation_revoke_delay: 2
     # Runs `bao operator generate-root` in the pod with the token that arrives on the
@@ -116,7 +151,7 @@
       ansible.builtin.set_fact:
         _ops_admin_rotation_openbao_pod: "{{ openbao_active_pod }}"
 
-    - name: Generate a root token as ops-admin, and revoke the login token afterwards
+    - name: Generate a root token as ops-admin, trade it for a short-lived token, and revoke the tokens afterwards
       block:
         # The password reaches the pod on stdin. `password=-` makes bao read the value
         # from stdin, and printf-style stdin carries no trailing newline.
@@ -307,9 +342,7 @@
           ansible.builtin.set_fact:
             _ops_admin_rotation_issuance_uncertain: false
 
-        # The accessor lets an operator revoke the token from another session if the
-        # revoke below fails. The lookup is best effort.
-        - name: Read the accessor of the temporary root token
+        - name: Check that the token is a root token
           ansible.builtin.shell:
             cmd: >-
               kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
@@ -325,6 +358,93 @@
           changed_when: false
           failed_when: false
           no_log: true
+
+        # The accessor lets an operator revoke the token from another session if a
+        # revoke fails, so the play keeps it before any check can stop the play.
+        - name: Keep the accessor of the generate-root token
+          ansible.builtin.set_fact:
+            _ops_admin_rotation_root_accessor: >-
+              {{ (_ops_admin_rotation_root_lookup.stdout | default('')
+              | regex_findall('"accessor": *"([^"]+)"') or ['unknown']) | first }}
+          no_log: true
+
+        - name: Assert the token holds the root policy
+          ansible.builtin.assert:
+            that:
+              - _ops_admin_rotation_root_lookup.rc == 0
+              - "'root' in (_ops_admin_rotation_root_lookup.stdout | from_json).data.policies"
+            fail_msg: The token that the play generated could not be looked up, or does not hold the root policy.
+
+        # An unreachable run leaves the short token valid until it expires, so its
+        # lifetime is bounded here and not only by the default.
+        - name: Check that the write token lifetime is 10 to 15 minutes
+          ansible.builtin.assert:
+            that: ops_admin_rotation_write_token_ttl is match('^1[0-5]m$')
+            fail_msg: >-
+              ops_admin_rotation_write_token_ttl is {{ ops_admin_rotation_write_token_ttl }}.
+              Set it to 10m to 15m: a token with the root policy may outlive an unreachable
+              run by that long, and no longer. The play made no write.
+
+        # The server creates the token before the answer travels back, and a lost answer
+        # looks like a failure. So the play counts the mint as attempted before it sends
+        # the call, and until it has read the token from the answer.
+        - name: Count the mint as attempted
+          ansible.builtin.set_fact:
+            _ops_admin_rotation_mint_attempted: true
+
+        # The orphan flag keeps the new token alive when its parent is revoked.
+        - name: Mint a short-lived orphan token with the root policy
+          ansible.builtin.shell:
+            cmd: >-
+              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+              -n {{ ops_admin_rotation_namespace }}
+              exec -i {{ _ops_admin_rotation_openbao_pod }}
+              --
+              sh -c 'IFS= read -r BAO_TOKEN;
+              export BAO_ADDR=https://127.0.0.1:8200;
+              export BAO_TOKEN;
+              bao token create -orphan -policy=root -renewable=false
+              -ttl={{ ops_admin_rotation_write_token_ttl }} -format=json'
+            stdin: "{{ _ops_admin_rotation_root_token }}\n"
+          register: _ops_admin_rotation_mint
+          changed_when: true
+          no_log: true
+
+        - name: Keep the short-lived token and its accessor
+          ansible.builtin.set_fact:
+            _ops_admin_rotation_write_token: "{{ (_ops_admin_rotation_mint.stdout | from_json).auth.client_token }}"
+            _ops_admin_rotation_write_accessor: "{{ (_ops_admin_rotation_mint.stdout | from_json).auth.accessor | default('unknown') }}"
+          no_log: true
+
+        - name: Assert the mint returned a non-renewable token of 10 to 15 minutes
+          ansible.builtin.assert:
+            that:
+              - _ops_admin_rotation_write_token | length > 0
+              - (_ops_admin_rotation_mint.stdout | from_json).auth.lease_duration | int >= 600
+              - (_ops_admin_rotation_mint.stdout | from_json).auth.lease_duration | int <= 900
+              - not ((_ops_admin_rotation_mint.stdout | from_json).auth.renewable | bool)
+            fail_msg: >-
+              OpenBao returned no short-lived write token, or one that is renewable or
+              lives outside 10 to 15 minutes. The play made no write, and the `always`
+              section revokes the tokens.
+
+        - name: Revoke the generate-root token before any write
+          ansible.builtin.include_role:
+            name: stack/operator/openbao
+            tasks_from: kubernetes-auth-revoke.yml
+          vars:
+            openbao_namespace: "{{ _ops_admin_rotation_namespace_resolved }}"
+            openbao_pod: "{{ _ops_admin_rotation_openbao_pod }}"
+            openbao_k8s_revoke_token: "{{ _ops_admin_rotation_root_token }}"
+            openbao_k8s_revoke_flag: _ops_admin_rotation_root_gone
+
+        - name: Stop when the generate-root token is not revoked
+          ansible.builtin.assert:
+            that: _ops_admin_rotation_root_gone | default(false) | bool
+            fail_msg: >-
+              The generate-root token could not be revoked, or the server still
+              accepts it. The play made no write. The `always` section tries again
+              and fails loudly if the token stays valid.
 
         - name: Generate new ops-admin password
           ansible.builtin.set_fact:
@@ -349,7 +469,7 @@
               export BAO_ADDR=https://127.0.0.1:8200;
               export BAO_TOKEN;
               bao read -format=json auth/userpass/users/{{ ops_admin_rotation_username }}'
-            stdin: "{{ _ops_admin_rotation_root_token }}\n"
+            stdin: "{{ _ops_admin_rotation_write_token }}\n"
           register: _ops_admin_rotation_user_raw
           changed_when: false
           no_log: true
@@ -380,7 +500,7 @@
               export BAO_ADDR=https://127.0.0.1:8200;
               export BAO_TOKEN;
               bao write auth/userpass/users/{{ ops_admin_rotation_username }}/policies -'
-            stdin: "{{ _ops_admin_rotation_root_token }}\n{{ {'token_policies': _ops_admin_rotation_policies | join(',')} | to_json }}\n"
+            stdin: "{{ _ops_admin_rotation_write_token }}\n{{ {'token_policies': _ops_admin_rotation_policies | join(',')} | to_json }}\n"
           changed_when: true
           no_log: true
 
@@ -395,7 +515,7 @@
               export BAO_ADDR=https://127.0.0.1:8200;
               export BAO_TOKEN;
               bao write auth/userpass/users/{{ ops_admin_rotation_username }} -'
-            stdin: "{{ _ops_admin_rotation_root_token }}\n{{ {'password': _ops_admin_rotation_new_password} | to_json }}\n"
+            stdin: "{{ _ops_admin_rotation_write_token }}\n{{ {'password': _ops_admin_rotation_new_password} | to_json }}\n"
           register: _ops_admin_rotation_password_update
           changed_when: true
           no_log: true
@@ -416,9 +536,10 @@
           no_log: true
           when: not (ops_admin_rotation_attach_only | bool)
       always:
-        # Runs after a success and after a failure. A token that was never issued is
-        # undefined, so its revoke skips. The login token is revoked even when the
-        # revoke of the root token fails. A revoke that keeps failing stops the play
+        # Runs after a success and after a failure, but not when the host becomes
+        # UNREACHABLE: the header says what such a run leaves. A token that was never
+        # issued is undefined, so its revoke skips. The login token is revoked even when
+        # the revoke of another token fails. A revoke that keeps failing stops the play
         # with the accessor, because a live token must not go unnoticed.
         # The warning comes first, so a failure of a revoke below cannot hide it. It holds
         # no secret.
@@ -436,43 +557,70 @@
           when:
             - _ops_admin_rotation_issuance_uncertain | default(false) | bool
 
+        - name: Warn that a short-lived root-policy token may exist that this play cannot revoke
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: the play sent the mint of the short-lived write token, and it did not
+              read the token from the answer, so a token with the root policy may exist that
+              nothing revoked. It expires on its own within {{ ops_admin_rotation_write_token_ttl }}.
+              To end it sooner, from a working session list the token accessors with
+              `bao list auth/token/accessors`, look each up with
+              `bao token lookup -accessor <accessor>`, and revoke the orphan token with the
+              root policy and that lifetime with `bao token revoke -accessor <accessor>`.
+          when:
+            - _ops_admin_rotation_mint_attempted | default(false) | bool
+            - _ops_admin_rotation_write_token | default('') | length == 0
+
         - name: Revoke the tokens
           block:
-            - name: Revoke temporary root token
-              ansible.builtin.shell:
-                cmd: >-
-                  kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-                  -n {{ ops_admin_rotation_namespace }}
-                  exec -i {{ _ops_admin_rotation_openbao_pod }}
-                  --
-                  sh -c 'IFS= read -r BAO_TOKEN;
-                  export BAO_ADDR=https://127.0.0.1:8200;
-                  export BAO_TOKEN;
-                  bao token revoke -self'
-                stdin: "{{ _ops_admin_rotation_root_token }}\n"
-              register: _ops_admin_rotation_root_revoke
-              until: _ops_admin_rotation_root_revoke.rc == 0
-              retries: "{{ ops_admin_rotation_revoke_retries }}"
-              delay: "{{ ops_admin_rotation_revoke_delay }}"
-              changed_when: true
-              failed_when: false
-              no_log: true
-              when: _ops_admin_rotation_root_token is defined
+            - name: Revoke the short-lived write token
+              ansible.builtin.include_role:
+                name: stack/operator/openbao
+                tasks_from: kubernetes-auth-revoke.yml
+              vars:
+                openbao_namespace: "{{ _ops_admin_rotation_namespace_resolved }}"
+                openbao_pod: "{{ _ops_admin_rotation_openbao_pod }}"
+                openbao_k8s_revoke_token: "{{ _ops_admin_rotation_write_token }}"
+                openbao_k8s_revoke_flag: _ops_admin_rotation_write_gone
+              when: _ops_admin_rotation_write_token | default('') | length > 0
 
-            - name: Stop because the temporary root token may still be live
+            - name: Revoke the generate-root token when it is still valid
+              ansible.builtin.include_role:
+                name: stack/operator/openbao
+                tasks_from: kubernetes-auth-revoke.yml
+              vars:
+                openbao_namespace: "{{ _ops_admin_rotation_namespace_resolved }}"
+                openbao_pod: "{{ _ops_admin_rotation_openbao_pod }}"
+                openbao_k8s_revoke_token: "{{ _ops_admin_rotation_root_token }}"
+                openbao_k8s_revoke_flag: _ops_admin_rotation_root_gone
+              when:
+                - _ops_admin_rotation_root_token is defined
+                - not (_ops_admin_rotation_root_gone | default(false) | bool)
+
+            - name: Stop because the generate-root token may still be live
               ansible.builtin.fail:
                 msg: >-
-                  The revoke of the temporary root token failed
-                  {{ ops_admin_rotation_revoke_retries | int + 1 }} tries, so a live root token may
-                  remain. Its accessor is
-                  {{ (_ops_admin_rotation_root_lookup.stdout | default('{}') | from_json).data.accessor | default('unknown') }}.
+                  The generate-root token is NOT revoked, or the server still accepts it,
+                  so a live root token may remain, and it has no lifetime. Its accessor is
+                  {{ _ops_admin_rotation_root_accessor | default('unknown') }}.
                   Revoke it before you do anything else, from a session that can reach
                   OpenBao: `bao token revoke -accessor <accessor>`. If you have no token
                   that may revoke it, follow the recovery steps in
                   roles/stack/operator/openbao/README.md (root token procedure).
               when:
                 - _ops_admin_rotation_root_token is defined
-                - _ops_admin_rotation_root_revoke.rc | default(1) != 0
+                - not (_ops_admin_rotation_root_gone | default(false) | bool)
+
+            - name: Stop because the short-lived write token may still be live
+              ansible.builtin.fail:
+                msg: >-
+                  The short-lived write token is NOT revoked, or the server still accepts
+                  it. Its accessor is {{ _ops_admin_rotation_write_accessor | default('unknown') }}.
+                  It expires on its own within 15 minutes. To end it sooner, revoke it with
+                  `bao token revoke -accessor <accessor>`.
+              when:
+                - _ops_admin_rotation_write_token | default('') | length > 0
+                - not (_ops_admin_rotation_write_gone | default(false) | bool)
           always:
             - name: Revoke the ops-admin login token
               ansible.builtin.shell:
@@ -506,6 +654,17 @@
               when:
                 - _ops_admin_rotation_login_token is defined
                 - _ops_admin_rotation_login_revoke.rc | default(1) != 0
+
+            - name: Stop because a short-lived token may exist that this play could not read
+              ansible.builtin.fail:
+                msg: >-
+                  The play sent the mint of the short-lived write token and did not read the
+                  token from the answer, so a token with the root policy may exist that this
+                  play could not revoke. The warning above says how to find and revoke it.
+                  It expires on its own within {{ ops_admin_rotation_write_token_ttl }}.
+              when:
+                - _ops_admin_rotation_mint_attempted | default(false) | bool
+                - _ops_admin_rotation_write_token | default('') | length == 0
 
             - name: Stop because a root token may exist that this play could not decode
               ansible.builtin.fail:

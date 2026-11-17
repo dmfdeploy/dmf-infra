@@ -34,7 +34,14 @@
 # as it has checked the policy: the generate-root token is revoked before any write,
 # and a run that ends UNREACHABLE after that point leaves only a token that expires on
 # its own. If the run ends UNREACHABLE before the revoke, the generate-root token can
-# still be valid: revoke it by its accessor.
+# still be valid: revoke it by its accessor. A run that stops during or after the mint,
+# but before that revoke, can leave both the generate-root token and a short token.
+#
+# If the answer to the mint is lost on its way back, the server may have created the
+# short token while the play never saw it. The play then cannot revoke it. It revokes
+# the other tokens, then ends failed with a message that says how to find and revoke
+# the token by its accessor; the token expires on its own within
+# openbao_k8s_write_token_ttl.
 #
 # The tokens are the play's own from the moment they exist. Everything after the read
 # of the token, the pod lookup and the readiness checks included, runs in one block
@@ -52,6 +59,7 @@
     _openbao_k8s_root_gone: false
     _openbao_k8s_write_gone: false
     _openbao_k8s_pod_known: false
+    _openbao_k8s_mint_attempted: false
   no_log: true
 
 - name: Move to Kubernetes auth, and revoke the tokens afterwards
@@ -161,6 +169,13 @@
               openbao_k8s_write_token_ttl is {{ openbao_k8s_write_token_ttl }}. Set it to
               10m to 15m: a token with the root policy may outlive an unreachable run by
               that long, and no longer.
+
+        # The server creates the token before the answer travels back, and a lost answer
+        # looks like a failure. So the play counts the mint as attempted before it sends
+        # the call, and until it has read the token from the answer.
+        - name: Count the mint as attempted
+          ansible.builtin.set_fact:
+            _openbao_k8s_mint_attempted: true
 
         # The orphan flag keeps the new token alive when its parent is revoked.
         - name: Mint a short-lived orphan token with the root policy
@@ -292,8 +307,26 @@
           in the audit entries of the generate-root decode and of the token create.
           Do not run this play again until the tokens are gone.
 
+    - name: Note whether a mint was sent whose token the play never read
+      ansible.builtin.set_fact:
+        _openbao_k8s_mint_unread: >-
+          {{ _openbao_k8s_mint_attempted | default(false) | bool
+             and _openbao_k8s_write_token | default('') | length == 0 }}
+
     - name: Clear the tokens from memory
       ansible.builtin.set_fact:
         _openbao_k8s_temp_root: ""
         _openbao_k8s_write_token: ""
       no_log: true
+
+    - name: Fail loudly when a short-lived token may exist that the play could not read
+      when: _openbao_k8s_mint_unread | bool
+      ansible.builtin.fail:
+        msg: >-
+          WARNING: the play sent the mint of the short-lived write token and did not read
+          the token from the answer, so a token with the root policy may exist that
+          nothing revoked. It expires on its own within {{ openbao_k8s_write_token_ttl }}.
+          To end it sooner, from a working session list the token accessors with
+          `bao list auth/token/accessors`, look each up with
+          `bao token lookup -accessor <accessor>`, and revoke the orphan token with the
+          root policy and that lifetime with `bao token revoke -accessor <accessor>`.

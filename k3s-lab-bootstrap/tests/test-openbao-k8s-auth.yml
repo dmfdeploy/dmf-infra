@@ -226,6 +226,15 @@
           expect: fail
           wrote: false
           revoked: true
+        - name: token, the answer to the mint is lost
+          token: "{{ _root }}"
+          env: {FAKE_TOKEN_CREATE_LOST: "yes"}
+          expect: fail
+          wrote: false
+          revoked: true
+          minted: 1
+          short_revoked: false
+          message: may exist that nothing revoked
         - name: token, the revoke of the generate-root token fails
           token: "{{ _root }}"
           env: {FAKE_REVOKE_FAILS: root}
@@ -321,7 +330,7 @@
     - name: Assert the outcome of every installed-environment case
       ansible.builtin.assert:
         that:
-          - _outcomes | length == 21
+          - _outcomes | length == 22
           - _outcomes | rejectattr('ok') | list | length == 0
         fail_msg: "{{ _outcomes | rejectattr('ok') | map(attribute='name') | join('; ') }}"
 

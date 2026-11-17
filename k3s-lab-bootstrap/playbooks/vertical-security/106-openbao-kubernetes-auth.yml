@@ -49,7 +49,13 @@
 # write, only the short token can be left, and it expires on its own within 15
 # minutes: you need to do nothing. If the host went away before that revoke, the
 # generate-root token can still be valid. Check it, and revoke it by its accessor
-# before you do anything else.
+# before you do anything else. A run that stops during or after the mint, but before
+# that revoke, can leave both the generate-root token and a short token.
+#
+# If the answer to the mint is lost on its way back, the server may have created the
+# short token while the play never saw it. The play then ends failed after it revoked
+# the other tokens, and says how to find and revoke the token by its accessor. It
+# expires on its own within 15 minutes.
 - name: Move an installed environment to Kubernetes auth
   hosts: k3s_control[0]
   become: true

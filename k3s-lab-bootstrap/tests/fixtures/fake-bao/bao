@@ -64,11 +64,15 @@
 #                        generate-root on another pod fails with a 500, as on a 2.5.2 standby.
 #   FAKE_OTP            the root generation OTP (default fake-otp); init and decode must carry it
 #   FAKE_DECODE_FAILS   set: the decode of the generated root token fails
+#   FAKE_DECODED_TOKEN  the token that the decode returns (default fake-root-genroot). A name
+#                        that does not start with fake-root is a token without the root policy.
 #   FAKE_GENROOT_LOSE_RESPONSE  set: the server records the last share, then the answer is lost
 #   FAKE_REVOKE_FAILS   root, short, login or both (all kinds): `bao token revoke -self` fails
 #                        for that kind of token. A short token is one that `token create`
 #                        made (name fake-root-short-N); root is any other fake-root token.
 #   FAKE_TOKEN_CREATE_FAILS  set: `bao token create` fails
+#   FAKE_TOKEN_CREATE_LOST   set: `bao token create` creates and records the token, then the answer
+#                        is lost: the call exits 2 with an error and prints no token
 #   FAKE_REVOKE_FAIL_FIRST  number of revoke attempts per token that fail before one works
 #   FAKE_OPS_POLICIES   comma list of the policies that ops-admin holds at the start
 #   FAKE_POLICIES_WRITE_FAILS  set: a write to auth/userpass/users/NAME/policies fails
@@ -416,7 +420,7 @@ case "$*" in
         cat > /dev/null
         case " $* " in *" -otp=$otp "*) ;; *) echo "Error decoding root token: invalid otp" >&2; exit 2 ;; esac
         [ -z "${FAKE_DECODE_FAILS:-}" ] || { echo "Error decoding root token: internal error" >&2; exit 2; }
-        printf '{"token":"fake-root-genroot"}\n'
+        printf '{"token":"%s"}\n' "${FAKE_DECODED_TOKEN:-fake-root-genroot}"
         exit 0
         ;;
     esac
@@ -486,7 +490,8 @@ PY
     # token with the root policy is.
     n=$(( $(count_call short-token) + 1 ))
     name="fake-root-short-$n"
-    python3 - "$state/token-$name.json" "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$policies" "$renewable" <<'PY'
+    created="$state/create-answer.json"
+    python3 - "$state/token-$name.json" "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$policies" "$renewable" > "$created" <<'PY'
 import json, sys
 path, name, parent, orphan, ttl, policies, renewable = sys.argv[1:8]
 units = {"s": 1, "m": 60, "h": 3600}
@@ -497,6 +502,11 @@ json.dump(record, open(path, "w"))
 print(json.dumps({"auth": {"client_token": name, "accessor": name + "-accessor", "policies": ["default"] + record["policies"],
                            "lease_duration": seconds, "renewable": record["renewable"], "orphan": record["orphan"]}}))
 PY
+    if [ -n "${FAKE_TOKEN_CREATE_LOST:-}" ]; then
+      echo "Error creating token: read tcp 127.0.0.1:8200: connection reset by peer" >&2
+      exit 2
+    fi
+    cat "$created"
     exit 0
     ;;
   "token revoke -self")

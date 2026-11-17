@@ -212,6 +212,13 @@ themselves, keep the root token in memory, and revoke it and the login token whe
 end. They retry a failed revoke and then stop with the accessor, and they warn when a
 root token may exist. They do not hand the token to another play.
 
+`120-ops-admin-rotation.yml` also trades the generate-root token at once, as 106 does: it
+mints a short-lived orphan token with the root policy, revokes the generate-root token
+before the first write, and writes with the short token. When 120 ends with `UNREACHABLE`,
+the header of the play says what can be left: after the revoke only the short token, which
+expires on its own within 15 minutes, and before the revoke the generate-root token, which
+you revoke by its accessor.
+
 ## Upgrade from 2.5.x to 2.7.x
 
 Upstream supports large version jumps and asks you to read the notes of each
