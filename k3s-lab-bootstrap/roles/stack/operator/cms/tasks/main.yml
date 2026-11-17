@@ -89,7 +89,9 @@
 
     - name: Encode new DMF Console runtime Secret values as base64
       ansible.builtin.shell:
-        cmd: printf '%s' "{{ cms_secret_key_effective }}" | openssl base64 -A
+        cmd: openssl base64 -A
+        stdin: "{{ cms_secret_key_effective }}"
+        stdin_add_newline: false
       register: _cms_secret_key_b64
       changed_when: false
       delegate_to: localhost
@@ -98,7 +100,9 @@
 
     - name: Encode DMF Console OIDC client secret as base64
       ansible.builtin.shell:
-        cmd: printf '%s' "{{ cms_oidc_client_secret_effective }}" | openssl base64 -A
+        cmd: openssl base64 -A
+        stdin: "{{ cms_oidc_client_secret_effective }}"
+        stdin_add_newline: false
       register: _cms_oidc_secret_b64
       changed_when: false
       delegate_to: localhost
@@ -119,8 +123,8 @@
 
     - name: Update DMF Console runtime Secret (preserve existing keys like authentikApiToken)
       ansible.builtin.shell:
-        cmd: |
-          sudo k3s kubectl -n {{ cms_namespace }} apply -f - <<EOF
+        cmd: sudo k3s kubectl -n {{ cms_namespace }} apply -f -
+        stdin: |
           apiVersion: v1
           kind: Secret
           metadata:
@@ -129,7 +133,6 @@
           data:
             {{ cms_runtime_secret_session_key }}: {{ _cms_secret_key_b64.stdout | default('') }}
             {{ cms_runtime_secret_oidc_key }}: {{ _cms_oidc_secret_b64.stdout | default('') }}
-          EOF
       no_log: true
 
     # ── Registry image presence check ─────────────────────────────────────────
