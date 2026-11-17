@@ -112,7 +112,7 @@ class SchedulerIdentityTests(unittest.TestCase):
     def test_the_kubernetes_auth_role_is_written_on_a_fresh_install_with_the_shared_body(self):
         body = task(SCHEDULER, "Write the rotation scheduler Kubernetes-auth role")
         self.assertIn("openbao_init_raw.changed", body)
-        self.assertIn("{{ openbao_root_token }}", body)
+        self.assertIn("{{ _openbao_write_token }}", body)
         self.assertIn("kubernetes-auth-role.yml", body)
         self.assertIn('openbao_k8s_auth_role: "{{ openbao_rotation_scheduler_k8s_auth_role }}"', body)
         mapping = re.search(r"(?ms)^openbao_rotation_scheduler_k8s_auth_role:\n(.*?)^\S", DEFAULTS + "\nend").group(1)

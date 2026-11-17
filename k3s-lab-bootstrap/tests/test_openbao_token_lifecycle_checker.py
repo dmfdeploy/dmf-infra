@@ -112,6 +112,25 @@ class TokenLifecycleCheckerTest(unittest.TestCase):
         self.assertEqual(default, [])
         self.assert_names(named, "before the generate-root token was revoked and proved refused")
 
+    def test_a_read_that_the_caller_names_is_allowed_before_the_revoke_only(self):
+        read = "read -format=json sys/storage/raft/autopilot/state"
+        before = [(ROOT, read)] + GOOD_CALLS
+        after = GOOD_CALLS[:-4] + [(ROOT, read)] + TAIL
+        with tempfile.TemporaryDirectory() as state:
+            with open(os.path.join(state, "token-%s.json" % SHORT), "w", encoding="utf-8") as handle:
+                json.dump(GOOD_RECORD, handle)
+            for name in (ROOT, SHORT):
+                open(os.path.join(state, "revoked-" + name), "w").close()
+
+            def check(calls, reads):
+                with open(os.path.join(state, "bao-calls.log"), "w", encoding="utf-8") as handle:
+                    handle.write("".join("%s %s\n" % call for call in calls))
+                return token_lifecycle.problems(state, ROOT, 1, "yes", "yes", root_reads=reads)
+
+            self.assertEqual(check(before, ("read -format=json sys/storage/raft/",)), [])
+            self.assert_names(check(before, ()), "the generate-root token made the call: " + read)
+            self.assert_names(check(after, ("read -format=json sys/storage/raft/",)), "made a read after its revoke")
+
 
 if __name__ == "__main__":
     unittest.main()

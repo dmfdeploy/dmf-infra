@@ -57,6 +57,8 @@
 #   FAKE_POLICY_WRITER   set: a live token that is not root may read and write
 #                        sys/policies/acl/* (the policy-reconciler grant)
 #   FAKE_POLICY_WRITE_FAILS  set: `bao policy write NAME -` fails
+#   FAKE_SEAL_ON_FAIL   set, with FAKE_POLICY_WRITE_FAILS: the failed policy write seals the pod, the
+#                        pod then refuses every token call, and it rejects every unseal key
 #   FAKE_GENROOT_AUTH   set: `bao operator generate-root` needs a live token, as on OpenBao
 #                        2.6 and later. Unset, it ignores the token, as 2.5.2 does.
 #   FAKE_GENROOT_THRESHOLD  shares that complete a root generation (default 3)
@@ -184,13 +186,13 @@ fi
 # and of v2.7.2 (internal/command/commands.go). A command that a play invented fails here
 # instead of passing against the fake.
 case "${1:-} ${2:-}" in
-  "status "*|"write "*|"read "*|"list "*|"kv metadata"|"policy write"|"operator unseal"|"operator generate-root"|"operator raft"|"token capabilities"|"token create"|"token lookup"|"token revoke"|"auth enable"|"secrets enable") ;;
+  "status "*|"write "*|"read "*|"list "*|"kv metadata"|"policy write"|"operator init"|"operator unseal"|"operator generate-root"|"operator raft"|"token capabilities"|"token create"|"token lookup"|"token revoke"|"auth enable"|"secrets enable") ;;
   *) echo "bao: unknown command: $*" >&2; exit 127 ;;
 esac
 
 case "$*" in
   "status -format=json")
-    if [ "${FAKE_INITIALIZED:-true}" = false ]; then
+    if [ "${FAKE_INITIALIZED:-true}" = false ] || { [ -n "${FAKE_FRESH_INIT:-}" ] && [ ! -f "$state/initialized" ]; }; then
       printf '{"initialized":false,"sealed":true,"t":0,"n":0,"progress":0}\n'
       exit 2
     fi
@@ -213,6 +215,10 @@ case "$*" in
 d=json.load(sys.stdin)
 k=d.get("key")
 sys.exit(1) if not isinstance(k,str) or not k else print(k)' 2>/dev/null)" || { echo "Error writing data to sys/unseal: invalid JSON body or no key" >&2; exit 2; }
+    if [ -f "$state/reject-keys" ]; then
+      echo "Error writing data to sys/unseal: invalid key" >&2
+      exit 2
+    fi
     if [ -n "${FAKE_VALID_KEYS:-}" ] && ! pod_in "$key" "$FAKE_VALID_KEYS"; then
       echo "Error writing data to sys/unseal: invalid key" >&2
       exit 2
@@ -221,6 +227,27 @@ sys.exit(1) if not isinstance(k,str) or not k else print(k)' 2>/dev/null)" || { 
     echo "$n" > "$progress_file"
     if [ "$n" -ge "${FAKE_THRESHOLD:-3}" ]; then touch "$unsealed_file"; rm -f "$sealed_file"; fi
     printf '{"sealed":%s,"progress":%s}\n' "$([ -f "$unsealed_file" ] && echo false || echo true)" "$n"
+    exit 0
+    ;;
+  "operator init "*)
+    # `bao operator init` needs no token. It makes the first root token and the unseal
+    # keys, once: a second call fails as on an initialized server. The root token is
+    # fake-root-init-1 and the keys are fake-key-1 and up, as many as -key-shares asks
+    # for. The server is initialized from then on (FAKE_FRESH_INIT makes the status say
+    # it is not before).
+    if [ -f "$state/initialized" ]; then
+      echo "Error initializing: Error making API request. Code: 400. Errors: * Vault is already initialized" >&2
+      exit 2
+    fi
+    shares=1
+    for flag in "$@"; do case "$flag" in -key-shares=*) shares="${flag#-key-shares=}" ;; esac; done
+    touch "$state/initialized"
+    python3 - "$shares" <<'PY'
+import json, sys
+keys = ["fake-key-%d" % i for i in range(1, int(sys.argv[1]) + 1)]
+print(json.dumps({"unseal_keys_b64": keys, "unseal_keys_hex": keys, "unseal_shares": len(keys),
+                  "unseal_threshold": len(keys), "root_token": "fake-root-init-1"}))
+PY
     exit 0
     ;;
   "operator unseal "*)
@@ -365,6 +392,11 @@ PY
     exit 0
     ;;
 esac
+seal_on_fail() {
+  [ -n "${FAKE_SEAL_ON_FAIL:-}" ] || return 0
+  rm -f "$unsealed_file"; touch "$sealed_file" "$state/reject-keys"
+}
+if [ -n "${FAKE_SEAL_ON_FAIL:-}" ] && is_sealed; then echo "Error: Vault is sealed" >&2; exit 2; fi
 k8s_auth_dir="$state/k8s-auth"
 token_ok() { [ -n "${BAO_TOKEN:-}" ] && [ ! -f "$state/revoked-$BAO_TOKEN" ]; }
 is_root() { case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac; return 1; }
@@ -373,6 +405,44 @@ is_root() { case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac; return 1; }
 policy_ok() { token_ok && { is_root || [ -n "${FAKE_POLICY_WRITER:-}" ]; }; }
 forbidden() { printf 'Error %s: Error making API request.\n\nCode: 403. Errors:\n\n* 1 error occurred:\n\t* permission denied\n' "$1" >&2; exit 2; }
 case "$*" in
+  "secrets enable "*|"auth enable "*)
+    # The mount is recorded as one line in $state/mounts.log. Enabling a path twice
+    # fails as on the server.
+    token_ok && is_root || forbidden "enabling a mount"
+    mount="${!#}"
+    case "$1" in secrets) kind=secrets ;; *) kind=auth ;; esac
+    for arg in "$@"; do case "$arg" in -path=*) mount="${arg#-path=}" ;; esac; done
+    if grep -qx "$kind/$mount" "$state/mounts.log" 2>/dev/null; then
+      echo "Error enabling: path is already in use at $mount/" >&2
+      exit 2
+    fi
+    echo "$kind/$mount" >> "$state/mounts.log"
+    exit 0
+    ;;
+  "policy write "*" /"*)
+    # The policy text is a file in the pod, which the fake kubectl keeps under pod-fs.
+    policy_ok || forbidden "uploading policy"
+    [ -z "${FAKE_POLICY_WRITE_FAILS:-}" ] || { seal_on_fail; echo "Error uploading policy: internal error" >&2; exit 2; }
+    [ -f "$state/pod-fs/$pod$4" ] || { echo "Error reading policy file: no such file $4" >&2; exit 1; }
+    mkdir -p "$state/policies"
+    cp "$state/pod-fs/$pod$4" "$state/policies/$3"
+    echo "Success! Uploaded policy: $3"
+    exit 0
+    ;;
+  "write auth/approle/role/"*"/secret-id"|"write -format=json -force auth/approle/role/"*"/secret-id")
+    token_ok && is_root || forbidden "writing data to auth/approle/role secret-id"
+    printf '{"data":{"secret_id":"fake-secret-id","secret_id_accessor":"fake-secret-id-accessor"}}\n'
+    exit 0
+    ;;
+  "write auth/approle/role/"*)
+    token_ok && is_root || forbidden "writing data to auth/approle/role"
+    exit 0
+    ;;
+  "read -format=json auth/approle/role/"*"/role-id")
+    token_ok && is_root || forbidden "reading auth/approle/role role-id"
+    printf '{"data":{"role_id":"fake-role-id"}}\n'
+    exit 0
+    ;;
   "operator generate-root "*)
     # With FAKE_GENROOT_AUTH set the call behaves as on OpenBao 2.6 and later: only a
     # token that the fake issued and has not revoked may make it (the ops-admin login
@@ -620,7 +690,7 @@ PY
     ;;
   "policy write "*" -")
     policy_ok || forbidden "uploading policy"
-    [ -z "${FAKE_POLICY_WRITE_FAILS:-}" ] || { echo "Error uploading policy: internal error" >&2; exit 2; }
+    [ -z "${FAKE_POLICY_WRITE_FAILS:-}" ] || { seal_on_fail; echo "Error uploading policy: internal error" >&2; exit 2; }
     mkdir -p "$state/policies"
     cat > "$state/policies/$3"
     echo "Success! Uploaded policy: $3"

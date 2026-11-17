@@ -71,8 +71,8 @@
   when: openbao_is_initialized | bool
 
 # Writing a Kubernetes-auth role needs a privileged token, as for the setup
-# issuer: a fresh install writes the role here with the initial root token. An
-# installed environment gets it from
+# issuer: a fresh install writes the role here with its short token, which holds the
+# root policy (main.yml says when the init token stays). An installed environment gets it from
 # playbooks/vertical-security/106-openbao-kubernetes-auth.yml, which writes it with
 # a temporary root token when it is missing. A rerun of this role leaves the role
 # as it is. The identity verifier fails when the role is missing.
@@ -80,7 +80,7 @@
   ansible.builtin.include_tasks: kubernetes-auth-role.yml
   vars:
     openbao_k8s_auth_role: "{{ openbao_rotation_scheduler_k8s_auth_role }}"
-    openbao_k8s_auth_token: "{{ openbao_root_token }}"
+    openbao_k8s_auth_token: "{{ _openbao_write_token }}"
   when:
     - openbao_init_raw is defined
     - openbao_init_raw.changed | default(false)

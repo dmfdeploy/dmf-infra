@@ -1,0 +1,7 @@
+---
+# Stands in for base/cluster-ready where a play names the role as base/cluster-ready
+# (playbooks/vertical-security/100-openbao.yml). The tests put this tree first on
+# ANSIBLE_ROLES_PATH. The real role waits for a cluster, which the fake one has.
+- name: Pretend the cluster is ready
+  ansible.builtin.debug:
+    msg: The fake cluster is ready.

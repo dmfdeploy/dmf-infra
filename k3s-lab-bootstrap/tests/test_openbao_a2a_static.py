@@ -149,7 +149,7 @@ class ExecutorRbacTest(unittest.TestCase):
     def test_kubernetes_auth_role_is_written_on_fresh_init_only(self):
         task = self.TEXT.split("- name: Write the setup issuer Kubernetes-auth role")[1]
         self.assertIn("openbao_init_raw.changed", task)
-        self.assertIn("{{ openbao_root_token }}", task)
+        self.assertIn("{{ _openbao_write_token }}", task)
 
 
 class BornInventorySwitchTest(unittest.TestCase):
