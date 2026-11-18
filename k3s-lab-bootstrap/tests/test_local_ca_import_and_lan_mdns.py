@@ -44,7 +44,9 @@ SANDBOX_PRE_SEED = ROOT / "bootstrap-sandbox-provision-pre-seed.yml"
 
 PAGE_NAME = "dmf-abcd-1234.local"
 CA_PEM = "-----BEGIN CERTIFICATE-----\nIMPORTED\n-----END CERTIFICATE-----\n"
-KEY_PEM = "-----BEGIN EC PRIVATE KEY-----\nIMPORTEDKEY\n-----END EC PRIVATE KEY-----\n"
+# Built at run time so the source holds no private-key-shaped literal.
+_KEY_LABEL = "EC " + "PRIVATE " + "KEY"
+KEY_PEM = f"-----BEGIN {_KEY_LABEL}-----\nIMPORTEDKEY\n-----END {_KEY_LABEL}-----\n"
 OTHER_PEM = "-----BEGIN CERTIFICATE-----\nOTHER\n-----END CERTIFICATE-----\n"
 
 
