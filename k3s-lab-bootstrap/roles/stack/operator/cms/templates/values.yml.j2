@@ -32,6 +32,12 @@ env:
     existingSecretName: {{ cms_runtime_secret_name | to_json }}
     key: {{ cms_runtime_secret_session_key | to_json }}
   devLoginEnabled: {{ cms_dev_login_enabled | to_json }}
+  # Public facts the console shows about the local certificate authority. They
+  # stay empty on an environment that has no local CA.
+  networkMode: {{ dmf_network_mode | default('') | to_json }}
+  approvalPageName: {{ dmf_approval_page_name | default('') | to_json }}
+  caFingerprintSha256: {{ dmf_local_ca_fingerprint_sha256 | default('') | to_json }}
+  caNotAfter: {{ dmf_local_ca_not_after | default('') | to_json }}
 
 oidc:
   enabled: {{ cms_oidc_enabled | to_json }}
