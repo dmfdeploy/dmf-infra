@@ -33,6 +33,27 @@ signal: pods before 2.7 ignore `tls_auto_reload` and need it, and it makes the
 reload happen when the play runs instead of within the next polling interval.
 Keep the check in any case, because it is the proof.
 
+## Standing Kubernetes-auth identities
+
+Three identities log in to OpenBao with a projected ServiceAccount token and hold
+no stored credential. Each is a mapping in `openbao_standing_k8s_auth_roles`. A
+fresh install writes the roles in `setup-issuer.yml`,
+`setup-rotation-scheduler.yml` and `setup-executor.yml`. An installed
+environment gets the missing ones from
+`playbooks/vertical-security/106-openbao-kubernetes-auth.yml`.
+
+| Identity | ServiceAccount and role | Namespace | Policy | Login token |
+|---|---|---|---|---|
+| Setup issuer | `setup-issuer` | `openbao` | `setup-issuer` | 5 minutes, at most 10 |
+| Rotation scheduler | `approle-rotation-scheduler` | `openbao` | `approle-rotation-scheduler` | 20 minutes, at most 30 |
+| Approval executor | `approval-executor` | `openbao` | `generate-root` | 5 minutes, at most 10 |
+
+The approval executor has no workload until slice D builds its image. Until then
+only its ServiceAccount, role and network rules exist. Its only policy is
+`generate-root`. Two NetworkPolicies in `roles/base/network-policies` cover it:
+one admits its pods, labelled `app.kubernetes.io/name: approval-executor`, to the
+OpenBao API port. The other admits only pods inside the cluster to the executor.
+
 ## Root token generation
 
 OpenBao 2.6 and later send `bao operator generate-root` only to the authenticated
