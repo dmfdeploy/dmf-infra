@@ -219,6 +219,34 @@ the header of the play says what can be left: after the revoke only the short to
 expires on its own within 15 minutes, and before the revoke the generate-root token, which
 you revoke by its accessor.
 
+## Catalogue of setup requests
+
+`files/catalogue.yml` lists the setup requests that the approval service offers.
+Each entry names a pinned policy file under `files/policies/catalogue/`, holds the
+SHA-256 digest of that file, lists the change's `requests` (path and capability),
+and states `request_count`, the number of those requests. The header of the file
+describes every field. On every run, `tasks/catalogue.yml` writes each pinned
+policy to OpenBao under the entry's `policy_name`, and renders the file and the
+policy files into the ConfigMap `setup-catalogue` in `openbao_setup_requests_namespace`.
+
+To add an entry:
+
+1. Write the policy file in `files/policies/catalogue/`. Grant `auth/token/revoke-self`
+   and only the paths and capabilities that the change uses. A wildcard or a `sys/` path fails the tests.
+2. List the requests that the change makes with the token, and set `request_count`
+   to their number. Where a request writes parameters, limit them with
+   `allowed_parameters` in the policy, and do not grant a path whose update takes
+   more than the change needs (for example, the user path of the userpass mount takes
+   `token_policies`). Do not count the token revoke: the executor ends the token with
+   `auth/token/revoke-self`, which every pinned policy grants and the count leaves
+   out. If a parameter changes the count, fix the parameter in the schema.
+3. Add the entry to `files/catalogue.yml` and set `policy_sha256` to the output of
+   `shasum -a 256 <policy file>`.
+4. Run `tests/test_openbao_catalogue.py` with the Python of Ansible. It checks the
+   entry's `requests` against the policy.
+
+To change a policy, edit the file and update `policy_sha256` in the same change.
+
 ## Upgrade from 2.5.x to 2.7.x
 
 Upstream supports large version jumps and asks you to read the notes of each

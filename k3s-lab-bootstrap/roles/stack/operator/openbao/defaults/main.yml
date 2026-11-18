@@ -341,3 +341,7 @@ openbao_rotation_scheduler_k8s_auth_role:
 openbao_standing_k8s_auth_roles:
   - "{{ openbao_setup_issuer_k8s_auth_role }}"
   - "{{ openbao_rotation_scheduler_k8s_auth_role }}"
+
+# Name of the ConfigMap that carries the catalogue of setup requests and its pinned
+# policy files. It lives in openbao_setup_requests_namespace.
+openbao_catalogue_configmap_name: setup-catalogue

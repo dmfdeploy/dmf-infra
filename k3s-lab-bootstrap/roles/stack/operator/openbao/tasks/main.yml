@@ -1299,6 +1299,9 @@
 - name: Set up the rotation scheduler identity
   ansible.builtin.include_tasks: setup-rotation-scheduler.yml
 
+- name: Write the catalogue policies and the catalogue ConfigMap
+  ansible.builtin.include_tasks: catalogue.yml
+
 # ---------------------------------------------------------------------------
 # Phase 5 — operator userpass retrieval path
 # Grants human operators a narrow read on secret/data/apps/*/admin without
