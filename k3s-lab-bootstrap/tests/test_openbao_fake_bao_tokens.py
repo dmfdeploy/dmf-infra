@@ -78,6 +78,30 @@ class FakeBaoTokenTests(unittest.TestCase):
         self.assertNotEqual(self.call(LIST_ACCESSORS, token=token).returncode, 0)
         self.assertNotEqual(self.call(SELF_LOOKUP, token=token).returncode, 0)
 
+    def test_a_last_use_spent_on_an_early_command_still_revokes(self) -> None:
+        # Catches a fake whose exit handler runs before the revoke helper exists: a token
+        # whose only request is `token capabilities`, which the first dispatcher answers
+        # and exits on, would stay usable.
+        auth = self.scoped("-use-limit=1")
+        token = auth["client_token"]
+        answered = self.call(["token", "capabilities", "-format=json", "secret/x"], token=token)
+        self.assertEqual(answered.returncode, 0, answered.stderr)
+        self.assertTrue((self.state / f"revoked-{token}").exists())
+        self.assertNotIn(auth["accessor"], self.call(LIST_ACCESSORS, token=ROOT_TOKEN).stdout)
+
+    def test_a_use_limit_of_zero_means_no_limit(self) -> None:
+        # Catches a fake that stores 0 as a count of zero uses left and revokes the token
+        # after its first request. OpenBao treats 0 as unlimited and reports num_uses 0.
+        auth = self.scoped("-use-limit=0")
+        token = auth["client_token"]
+        self.assertEqual(auth["num_uses"], 0)
+        for _ in range(4):
+            self.assertEqual(self.call(SELF_LOOKUP, token=token).returncode, 0)
+        self.assertFalse((self.state / f"revoked-{token}").exists())
+        looked = self.call(["write", "-format=json", "auth/token/lookup-accessor", f"accessor={auth['accessor']}"],
+                           token=ROOT_TOKEN)
+        self.assertEqual(json.loads(looked.stdout)["data"]["num_uses"], 0)
+
     def test_a_token_without_a_use_limit_has_none(self) -> None:
         # Catches a fake that gives every scoped token a default limit.
         token = self.scoped()["client_token"]
