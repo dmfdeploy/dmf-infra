@@ -716,9 +716,10 @@ case "$*" in
     echo "fake bao: unexpected generate-root call: $*" >&2
     exit 1
     ;;
-  "read -format=json auth/userpass/users/"*)
+  "read -format=json auth/userpass/users/"*|"read auth/userpass/users/"*)
     can_inspect || forbidden "reading auth/userpass/users"
-    identity_fixture auth/userpass/users "${3##*/}" 2>/dev/null && exit 0
+    name="${!#}"
+    identity_fixture auth/userpass/users "${name##*/}" 2>/dev/null && exit 0
     printf '{"data":%s}\n' "$(userpass_user show)"
     exit 0
     ;;
@@ -906,6 +907,9 @@ PY
     exit 0
     ;;
   "read -format=json auth/approle/role/external-secrets")
+    # A role that identity.json defines goes to a token that may inspect, as every other
+    # identity read does; without one the answer is the scheduler's.
+    if can_inspect && identity_fixture auth/approle/role external-secrets 2>/dev/null; then exit 0; fi
     case "${BAO_TOKEN:-}" in fake-scheduler*) ;; *) forbidden "reading auth/approle/role/external-secrets" ;; esac
     printf '{"data":{"token_policies":%s,"token_ttl":3600}}\n' "${FAKE_ESO_ROLE_POLICIES:-[\"eso-reader\"]}"
     exit 0
@@ -925,9 +929,9 @@ PY
     echo "Success! Uploaded policy: $3"
     exit 0
     ;;
-  "read -format=json auth/kubernetes/role/"*)
+  "read -format=json auth/kubernetes/role/"*|"read auth/kubernetes/role/"*)
     can_inspect || forbidden "reading auth/kubernetes/role"
-    name="${3#auth/kubernetes/role/}"
+    name="${!#}"; name="${name#auth/kubernetes/role/}"
     [ -f "$k8s_auth_dir/role-$name.json" ] || { echo "No value found at auth/kubernetes/role/$name" >&2; exit 2; }
     python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$k8s_auth_dir/role-$name.json"
     exit 0

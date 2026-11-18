@@ -305,6 +305,45 @@ class FakeBaoTokenTests(unittest.TestCase):
                 self.assertEqual(json.loads(self.call(["list", "-format=json", path], token=token).stdout), keys)
                 self.assertNotEqual(self.call(["list", path], token=outsider).returncode, 0)
 
+    def _verifier(self):
+        self.role("verifier", "identity-verifier")
+        return json.loads(self.login("verifier").stdout)["auth"]["client_token"]
+
+    def test_the_verifier_reads_a_fixture_external_secrets_role_with_and_without_json(self) -> None:
+        # Catches an exact-match handler for the external-secrets role that answers 403 to
+        # the verifier even when identity.json defines the role.
+        (self.state / "identity.json").write_text(json.dumps(
+            {"approle_roles": {"external-secrets": {"token_policies": ["p9"]}}}))
+        token = self._verifier()
+        for flags in (["-format=json"], []):
+            with self.subTest(flags=flags):
+                result = self.call(["read", *flags, "auth/approle/role/external-secrets"], token=token)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout)["data"]["token_policies"], ["p9"])
+        self.assertNotEqual(self.call(["read", "-format=json", "auth/approle/role/external-secrets"],
+                                      token=self.scoped()["client_token"]).returncode, 0)
+
+    def test_the_scheduler_still_reads_external_secrets_without_a_fixture(self) -> None:
+        # Catches a fix that drops the scheduler answer when identity.json has no such role.
+        result = self.call(["read", "-format=json", "auth/approle/role/external-secrets"], token="fake-scheduler-1")
+        self.assertEqual(json.loads(result.stdout)["data"]["token_policies"], ["eso-reader"])
+        self.assertNotEqual(self.call(["read", "-format=json", "auth/approle/role/external-secrets"],
+                                      token=self._verifier()).returncode, 0)
+
+    def test_userpass_and_kubernetes_role_reads_work_without_the_json_flag(self) -> None:
+        # Catches exact-match handlers that serve only the -format=json form, which leaves
+        # the plain read as an unexpected call.
+        (self.state / "identity.json").write_text(json.dumps(
+            {"userpass_users": {"alice": {"token_policies": ["p1"]}}}))
+        self.role("executor", "generate-root")
+        token = self._verifier()
+        user = self.call(["read", "auth/userpass/users/alice"], token=token)
+        self.assertEqual(json.loads(user.stdout)["data"]["token_policies"], ["p1"], user.stderr)
+        role = self.call(["read", "auth/kubernetes/role/executor"], token=token)
+        self.assertEqual(json.loads(role.stdout)["data"]["token_policies"], ["generate-root"], role.stderr)
+        for args in (["read", "auth/userpass/users/alice"], ["read", "auth/kubernetes/role/executor"]):
+            self.assertNotEqual(self.call(args, token=self.scoped()["client_token"]).returncode, 0)
+
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.
         listed = self.call(["list", "-format=json", "auth/userpass/users"], token=ROOT_TOKEN)

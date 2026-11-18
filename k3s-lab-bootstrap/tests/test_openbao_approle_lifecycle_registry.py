@@ -118,7 +118,7 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": 8,
     "k3s-lab-bootstrap/tests/test-openbao-k8s-auth.yml": 1,
     "k3s-lab-bootstrap/tests/fixtures/fake-bao/README.md": 1,
-    "k3s-lab-bootstrap/tests/test_openbao_fake_bao_tokens.py": 1,
+    "k3s-lab-bootstrap/tests/test_openbao_fake_bao_tokens.py": 5,
 }
 
 
