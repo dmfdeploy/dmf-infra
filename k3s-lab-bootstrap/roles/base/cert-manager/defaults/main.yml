@@ -104,6 +104,20 @@ cert_manager_local_ca_secret: dmf-local-ca
 cert_manager_local_ca_common_name: "DMF Local CA ({{ cert_manager_cluster_domain | default('dmf.test') }})"
 cert_manager_local_ca_duration: 87600h        # 10y root
 cert_manager_local_ca_cert_duration: 8760h     # 1y default leaf
+cert_manager_local_ca_renew_before: 720h       # leaves renew 30 days early
+# Import the install's own CA (made by dmf-init) instead of building a
+# self-signed root in the cluster. A new install only: the role refuses to
+# replace a CA secret that already holds a different certificate.
+cert_manager_local_ca_import: "{{ dmf_local_ca_import | default(false) | bool }}"
+cert_manager_local_ca_import_cert_file: "{{ dmf_local_ca_cert_file | default('') }}"
+cert_manager_local_ca_import_key_file: "{{ dmf_local_ca_key_file | default('') }}"
+# The approval page's certificate. It is issued only when the CA is imported
+# and dmf_approval_page_name is set.
+cert_manager_approval_page_name: "{{ dmf_approval_page_name | default('') }}"
+cert_manager_approval_page_namespace: dmf-approval
+cert_manager_approval_page_certificate: dmf-approval-page
+cert_manager_approval_page_secret: dmf-approval-page-tls
+cert_manager_approval_page_duration: 8760h
 # SAN set for the collapsed default cert: apex + wildcard under the base domain.
 cert_manager_local_ca_dns_names:
   - "{{ cert_manager_cluster_domain | default('dmf.test') }}"

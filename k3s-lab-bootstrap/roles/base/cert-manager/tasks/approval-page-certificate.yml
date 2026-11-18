@@ -1,0 +1,54 @@
+---
+# A certificate for the approval page's own name, issued by the local CA. In
+# LAN mode that name ends in .local, which the wildcard default certificate does
+# not cover. The name is the only DNS name on the certificate.
+#
+# cert-manager does not cap a leaf at the CA's expiry, so the duration is the
+# one set here. Renewal starts 30 days before it ends.
+
+- name: Create the approval page namespace
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ cert_manager_approval_page_namespace }}"
+
+- name: Create the approval page Certificate
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: cert-manager.io/v1
+      kind: Certificate
+      metadata:
+        name: "{{ cert_manager_approval_page_certificate }}"
+        namespace: "{{ cert_manager_approval_page_namespace }}"
+      spec:
+        secretName: "{{ cert_manager_approval_page_secret }}"
+        dnsNames:
+          - "{{ cert_manager_approval_page_name }}"
+        duration: "{{ cert_manager_approval_page_duration }}"
+        renewBefore: "{{ cert_manager_local_ca_renew_before }}"
+        issuerRef:
+          name: "{{ cert_manager_local_ca_issuer }}"
+          kind: ClusterIssuer
+
+- name: Wait for the approval page Certificate to become Ready
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: cert-manager.io/v1
+    kind: Certificate
+    name: "{{ cert_manager_approval_page_certificate }}"
+    namespace: "{{ cert_manager_approval_page_namespace }}"
+  register: _approval_page_cert_status
+  until: >-
+    _approval_page_cert_status.resources | length > 0
+    and (_approval_page_cert_status.resources[0].status.conditions | default([]))
+        | selectattr('type', 'equalto', 'Ready')
+        | selectattr('status', 'equalto', 'True')
+        | list | length > 0
+  retries: "{{ cert_manager_certificate_wait_retries }}"
+  delay: "{{ cert_manager_certificate_wait_delay }}"

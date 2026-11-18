@@ -1,0 +1,41 @@
+---
+# ---------------------------------------------------------------------------
+# playbooks/323-lan-mdns.yml
+# LAN mode: announce the approval page's name (dmf-<id>.local) over mDNS. Only
+# the approval page moves to .local; the console and the other apps keep the
+# base domain. No-op unless dmf_network_mode == 'lan'. The firewall rule for
+# UDP 5353 is in the harden role's nftables template.
+#
+# Runs after 321-local-ca-trust (the number 322 belongs to headscale cleanup,
+# which this chain does not run). The address is the node's internal address,
+# found by the resolver that 321 uses, so a 1:1-NAT node announces an address
+# the LAN can reach.
+# ---------------------------------------------------------------------------
+
+- name: LAN mode — announce the approval page name over mDNS
+  hosts: k3s_control[0]
+  become: true
+  gather_facts: false
+  vars:
+    _lan: "{{ dmf_network_mode | default('') == 'lan' }}"
+  tasks:
+    - name: Gather network facts to find the node's internal address
+      ansible.builtin.setup:
+        gather_subset:
+          - network
+      when:
+        - _lan | bool
+        - k3s_node_ip is defined
+
+    - name: Resolve the node's internal address (same resolver as 300-k3s)
+      ansible.builtin.import_tasks: ../tasks/resolve-k3s-node-ip.yml
+      when:
+        - _lan | bool
+        - k3s_node_ip is defined
+
+    - name: Announce the page name
+      ansible.builtin.include_role:
+        name: base/lan-mdns
+      vars:
+        lan_mdns_node_address: "{{ k3s_node_ip | default(k3s_advertise_address | default(ansible_host)) }}"
+      when: _lan | bool

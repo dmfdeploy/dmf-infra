@@ -35,6 +35,8 @@
   tags: [layer3, container-platform, tls]
 - import_playbook: playbooks/321-local-ca-trust.yml
   tags: [layer3, container-platform, tls, local-ca, dns]
+- import_playbook: playbooks/323-lan-mdns.yml
+  tags: [layer3, container-platform, lan, mdns]
 - import_playbook: playbooks/331-registry-zot.yml
   tags: [layer3, container-platform, registry]
 

@@ -1,0 +1,60 @@
+---
+# Put the install's own CA into the cluster as the local CA secret. The CA
+# certificate and key are files on the controller (dmf-init writes them). The
+# secret holds the CA certificate twice, as tls.crt for the CA ClusterIssuer and
+# as ca.crt for the trust steps in playbook 321.
+#
+# The import is for a new install. A secret that already holds a different
+# certificate belongs to a running install, and replacing its CA would break
+# every certificate that install has issued, so the play stops instead.
+
+- name: Require the local-CA lane and both CA files (imported CA)
+  ansible.builtin.assert:
+    that:
+      - cert_manager_local_ca_enabled | bool
+      - cert_manager_local_ca_import_cert_file | length > 0
+      - cert_manager_local_ca_import_key_file | length > 0
+    fail_msg: >-
+      dmf_local_ca_import needs dmf_tls_mode == 'local-ca' together with
+      dmf_local_ca_cert_file and dmf_local_ca_key_file.
+
+- name: Read the CA secret if it exists (imported CA)
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Secret
+    name: "{{ cert_manager_local_ca_secret }}"
+    namespace: "{{ cert_manager_namespace }}"
+  register: _imported_ca_existing
+  no_log: true
+
+- name: Refuse to replace a different CA (imported CA)
+  ansible.builtin.assert:
+    that:
+      - >-
+        (_imported_ca_existing.resources[0].data['tls.crt'] | b64decode | trim)
+        == (lookup('file', cert_manager_local_ca_import_cert_file) | trim)
+    fail_msg: >-
+      Secret {{ cert_manager_local_ca_secret }} in {{ cert_manager_namespace }}
+      already holds a different CA certificate than
+      {{ cert_manager_local_ca_import_cert_file }}. An existing install keeps
+      its CA; the import is for new installs.
+  when: _imported_ca_existing.resources | length > 0
+
+- name: Create the CA secret from the imported CA
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      type: kubernetes.io/tls
+      metadata:
+        name: "{{ cert_manager_local_ca_secret }}"
+        namespace: "{{ cert_manager_namespace }}"
+      stringData:
+        tls.crt: "{{ lookup('file', cert_manager_local_ca_import_cert_file) }}"
+        tls.key: "{{ lookup('file', cert_manager_local_ca_import_key_file) }}"
+        ca.crt: "{{ lookup('file', cert_manager_local_ca_import_cert_file) }}"
+  when: _imported_ca_existing.resources | length == 0
+  no_log: true

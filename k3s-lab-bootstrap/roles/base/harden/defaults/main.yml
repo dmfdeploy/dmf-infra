@@ -17,6 +17,12 @@ harden_public_tcp_ports:
 # Private network CIDR — all traffic allowed (k3s cluster communication)
 harden_private_cidr: "10.0.0.0/28"
 
+# LAN mode announces the approval page's name over mDNS (UDP 5353). The rule is
+# present only in LAN mode. Set harden_lan_cidr to limit it to the LAN's
+# addresses; empty accepts mDNS from any source address.
+harden_lan_mdns: "{{ dmf_network_mode | default('') == 'lan' }}"
+harden_lan_cidr: ""
+
 # Unattended upgrades — reboot window (UTC)
 harden_reboot_time: "02:00"
 

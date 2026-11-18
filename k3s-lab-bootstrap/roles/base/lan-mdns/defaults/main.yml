@@ -1,0 +1,9 @@
+---
+# LAN mode (dmf_network_mode == 'lan') announces the approval page's name,
+# dmf-<id>.local, over mDNS so devices on the LAN find the node without DNS.
+# In public mode the role does nothing.
+lan_mdns_enabled: "{{ dmf_network_mode | default('') == 'lan' }}"
+lan_mdns_page_name: "{{ dmf_approval_page_name | default('') }}"
+# The address the name points to. The playbook sets it to the node's internal
+# address, which is the one devices on the LAN can reach.
+lan_mdns_node_address: "{{ k3s_node_ip | default(ansible_host) }}"
