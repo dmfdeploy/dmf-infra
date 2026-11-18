@@ -1,0 +1,33 @@
+---
+# The catalogue of setup requests (files/catalogue.yml). Included from main.yml after
+# the setup request namespace exists. It writes each pinned policy to OpenBao, and
+# it renders the catalogue and the policy files into a ConfigMap in that namespace.
+# The approval service reads the ConfigMap. The policy writes run on a fresh install
+# and on an installed environment, like the other policies of this role.
+
+- name: Load the catalogue
+  ansible.builtin.set_fact:
+    _openbao_catalogue: "{{ lookup('ansible.builtin.file', role_path ~ '/files/catalogue.yml') | from_yaml }}"
+
+- name: Write the pinned policy of each catalogue entry
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ item.policy_name }} -'
+    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/' ~ item.policy_file) }}\n"
+  loop: "{{ _openbao_catalogue.entries }}"
+  loop_control:
+    label: "{{ item.policy_name }}"
+  no_log: true
+  when: openbao_is_initialized | bool
+
+- name: Render the catalogue ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'catalogue-configmap.yml.j2') | from_yaml }}"

@@ -1,0 +1,13 @@
+{# Every value goes through to_json, so the bytes of each file arrive in the ConfigMap unchanged. #}
+{% set catalogue_text = lookup('ansible.builtin.file', role_path ~ '/files/catalogue.yml', rstrip=False) %}
+{% set catalogue = catalogue_text | from_yaml %}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ openbao_catalogue_configmap_name | to_json }}
+  namespace: {{ openbao_setup_requests_namespace | to_json }}
+data:
+  catalogue.yml: {{ catalogue_text | to_json }}
+{% for entry in catalogue.entries %}
+  {{ (entry.policy_file | basename) | to_json }}: {{ lookup('ansible.builtin.file', role_path ~ '/' ~ entry.policy_file, rstrip=False) | to_json }}
+{% endfor %}

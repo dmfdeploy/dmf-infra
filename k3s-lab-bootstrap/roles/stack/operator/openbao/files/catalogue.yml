@@ -1,0 +1,48 @@
+---
+# Catalogue of setup requests that the approval service offers and the executor
+# runs. The role writes each pinned policy to OpenBao and renders this file and
+# the policy files into the ConfigMap setup-catalogue.
+#
+# schema_version  Version of this file's layout. Raise it when a field changes.
+# entries         The list of catalogue entries. Each entry has these fields:
+#   name           Stable identifier of the entry.
+#   consequence    Plain text that tells the approver what the change does.
+#   policy_name    Name of the policy in OpenBao. It stays stable.
+#   policy_file    Path of the pinned policy file, relative to the
+#                  directory of the role.
+#   policy_sha256  SHA-256 digest over the exact bytes of the policy file. A
+#                  test fails when the file and the digest differ.
+#   requests       The change's own requests with the scoped token, one item per
+#                  request, each with the path and the capability. The pinned
+#                  policy grants these and nothing else but the token revoke.
+#   request_count  The number of OpenBao requests that the change makes with
+#                  the scoped token. It is the token's use limit, so it must
+#                  match the change exactly. The count holds the change's own
+#                  requests only. The token revoke (auth/token/revoke-self) is
+#                  not counted, and every pinned policy grants it: the token has
+#                  no default policy, and a change that stops early leaves a use
+#                  for the revoke.
+#   parameters     Schema of the values that an approver may set. Any value not
+#                  listed here is fixed.
+schema_version: 1
+entries:
+  - name: ops-admin-password-rotation
+    consequence: >-
+      Changes only the password of the OpenBao user ops-admin to a new random
+      password. The old password stops working, and the break-glass file on the
+      operator host is rewritten with the new one.
+    policy_name: catalogue-ops-admin-password-rotation
+    policy_file: files/policies/catalogue/ops-admin-password-rotation.hcl
+    policy_sha256: 2e08fe196b5610e6cc585c171e375395478243551b2be2bdf393d92a86b0a5d7
+    requests:
+      - path: auth/userpass/users/ops-admin/password
+        capability: update
+    request_count: 1
+    parameters:
+      # The user name is fixed: the pinned policy names this user. The request
+      # carries the password only, so no parameter changes the count.
+      password_length:
+        type: integer
+        default: 32
+        minimum: 20
+        maximum: 64
