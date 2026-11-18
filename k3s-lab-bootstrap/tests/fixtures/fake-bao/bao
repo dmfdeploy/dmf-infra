@@ -246,6 +246,7 @@ elif op == "lookup-self":
 elif op == "create":  # NAME PARENT ORPHAN TTL EXPLICIT_MAX USE_LIMIT RENEWABLE POLICY...
     name, parent, orphan, ttl, explicit_max, use_limit, renewable = args[:7]
     ttl, explicit_max = seconds(ttl), seconds(explicit_max)
+    # A use limit of 0 is OpenBao's value for unlimited: no limit is kept as null.
     if not ttl and not explicit_max:
         ttl = 32 * 24 * 3600   # the default lifetime of a token
     elif explicit_max and (not ttl or ttl > explicit_max):
@@ -253,7 +254,7 @@ elif op == "create":  # NAME PARENT ORPHAN TTL EXPLICIT_MAX USE_LIMIT RENEWABLE 
     policies = ["default"] + [p for p in args[7:] if p != "default"]
     record = {"parent": parent, "orphan": orphan == "true", "policies": policies, "ttl": ttl,
               "explicit_max_ttl": explicit_max, "renewable": renewable == "true", "created": now,
-              "uses_left": int(use_limit) if use_limit else None, "use_limit": int(use_limit or 0)}
+              "uses_left": int(use_limit or 0) or None, "use_limit": int(use_limit or 0)}
     os.makedirs(tokens, exist_ok=True)
     json.dump(record, open(os.path.join(tokens, name + ".json"), "w"))
     print(json.dumps({"auth": {"client_token": name, "accessor": name + "-accessor", "policies": policies,
@@ -358,6 +359,20 @@ case "${1:-} ${2:-}" in
   *) echo "bao: unknown command: $*" >&2; exit 127 ;;
 esac
 
+# Revoke NAME and the tokens that it made without -orphan.
+revoke_token() {
+  touch "$state/revoked-$1"
+  printf '%s =revoked\n' "$1" >> "$state/bao-calls.log"
+  for record in "$state"/token-*.json "$tokens_dir"/*.json; do
+    [ -f "$record" ] || continue
+    child="$(basename "$record" .json)"; child="${child#token-}"
+    python3 - "$record" "$1" <<'PY' && touch "$state/revoked-$child"
+import json, sys
+record = json.load(open(sys.argv[1]))
+sys.exit(0 if record.get("parent") == sys.argv[2] and not record["orphan"] else 1)
+PY
+  done
+}
 # A token with a use limit spends one use on each request that it makes, allowed or not,
 # as OpenBao does, and is revoked once the request that spent its last use is done.
 json_out=""
@@ -604,20 +619,6 @@ has_policy() {
 # token or the verifier's. The fake checks the policy by name, not by its paths.
 can_revoke() { token_ok && { is_root || has_policy "${FAKE_REVOKER_POLICY:-token-revoker}"; }; }
 can_inspect() { token_ok && { is_root || has_policy "${FAKE_VERIFIER_POLICY:-identity-verifier}"; }; }
-# Revoke NAME and the tokens that it made without -orphan.
-revoke_token() {
-  touch "$state/revoked-$1"
-  printf '%s =revoked\n' "$1" >> "$state/bao-calls.log"
-  for record in "$state"/token-*.json "$tokens_dir"/*.json; do
-    [ -f "$record" ] || continue
-    child="$(basename "$record" .json)"; child="${child#token-}"
-    python3 - "$record" "$1" <<'PY' && touch "$state/revoked-$child"
-import json, sys
-record = json.load(open(sys.argv[1]))
-sys.exit(0 if record.get("parent") == sys.argv[2] and not record["orphan"] else 1)
-PY
-  done
-}
 # The policy paths take a root token, or any live token when FAKE_POLICY_WRITER is set:
 # the policy-reconciler identity holds a grant on sys/policies/acl/*.
 policy_ok() { token_ok && { is_root || [ -n "${FAKE_POLICY_WRITER:-}" ]; }; }
