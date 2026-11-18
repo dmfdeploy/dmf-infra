@@ -1,0 +1,34 @@
+---
+- name: Require the page name in LAN mode
+  ansible.builtin.assert:
+    that:
+      - lan_mdns_page_name | length > 0
+    fail_msg: dmf_network_mode is 'lan' but dmf_approval_page_name is not set.
+  when: lan_mdns_enabled | bool
+
+- name: Install avahi-daemon
+  ansible.builtin.apt:
+    name: avahi-daemon
+    state: present
+  when: lan_mdns_enabled | bool
+
+# avahi answers mDNS queries for each name in /etc/avahi/hosts.
+- name: Announce the approval page name
+  ansible.builtin.copy:
+    dest: /etc/avahi/hosts
+    content: |
+      {{ lan_mdns_node_address }} {{ lan_mdns_page_name }}
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart avahi-daemon
+  when: lan_mdns_enabled | bool
+
+- name: Enable and start avahi-daemon
+  ansible.builtin.service:
+    name: avahi-daemon
+    enabled: true
+    state: started
+  when:
+    - lan_mdns_enabled | bool
+    - not ansible_check_mode

@@ -284,6 +284,12 @@
       clear cert_manager_acme_email to use the local-CA lane.
   when: cert_manager_local_ca_enabled | bool
 
+# With an imported CA the root secret comes from import-local-ca.yml. The
+# self-signed root below would overwrite it, so it is skipped.
+- name: Import the install's local CA (local-CA lane)
+  ansible.builtin.include_tasks: import-local-ca.yml
+  when: cert_manager_local_ca_import | bool
+
 - name: Create self-signed bootstrap ClusterIssuer (local-CA lane)
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
@@ -295,7 +301,9 @@
         name: "{{ cert_manager_local_ca_bootstrap_issuer }}"
       spec:
         selfSigned: {}
-  when: cert_manager_local_ca_enabled | bool
+  when:
+    - cert_manager_local_ca_enabled | bool
+    - not (cert_manager_local_ca_import | bool)
 
 - name: Create local root CA Certificate (local-CA lane)
   kubernetes.core.k8s:
@@ -318,7 +326,9 @@
         issuerRef:
           name: "{{ cert_manager_local_ca_bootstrap_issuer }}"
           kind: ClusterIssuer
-  when: cert_manager_local_ca_enabled | bool
+  when:
+    - cert_manager_local_ca_enabled | bool
+    - not (cert_manager_local_ca_import | bool)
 
 - name: Wait for local root CA to become Ready (local-CA lane)
   kubernetes.core.k8s_info:
@@ -336,7 +346,9 @@
         | list | length > 0
   retries: "{{ cert_manager_certificate_wait_retries }}"
   delay: "{{ cert_manager_certificate_wait_delay }}"
-  when: cert_manager_local_ca_enabled | bool
+  when:
+    - cert_manager_local_ca_enabled | bool
+    - not (cert_manager_local_ca_import | bool)
 
 - name: Create local CA ClusterIssuer (local-CA lane)
   kubernetes.core.k8s:
@@ -365,6 +377,7 @@
       spec:
         secretName: "{{ cert_manager_tls_secret_name }}"
         duration: "{{ cert_manager_local_ca_cert_duration }}"
+        renewBefore: "{{ cert_manager_local_ca_renew_before }}"
         dnsNames: "{{ cert_manager_local_ca_dns_names }}"
         issuerRef:
           name: "{{ cert_manager_local_ca_issuer }}"
@@ -403,6 +416,13 @@
         defaultCertificate:
           secretName: "{{ cert_manager_tls_secret_name }}"
   when: cert_manager_local_ca_enabled | bool
+
+- name: Issue the approval page certificate from the imported CA
+  ansible.builtin.include_tasks: approval-page-certificate.yml
+  when:
+    - cert_manager_local_ca_enabled | bool
+    - cert_manager_local_ca_import | bool
+    - cert_manager_approval_page_name | length > 0
 
 - name: Issue the OpenBao certificate
   ansible.builtin.include_tasks: openbao-certificate.yml
