@@ -63,8 +63,9 @@ class FakeBaoTokenTests(unittest.TestCase):
         auth = self.scoped("-use-limit=2")
         token = auth["client_token"]
         self.assertEqual(auth["num_uses"], 2)
-        self.assertEqual(self.call(SELF_LOOKUP, token=token).returncode, 0)
-        self.assertEqual(self.call(SELF_LOOKUP, token=token).returncode, 0)
+        first = self.call(SELF_LOOKUP, token=token)
+        self.assertEqual(json.loads(first.stdout)["data"]["num_uses"], 1)
+        self.assertEqual(self.call(["token", "capabilities", "-format=json", "secret/x"], token=token).returncode, 0)
         refused = self.call(SELF_LOOKUP, token=token)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("permission denied", refused.stderr)
@@ -196,7 +197,8 @@ class FakeBaoTokenTests(unittest.TestCase):
 
     def test_revoke_by_accessor_revokes_that_token_and_its_children(self) -> None:
         # Catches a revoke that does nothing, one that revokes the caller, one open to any
-        # token, and one that leaves a child that was not made as an orphan.
+        # token, one that leaves a child that was not made as an orphan, and a repeat that
+        # fails where the server only warns.
         revoker = self.revoker()
         target = self.scoped()
         child = self.create("-policy=netbox-write", "-use-limit=9", token=ROOT_TOKEN)
@@ -210,7 +212,9 @@ class FakeBaoTokenTests(unittest.TestCase):
         self.assertNotEqual(self.call(SELF_LOOKUP, token=child["client_token"]).returncode, 0)
         self.assertEqual(self.call(SELF_LOOKUP, token=revoker).returncode, 0)
         self.assertNotIn(target["accessor"], self.call(LIST_ACCESSORS, token=ROOT_TOKEN).stdout)
-        self.assertNotEqual(self.call(args, token=ROOT_TOKEN).returncode, 0)
+        again = self.call(args, token=ROOT_TOKEN)
+        self.assertEqual(again.returncode, 0)
+        self.assertIn("No token found with this accessor", again.stderr)
 
     def test_an_orphan_outlives_its_revoked_parent_and_a_child_does_not(self) -> None:
         # Catches a revoke that takes an orphan token down with its parent: the executor
@@ -377,6 +381,90 @@ class FakeBaoTokenTests(unittest.TestCase):
             with self.subTest(args=args, case="live"):
                 self.seed(name)
                 self.assertEqual(self.call(args, token=name, **env).returncode, 0)
+
+    def mint(self, *flags, token):
+        result = self.call(["token", "create", *flags, "-format=json"], token=token)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)["auth"]
+
+    def lookup_accessor(self, auth):
+        result = self.call(["write", "-format=json", "auth/token/lookup-accessor", f"accessor={auth['accessor']}"],
+                           token=ROOT_TOKEN)
+        return json.loads(result.stdout)["data"]
+
+    def test_a_token_with_a_use_limit_cannot_create_tokens_even_with_the_root_policy(self) -> None:
+        # Catches a fake that lets a limited-use root token mint a child, which would escape
+        # the limit. The last use leaves nothing to look up, so the server says no parent.
+        for limit, reason in (("3", "restricted use token cannot generate child tokens"),
+                              ("1", "parent token lookup failed: no parent found")):
+            with self.subTest(limit=limit):
+                limited = self.create("-policy=root", f"-use-limit={limit}")["client_token"]
+                result = self.call(["token", "create", "-policy=netbox-write", "-format=json"], token=limited)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(reason, result.stderr)
+        unlimited = self.create("-policy=root", "-use-limit=0")["client_token"]
+        self.assertEqual(self.call(["token", "create", "-policy=netbox-write", "-format=json"], token=unlimited).returncode, 0)
+
+    def test_revoking_a_token_revokes_the_whole_tree_of_non_orphan_descendants(self) -> None:
+        # Catches a revoke that stops at the direct children: a grandchild would stay usable.
+        # An orphan below the revoked token keeps its own tree.
+        top = self.create("-policy=root", "-explicit-max-ttl=1h")
+        middle = self.mint("-policy=root", "-explicit-max-ttl=1h", token=top["client_token"])
+        grandchild = self.mint("-policy=netbox-write", "-use-limit=5", token=middle["client_token"])
+        orphan = self.mint("-orphan", "-policy=netbox-write", "-use-limit=5", token=middle["client_token"])
+        args = ["write", "auth/token/revoke-accessor", f"accessor={top['accessor']}"]
+        self.assertEqual(self.call(args, token=ROOT_TOKEN).returncode, 0)
+        for auth, alive in ((top, False), (middle, False), (grandchild, False), (orphan, True)):
+            with self.subTest(token=auth["client_token"]):
+                result = self.call(SELF_LOOKUP, token=auth["client_token"])
+                self.assertEqual(result.returncode == 0, alive, result.stderr)
+
+    def test_policies_are_sorted_with_default_and_root_stands_alone(self) -> None:
+        # Catches policies kept in request order with default first, a missing
+        # -no-default-policy, and a root token that also carries default.
+        cases = [(["-policy=zeta", "-policy=Alpha"], ["alpha", "default", "zeta"]),
+                 (["-policy=zeta", "-policy=alpha", "-no-default-policy"], ["alpha", "zeta"]),
+                 (["-policy=zeta", "-policy=default", "-no-default-policy"], ["default", "zeta"]),
+                 (["-policy=zeta", "-policy=root", "-use-limit=2"], ["root"])]
+        for flags, expected in cases:
+            with self.subTest(flags=flags):
+                auth = self.create("-orphan", *flags)
+                self.assertEqual(auth["policies"], expected)
+                self.assertEqual(self.lookup_accessor(auth)["policies"], expected)
+
+    def test_a_root_policy_token_without_a_ttl_never_expires_and_is_not_renewable(self) -> None:
+        # Catches a fake that gives a root token the 32-day default lifetime.
+        auth = self.create("-policy=root", "-use-limit=0")
+        later = NOW + 100 * 24 * 3600
+        data = json.loads(self.call(["write", "-format=json", "auth/token/lookup-accessor",
+                                     f"accessor={auth['accessor']}"], token=ROOT_TOKEN, now=later).stdout)["data"]
+        self.assertEqual((data["creation_ttl"], data["ttl"], data["renewable"]), (0, 0, False))
+        self.assertEqual((auth["lease_duration"], auth["renewable"]), (0, False))
+        self.assertEqual(self.call(SELF_LOOKUP, token=auth["client_token"], now=later).returncode, 0)
+
+    def test_a_ttl_longer_than_the_longest_lifetime_is_cut_to_it(self) -> None:
+        # Catches a fake that honors a TTL past the system maximum of 32 days.
+        auth = self.scoped("-ttl=1000h")
+        self.assertEqual(auth["lease_duration"], 32 * 24 * 3600)
+
+    def test_a_token_goes_with_its_parent_when_the_parent_lifetime_is_over(self) -> None:
+        # Catches a child that outlives the lifetime of its parent. An orphan does not.
+        parent = self.create("-policy=root", "-explicit-max-ttl=1m")
+        child = self.mint("-policy=netbox-write", "-use-limit=9", token=parent["client_token"])
+        orphan = self.mint("-orphan", "-policy=netbox-write", "-use-limit=9", token=parent["client_token"])
+        later = NOW + 120
+        self.assertNotEqual(self.call(SELF_LOOKUP, token=parent["client_token"], now=later).returncode, 0)
+        self.assertNotEqual(self.call(SELF_LOOKUP, token=child["client_token"], now=later).returncode, 0)
+        self.assertEqual(self.call(SELF_LOOKUP, token=orphan["client_token"], now=later).returncode, 0)
+        self.assertEqual(self.call(SELF_LOOKUP, token=child["client_token"], now=NOW + 30).returncode, 0)
+
+    def test_the_last_use_of_a_limited_token_cannot_look_the_token_up(self) -> None:
+        # Catches a fake that answers a lookup on the use that spends the last one: the
+        # server has no token left to look up and answers bad token.
+        token = self.scoped("-use-limit=1")["client_token"]
+        refused = self.call(SELF_LOOKUP, token=token)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("permission denied", refused.stderr)
 
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.

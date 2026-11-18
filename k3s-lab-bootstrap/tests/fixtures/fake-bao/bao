@@ -192,9 +192,13 @@ def load(name):
                 "renewable": record.get("renewable", True), "created": record.get("created", now), "uses_left": None}
     return None
 
-def expired(record):
+def expired(record, depth=0):
+    # A token whose parent lifetime is over goes with it, unless it is an orphan.
     ttl = int(record.get("ttl") or 0)
-    return ttl > 0 and now >= record.get("created", now) + ttl
+    if ttl > 0 and now >= record.get("created", now) + ttl:
+        return True
+    parent = load(record["parent"]) if record.get("parent") and not record.get("orphan") and depth < 16 else None
+    return parent is not None and expired(parent, depth + 1)
 
 def accessor_of(name, record):
     return record.get("accessor") or name + "-accessor"
@@ -218,7 +222,10 @@ def describe(name, record, show_id):
             "explicit_max_ttl": int(record.get("explicit_max_ttl") or 0),
             "num_uses": record.get("uses_left") or 0, "path": "auth/token/create", "display_name": "token"}
 
-if op == "live":      # exit 1 for a token whose lifetime is over
+if op == "limited":   # exit 0 for a token that has a use limit
+    record = load(args[0])
+    sys.exit(0 if record and record.get("uses_left") is not None else 1)
+elif op == "live":    # exit 1 for a token whose lifetime is over
     record = load(args[0])
     sys.exit(1 if record and expired(record) else 0)
 elif op == "use":     # spend one use; print "final" when that was the last one
@@ -243,15 +250,28 @@ elif op == "lookup":  # by accessor
     print(json.dumps({"data": describe(name, load(name), False)}))
 elif op == "lookup-self":
     print(json.dumps({"data": describe(args[0], load(args[0]), True)}))
-elif op == "create":  # NAME PARENT ORPHAN TTL EXPLICIT_MAX USE_LIMIT RENEWABLE POLICY...
-    name, parent, orphan, ttl, explicit_max, use_limit, renewable = args[:7]
+elif op == "create":  # NAME PARENT ORPHAN TTL EXPLICIT_MAX USE_LIMIT RENEWABLE NO_DEFAULT POLICY...
+    name, parent, orphan, ttl, explicit_max, use_limit, renewable, no_default = args[:8]
     ttl, explicit_max = seconds(ttl), seconds(explicit_max)
+    # The policies are lower case, without duplicates and in order. The root policy stands
+    # alone. The default policy is added, except to root and with -no-default-policy.
+    wanted = {p.strip().lower() for p in args[8:] if p.strip()}
+    root = "root" in wanted
+    if no_default == "as-given":   # a login token comes from the auth method, not the token store
+        policies = ["default"] + [p for p in args[8:] if p != "default"]
+    elif root:
+        policies = ["root"]
+    else:
+        policies = sorted(wanted if no_default == "true" else wanted | {"default"})
+    month = 32 * 24 * 3600   # the default and the longest lifetime of a token
     # A use limit of 0 is OpenBao's value for unlimited: no limit is kept as null.
     if not ttl and not explicit_max:
-        ttl = 32 * 24 * 3600   # the default lifetime of a token
+        ttl = 0 if root else month   # a root token without a TTL never expires
     elif explicit_max and (not ttl or ttl > explicit_max):
         ttl = explicit_max
-    policies = ["default"] + [p for p in args[7:] if p != "default"]
+    ttl = min(ttl, month)
+    if not ttl:
+        renewable = "false"
     record = {"parent": parent, "orphan": orphan == "true", "policies": policies, "ttl": ttl,
               "explicit_max_ttl": explicit_max, "renewable": renewable == "true", "created": now,
               "uses_left": int(use_limit or 0) or None, "use_limit": int(use_limit or 0)}
@@ -359,19 +379,29 @@ case "${1:-} ${2:-}" in
   *) echo "bao: unknown command: $*" >&2; exit 127 ;;
 esac
 
-# Revoke NAME and the tokens that it made without -orphan.
-revoke_token() {
-  touch "$state/revoked-$1"
-  printf '%s =revoked\n' "$1" >> "$state/bao-calls.log"
+# Revoke NAME and every token below it that was made without -orphan: the children, their
+# children, and so on. An orphan keeps its own tree.
+revoke_children() { # revoke_children NAME
+  local record child
   for record in "$state"/token-*.json "$tokens_dir"/*.json; do
     [ -f "$record" ] || continue
     child="$(basename "$record" .json)"; child="${child#token-}"
-    python3 - "$record" "$1" <<'PY' && touch "$state/revoked-$child"
+    [ ! -f "$state/revoked-$child" ] || continue
+    if python3 - "$record" "$1" <<'PY'
 import json, sys
 record = json.load(open(sys.argv[1]))
 sys.exit(0 if record.get("parent") == sys.argv[2] and not record["orphan"] else 1)
 PY
+    then
+      touch "$state/revoked-$child"
+      revoke_children "$child"
+    fi
   done
+}
+revoke_token() {
+  touch "$state/revoked-$1"
+  printf '%s =revoked\n' "$1" >> "$state/bao-calls.log"
+  revoke_children "$1"
 }
 # A scoped token is live until it is revoked or its lifetime is over.
 token_ok() {
@@ -756,6 +786,8 @@ case "$*" in
       printf '%s =refused\n' "$BAO_TOKEN" >> "$state/bao-calls.log"
     fi
     token_ok || forbidden "looking up token"
+    # The request that spends the last use leaves no token to look up: the server answers bad token.
+    [ -z "$used_up" ] || forbidden "looking up token"
     [ ! -f "$tokens_dir/$BAO_TOKEN.json" ] || { token_store lookup-self "$BAO_TOKEN"; exit 0; }
     python3 - "$BAO_TOKEN" "$(userpass_user show)" <<'PY'
 import json, sys
@@ -767,9 +799,16 @@ PY
     ;;
   "token create "*)
     token_ok && is_root || forbidden "creating a token"
+    # A token with a use limit cannot create tokens, or it could escape the limit. Its last
+    # use leaves nothing to look up, which the server reports as a missing parent.
+    if token_store limited "$BAO_TOKEN"; then
+      if [ -n "$used_up" ]; then reason="parent token lookup failed: no parent found"; else reason="restricted use token cannot generate child tokens"; fi
+      printf 'Error creating token: Error making API request.\n\nCode: 400. Errors:\n\n* %s\n' "$reason" >&2
+      exit 2
+    fi
     [ -z "${FAKE_TOKEN_CREATE_FAILS:-}" ] || { echo "Error creating token: internal error" >&2; exit 2; }
     shift 2
-    orphan=false; ttl=""; policies=""; renewable=true; explicit_max=""; use_limit=""
+    orphan=false; ttl=""; policies=""; renewable=true; explicit_max=""; use_limit=""; no_default=false
     for flag in "$@"; do
       case "$flag" in
         -orphan) orphan=true ;;
@@ -779,6 +818,8 @@ PY
         -renewable=*) renewable="${flag#-renewable=}" ;;
         -explicit-max-ttl=*) explicit_max="${flag#-explicit-max-ttl=}" ;;
         -use-limit=*) use_limit="${flag#-use-limit=}" ;;
+        -no-default-policy) no_default=true ;;
+        -no-default-policy=*) no_default="${flag#-no-default-policy=}" ;;
         -format=json) ;;
         *) echo "flag provided but not defined: ${flag%%=*}" >&2; exit 1 ;;
       esac
@@ -792,7 +833,7 @@ PY
       name="fake-scoped-$(( $(count_call scoped-token) + 1 ))"
       created="$state/create-answer.json"
       # shellcheck disable=SC2086
-      token_store create "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$explicit_max" "$use_limit" "$renewable" $policies > "$created" || exit 1
+      token_store create "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$explicit_max" "$use_limit" "$renewable" "$no_default" $policies > "$created" || exit 1
       if [ -n "${FAKE_TOKEN_CREATE_LOST:-}" ]; then
         echo "Error creating token: read tcp 127.0.0.1:8200: connection reset by peer" >&2
         exit 2
@@ -958,7 +999,8 @@ case "$norm" in
     ;;
   "write auth/token/revoke-accessor "*)
     can_revoke || forbidden "writing data to auth/token/revoke-accessor"
-    name="$(token_store name-of "$(field accessor "$@")")" || { echo "Error writing data to auth/token/revoke-accessor: invalid accessor" >&2; exit 2; }
+    # An accessor that no live token has is not an error: the server only warns.
+    name="$(token_store name-of "$(field accessor "$@")")" || { echo "WARNING! The following warnings were returned from OpenBao:" >&2; echo "  * No token found with this accessor" >&2; exit 0; }
     revoke_token "$name"
     exit 0
     ;;
@@ -972,7 +1014,7 @@ case "$norm" in
     read -r role_ttl role_max_ttl role_policies <<< "$grant"
     name="fake-k8s-$(( $(count_call k8s-login) + 1 ))"
     # shellcheck disable=SC2086
-    token_store create "$name" "" true "$role_ttl" "$role_max_ttl" "" true $role_policies
+    token_store create "$name" "" true "$role_ttl" "$role_max_ttl" "" true as-given $role_policies
     exit 0
     ;;
   "list auth/kubernetes/role")
