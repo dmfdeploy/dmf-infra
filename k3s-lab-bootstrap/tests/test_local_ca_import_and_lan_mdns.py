@@ -305,20 +305,25 @@ class ApprovalPageCertificateTest(unittest.TestCase):
         self.assertFalse(_when_holds(task, {**base, "cert_manager_approval_page_name": ""}))
 
 
-def _avahi_hosts(workdir, node_ip, mode, play_vars=None):
-    """Run 323's address tasks and the role's hosts task; return the file text."""
+def _avahi_hosts(workdir, node_ip, mode, play_vars=None, existing=None):
+    """Run 323's address tasks and the role's hosts task; return the file text.
+
+    `existing` is the text of /etc/avahi/hosts before the run.
+    """
     play = yaml.safe_load(MDNS_PLAYBOOK.read_text())[0]
     role_tasks = yaml.safe_load(MDNS_ROLE.read_text())
     hosts_task = next(t for t in role_tasks if t["name"].startswith("Announce the approval page name"))
     out = workdir / "avahi-hosts"
+    if existing is not None:
+        out.write_text(existing)
     tasks = [t for t in map(nat._kept_task, play["tasks"]) if t is not None]
     include = next(t for t in play["tasks"] if nat._action(t) == "ansible.builtin.include_role")
     tasks.append({
         "name": hosts_task["name"],
-        "ansible.builtin.copy": {
-            **{k: v for k, v in hosts_task["ansible.builtin.copy"].items()
-               if k not in ("owner", "group")},
-            "dest": str(out),
+        "ansible.builtin.blockinfile": {
+            **{k: v for k, v in hosts_task["ansible.builtin.blockinfile"].items()
+               if k not in ("owner", "group", "path")},
+            "path": str(out),
         },
         "vars": {**include["vars"],
                  "lan_mdns_page_name": PAGE_NAME,
@@ -336,7 +341,7 @@ class LanMdnsTest(unittest.TestCase):
         self.workdir = pathlib.Path(tempfile.mkdtemp(prefix="lan-mdns-"))
         self.addCleanup(shutil.rmtree, self.workdir, ignore_errors=True)
 
-    def _run(self, node_ip, mode):
+    def _run(self, node_ip, mode, existing=None):
         # The harness inventory carries no network mode; set it for the run.
         original = nat._inventory
 
@@ -348,18 +353,48 @@ class LanMdnsTest(unittest.TestCase):
 
         nat._inventory = inventory
         self.addCleanup(setattr, nat, "_inventory", original)
-        return _avahi_hosts(self.workdir, node_ip, mode)
+        return _avahi_hosts(self.workdir, node_ip, mode, existing=existing)
+
+    MARK_BEGIN = "# BEGIN DMF approval page (managed by dmf-infra)"
+    MARK_END = "# END DMF approval page (managed by dmf-infra)"
+
+    def _block(self, node_ip):
+        return f"{self.MARK_BEGIN}\n{node_ip} {PAGE_NAME}\n{self.MARK_END}\n"
 
     def test_hosts_line_is_internal_address_and_page_name(self):
         # Catches a line that holds the declared public address on a NAT node,
         # or one without the page name.
-        self.assertEqual(self._run(nat.INTERNAL_IP, "lan"),
-                         f"{nat.INTERNAL_IP} {PAGE_NAME}\n")
+        self.assertEqual(self._run(nat.INTERNAL_IP, "lan"), self._block(nat.INTERNAL_IP))
 
     def test_nat_node_announces_the_internal_address(self):
         text = self._run(nat.PUBLIC_IP, "lan")
-        self.assertEqual(text, f"{nat.INTERNAL_IP} {PAGE_NAME}\n")
+        self.assertEqual(text, self._block(nat.INTERNAL_IP))
         self.assertNotIn(nat.PUBLIC_IP, text)
+
+    def test_task_uses_blockinfile_with_the_dmf_marker(self):
+        # Catches a return to `copy`, which replaces the whole file.
+        task = next(t for t in yaml.safe_load(MDNS_ROLE.read_text())
+                    if t["name"].startswith("Announce the approval page name"))
+        self.assertNotIn("ansible.builtin.copy", task)
+        self.assertEqual(task["ansible.builtin.blockinfile"]["marker"],
+                         "# {mark} DMF approval page (managed by dmf-infra)")
+
+    def test_other_entries_in_the_hosts_file_survive(self):
+        # Catches a task that overwrites /etc/avahi/hosts.
+        other = "192.0.2.77 printer.local\n"
+        text = self._run(nat.INTERNAL_IP, "lan", existing=other)
+        self.assertIn(other, text)
+        self.assertIn(self._block(nat.INTERNAL_IP), text)
+
+    def test_a_second_run_changes_nothing_and_updates_in_place(self):
+        # Catches a task that appends a new block on every run.
+        once = self._run(nat.INTERNAL_IP, "lan", existing="192.0.2.77 printer.local\n")
+        twice = self._run(nat.INTERNAL_IP, "lan", existing=once)
+        self.assertEqual(once, twice)
+        self.assertEqual(twice.count(PAGE_NAME), 1)
+        stale = self._run(nat.INTERNAL_IP, "lan",
+                          existing=f"{self.MARK_BEGIN}\n198.51.100.9 {PAGE_NAME}\n{self.MARK_END}\n")
+        self.assertNotIn("198.51.100.9", stale)
 
     def test_public_mode_writes_nothing(self):
         self.assertIsNone(self._run(nat.INTERNAL_IP, "public"))
@@ -385,26 +420,121 @@ class LanMdnsTest(unittest.TestCase):
                          {"name": "avahi-daemon", "enabled": True, "state": "started"})
 
 
+HARDEN_TASKS = ROOT / "roles" / "base" / "harden" / "tasks" / "main.yml"
+LAN_IFACE = "enp0s1"
+LAN_NET = "192.0.2.0"
+LAN_PREFIX = "24"
+LAN_CIDR = f"{LAN_NET}/{LAN_PREFIX}"
+LAN_ADDRESS = "192.0.2.10"
+
+
+def _iface_facts(name=LAN_IFACE, with_ipv4=True):
+    facts = {"ansible_default_ipv4": {"address": LAN_ADDRESS, "interface": name}}
+    entry = {"device": name}
+    if with_ipv4:
+        entry["ipv4"] = {"address": LAN_ADDRESS, "network": LAN_NET,
+                         "netmask": "255.255.255.0", "prefix": LAN_PREFIX}
+    facts[name.replace("-", "_")] = entry
+    return facts
+
+
+def _render_nftables(workdir, facts, variables):
+    """Run the harden role's scoping tasks, then render the ruleset template.
+
+    The tasks come from the role as written. The run uses the role's own
+    defaults, so the interface lookup is the real one.
+    """
+    tasks = yaml.safe_load(HARDEN_TASKS.read_text())
+    wanted = ("Resolve the LAN interface and network for the mDNS rule",
+              "Refuse to open mDNS without a LAN interface and network")
+    kept = [t for t in tasks if t["name"] in wanted]
+    assert len(kept) == 2
+    out = workdir / "nftables.conf"
+    play = {
+        "name": "render",
+        "hosts": "k3s",
+        "gather_facts": False,
+        "vars": {**yaml.safe_load(HARDEN_DEFAULTS.read_text()), **variables},
+        "tasks": [
+            {"fake_setup": {"gather_subset": ["network"], "facts": facts}},
+            *kept,
+            {"name": "render",
+             "ansible.builtin.template": {
+                 "src": str(NFT), "dest": str(out), "mode": "0640"}},
+        ],
+    }
+    nat._run_plays([nat._with_tasks(play, play["tasks"])], nat.INTERNAL_IP, workdir)
+    return out.read_text()
+
+
 class NftablesMdnsRuleTest(unittest.TestCase):
-    def _render(self, network_mode, cidr=""):
-        defaults = yaml.safe_load(HARDEN_DEFAULTS.read_text())
-        env = _env()
-        variables = {k: v for k, v in defaults.items() if not isinstance(v, str) or "{{" not in v}
-        variables["harden_lan_mdns"] = env.from_string(defaults["harden_lan_mdns"]).render(
-            **({"dmf_network_mode": network_mode} if network_mode else {}))
-        variables["harden_lan_cidr"] = cidr
-        return env.from_string(NFT.read_text()).render(**variables)
+    def setUp(self):
+        self.workdir = pathlib.Path(tempfile.mkdtemp(prefix="nft-mdns-"))
+        self.addCleanup(shutil.rmtree, self.workdir, ignore_errors=True)
+
+    def _render(self, mode, facts=None, **extra):
+        variables = dict(extra)
+        if mode:
+            variables["dmf_network_mode"] = mode
+        return _render_nftables(self.workdir, facts or _iface_facts(), variables)
+
+    def _mdns_lines(self, text):
+        return [ln.strip() for ln in text.splitlines()
+                if "5353" in ln and not ln.strip().startswith("#")]
 
     def test_rule_renders_only_in_lan_mode(self):
         # Catches a rule that is always on (public nodes would answer mDNS) or
         # never on.
-        self.assertIn("udp dport 5353 accept", self._render("lan"))
-        self.assertNotIn("5353", self._render("public"))
-        self.assertNotIn("5353", self._render(None))
+        self.assertTrue(self._mdns_lines(self._render("lan")))
+        self.assertEqual(self._mdns_lines(self._render("public")), [])
+        self.assertEqual(self._mdns_lines(self._render(None)), [])
 
-    def test_rule_is_limited_to_the_lan_when_a_cidr_is_set(self):
-        text = self._render("lan", "192.0.2.0/24")
-        self.assertIn("ip saddr 192.0.2.0/24 udp dport 5353 accept", text)
+    def test_rule_is_scoped_to_the_interface_and_its_derived_network(self):
+        # Catches a rule with no interface match, or one that ignores the
+        # network the interface facts give.
+        lines = self._mdns_lines(self._render("lan"))
+        self.assertIn(
+            f'iifname "{LAN_IFACE}" ip saddr {LAN_CIDR} ip daddr 224.0.0.251 udp dport 5353 accept',
+            lines)
+        self.assertIn(
+            f'iifname "{LAN_IFACE}" ip saddr {LAN_CIDR} ip daddr {LAN_ADDRESS} udp dport 5353 accept',
+            lines)
+
+    def test_no_unscoped_5353_rule_can_render(self):
+        # Catches any accept for 5353 without the interface, the source
+        # network and a destination.
+        for kwargs in ({}, {"harden_lan_cidr": "198.51.100.0/24"},
+                       {"harden_lan_interface": "br-lan"}):
+            facts = _iface_facts("br-lan") if "harden_lan_interface" in kwargs else None
+            for line in self._mdns_lines(self._render("lan", facts, **kwargs)):
+                with self.subTest(line=line):
+                    self.assertRegex(line, r'^iifname "[^"]+" ip saddr [0-9.]+/[0-9]+ ip daddr [0-9.]+ udp dport 5353 accept$')
+
+    def test_explicit_cidr_and_interface_win_over_the_facts(self):
+        text = self._render("lan", _iface_facts("br-lan"),
+                            harden_lan_interface="br-lan", harden_lan_cidr="198.51.100.0/24")
+        lines = self._mdns_lines(text)
+        self.assertTrue(all('iifname "br-lan" ip saddr 198.51.100.0/24 ' in ln for ln in lines))
+
+    def test_interface_follows_the_k3s_lookup(self):
+        # Catches an interface chosen by a different rule than 300-k3s uses.
+        facts = {**_iface_facts("eth9"), "ansible_default_ipv4": {"interface": "eth0"}}
+        lines = self._mdns_lines(self._render("lan", facts, k3s_private_interface="eth9"))
+        self.assertTrue(lines and all('iifname "eth9"' in ln for ln in lines))
+
+    def test_missing_interface_fails_the_play(self):
+        # Catches a fallback to a rule open on every interface.
+        facts = {"ansible_default_ipv4": {}}
+        with self.assertRaisesRegex(AssertionError, "never opened to every source"):
+            self._render("lan", facts)
+
+    def test_missing_network_fails_the_play(self):
+        # Catches a fallback to a rule open to every source address.
+        with self.assertRaisesRegex(AssertionError, "never opened to every source"):
+            self._render("lan", _iface_facts(with_ipv4=False))
+
+    def test_public_mode_needs_no_interface(self):
+        self.assertEqual(self._mdns_lines(self._render("public", {"ansible_default_ipv4": {}})), [])
 
     def test_rule_comes_before_the_drop(self):
         text = self._render("lan")

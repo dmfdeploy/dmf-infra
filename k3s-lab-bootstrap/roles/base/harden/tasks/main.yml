@@ -63,6 +63,33 @@
 
 # ── nftables (OS-level firewall) ──────────────────────────────────────────────
 
+- name: Resolve the LAN interface and network for the mDNS rule
+  ansible.builtin.set_fact:
+    harden_lan_mdns_iface: "{{ harden_lan_interface | trim }}"
+    harden_lan_mdns_address: >-
+      {{ (ansible_facts[(harden_lan_interface | trim) | replace('-', '_')] | default({})).ipv4.address | default('') }}
+    harden_lan_mdns_cidr: >-
+      {{ (harden_lan_cidr | trim)
+         if (harden_lan_cidr | trim | length > 0)
+         else ((ansible_facts[(harden_lan_interface | trim) | replace('-', '_')] | default({})).ipv4.network | default(''))
+              ~ '/'
+              ~ ((ansible_facts[(harden_lan_interface | trim) | replace('-', '_')] | default({})).ipv4.prefix | default('')) }}
+  when: harden_lan_mdns | bool
+
+- name: Refuse to open mDNS without a LAN interface and network
+  ansible.builtin.assert:
+    that:
+      - harden_lan_mdns_iface | length > 0
+      - harden_lan_mdns_cidr | regex_search('^[0-9.]+/[0-9]+$') is not none
+    fail_msg: >-
+      LAN mode needs the node's LAN interface and its IPv4 network to scope the
+      mDNS firewall rule, and the play found interface
+      '{{ harden_lan_mdns_iface | default('') }}' and network
+      '{{ harden_lan_mdns_cidr | default('') }}'. Set harden_lan_interface
+      (and harden_lan_cidr if the interface has no IPv4 facts). The rule is
+      never opened to every source.
+  when: harden_lan_mdns | bool
+
 - name: Deploy nftables ruleset
   ansible.builtin.template:
     src: nftables.conf.j2

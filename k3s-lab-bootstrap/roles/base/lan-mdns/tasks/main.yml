@@ -12,11 +12,14 @@
     state: present
   when: lan_mdns_enabled | bool
 
-# avahi answers mDNS queries for each name in /etc/avahi/hosts.
+# avahi answers mDNS queries for each name in /etc/avahi/hosts. Only the lines
+# between the DMF markers belong to this role; other entries stay.
 - name: Announce the approval page name
-  ansible.builtin.copy:
-    dest: /etc/avahi/hosts
-    content: |
+  ansible.builtin.blockinfile:
+    path: /etc/avahi/hosts
+    create: true
+    marker: "# {mark} DMF approval page (managed by dmf-infra)"
+    block: |
       {{ lan_mdns_node_address }} {{ lan_mdns_page_name }}
     owner: root
     group: root
