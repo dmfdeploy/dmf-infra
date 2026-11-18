@@ -79,6 +79,8 @@ EXCLUDED = {
     "k3s-lab-bootstrap/playbooks/tasks/verify-eso-role-policies.yml": "reads the configuration of ESO's existing role to check its policy list and creates no role",
     "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": "fake that answers the reads and the writes of AppRole roles for the fixtures and is no create site of the platform",
     "k3s-lab-bootstrap/tests/test-openbao-k8s-auth.yml": "tests the verifier's read of ESO's existing role and creates no role",
+    "k3s-lab-bootstrap/tests/fixtures/fake-bao/README.md": "describes the reads of AppRole roles that the fake answers for the identity verifier and creates no role",
+    "k3s-lab-bootstrap/tests/test_openbao_fake_bao_tokens.py": "tests the fake's read of an AppRole role and creates no role",
 }
 
 
@@ -113,8 +115,10 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/tests/test_openbao_scheduler_policy.py": 13,
     "k3s-lab-bootstrap/tasks/eso-secret-rotation-legacy.yml": 1,
     "k3s-lab-bootstrap/playbooks/tasks/verify-eso-role-policies.yml": 1,
-    "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": 7,
+    "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": 8,
     "k3s-lab-bootstrap/tests/test-openbao-k8s-auth.yml": 1,
+    "k3s-lab-bootstrap/tests/fixtures/fake-bao/README.md": 1,
+    "k3s-lab-bootstrap/tests/test_openbao_fake_bao_tokens.py": 1,
 }
 
 
