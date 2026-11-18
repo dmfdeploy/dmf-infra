@@ -18,9 +18,16 @@ harden_public_tcp_ports:
 harden_private_cidr: "10.0.0.0/28"
 
 # LAN mode announces the approval page's name over mDNS (UDP 5353). The rule is
-# present only in LAN mode. Set harden_lan_cidr to limit it to the LAN's
-# addresses; empty accepts mDNS from any source address.
+# present only in LAN mode, and it accepts mDNS only on the node's LAN interface
+# and only from that interface's IPv4 network. The interface is the one k3s
+# already uses (the same lookup as 300-k3s). The network comes from the
+# interface's facts. Set harden_lan_interface or harden_lan_cidr to override
+# either one. In LAN mode the play fails if it can't determine both.
 harden_lan_mdns: "{{ dmf_network_mode | default('') == 'lan' }}"
+harden_lan_interface: >-
+  {{ k3s_private_interface
+     | default(k3s_flannel_iface
+     | default(ansible_default_ipv4.interface | default(''))) }}
 harden_lan_cidr: ""
 
 # Unattended upgrades — reboot window (UTC)

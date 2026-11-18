@@ -37,10 +37,12 @@ table inet filter {
 
 {% if harden_lan_mdns | bool %}
         # LAN mode: answer mDNS queries for the approval page's .local name.
-{% if harden_lan_cidr | length > 0 %}
-        ip saddr {{ harden_lan_cidr }} udp dport 5353 accept
-{% else %}
-        udp dport 5353 accept
+        # Only on the LAN interface, only from its IPv4 network, and only to the
+        # mDNS group or to this node's own address (unicast replies). The
+        # ruleset has no IPv6 path for UDP, so ff02::fb stays closed.
+        iifname "{{ harden_lan_mdns_iface }}" ip saddr {{ harden_lan_mdns_cidr }} ip daddr 224.0.0.251 udp dport 5353 accept
+{% if harden_lan_mdns_address | length > 0 %}
+        iifname "{{ harden_lan_mdns_iface }}" ip saddr {{ harden_lan_mdns_cidr }} ip daddr {{ harden_lan_mdns_address }} udp dport 5353 accept
 {% endif %}
 
 {% endif %}
