@@ -1,6 +1,6 @@
 ---
-# Write the Kubernetes-auth roles of the setup issuer and the rotation scheduler on an
-# installed environment, with the temporary root token of
+# Write the Kubernetes-auth roles of the setup issuer, the rotation scheduler and the
+# approval executor on an installed environment, with the temporary root token of
 # kubernetes-auth-existing.yml. A fresh install writes them in main.yml with the
 # initial root token.
 #
