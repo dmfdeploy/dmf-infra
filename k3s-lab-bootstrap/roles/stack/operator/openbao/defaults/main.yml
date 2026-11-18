@@ -316,8 +316,27 @@ openbao_rotation_scheduler_audience: openbao
 openbao_rotation_scheduler_token_ttl: 20m
 openbao_rotation_scheduler_token_max_ttl: 30m
 
-# The Kubernetes-auth roles of the two standing identities above, one mapping each.
-# A fresh install writes them in setup-issuer.yml and setup-rotation-scheduler.yml.
+# Approval executor. For now it is an
+# identity only: a ServiceAccount, a Kubernetes-auth role and a NetworkPolicy
+# rule, with no workload. Its only policy is generate-root (ADR-0051, Amendment
+# 2026-11-18), which grants the two authenticated generate-root endpoints and
+# creates no token. It holds no stored credential: it logs in with its projected
+# ServiceAccount token. The ServiceAccount sits in the OpenBao namespace, like the
+# setup issuer and the rotation scheduler. The login token serves one
+# generate-root attempt, which the executor abandons after 2 minutes, so the
+# lifetime is the setup issuer's: 5 minutes, at most 10. The pods of the future
+# workload carry the label below, which the OpenBao ingress rule in
+# roles/base/network-policies selects.
+openbao_executor_service_account: approval-executor
+openbao_executor_k8s_role: approval-executor
+openbao_executor_audience: openbao
+openbao_executor_token_ttl: 5m
+openbao_executor_token_max_ttl: 10m
+openbao_executor_pod_label: approval-executor
+
+# The Kubernetes-auth roles of the three standing identities, one
+# mapping each. A fresh install writes them in setup-issuer.yml,
+# setup-rotation-scheduler.yml and setup-executor.yml.
 # An installed environment gets the missing ones from
 # playbooks/vertical-security/106-openbao-kubernetes-auth.yml. Both paths write a
 # role from these mappings through tasks/kubernetes-auth-role.yml, so a fresh
@@ -338,9 +357,18 @@ openbao_rotation_scheduler_k8s_auth_role:
   policy: "{{ openbao_rotation_scheduler_policy_name }}"
   token_ttl: "{{ openbao_rotation_scheduler_token_ttl }}"
   token_max_ttl: "{{ openbao_rotation_scheduler_token_max_ttl }}"
+openbao_executor_k8s_auth_role:
+  name: "{{ openbao_executor_k8s_role }}"
+  service_account: "{{ openbao_executor_service_account }}"
+  namespace: "{{ openbao_namespace }}"
+  audience: "{{ openbao_executor_audience }}"
+  policy: "{{ openbao_generate_root_policy_name }}"
+  token_ttl: "{{ openbao_executor_token_ttl }}"
+  token_max_ttl: "{{ openbao_executor_token_max_ttl }}"
 openbao_standing_k8s_auth_roles:
   - "{{ openbao_setup_issuer_k8s_auth_role }}"
   - "{{ openbao_rotation_scheduler_k8s_auth_role }}"
+  - "{{ openbao_executor_k8s_auth_role }}"
 
 # Name of the ConfigMap that carries the catalogue of setup requests and its pinned
 # policy files. It lives in openbao_setup_requests_namespace.

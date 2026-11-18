@@ -1,7 +1,8 @@
 ---
 # Move an installed environment to the Kubernetes auth reviewer identity and, when
 # ESO uses Kubernetes auth, to ESO's role, and give it the Kubernetes-auth roles of
-# the setup issuer and the rotation scheduler when they are missing
+# the setup issuer, the rotation scheduler and the approval executor when they are
+# missing
 # (playbooks/vertical-security/106-openbao-kubernetes-auth.yml).
 #
 # Order of runs:
@@ -19,10 +20,11 @@
 #      before the first write. The play makes every write with the short token and
 #      revokes that token at the end. The play writes
 #      the Kubernetes auth config and, with ESO on Kubernetes auth, ESO's role. It
-#      then writes the role of the setup issuer and the role of the rotation
-#      scheduler, each only when it is missing, and nothing else. A role needs its
+#      then writes the role of the setup issuer, the role of the rotation
+#      scheduler and the role of the approval executor, each only when it is
+#      missing, and nothing else. A role needs its
 #      ServiceAccount and its policy, which 100-openbao.yml creates: when one is
-#      missing, the play writes neither role and fails with the names. Run
+#      missing, the play writes no role and fails with the names. Run
 #      100-openbao.yml first, then step 2 again. The play records metadata when it
 #      changed the config or ESO's role.
 #   3. Run step 2 again at any time. When the config and every role already match,

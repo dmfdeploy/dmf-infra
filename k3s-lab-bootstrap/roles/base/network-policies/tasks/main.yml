@@ -33,10 +33,16 @@
         policyTypes:
           - Ingress
         ingress:
+          # Only the OpenBao server pods use the Raft port and reach the peers' API
+          # port. The namespace holds no other workload, and a workload added there
+          # needs its own rule, as the approval executor has below.
           - from:
               - namespaceSelector:
                   matchLabels:
                     kubernetes.io/metadata.name: "{{ network_policies_openbao_allow_cluster_peer_namespace }}"
+                podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: "{{ network_policies_openbao_service_name }}"
             ports:
               - protocol: TCP
                 port: 8200
@@ -49,3 +55,56 @@
             ports:
               - protocol: TCP
                 port: 8200
+
+# The approval executor logs in and starts generate-root requests through the API
+# port only. The rule selects pods by label in the OpenBao namespace, so it admits
+# no other namespace and no peer port. The namespace has no egress policy, so the
+# executor needs no egress rule.
+- name: Create allow ingress policy for the approval executor
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openbao-allow-from-approval-executor
+        namespace: "{{ network_policies_openbao_namespace }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ network_policies_openbao_service_name }}"
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: "{{ network_policies_openbao_allow_executor_pod_label }}"
+            ports:
+              - protocol: TCP
+                port: 8200
+
+# The executor's own pods take connections from pods inside the cluster only: the
+# peer is a namespaceSelector that matches every namespace, and there is no
+# ipBlock. The rule admits every port for now, because the executor's port and its
+# one caller are not defined yet.
+- name: Create allow ingress policy on the approval executor pods
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: approval-executor-allow-cluster-internal
+        namespace: "{{ network_policies_openbao_namespace }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ network_policies_openbao_allow_executor_pod_label }}"
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - namespaceSelector: {}

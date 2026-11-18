@@ -16,8 +16,8 @@
 #      the first write, writes with the short token and revokes that token before it
 #      exits, also when a step fails (fixtures/token_lifecycle.py checks the order and
 #      the token it records); with no token it writes nothing. It writes the
-#      Kubernetes-auth roles of the setup issuer and the rotation scheduler once when they
-#      are missing, writes nothing for roles that exist and leaves them as they are, and, when a
+#      Kubernetes-auth roles of the setup issuer, the rotation scheduler and the approval
+#      executor once when they are missing, writes nothing for roles that exist and leaves them as they are, and, when a
 #      ServiceAccount or a policy is missing, writes no role, fails with the names and revokes
 #      the token.
 #   5. The verifier's refresh probe passes when ESO publishes the synced resource version
@@ -160,7 +160,7 @@
           records: 1
           role: true
           eso_role_written: "true"
-          standing_role_writes: 2
+          standing_role_writes: 3
         - name: rerun with a new token writes and records nothing more
           state: 0
           token: fake-root-token-2
@@ -169,7 +169,7 @@
           revoked: true
           config_writes: 1
           records: 1
-          standing_role_writes: 2
+          standing_role_writes: 3
         - name: no token
           expect: pass
           rbac: true
@@ -278,7 +278,7 @@
           wrote: true
           revoked: true
           short_revoked: false
-          standing_role_writes: 2
+          standing_role_writes: 3
           max_revokes: 5
           message: NOT revoked
         - name: reviewer on, ESO on AppRole, token
@@ -289,10 +289,10 @@
           revoked: true
           config_writes: 1
           role: false
-          standing_role_writes: 2
-        - name: token, both standing roles exist already
+          standing_role_writes: 3
+        - name: token, every standing role exists already
           token: "{{ _root }}"
-          roles_present: [setup-issuer, approle-rotation-scheduler]
+          roles_present: [setup-issuer, approle-rotation-scheduler, approval-executor]
           present_role_ttl: 99
           expect: pass
           wrote: true
@@ -305,7 +305,7 @@
           expect: pass
           wrote: true
           revoked: true
-          standing_role_writes: 1
+          standing_role_writes: 2
         - name: token, a standing ServiceAccount is missing
           token: "{{ _root }}"
           missing_sa: [approle-rotation-scheduler]
@@ -322,6 +322,15 @@
           revoked: true
           standing_role_writes: 0
           message: "Missing policies: setup-issuer"
+        - name: token, the executor's ServiceAccount and policy are missing
+          token: "{{ _root }}"
+          missing_sa: [approval-executor]
+          missing_policy: [generate-root]
+          expect: fail
+          wrote: true
+          revoked: true
+          standing_role_writes: 0
+          message: "Missing ServiceAccounts in namespace openbao: approval-executor. Missing policies: generate-root."
       loop_control:
         loop_var: case
         index_var: case_index
@@ -330,7 +339,7 @@
     - name: Assert the outcome of every installed-environment case
       ansible.builtin.assert:
         that:
-          - _outcomes | length == 22
+          - _outcomes | length == 23
           - _outcomes | rejectattr('ok') | list | length == 0
         fail_msg: "{{ _outcomes | rejectattr('ok') | map(attribute='name') | join('; ') }}"
 

@@ -19,6 +19,7 @@ BORN_ROLE = ROOT / "roles/common/dmf-born-inventory"
 ARGV_CHECKED = [
     OPENBAO_ROLE / "tasks/setup-issuer.yml",
     OPENBAO_ROLE / "tasks/setup-rotation-scheduler.yml",
+    OPENBAO_ROLE / "tasks/setup-executor.yml",
     BORN_ROLE / "tasks/openbao-setup-only.yml",
     BORN_ROLE / "tasks/openbao-breakglass.yml",
     ROOT / "playbooks/verify-openbao-identity-model.yml",

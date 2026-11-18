@@ -1,0 +1,31 @@
+---
+# Approval executor identity: the ServiceAccount and its Kubernetes-auth role.
+# Included from main.yml after the rotation scheduler. The generate-root policy
+# that the role names is written earlier in main.yml. There is no workload here:
+# no Deployment, Job or Pod uses the ServiceAccount yet. The NetworkPolicy rule
+# that admits its pods lives in roles/base/network-policies.
+
+- name: Create the approval executor ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ openbao_executor_service_account }}"
+        namespace: "{{ openbao_namespace }}"
+
+# Writing a Kubernetes-auth role needs a privileged token, as for the setup
+# issuer: a fresh install writes the role here with its short token, and an
+# installed environment gets it from
+# playbooks/vertical-security/106-openbao-kubernetes-auth.yml. A rerun of this
+# role leaves the role as it is.
+- name: Write the approval executor Kubernetes-auth role
+  ansible.builtin.include_tasks: kubernetes-auth-role.yml
+  vars:
+    openbao_k8s_auth_role: "{{ openbao_executor_k8s_auth_role }}"
+    openbao_k8s_auth_token: "{{ _openbao_write_token }}"
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)

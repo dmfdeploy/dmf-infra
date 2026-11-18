@@ -1,6 +1,6 @@
 ---
 # Write one Kubernetes-auth role of the OpenBao mount. Included by
-# setup-issuer.yml and setup-rotation-scheduler.yml on a fresh install, and by
+# setup-issuer.yml, setup-rotation-scheduler.yml and setup-executor.yml on a fresh install, and by
 # kubernetes-auth-standing-roles.yml on an installed environment, so both paths
 # write the same fields.
 #

@@ -300,8 +300,8 @@ if __name__ == "__main__":
 
 
 class StandingRolesTest(unittest.TestCase):
-    """The installed-environment path writes the setup issuer and rotation scheduler roles
-    from the same mappings and the same task as a fresh install."""
+    """The installed-environment path writes the setup issuer, rotation scheduler and approval
+    executor roles from the same mappings and the same task as a fresh install."""
 
     role = text(OPENBAO / "tasks/kubernetes-auth-role.yml")
     standing = text(OPENBAO / "tasks/kubernetes-auth-standing-roles.yml")
@@ -309,11 +309,11 @@ class StandingRolesTest(unittest.TestCase):
     existing = text(OPENBAO / "tasks/kubernetes-auth-existing.yml")
 
     def test_both_paths_write_through_the_one_task_file(self):
-        for path in ["setup-issuer.yml", "setup-rotation-scheduler.yml", "kubernetes-auth-standing-roles.yml"]:
+        for path in ["setup-issuer.yml", "setup-rotation-scheduler.yml", "setup-executor.yml", "kubernetes-auth-standing-roles.yml"]:
             with self.subTest(path=path):
                 self.assertIn("kubernetes-auth-role.yml", text(OPENBAO / "tasks" / path))
         self.assertEqual(self.role.count("bao write auth/kubernetes/role/"), 1)
-        for path in ["setup-issuer.yml", "setup-rotation-scheduler.yml", "kubernetes-auth-standing-roles.yml"]:
+        for path in ["setup-issuer.yml", "setup-rotation-scheduler.yml", "setup-executor.yml", "kubernetes-auth-standing-roles.yml"]:
             with self.subTest(path=path):
                 self.assertNotIn("bao write", text(OPENBAO / "tasks" / path))
 
@@ -321,6 +321,7 @@ class StandingRolesTest(unittest.TestCase):
         defaults = text(OPENBAO / "defaults/main.yml")
         self.assertIn('  - "{{ openbao_setup_issuer_k8s_auth_role }}"', defaults)
         self.assertIn('  - "{{ openbao_rotation_scheduler_k8s_auth_role }}"', defaults)
+        self.assertIn('  - "{{ openbao_executor_k8s_auth_role }}"', defaults)
         self.assertIn("openbao_standing_k8s_auth_roles", self.standing)
         self.assertIn('openbao_k8s_auth_role: "{{ openbao_setup_issuer_k8s_auth_role }}"', text(OPENBAO / "tasks/setup-issuer.yml"))
 

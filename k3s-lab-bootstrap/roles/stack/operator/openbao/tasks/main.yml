@@ -1293,11 +1293,38 @@
     - born_inventory_secret_id_raw.stdout is defined
   no_log: true
 
+# The approval executor's Kubernetes-auth role (setup-executor.yml) and ops-admin
+# carry this policy so that `bao operator generate-root` works on OpenBao 2.6 and
+# later (files/policies/generate-root.hcl). The write comes before the writer of
+# every role that names the policy. It converges on every run and is valid on older
+# releases, so the policy is in place before the image changes. A fresh install
+# attaches it to ops-admin in the user upsert below. An installed
+# environment attaches it with playbooks/vertical-orchestration/120-ops-admin-rotation.yml
+# and -e ops_admin_rotation_attach_only=true, which sets the policies with a temporary
+# root token and writes no password, because no standing identity may write
+# `auth/userpass/users/*`.
+- name: Write the generate-root policy
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_generate_root_policy_name }} -'
+    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/generate-root.hcl') }}\n"
+  no_log: true
+  when: openbao_is_initialized | bool
+
 - name: Set up the setup-only issuer identity and the receipt namespace
   ansible.builtin.include_tasks: setup-issuer.yml
 
 - name: Set up the rotation scheduler identity
   ansible.builtin.include_tasks: setup-rotation-scheduler.yml
+
+- name: Set up the approval executor identity
+  ansible.builtin.include_tasks: setup-executor.yml
 
 - name: Write the catalogue policies and the catalogue ConfigMap
   ansible.builtin.include_tasks: catalogue.yml
@@ -1358,28 +1385,6 @@
       export BAO_TOKEN;
       bao policy write {{ openbao_operator_reader_policy_name }} /tmp/app-admin-reader-policy.hcl'
     stdin: "{{ _openbao_policy_apply_token }}\n"
-  no_log: true
-  when: openbao_is_initialized | bool
-
-# ops-admin carries this policy so that `bao operator generate-root` works on
-# OpenBao 2.6 and later (files/policies/generate-root.hcl). The write converges on
-# every run and is valid on older releases, so the policy is in place before the
-# image changes. A fresh install attaches it in the user upsert below. An installed
-# environment attaches it with playbooks/vertical-orchestration/120-ops-admin-rotation.yml
-# and -e ops_admin_rotation_attach_only=true, which sets the policies with a temporary
-# root token and writes no password, because no standing identity may write
-# `auth/userpass/users/*`.
-- name: Write the generate-root policy
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao policy write {{ openbao_generate_root_policy_name }} -'
-    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/generate-root.hcl') }}\n"
   no_log: true
   when: openbao_is_initialized | bool
 

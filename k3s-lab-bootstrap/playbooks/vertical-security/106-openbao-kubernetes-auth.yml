@@ -7,8 +7,8 @@
 # operator's approval for the environment.
 #
 # It writes only the Kubernetes auth config, ESO's role, and the Kubernetes-auth roles
-# of the setup issuer and the rotation scheduler when they are missing, with a
-# temporary root token that you give it in the environment:
+# of the setup issuer, the rotation scheduler and the approval executor when they are
+# missing, with a temporary root token that you give it in the environment:
 #
 #   OPENBAO_TEMP_ROOT_TOKEN=<token from the generate-root procedure>
 #
@@ -26,8 +26,9 @@
 # role states the order of runs. A rerun writes nothing when the config and every
 # role match, and it leaves an existing role as it is. A role needs its
 # ServiceAccount and its policy: when one is missing, the play writes no role of the
-# setup issuer or the rotation scheduler and fails with the names. Run
-# playbooks/vertical-security/100-openbao.yml first, then this play again. It needs
+# setup issuer, the rotation scheduler or the approval executor and fails with the
+# names. Run playbooks/vertical-security/100-openbao.yml first, then this play
+# again. It needs
 # openbao_kubernetes_reviewer_enabled set to true in the inventory.
 #
 # The generate-root token has no lifetime, so the play trades it at once. After it
