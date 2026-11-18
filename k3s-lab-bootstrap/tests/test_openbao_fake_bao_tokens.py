@@ -344,6 +344,40 @@ class FakeBaoTokenTests(unittest.TestCase):
         for args in (["read", "auth/userpass/users/alice"], ["read", "auth/kubernetes/role/executor"]):
             self.assertNotEqual(self.call(args, token=self.scoped()["client_token"]).returncode, 0)
 
+    EARLY_READS = [
+        ("tcap", ["token", "capabilities", "-format=json", "secret/x"]),
+        ("tauto", ["read", "-format=json", "sys/storage/raft/autopilot/state"]),
+        ("traft", ["read", "-format=json", "sys/storage/raft/configuration"]),
+        ("tkv", ["kv", "metadata", "get", "-mount=secret", "-format=json", "x"]),
+        ("fake-approle-token", ["read", "-format=json", "secret/data/apps/netbox/runtime"]),
+        ("fake-policy-t", ["read", "-format=json", "sys/policies/acl/eso-reader"]),
+        ("fake-scheduler-t", ["read", "-format=json", "auth/approle/role/external-secrets"]),
+    ]
+
+    def seed(self, name, **fields):
+        (self.state / "tokens").mkdir(exist_ok=True)
+        record = {"policies": ["default"], "orphan": True, "created": NOW, "ttl": 0, "uses_left": None, **fields}
+        (self.state / "tokens" / f"{name}.json").write_text(json.dumps(record))
+        (self.state / f"revoked-{name}").unlink(missing_ok=True)
+
+    def test_every_token_authenticated_read_refuses_a_used_up_or_expired_scoped_token(self) -> None:
+        # Catches a handler that accepts any non-empty BAO_TOKEN: a scoped token whose last use
+        # is spent, or whose lifetime is over, would still read through it.
+        policy_file = self.state / "eso-policy.hcl"
+        policy_file.write_text("path \"secret/*\" { capabilities = [\"read\"] }\n")
+        env = {"FAKE_ESO_POLICY_FILE": str(policy_file)}
+        for name, args in self.EARLY_READS:
+            with self.subTest(args=args, case="second request"):
+                self.seed(name, uses_left=1)
+                self.assertEqual(self.call(args, token=name, **env).returncode, 0)
+                self.assertNotEqual(self.call(args, token=name, **env).returncode, 0)
+            with self.subTest(args=args, case="expired"):
+                self.seed(name, created=NOW - 600, ttl=60)
+                self.assertNotEqual(self.call(args, token=name, **env).returncode, 0)
+            with self.subTest(args=args, case="live"):
+                self.seed(name)
+                self.assertEqual(self.call(args, token=name, **env).returncode, 0)
+
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.
         listed = self.call(["list", "-format=json", "auth/userpass/users"], token=ROOT_TOKEN)
