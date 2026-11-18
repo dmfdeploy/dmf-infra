@@ -16,13 +16,16 @@ create` makes keep their old form: `fake-root-short-N`, a root token that is
 recorded in `token-NAME.json`.
 
 Flags of `token create`: `-policy`, `-orphan`, `-ttl`, `-explicit-max-ttl`,
-`-use-limit`, `-renewable` and `-format`. Only the caller with a root token may
-create a token.
+`-use-limit`, `-renewable`, `-no-default-policy` and `-format`. Only the caller
+with a root token may create a token, and a token with a use limit can't create
+one, as in OpenBao. Policies are stored in lower case, sorted, and without
+repeats. A token with the `root` policy holds only that policy, and other tokens
+also get `default` unless `-no-default-policy` is set.
 
 | Behaviour | What the fake does |
 |---|---|
-| Use limit | Each request that carries the token spends one use. A refused request spends one too. The token is revoked after the request that spends the last use. |
-| Lifetime | The lifetime is `-ttl`, cut to `-explicit-max-ttl` when that is shorter. With neither, it is 32 days. A token past its lifetime is refused. |
+| Use limit | Each request that carries the token spends one use. A refused request spends one too. The token is revoked after the request that spends the last use, and that request can't look the token up. |
+| Lifetime | The lifetime is `-ttl`, cut to `-explicit-max-ttl` when that is shorter, and to 32 days. Without either, a `root` token never expires and can't be renewed, and other tokens live 32 days. A token past its lifetime, or whose parent's lifetime is over (unless it's an orphan), is refused. |
 | Clock | `FAKE_NOW` (epoch seconds, default `1800000000`) is the time of every call. A test moves it to age a token. |
 | Seeding | A test can write `tokens/NAME.json` with `policies`, `orphan`, `created`, `ttl`, `uses_left` (`null` for no limit) and an optional `accessor`. A token with the `root` policy acts as a root token. |
 
@@ -37,8 +40,9 @@ These need a root token or a token with the policy in `FAKE_REVOKER_POLICY`
 - `write auth/token/lookup-accessor accessor=A` returns `policies`,
   `creation_time`, `creation_ttl`, `ttl` (what is left), `num_uses` (what is
   left), `orphan` and `renewable`. A revoked or expired token has no accessor.
-- `write auth/token/revoke-accessor accessor=A` revokes the token and the tokens
-  it made without `-orphan`.
+- `write auth/token/revoke-accessor accessor=A` revokes the token and every
+  token below it that was made without `-orphan`, at any depth. Orphans survive.
+  An unknown or already revoked accessor gives a warning and exit status 0.
 
 ## Kubernetes login
 
