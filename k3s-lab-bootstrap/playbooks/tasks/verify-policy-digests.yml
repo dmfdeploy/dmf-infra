@@ -1,0 +1,71 @@
+# The verifier's check that the live policies equal the files that the role writes. For
+# each entry of verify_policy_files (the policy name and the file's path under the
+# role) it reads
+# sys/policies/acl/NAME with the identity reader's token and compares SHA-256 digests.
+#
+# The role writes a file's text, as `lookup('file')` returns it (the lookup drops the
+# trailing newline), followed by one newline, and OpenBao keeps the policy text as it
+# was written. Both sides are compared without trailing whitespace, so that one added
+# or dropped final newline is not drift, and any other difference is. A policy that is
+# missing, or whose read is refused, fails the run.
+
+- name: Read the policy files of the role
+  ansible.builtin.set_fact:
+    _verify_policy_sources: >-
+      {{
+        _verify_policy_sources | default([])
+        + [{'name': item.name, 'file': item.file,
+            'text': lookup('ansible.builtin.file', verify_role_path ~ '/' ~ item.file)}]
+      }}
+  loop: "{{ verify_policy_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  no_log: true
+
+- name: Read the live policies that the role writes
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json sys/policies/acl/{{ item.name | quote }}'
+    stdin: "{{ _verify_token_identity_reader }}\n"
+  register: _verify_policy_reads
+  changed_when: false
+  failed_when:
+    - _verify_policy_reads.rc != 0
+    - not (_verify_policy_reads.rc == 2 and 'No value found' in _verify_policy_reads.stderr)
+  no_log: true
+  loop: "{{ _verify_policy_sources }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Work out which policies differ from their files
+  ansible.builtin.set_fact:
+    _verify_policy_drift: >-
+      {%- set ns = namespace(found=[]) -%}
+      {%- for r in _verify_policy_reads.results -%}
+      {%- if r.rc != 0 -%}
+      {%- set ns.found = ns.found + [r.item.name ~ ' is missing from OpenBao'] -%}
+      {%- else -%}
+      {%- set live = (r.stdout | from_json).data.policy | regex_replace('\s+\Z', '') -%}
+      {%- set want = r.item.text | regex_replace('\s+\Z', '') -%}
+      {%- if live | hash('sha256') != want | hash('sha256') -%}
+      {%- set ns.found = ns.found + [r.item.name ~ ' differs from ' ~ r.item.file ~ ' (live ' ~ (live | hash('sha256'))[:12] ~ ', file ' ~ (want | hash('sha256'))[:12] ~ ')'] -%}
+      {%- endif -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.found }}
+  no_log: true
+
+- name: Assert that every live policy equals its file
+  ansible.builtin.assert:
+    that: _verify_policy_drift | length == 0
+    fail_msg: >-
+      A live policy is not the policy that the role writes: {{ _verify_policy_drift | join('; ') }}.
+      The digests are SHA-256 of the text without trailing whitespace. Someone changed the
+      policy in OpenBao, or the file changed and the role has not run. Run the role
+      again to write the files, then investigate who changed the policy.

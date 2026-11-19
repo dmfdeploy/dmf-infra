@@ -1,0 +1,220 @@
+# The verifier's check of who holds power in OpenBao's identity configuration. It reads
+# with the identity-verifier policy (files/policies/identity-verifier.hcl) and checks:
+#
+#   1. Every enabled auth method is one the role enables. The allowlist is
+#      verify_identity_allowed_auth_types. A method outside it fails the run, and the
+#      message names the mount.
+#   2. Under the allowed methods, every userpass user, AppRole role, token role and
+#      Kubernetes role, and every identity entity and group, is read. A principal
+#      holds a policy when its own list names it. A group also passes its policies to its
+#      member groups, to any depth, and to its member entities.
+#   3. No principal other than the approval executor's Kubernetes role holds
+#      generate-root. No principal other than the revoker's Kubernetes role holds the
+#      revoker's policy. No principal holds a catalogue policy: those policies are
+#      attached only to the scoped tokens that the executor mints.
+#
+# A token role holds the policies that it may hand out (`allowed_policies`, and
+# `allowed_policies_glob`, in which an entry that ends in `*` matches by prefix). A
+# policy a principal holds through a glob counts as held.
+#
+# The callers set the variables listed in the playbook's vars. The token is in
+# _verify_token_identity_reader, and the pod is in _verify_openbao_pod.
+
+- name: Read the enabled auth methods
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json sys/auth'
+    stdin: "{{ _verify_token_identity_reader }}\n"
+  register: _verify_auth_read
+  changed_when: false
+  no_log: true
+
+- name: Take the enabled auth methods from the answer
+  ansible.builtin.set_fact:
+    _verify_auth_mounts: "{{ (_verify_auth_answer.data | default(_verify_auth_answer)) }}"
+  vars:
+    _verify_auth_answer: "{{ _verify_auth_read.stdout | from_json }}"
+  no_log: true
+
+# An empty answer has no unexpected mount, so the allowlist check would pass without the
+# inventory having been read. The token mount always exists.
+- name: Assert that the answer lists the enabled auth methods
+  ansible.builtin.assert:
+    that:
+      - _verify_auth_mounts is mapping
+      - "'token/' in _verify_auth_mounts"
+      - _verify_auth_mounts.values() | select('mapping') | list | length == _verify_auth_mounts | length
+      - _verify_auth_mounts.values() | selectattr('type', 'defined') | map(attribute='type') | select('string') | list | length == _verify_auth_mounts | length
+    fail_msg: >-
+      sys/auth did not list the enabled auth methods: the answer is empty, lacks the
+      token/ mount, or holds an entry without a type. The verifier cannot tell which
+      methods are enabled, so it stops here.
+
+- name: Work out the auth methods that are outside the allowlist
+  ansible.builtin.set_fact:
+    _verify_auth_unexpected: >-
+      {%- set ns = namespace(found=[]) -%}
+      {%- for mount, info in _verify_auth_mounts.items() -%}
+      {%- if info.type not in verify_identity_allowed_auth_types -%}
+      {%- set ns.found = ns.found + [mount ~ ' (type ' ~ info.type ~ ')'] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ ns.found }}
+  no_log: true
+
+- name: Assert that no auth method is enabled outside the allowlist
+  ansible.builtin.assert:
+    that: _verify_auth_unexpected | length == 0
+    fail_msg: >-
+      An auth method outside the allowlist is enabled: {{ _verify_auth_unexpected | join(', ') }}.
+      The role enables {{ verify_identity_allowed_auth_types | join(', ') }} and nothing
+      else. A method that the role does not enable is a way to log in that nothing
+      here accounts for. Disable the mount, or add its type to
+      verify_identity_allowed_auth_types in the same change that enables it in the role.
+
+- name: Work out which sources of principals to read
+  ansible.builtin.set_fact:
+    _verify_sources: >-
+      {%- set ns = namespace(found=[]) -%}
+      {%- for mount, info in _verify_auth_mounts.items() -%}
+      {%- set m = mount | regex_replace('/$', '') -%}
+      {%- if info.type == 'userpass' -%}
+      {%- set ns.found = ns.found + [{'kind': 'userpass user', 'mount': mount, 'list_path': 'auth/' ~ m ~ '/users'}] -%}
+      {%- elif info.type == 'approle' -%}
+      {%- set ns.found = ns.found + [{'kind': 'AppRole role', 'mount': mount, 'list_path': 'auth/' ~ m ~ '/role'}] -%}
+      {%- elif info.type == 'kubernetes' -%}
+      {%- set ns.found = ns.found + [{'kind': 'Kubernetes role', 'mount': mount, 'list_path': 'auth/' ~ m ~ '/role'}] -%}
+      {%- elif info.type == 'token' -%}
+      {%- set ns.found = ns.found + [{'kind': 'token role', 'mount': mount, 'list_path': 'auth/token/roles'}] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- set ns.found = ns.found + [
+            {'kind': 'identity entity', 'mount': '', 'list_path': 'identity/entity/id'},
+            {'kind': 'identity group', 'mount': '', 'list_path': 'identity/group/id'}] -%}
+      {{ ns.found }}
+
+- name: Reset the principals
+  ansible.builtin.set_fact:
+    _verify_principals: []
+
+- name: Read the principals of each source
+  ansible.builtin.include_tasks: verify-identity-read-source.yml
+  loop: "{{ _verify_sources }}"
+  loop_control:
+    loop_var: _verify_src
+    label: "{{ _verify_src.list_path }}"
+
+- name: Work out the policies that each principal holds
+  ansible.builtin.set_fact:
+    _verify_effective: >-
+      {%- set by_key = {} -%}
+      {%- for p in _verify_principals -%}
+      {%- set _ = by_key.update({p.kind ~ '|' ~ p.mount ~ '|' ~ p.id: p.policies}) -%}
+      {%- endfor -%}
+      {%- set groups = _verify_principals | selectattr('kind', 'equalto', 'identity group') | list -%}
+      {%- for round in range(groups | length) -%}
+      {%- for g in groups -%}
+      {%- set gkey = g.kind ~ '|' ~ g.mount ~ '|' ~ g.id -%}
+      {%- for child in g.members -%}
+      {%- set ckey = 'identity group||' ~ child -%}
+      {%- if ckey in by_key -%}
+      {%- set _ = by_key.update({ckey: (by_key[ckey] + by_key[gkey]) | unique | list}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for entity in g.member_entities -%}
+      {%- set ekey = 'identity entity||' ~ entity -%}
+      {%- if ekey in by_key -%}
+      {%- set _ = by_key.update({ekey: (by_key[ekey] + by_key[gkey]) | unique | list}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ by_key }}
+  no_log: true
+
+# One rule per policy that is restricted. `allowed_k8s_role` names the one Kubernetes
+# role that may hold it ('' for none). A rule with `prefix` matches every policy whose
+# name starts with it.
+- name: Work out the rules of who may hold what
+  ansible.builtin.set_fact:
+    _verify_holder_rules: >-
+      {%- set rules = [
+            {'policy': verify_generate_root_policy, 'allowed_k8s_role': verify_executor_k8s_role,
+             'hint': ' (ADR-0051 removes this grant from ' ~ verify_ops_admin_user ~ '; the fresh install still attaches it until that change lands, so an environment that has it fails here until the grant is removed)'},
+            {'policy': verify_revoker_policy, 'allowed_k8s_role': verify_revoker_k8s_role},
+            {'policy': verify_catalogue_prefix, 'prefix': true, 'allowed_k8s_role': ''}
+          ] -%}
+      {%- for name in verify_catalogue_policy_names -%}
+      {%- set _ = rules.append({'policy': name, 'allowed_k8s_role': ''}) -%}
+      {%- endfor -%}
+      {{ rules }}
+
+- name: Work out which principals hold a policy that they must not hold
+  ansible.builtin.set_fact:
+    _verify_holder_offences: >-
+      {%- set ns = namespace(found=[], hit=false, own=false) -%}
+      {%- for p in _verify_principals -%}
+      {%- set held = _verify_effective[p.kind ~ '|' ~ p.mount ~ '|' ~ p.id] -%}
+      {%- for rule in _verify_holder_rules -%}
+      {%- set ns.hit = false -%}
+      {%- set ns.own = false -%}
+      {%- for e in held -%}
+      {%- if rule.prefix | default(false) -%}
+      {%- if e.startswith(rule.policy) or (e.endswith('*') and (rule.policy.startswith(e[:-1]) or e[:-1].startswith(rule.policy))) -%}
+      {%- set ns.hit = true -%}
+      {%- set ns.own = ns.own or e in p.policies -%}
+      {%- endif -%}
+      {%- elif e == rule.policy or (e.endswith('*') and rule.policy.startswith(e[:-1])) -%}
+      {%- set ns.hit = true -%}
+      {%- set ns.own = ns.own or e in p.policies -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if ns.hit and not (p.kind == 'Kubernetes role' and rule.allowed_k8s_role | length > 0 and p.name == rule.allowed_k8s_role) -%}
+      {%- set label = p.kind ~ ' ' ~ p.mount ~ p.name ~ (' (' ~ p.id ~ ')' if p.kind.startswith('identity') else '') -%}
+      {%- set hint = rule.hint if (p.kind == 'userpass user' and p.name == verify_ops_admin_user and rule.hint is defined) else '' -%}
+      {%- set inherited = '' if ns.own else ' through a group' -%}
+      {%- set ns.found = ns.found + [label ~ ' holds ' ~ ('the ' ~ rule.policy ~ '* policies' if rule.prefix | default(false) else rule.policy) ~ inherited ~ hint] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ ns.found }}
+    _verify_executor_role_present: >-
+      {{ _verify_principals | selectattr('kind', 'equalto', 'Kubernetes role')
+         | selectattr('name', 'equalto', verify_executor_k8s_role) | list | length > 0 }}
+    _verify_revoker_role_present: >-
+      {{ _verify_principals | selectattr('kind', 'equalto', 'Kubernetes role')
+         | selectattr('name', 'equalto', verify_revoker_k8s_role) | list | length > 0 }}
+  no_log: true
+
+- name: Assert that no principal holds a policy that it must not hold
+  ansible.builtin.assert:
+    that: _verify_holder_offences | length == 0
+    fail_msg: >-
+      A principal holds a policy that it must not hold: {{ _verify_holder_offences | join('; ') }}.
+      Only the Kubernetes role {{ verify_executor_k8s_role }} may hold {{ verify_generate_root_policy }},
+      only the Kubernetes role {{ verify_revoker_k8s_role }} may hold {{ verify_revoker_policy }},
+      and no standing principal may hold a {{ verify_catalogue_prefix }} policy: the executor attaches
+      those to the scoped tokens that it mints. Remove the policy from the principal
+      that the message names.
+
+- name: Say which of the two Kubernetes roles are installed
+  ansible.builtin.set_fact:
+    _verify_identity_notes:
+      - >-
+        {{
+          'approval executor role ' ~ verify_executor_k8s_role ~ ' is installed, and it may hold ' ~ verify_generate_root_policy
+          if _verify_executor_role_present | bool else
+          'approval executor role ' ~ verify_executor_k8s_role ~ ' is not installed on this environment, so no principal may hold ' ~ verify_generate_root_policy
+        }}
+      - >-
+        {{
+          'token revoker role ' ~ verify_revoker_k8s_role ~ ' is installed, and it may hold ' ~ verify_revoker_policy
+          if _verify_revoker_role_present | bool else
+          'token revoker role ' ~ verify_revoker_k8s_role ~ ' is not installed on this environment, so no principal may hold ' ~ verify_revoker_policy
+        }}

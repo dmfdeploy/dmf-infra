@@ -1,0 +1,74 @@
+# Reads one source of principals for the identity check: lists the names under
+# `_verify_src.list_path` and reads each one. It adds one entry per principal to
+# _verify_principals, with the policies that the principal holds, in `policies`,
+# and the groups that it passes policies to, in `members`.
+#
+# An empty list is not a failure: `bao list` exits 2 and prints "No value found" on
+# standard error, or `{}` in JSON mode. A refused list (permission denied) also exits 2, so
+# the task accepts only those two answers. A refused read, or a read of a name that the
+# list just returned, fails the run: a principal that could not be read is one that the
+# check could not clear.
+#
+# The caller holds the token in _verify_token_identity_reader and the pod in
+# _verify_openbao_pod. The token goes in on stdin.
+
+- name: "Identity check: list {{ _verify_src.list_path }}"
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao list -format=json {{ _verify_src.list_path | quote }}'
+    stdin: "{{ _verify_token_identity_reader }}\n"
+  register: _verify_src_list
+  changed_when: false
+  failed_when:
+    - _verify_src_list.rc != 0
+    - not (_verify_src_list.rc == 2 and (_verify_src_list.stdout | trim == '{}' or 'No value found' in _verify_src_list.stderr))
+  no_log: true
+
+- name: "Identity check: read each name under {{ _verify_src.list_path }}"
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json {{ (_verify_src.list_path ~ "/" ~ item) | quote }}'
+    stdin: "{{ _verify_token_identity_reader }}\n"
+  register: _verify_src_reads
+  changed_when: false
+  no_log: true
+  loop: "{{ (_verify_src_list.stdout | from_json) if _verify_src_list.rc == 0 else [] }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: "Identity check: record the principals under {{ _verify_src.list_path }}"
+  ansible.builtin.set_fact:
+    _verify_principals: >-
+      {{
+        _verify_principals | default([])
+        + [{
+            'kind': _verify_src.kind,
+            'mount': _verify_src.mount,
+            'id': item.item,
+            'name': (item.stdout | from_json).data.name | default(item.item),
+            'policies': (
+              ((item.stdout | from_json).data.token_policies | default([], true))
+              + ((item.stdout | from_json).data.policies | default([], true))
+              + ((item.stdout | from_json).data.allowed_policies | default([], true))
+              + ((item.stdout | from_json).data.allowed_policies_glob | default([], true))
+            ),
+            'members': (item.stdout | from_json).data.member_group_ids | default([], true),
+            'member_entities': (item.stdout | from_json).data.member_entity_ids | default([], true)
+          }]
+      }}
+  loop: "{{ _verify_src_reads.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  no_log: true

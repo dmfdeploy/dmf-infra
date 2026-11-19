@@ -1317,6 +1317,23 @@
   no_log: true
   when: openbao_is_initialized | bool
 
+# The identity verifier's policy (files/policies/identity-verifier.hcl): reads of the auth
+# and identity configuration, no writes. policy-reconciler carries it, so that the verifier
+# can list every principal with the identity it already logs in as.
+- name: Write the identity-verifier policy
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_identity_verifier_policy_name }} -'
+    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/identity-verifier.hcl') }}\n"
+  no_log: true
+  when: openbao_is_initialized | bool
+
 # The token revoker's policy, written before the role that names it.
 - name: Write the token-revoker policy
   ansible.builtin.shell:
@@ -1530,7 +1547,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao write auth/userpass/users/{{ openbao_policy_reconciler_username }} -'
-    stdin: "{{ _openbao_write_token }}\n{{ {'password': openbao_policy_reconciler_password, 'token_policies': openbao_policy_writer_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
+    stdin: "{{ _openbao_write_token }}\n{{ {'password': openbao_policy_reconciler_password, 'token_policies': openbao_policy_writer_policy_name ~ ',' ~ openbao_identity_verifier_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
   no_log: true
   when:
     - openbao_init_raw is defined

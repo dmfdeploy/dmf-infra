@@ -376,6 +376,66 @@ To add an entry:
 
 To change a policy, edit the file and update `policy_sha256` in the same change.
 
+## The identity verifier
+
+The identity verifier checks that nothing in the identity configuration holds power it
+should not hold. It reads with the
+`identity-verifier` policy (`files/policies/identity-verifier.hcl`: read and list of
+`sys/auth`, the users, roles, entities and groups, and nothing that returns a secret),
+which `policy-reconciler` carries on a fresh install. It logs in as `policy-reconciler`,
+which also reads `sys/policies/acl/*`.
+
+The playbook does not run these checks yet: `playbooks/tasks/verify-identity-holders.yml`
+and `verify-policy-digests.yml` run only in `tests/test-openbao-identity-verifier.yml`, until
+the change that retires the temporary-root procedure includes them in the playbook.
+
+What it checks:
+
+- **Allowlist.** Every enabled auth method has a type in `verify_identity_allowed_auth_types`
+  (userpass, kubernetes, approle and token: the methods this role enables). A mount of
+  any other type fails the run, and the message names the mount.
+- **Holders.** It reads every userpass user, AppRole role, token role, and Kubernetes role
+  under those methods, and every identity entity and group. A principal holds a policy when
+  it lists it. A token role holds what it may hand out (`allowed_policies`, and
+  `allowed_policies_glob` by prefix). A group also passes its policies to its member groups, to any
+  depth, and to its member entities. It fails when:
+  - any principal except the Kubernetes role `openbao_executor_k8s_role` holds
+    `generate-root`;
+  - any principal except the Kubernetes role `openbao_revoker_k8s_role` holds the
+    revoker's policy;
+  - any principal holds a `catalogue-*` policy. Only the scoped tokens that the executor
+    mints carry those.
+- **Digests.** For every policy that this role writes from a file (generate-root, the
+  revoker's, setup-issuer, the rotation scheduler's, identity-verifier and each catalogue
+  policy), the live text must equal the file. Both texts are compared by SHA-256 without
+  trailing whitespace, because the role writes the file's text and one final newline.
+  The policies that `tasks/main.yml` writes from inline text are not compared.
+- **Grants of the generate-root endpoints.** `tasks/verify-generate-root-grants.yml` lists
+  every live ACL policy, reads each one except `root` and the executor's own, and fails when
+  one has a path stanza that matches `sys/generate-root-token/*` or `sys/generate-root/*` and
+  grants any capability but `deny`. It matches an exact path, a `+` segment and a trailing
+  `*`, in HCL and in JSON. The failure names the policy and the path. This covers the policies
+  that the digest check leaves out. It does not remove a trust: `policy-reconciler` can rewrite
+  any ACL policy, the one that lets the verifier read included, so the check is as strong as
+  that identity is trusted.
+
+A failure names the principal or the policy. For example,
+`userpass user userpass/ops-admin holds generate-root` means that the user's policy list
+has `generate-root`: remove it. `generate-root differs from files/policies/generate-root.hcl (live 1a2b..., file 3c4d...)`
+means that someone changed the policy in OpenBao, or the file changed and the role has not
+run. `token-revoker is missing from OpenBao` means that the role has not written it. The
+run also says whether the executor and the revoker roles are installed. Where one is not,
+no principal may hold its policy.
+
+The fresh install still attaches `generate-root` to `ops-admin`, and the verifier fails
+on that, with a message that says so. The change that stops the install from attaching
+it removes the failure. An installed environment needs a root token once, to give
+`policy-reconciler` the `identity-verifier` policy: until then the verifier cannot read the
+identity configuration and fails with a refused read.
+
+The tests in `tests/test-openbao-identity-verifier.yml` run the verifier against the
+fake bao with an identity fixture.
+
 ## Upgrade from 2.5.x to 2.7.x
 
 Upstream supports large version jumps and asks you to read the notes of each

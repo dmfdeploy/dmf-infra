@@ -1,0 +1,85 @@
+---
+# The verifier's check of who can reach the generate-root endpoints through policy text.
+# Without it, a policy that grants `sys/generate-root-token/*` through some other name
+# gives its holder the power that only the approval executor's policy may give.
+#
+# It lists every live ACL policy with the identity reader's token, reads each one except
+# `root` and the executor's own policy (verify_generate_root_policy), and fails when any
+# of them has a path stanza that matches one of verify_generate_root_paths and grants a
+# capability other than deny. A path in a policy is exact, or has `+` for one segment, or
+# ends in `*` for a prefix. A policy in JSON form is read as well as one in HCL.
+#
+# What this does not cover: the policy-reconciler identity can rewrite any ACL policy, the
+# identity reader's policy included, so the check is as strong as that identity is trusted.
+# See the role's README, "The identity verifier".
+
+- name: List the live ACL policies
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao list -format=json sys/policies/acl'
+    stdin: "{{ _verify_token_identity_reader }}\n"
+  register: _verify_acl_list
+  changed_when: false
+  no_log: true
+
+- name: Read every live ACL policy except root and the executor's
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ verify_openbao_namespace }}
+      exec -i {{ _verify_openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao read -format=json sys/policies/acl/{{ item | quote }}'
+    stdin: "{{ _verify_token_identity_reader }}\n"
+  register: _verify_acl_reads
+  changed_when: false
+  no_log: true
+  loop: "{{ _verify_acl_list.stdout | from_json | difference(['root', verify_generate_root_policy]) }}"
+  loop_control:
+    label: "{{ item }}"
+
+- name: Work out which policies grant a path under sys/generate-root
+  ansible.builtin.set_fact:
+    _verify_generate_root_grants: >-
+      {%- set found = namespace(list=[]) -%}
+      {%- for read in _verify_acl_reads.results -%}
+      {%- set text = (read.stdout | from_json).data.policy | regex_replace('(?m)^\s*#.*$', '') -%}
+      {%- set stanzas = namespace(list=[]) -%}
+      {%- if text | trim | first == '{' -%}
+      {%- for path, body in ((text | from_json).path | default({})).items() -%}
+      {%- set stanzas.list = stanzas.list + [[path, (body.capabilities | default([])) | join(',')]] -%}
+      {%- endfor -%}
+      {%- else -%}
+      {%- for chunk in text.split('path "')[1:] -%}
+      {%- set caps = chunk | regex_search('capabilities\s*=\s*\[([^\]]*)\]', '\\1') -%}
+      {%- set stanzas.list = stanzas.list + [[chunk.split('"')[0], caps[0] if caps else '']] -%}
+      {%- endfor -%}
+      {%- endif -%}
+      {%- for path, caps in stanzas.list -%}
+      {%- set regex = '^' ~ (path | replace('+', '[^/]+') | regex_replace('[*]$', '.*')) ~ '$' -%}
+      {%- if caps | regex_replace('[\s",]', '') | length > 0 and 'deny' not in caps
+             and (verify_generate_root_paths | select('regex', regex) | list | length > 0) -%}
+      {%- set found.list = found.list + [read.item ~ ' (path "' ~ path ~ '")'] -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- endfor -%}
+      {{ found.list }}
+  no_log: true
+
+- name: Assert that only the executor's policy grants a path under sys/generate-root
+  ansible.builtin.assert:
+    that: _verify_generate_root_grants | length == 0
+    fail_msg: >-
+      A policy other than {{ verify_generate_root_policy }} grants a path under
+      sys/generate-root, so whoever holds it can start or finish a generate-root attempt:
+      {{ _verify_generate_root_grants | join('; ') }}.
+      Only the approval executor's policy may grant these paths. Remove the grant, then
+      investigate who wrote the policy.

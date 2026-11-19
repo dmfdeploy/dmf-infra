@@ -948,6 +948,12 @@ PY
     python3 -c 'import json,sys; print(json.dumps({"data": {"name": sys.argv[1], "policy": open(sys.argv[2]).read()}}))' "$name" "$file"
     exit 0
     ;;
+  "list sys/policies/acl")
+    # The names of the files in $state/policies, as the server lists the policies it holds.
+    policy_ok || forbidden "listing sys/policies/acl"
+    print_keys sys/policies/acl "$(cd "$state/policies" 2>/dev/null && ls)"
+    exit 0
+    ;;
   "policy write "*" -")
     policy_ok || forbidden "uploading policy"
     [ -z "${FAKE_POLICY_WRITE_FAILS:-}" ] || { seal_on_fail; echo "Error uploading policy: internal error" >&2; exit 2; }

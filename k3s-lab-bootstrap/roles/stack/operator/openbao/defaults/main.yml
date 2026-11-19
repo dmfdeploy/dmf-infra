@@ -213,6 +213,9 @@ openbao_operator_reader_policy_name: app-admin-reader
 # sys/generate-root-token endpoints. The caller still needs a quorum of unseal
 # shares, so the policy alone creates no token.
 openbao_generate_root_policy_name: generate-root
+# Read-only access to the auth and identity configuration, for the identity verifier
+# (files/policies/identity-verifier.hcl). policy-reconciler carries it.
+openbao_identity_verifier_policy_name: identity-verifier
 openbao_operator_runtime_policy_name: app-runtime-writer
 openbao_eso_policy_name: eso-reader
 openbao_operator_password_length: 32

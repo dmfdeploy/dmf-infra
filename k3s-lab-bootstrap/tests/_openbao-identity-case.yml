@@ -1,0 +1,85 @@
+---
+# One case of the identity verifier's checks. The caller sets _case:
+#   name      the case's name; it names the state directory of the fake
+#   patch     identity fixture entries to add to or replace in the clean fixture
+#   replace   top-level fixture keys to replace as a whole (patch merges into them)
+#   k8s       Kubernetes roles (name: list of policies) to add to or replace in the clean set
+#   drift     policy name: the live text, in place of the file's text. null: the policy is missing
+#   policies  extra live policies, name: text, that the role does not write
+#   expect    text that the failure message must hold, all of it. Empty: the case must pass.
+- name: "Identity verifier — {{ _case.name }}"
+  environment:
+    FAKE_STATE: "{{ _state.path }}/{{ _case.name }}"
+    FAKE_POLICY_WRITER: "1"
+  block:
+    - name: "Identity verifier — {{ _case.name }}: make the state directory"
+      ansible.builtin.file:
+        path: "{{ _state.path }}/{{ _case.name }}/{{ item }}"
+        state: directory
+        mode: "0700"
+      loop: [tokens, k8s-auth, policies]
+
+    - name: "Identity verifier — {{ _case.name }}: seed the reader's token"
+      ansible.builtin.copy:
+        dest: "{{ _state.path }}/{{ _case.name }}/tokens/fake-reader.json"
+        content: '{"policies": ["identity-verifier", "policy-writer"], "orphan": true, "created": 1800000000, "ttl": 0, "uses_left": null}'
+        mode: "0600"
+
+    - name: "Identity verifier — {{ _case.name }}: write the identity fixture"
+      ansible.builtin.copy:
+        dest: "{{ _state.path }}/{{ _case.name }}/identity.json"
+        content: "{{ _clean_identity | combine(_case.patch | default({}), recursive=true) | combine(_case.replace | default({})) | to_json }}"
+        mode: "0600"
+
+    - name: "Identity verifier — {{ _case.name }}: write the Kubernetes roles"
+      ansible.builtin.copy:
+        dest: "{{ _state.path }}/{{ _case.name }}/k8s-auth/role-{{ item.key }}.json"
+        content: "{{ {'token_policies': item.value} | to_json }}"
+        mode: "0600"
+      loop: "{{ _clean_k8s_roles | combine(_case.k8s | default({})) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: "Identity verifier — {{ _case.name }}: write the live policies"
+      ansible.builtin.copy:
+        dest: "{{ _state.path }}/{{ _case.name }}/policies/{{ item.name }}"
+        content: "{{ (_case.drift | default({}))[item.name] | default(lookup('ansible.builtin.file', verify_role_path ~ '/' ~ item.file) ~ '\n', true) }}"
+        mode: "0600"
+      loop: "{{ verify_policy_files }}"
+      loop_control:
+        label: "{{ item.name }}"
+      when: (_case.drift | default({}))[item.name] is not defined or (_case.drift | default({}))[item.name] is not none
+
+    - name: "Identity verifier — {{ _case.name }}: write the extra live policies"
+      ansible.builtin.copy:
+        dest: "{{ _state.path }}/{{ _case.name }}/policies/{{ item.key }}"
+        content: "{{ item.value }}"
+        mode: "0600"
+      loop: "{{ (_case.policies | default({})) | dict2items }}"
+      loop_control:
+        label: "{{ item.key }}"
+
+    - name: "Identity verifier — {{ _case.name }}: run the checks"
+      ansible.builtin.include_tasks: "{{ item }}"
+      loop:
+        - ../playbooks/tasks/verify-identity-holders.yml
+        - ../playbooks/tasks/verify-policy-digests.yml
+        - ../playbooks/tasks/verify-generate-root-grants.yml
+
+    - name: "Identity verifier — {{ _case.name }}: fail when the checks passed a case that must fail"
+      ansible.builtin.fail:
+        msg: The verifier passed a case that must fail.
+      when: _case.expect | default([]) | length > 0
+  rescue:
+    - name: "Identity verifier — {{ _case.name }}: fail when a case that must pass failed"
+      ansible.builtin.fail:
+        msg: "The verifier failed a case that must pass: {{ ansible_failed_result.msg | default('') }}"
+      when: _case.expect | default([]) | length == 0
+
+    - name: "Identity verifier — {{ _case.name }}: assert the failure names what it found"
+      ansible.builtin.assert:
+        that:
+          - "'passed a case' not in ansible_failed_result.msg"
+          - item in ansible_failed_result.msg
+        fail_msg: "The failure did not name {{ item }}: {{ ansible_failed_result.msg | default('') }}"
+      loop: "{{ _case.expect | default([]) }}"
