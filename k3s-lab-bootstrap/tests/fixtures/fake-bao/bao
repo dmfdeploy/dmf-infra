@@ -188,7 +188,7 @@ def load(name):
     path = os.path.join(state, "token-" + name + ".json")
     if os.path.exists(path):
         record = json.load(open(path))
-        return {"policies": ["default"] + record["policies"], "orphan": record["orphan"], "ttl": record["ttl"],
+        return {"policies": record["policies"] if "root" in record["policies"] else ["default"] + record["policies"], "orphan": record["orphan"], "ttl": record["ttl"],
                 "renewable": record.get("renewable", True), "created": record.get("created", now), "uses_left": None}
     return None
 
@@ -315,8 +315,9 @@ sections = {"auth/userpass/users": "userpass_users", "auth/approle/role": "appro
 fixture = json.load(open(path)) if os.path.exists(path) else {}
 entries = fixture.get(sections[prefix], {})
 if key is None:
-    # Without a fixture the only userpass user is ops-admin, whose record is userpass-user.json.
-    print("\n".join(sorted(entries or ({"ops-admin": 1} if prefix == "auth/userpass/users" else {}))))
+    # Without a fixture file the only userpass user is ops-admin, whose record is userpass-user.json.
+    legacy = {"ops-admin": 1} if prefix == "auth/userpass/users" and not os.path.exists(path) else {}
+    print("\n".join(sorted(entries or legacy)))
 elif key in entries:
     print(json.dumps({"data": dict(entries[key], **({"id": key} if prefix.startswith("identity/") else {}))}))
 else:
@@ -412,6 +413,16 @@ token_ok() {
 # The handlers that answer the older callers (a fake-* token with no stored record) check
 # only that a token is present. A stored scoped token must also be live.
 scoped_live() { [ ! -f "$tokens_dir/${BAO_TOKEN:-none}.json" ] || token_ok; }
+# A token with a stored record has the power of its stored policies. Only a token without
+# one gets the answer that its name stands for (fake-root*, fake-scheduler*, ...).
+stored_token() { [ -f "$tokens_dir/${BAO_TOKEN:-none}.json" ]; }
+# A root token is a fake-root token or a stored token with the root policy.
+is_root() {
+  stored_token || { case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac; return 1; }
+  token_store policies "$BAO_TOKEN" | grep -qx root
+}
+# A call that reads the identity fixture answers from it whenever the file exists.
+fixture_present() { [ -f "$state/identity.json" ]; }
 # A token with a use limit spends one use on each request that it makes, allowed or not,
 # as OpenBao does, and is revoked once the request that spent its last use is done.
 json_out=""
@@ -522,7 +533,7 @@ PY
     exit 0
     ;;
   "read -format=json secret/data/apps/netbox/runtime")
-    scoped_live && [ "${BAO_TOKEN:-}" = "fake-approle-token" ] || { echo "Error reading secret/data/apps/netbox/runtime: permission denied" >&2; exit 2; }
+    scoped_live && { if stored_token; then is_root; else [ "${BAO_TOKEN:-}" = "fake-approle-token" ]; fi; } || { echo "Error reading secret/data/apps/netbox/runtime: permission denied" >&2; exit 2; }
     printf '{"data":{"data":{"netbox_admin_token":"fake-netbox-admin-token"}}}\n'
     exit 0
     ;;
@@ -599,15 +610,18 @@ PY
     path="${4:-}"
     # A token whose name starts with fake-eso carries eso-reader. It can read the KV
     # secrets and, unless FAKE_ESO_PKI_GRANT holds a capability list, has nothing on any
-    # other path: OpenBao answers a path without a grant with ["deny"].
+    # other path: OpenBao answers a path without a grant with ["deny"]. A token of that
+    # name that has a stored record has only its stored policies.
     case "${BAO_TOKEN:-}" in
       fake-eso*)
-        case "$path" in
-          secret/*) printf '["read"]\n' ;;
-          pki/*) printf '%s\n' "${FAKE_ESO_PKI_GRANT:-[\"deny\"]}" ;;
-          *) printf '["deny"]\n' ;;
-        esac
-        exit 0
+        if ! stored_token; then
+          case "$path" in
+            secret/*) printf '["read"]\n' ;;
+            pki/*) printf '%s\n' "${FAKE_ESO_PKI_GRANT:-[\"deny\"]}" ;;
+            *) printf '["deny"]\n' ;;
+          esac
+          exit 0
+        fi
         ;;
     esac
     if pod_in "$path" "${FAKE_CAPS_MISSING:-}"; then printf '["deny"]\n'; else printf '%s\n' "${FAKE_CAPS_JSON:-[\"read\"]}"; fi
@@ -634,18 +648,14 @@ seal_on_fail() {
 }
 if [ -n "${FAKE_SEAL_ON_FAIL:-}" ] && is_sealed; then echo "Error: Vault is sealed" >&2; exit 2; fi
 k8s_auth_dir="$state/k8s-auth"
-# A root token is a fake-root token or a stored token with the root policy.
-is_root() {
-  case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac
-  [ -f "$tokens_dir/${BAO_TOKEN:-none}.json" ] && token_store policies "$BAO_TOKEN" | grep -qx root
-}
 # The live caller holds POLICY. The ops-admin login token holds what its userpass user holds.
 has_policy() {
   token_ok || return 1
   is_root && return 0
+  if stored_token; then token_store policies "$BAO_TOKEN" | grep -qx "$1"; return; fi
   case "$BAO_TOKEN" in
     fake-ops-token) userpass_user show | python3 -c 'import json,sys; sys.exit(0 if sys.argv[1] in json.load(sys.stdin)["token_policies"] else 1)' "$1" ;;
-    *) [ -f "$tokens_dir/$BAO_TOKEN.json" ] && token_store policies "$BAO_TOKEN" | grep -qx "$1" ;;
+    *) return 1 ;;
   esac
 }
 # The accessor calls need a root token or the revoker's policy, the identity reads a root
@@ -713,7 +723,7 @@ case "$*" in
       exit 2
     fi
     if [ -n "${FAKE_GENROOT_AUTH:-}" ]; then
-      token_ok && { is_root || [ "$BAO_TOKEN" = fake-ops-token ] || has_policy generate-root; } || forbidden "generating the root token"
+      token_ok && { is_root || { ! stored_token && [ "$BAO_TOKEN" = fake-ops-token ]; } || has_policy generate-root; } || forbidden "generating the root token"
     fi
     shift 2
     otp="${FAKE_OTP:-fake-otp}"
@@ -752,7 +762,10 @@ case "$*" in
   "read -format=json auth/userpass/users/"*|"read auth/userpass/users/"*)
     can_inspect || forbidden "reading auth/userpass/users"
     name="${!#}"
-    identity_fixture auth/userpass/users "${name##*/}" 2>/dev/null && exit 0
+    name="${name##*/}"
+    # With a fixture the users are the ones it names. Without one, the only user is ops-admin.
+    if fixture_present; then identity_fixture auth/userpass/users "$name" && exit 0; exit 2; fi
+    [ "$name" = ops-admin ] || { echo "No value found at auth/userpass/users/$name" >&2; exit 2; }
     printf '{"data":%s}\n' "$(userpass_user show)"
     exit 0
     ;;
@@ -851,11 +864,13 @@ import json, sys
 path, name, parent, orphan, ttl, policies, renewable, now = sys.argv[1:9]
 units = {"s": 1, "m": 60, "h": 3600}
 seconds = int(ttl[:-1]) * units[ttl[-1]] if ttl and ttl[-1] in units else int(ttl or 0)
-record = {"parent": parent, "orphan": orphan == "true", "policies": policies.split(), "ttl": seconds,
+# Without a policy the child inherits the policies of its root parent, so it is a root token.
+record = {"parent": parent, "orphan": orphan == "true", "policies": ["root"], "ttl": seconds,
           "renewable": renewable == "true", "created": int(now)}
 json.dump(record, open(path, "w"))
-print(json.dumps({"auth": {"client_token": name, "accessor": name + "-accessor", "policies": ["default"] + record["policies"],
-                           "lease_duration": seconds, "renewable": record["renewable"], "orphan": record["orphan"]}}))
+print(json.dumps({"auth": {"client_token": name, "accessor": name + "-accessor", "policies": record["policies"],
+                           "token_policies": record["policies"], "lease_duration": seconds,
+                           "renewable": record["renewable"], "orphan": record["orphan"]}}))
 PY
     if [ -n "${FAKE_TOKEN_CREATE_LOST:-}" ]; then
       echo "Error creating token: read tcp 127.0.0.1:8200: connection reset by peer" >&2
@@ -947,16 +962,20 @@ PY
     ;;
   "read -format=json sys/policies/acl/eso-reader")
     scoped_live || forbidden "reading sys/policies/acl/eso-reader"
-    case "${BAO_TOKEN:-}" in fake-policy*) ;; *) forbidden "reading sys/policies/acl/eso-reader" ;; esac
+    if stored_token; then is_root || forbidden "reading sys/policies/acl/eso-reader"; else
+      case "${BAO_TOKEN:-}" in fake-policy*) ;; *) forbidden "reading sys/policies/acl/eso-reader" ;; esac
+    fi
     python3 -c 'import json,sys; print(json.dumps({"data": {"name": "eso-reader", "policy": open(sys.argv[1]).read()}}))' "${FAKE_ESO_POLICY_FILE:?FAKE_ESO_POLICY_FILE is not set}"
     exit 0
     ;;
   "read -format=json auth/approle/role/external-secrets")
-    # A role that identity.json defines goes to a token that may inspect, as every other
-    # identity read does; without one the answer is the scheduler's.
-    if can_inspect && identity_fixture auth/approle/role external-secrets 2>/dev/null; then exit 0; fi
+    # With identity.json, a token that may inspect gets the role it names, or no value, as
+    # every other identity read does. Without one the answer is the scheduler's.
+    if can_inspect && fixture_present; then identity_fixture auth/approle/role external-secrets && exit 0; exit 2; fi
     scoped_live || forbidden "reading auth/approle/role/external-secrets"
-    case "${BAO_TOKEN:-}" in fake-scheduler*) ;; *) forbidden "reading auth/approle/role/external-secrets" ;; esac
+    if stored_token; then is_root || forbidden "reading auth/approle/role/external-secrets"; else
+      case "${BAO_TOKEN:-}" in fake-scheduler*) ;; *) forbidden "reading auth/approle/role/external-secrets" ;; esac
+    fi
     printf '{"data":{"token_policies":%s,"token_ttl":3600}}\n' "${FAKE_ESO_ROLE_POLICIES:-[\"eso-reader\"]}"
     exit 0
     ;;

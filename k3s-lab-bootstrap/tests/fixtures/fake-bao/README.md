@@ -13,7 +13,13 @@ State lives in `$FAKE_STATE`. Each call takes the token from `BAO_TOKEN`.
 it sets `-use-limit` or `-explicit-max-ttl`. A scoped token is a file
 `$FAKE_STATE/tokens/NAME.json`, named `fake-scoped-N`. Other tokens that `token
 create` makes keep their old form: `fake-root-short-N`, a root token that is
-recorded in `token-NAME.json`.
+recorded in `token-NAME.json`. A call without `-policy` makes one of these: the
+child inherits the policies of its root parent, so its answer lists `root` only.
+
+A token that has a stored record in `tokens/` holds the policies of that record
+and nothing more. The names `fake-root*`, `fake-ops-token`, `fake-scheduler*`,
+`fake-policy*`, `fake-eso*` and `fake-approle-token` grant power only to a token
+that has no stored record.
 
 Flags of `token create`: `-policy`, `-orphan`, `-ttl`, `-explicit-max-ttl`,
 `-use-limit`, `-renewable`, `-no-default-policy` and `-format`. Only the caller
@@ -84,8 +90,8 @@ come from `$FAKE_STATE/identity.json`:
 | Call | Answer |
 |---|---|
 | `read sys/auth` | `auth_methods`, as the response of the server has it. Without a fixture: the token method. |
-| `list auth/userpass/users`, `read auth/userpass/users/NAME` | `userpass_users`. Without a fixture, the list holds `ops-admin` and the read is the `ops-admin` record the other tests use. |
-| `list auth/approle/role`, `read auth/approle/role/NAME` | `approle_roles` |
+| `list auth/userpass/users`, `read auth/userpass/users/NAME` | `userpass_users`. When the fixture file exists, a user that it does not name has no value (exit 2). Without the file, `ops-admin` is the only user: the list holds it and the read is the record the other tests use. |
+| `list auth/approle/role`, `read auth/approle/role/NAME` | `approle_roles`. This includes `external-secrets`: with the fixture file, a missing role has no value (exit 2). |
 | `list auth/token/roles`, `read auth/token/roles/NAME` | `token_roles` |
 | `list identity/entity/id`, `read identity/entity/id/ID` | `entities`, with `id` added |
 | `list identity/group/id`, `read identity/group/id/ID` | `groups`, with `id` added |
