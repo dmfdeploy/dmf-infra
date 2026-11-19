@@ -2,7 +2,8 @@
 # Fake bao for the OpenBao tests. It answers the calls that the role and the
 # guard make, from a state directory ($FAKE_STATE) and scenario variables, and it
 # logs every argument list to $FAKE_STATE/bao-argv.log so a test can prove that no
-# secret arrives as an argument. It follows OpenBao v2.5.2:
+# secret arrives as an argument. README.md in this directory describes the token model and
+# lists what the fake does not model. It follows OpenBao v2.5.2:
 #   - `bao status` exits 0 unsealed and 2 sealed (command/status.go).
 #   - `bao write PATH -` reads a JSON object from stdin, and `key=-` reads the
 #     whole of stdin as the value (go-secure-stdlib kv-builder v0.1.2, builder.go).
@@ -16,12 +17,7 @@
 #   - `bao token capabilities -format=json` prints a JSON list.
 #   - `bao token create` takes -orphan, -policy, -ttl, -explicit-max-ttl, -use-limit,
 #     -no-default-policy, -renewable and -format, as the CLI does (command/token_create.go),
-#     and refuses any other flag. The caller needs a root token. Every new token is a record
-#     in $FAKE_STATE/tokens/NAME.json with its parent, orphan flag, policies, creation time
-#     and TTL in seconds. A token created without -orphan is revoked with its parent. The
-#     file README.md in this directory lists what the fake does for these tokens (use
-#     limits, expiry, accessors, Kubernetes login, the identity reads) and the variables
-#     that it adds.
+#     and refuses any other flag. The caller needs a root token.
 #   - `bao read -format=json sys/storage/raft/autopilot/state` prints the API
 #     response: the state object, with snake_case keys (healthy, failure_tolerance,
 #     leader, voters, servers), is under "data".
@@ -44,7 +40,9 @@
 #                        Raft configuration; file raft-config in the state directory wins)
 #   FAKE_PROMOTE_AFTER   with delayed: autopilot calls before the new voter is healthy
 #   FAKE_CAPS_MISSING    space-separated paths on which the token has no capability
-#   FAKE_CAPS_JSON       capability list for every other path (default ["read"])
+#   FAKE_CAPS_JSON       capability list for every other path. Unset: a token with a record
+#                        gets ["root"] when it holds the root policy and ["deny"] otherwise, and
+#                        a legacy token gets ["read"].
 #   FAKE_ESO_PKI_GRANT   capability list that a token named fake-eso* holds on pki/*
 #                        (default ["deny"], a path without a grant)
 #   FAKE_ESO_POLICY_FILE file whose text `bao read sys/policies/acl/eso-reader` returns as
@@ -93,10 +91,9 @@
 #                        (default token-revoker)
 #   FAKE_VERIFIER_POLICY the policy that lets a token read the identity configuration
 #                        (default identity-verifier)
-# Kubernetes auth: the config and the roles are files under $state/k8s-auth. A token
-# whose name starts with fake-root is a root token and may read and write
-# auth/kubernetes/*; every other token gets 403 on a write. A token revoked with
-# `bao token revoke -self` (file revoked-<token>) is refused everywhere. A config
+# Kubernetes auth: the config and the roles are files under $state/k8s-auth. A root token
+# may read and write auth/kubernetes/*; every other token gets 403 on a write. A revoked
+# token (file revoked-<token>) is refused everywhere. A config
 # write rebuilds the config from its fields, as the mount does, and token_reviewer_jwt
 # set to "" stores no token. A pem_keys value that does not parse fails after the
 # permission check. A role write takes its fields as key=value arguments or, with `-`,
@@ -161,29 +158,32 @@ count_call() { # count_call NAME -> prints the number of earlier calls, then rec
   printf '%s' "$n"
 }
 
-# The fake clock and the token store. A token is a file $state/tokens/NAME.json:
-# policies (with default), orphan, parent, created (epoch seconds), ttl (seconds, 0 for
-# none), explicit_max_ttl, renewable, uses_left (null for no limit) and use_limit. A test
-# may write such a file to seed a token, with an optional "accessor"; the accessor of a
-# token without one is NAME-accessor. Every token that `token create` or a Kubernetes login
-# makes is such a file, and a token with no file is a legacy token.
+# The fake clock and the token model. A token is a file $state/tokens/NAME.json (README.md
+# lists its fields). A token with no file is a legacy fake-* token that stands for the
+# profile in `legacy` below. A revoked token has a file $state/revoked-NAME. The model
+# decides everything about a token: whether it is live, what it may do, its uses, its
+# accessor and its revocation. The handlers below only ask.
 now="${FAKE_NOW:-1800000000}"
 tokens_dir="$state/tokens"
-token_store() { # token_store OP ARGS...: see the operations in the script below
+token_model() { # token_model OP ARGS...: the operations are at the end of the Python script
   python3 - "$state" "$now" "$@" <<'PY'
-import glob, json, os, sys
+import fnmatch, glob, json, os, sys
 state, now, op, args = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4:]
-tokens = os.path.join(state, "tokens")
+env, tokens = os.environ, os.path.join(state, "tokens")
+MONTH = 32 * 24 * 3600   # the default and the longest lifetime of a token
 
 def seconds(text):
     units = {"s": 1, "m": 60, "h": 3600}
     return int(text[:-1]) * units[text[-1]] if text and text[-1] in units else int(text or 0)
 
+def path_of(name):
+    return os.path.join(tokens, name + ".json")
+
 def load(name):
-    path = os.path.join(tokens, name + ".json")
-    if os.path.exists(path):
-        return json.load(open(path))
-    return None
+    return json.load(open(path_of(name))) if os.path.exists(path_of(name)) else None
+
+def revoked(name):
+    return os.path.exists(os.path.join(state, "revoked-" + name))
 
 def is_orphan(record):   # without the field, a token with no parent is an orphan
     value = record.get("orphan")
@@ -204,40 +204,87 @@ def lapsed(record):
     limit = min([value for value in limits if value > 0], default=0)
     return bool(limit) and now >= created + limit
 
-def expired(record):
-    # A token also ends with every ancestor it was made without -orphan, however deep the
-    # chain. A parent without a record is a legacy token (its name starts with fake-) and
-    # ends the chain. A cycle, or any other missing parent, fails closed.
-    if lapsed(record):
+def is_live(name):
+    # A token is live until it is revoked, spent or past its lifetime, and so is each ancestor
+    # that it was made from without -orphan, however deep. A token with no record is a legacy
+    # token. A parent with no record is a legacy token when its name starts with fake-; any
+    # other missing parent, and any cycle, fails closed.
+    if not name or revoked(name):
+        return False
+    record, seen = load(name), {name}
+    if record is None:
         return True
-    seen, current = set(), record
-    while current.get("parent") and not is_orphan(current):
-        name = current["parent"]
-        if name in seen:
+    while True:
+        if lapsed(record) or spent(record):
+            return False
+        parent = record.get("parent")
+        if not parent or is_orphan(record):
             return True
-        seen.add(name)
-        current = load(name)
-        if current is None:
-            return not name.startswith("fake-")
-        if lapsed(current):
-            return True
-    return False
+        if parent in seen or revoked(parent):
+            return False
+        seen.add(parent)
+        record = load(parent)
+        if record is None:
+            return parent.startswith("fake-")
+
+def ops_policies():   # what the userpass user ops-admin holds
+    path = os.path.join(state, "userpass-user.json")
+    if os.path.exists(path):
+        return json.load(open(path))["token_policies"]
+    return [p for p in env.get("FAKE_OPS_POLICIES", "app-admin-writer,app-runtime-writer").split(",") if p]
+
+def legacy(name):
+    # The profile of a token that has no record: the policies it shows and the grants it
+    # holds. A grant is a power of a name that only a legacy token has. A token with a record
+    # never gets one, and a profile never makes a token live.
+    profiles = [("fake-root*", ["root"], []),
+                ("fake-ops-token", ["default"] + ops_policies(), ["legacy:ops-login"]),
+                ("fake-scheduler*", ["default"], ["legacy:scheduler"]),
+                ("fake-policy*", ["default"], ["legacy:policy-reader"]),
+                ("fake-eso*", ["default"], ["legacy:eso"]),
+                ("fake-approle-token", ["default"], ["legacy:approle"])]
+    return next(((p, g) for pattern, p, g in profiles if fnmatch.fnmatch(name, pattern)), (["default"], []))
+
+def held(name):
+    record = load(name)
+    policies, grants = (record["policies"], []) if record else legacy(name)
+    return set(policies) | set(grants)
+
+def authorize(name, needs):   # live, and holding root or at least one of the needs
+    holdings = held(name)
+    return is_live(name) and ("root" in holdings or bool(holdings & set(needs)))
+
+def capabilities(name, path):
+    # The paths of the scenario variables first, then what the token holds. A legacy fake-eso
+    # token holds eso-reader. Any other token with no record gets the scenario answer.
+    holdings, record, deny = held(name), load(name), '["deny"]'
+    if "legacy:eso" in holdings:
+        head, slash, _ = path.partition("/")
+        return {"secret": '["read"]', "pki": env.get("FAKE_ESO_PKI_GRANT", deny)}.get(head if slash else "", deny)
+    if path in env.get("FAKE_CAPS_MISSING", "").split():
+        return deny
+    if env.get("FAKE_CAPS_JSON"):
+        return env["FAKE_CAPS_JSON"]
+    if record is None:
+        return '["read"]'
+    return '["root"]' if "root" in holdings else deny
 
 def accessor_of(name, record):
     return record.get("accessor") or name + "-accessor"
 
-def live_names():
-    names = [os.path.basename(p)[:-5] for p in glob.glob(os.path.join(tokens, "*.json"))]
-    return sorted(n for n in set(names) if not os.path.exists(os.path.join(state, "revoked-" + n))
-                  and not expired(load(n)) and not spent(load(n)))
+def stored_names():
+    return sorted(os.path.basename(p)[:-5] for p in glob.glob(os.path.join(tokens, "*.json")))
+
+def live_tokens():
+    return [n for n in stored_names() if is_live(n)]
 
 def find(accessor):
-    for name in live_names():
-        if accessor_of(name, load(name)) == accessor:
-            return name
-    return None
+    return next((n for n in live_tokens() if accessor_of(n, load(n)) == accessor), None)
 
-def describe(name, record, show_id):
+def describe(name, show_id):
+    record = load(name)
+    if record is None:   # a legacy token knows its policies and its accessor
+        return {"policies": legacy(name)[0], "accessor": name + "-accessor"}
     created, ttl = record.get("created", now), int(record.get("ttl") or 0)
     return {"accessor": accessor_of(name, record), "id": name if show_id else "", "policies": record["policies"],
             "orphan": is_orphan(record), "renewable": bool(record.get("renewable", True)),
@@ -245,87 +292,101 @@ def describe(name, record, show_id):
             "explicit_max_ttl": int(record.get("explicit_max_ttl") or 0),
             "num_uses": record.get("uses_left") or 0, "path": "auth/token/create", "display_name": "token"}
 
-if op == "limited":   # exit 0 for a token that has a use limit
-    record = load(args[0])
-    sys.exit(0 if record and record.get("uses_left") is not None else 1)
-elif op == "live":    # exit 1 for a token whose lifetime is over
-    record = load(args[0])
-    sys.exit(1 if record and expired(record) else 0)
-elif op == "use":     # spend one use; print "final" when that was the last one
-    path = os.path.join(tokens, args[0] + ".json")
-    record = json.load(open(path))
-    if spent(record):   # no use is left: the token is gone before the call is dispatched
-        open(os.path.join(state, "revoked-" + args[0]), "w").close()
-    elif record.get("uses_left") is not None and not expired(record):
+def consume_use(name):
+    # A request spends one use. The request that spends the last one still completes, so that
+    # use is only reported: the caller revokes the token when the request is over.
+    record = load(name)
+    if record is None or record.get("uses_left") is None or not is_live(name):
+        return ""
+    if record["uses_left"] > 1:
         record["uses_left"] -= 1
-        json.dump(record, open(path, "w"))
-        print("final" if record["uses_left"] <= 0 else "")
-elif op == "policies":
-    print("\n".join(load(args[0])["policies"]))
-elif op == "accessors":
-    print("\n".join(accessor_of(n, load(n)) for n in live_names()))
-elif op == "name-of":
-    name = find(args[0])
-    print(name or "", end="")
-    sys.exit(0 if name else 1)
-elif op == "lookup":  # by accessor
-    name = find(args[0])
-    if not name:
-        sys.exit(1)
-    print(json.dumps({"data": describe(name, load(name), False)}))
-elif op == "lookup-self":
-    print(json.dumps({"data": describe(args[0], load(args[0]), True)}))
-elif op == "create":  # NAME PARENT ORPHAN TTL EXPLICIT_MAX USE_LIMIT RENEWABLE NO_DEFAULT POLICY...
-    name, parent, orphan, ttl, explicit_max, use_limit, renewable, no_default = args[:8]
-    ttl, explicit_max = seconds(ttl), seconds(explicit_max)
-    # The policies are lower case, without duplicates and in order. The root policy stands
-    # alone. The default policy is added, except to root and with -no-default-policy.
-    wanted = {p.strip().lower() for p in args[8:] if p.strip()}
-    root = "root" in wanted
-    if no_default == "as-given":   # a login token comes from the auth method, not the token store
-        policies = ["default"] + [p for p in args[8:] if p != "default"]
-    elif root:
-        policies = ["root"]
-    else:
-        policies = sorted(wanted if no_default == "true" else wanted | {"default"})
-    month = 32 * 24 * 3600   # the default and the longest lifetime of a token
-    # A use limit of 0 is OpenBao's value for unlimited: no limit is kept as null.
+        json.dump(record, open(path_of(name), "w"))
+        return "limited"
+    return "final"
+
+def revoke_tree(name):   # NAME and every descendant that was made without -orphan
+    pending = [name]
+    while pending:
+        current = pending.pop()
+        open(os.path.join(state, "revoked-" + current), "w").close()
+        pending += [n for n in stored_names() if not revoked(n) and load(n).get("parent") == current
+                    and not is_orphan(load(n))]
+    with open(os.path.join(state, "bao-calls.log"), "a") as log:
+        log.write("%s =revoked\n" % name)
+
+def issue(parent, orphan, ttl, explicit_max, limit, renewable, policies, prefix, counter):
+    # Record a new token and print the answer of the server. A root token without a TTL never
+    # expires. A use limit of 0 is OpenBao's value for unlimited, so it is kept as null.
     if not ttl and not explicit_max:
-        ttl = 0 if root else month   # a root token without a TTL never expires
+        ttl = 0 if "root" in policies else MONTH
     elif explicit_max and (not ttl or ttl > explicit_max):
         ttl = explicit_max
-    ttl = min(ttl, month)
-    if not ttl:
-        renewable = "false"
-    record = {"parent": parent, "orphan": orphan == "true", "policies": policies, "ttl": ttl,
-              "explicit_max_ttl": explicit_max, "renewable": renewable == "true", "created": now,
-              "uses_left": int(use_limit or 0) or None, "use_limit": int(use_limit or 0)}
+    ttl = min(ttl, MONTH)
+    count = os.path.join(state, "count-" + counter)
+    number = int(open(count).read()) + 1 if os.path.exists(count) else 1
+    open(count, "w").write("%d\n" % number)
+    name, uses = "%s-%d" % (prefix, number), int(limit or 0)
+    record = {"parent": parent, "orphan": orphan, "policies": policies, "ttl": ttl, "explicit_max_ttl": explicit_max,
+              "renewable": renewable and bool(ttl), "created": now, "uses_left": uses or None}
     os.makedirs(tokens, exist_ok=True)
-    json.dump(record, open(os.path.join(tokens, name + ".json"), "w"))
+    json.dump(record, open(path_of(name), "w"))
     print(json.dumps({"auth": {"client_token": name, "accessor": name + "-accessor", "policies": policies,
                                "token_policies": policies, "lease_duration": ttl, "renewable": record["renewable"],
-                               "orphan": record["orphan"], "num_uses": record["use_limit"]}}))
-PY
-}
-# The Kubernetes login check: prints "TTL MAX_TTL POLICY..." for a role that exists. A JWT of
-# the form fake-sa:NAMESPACE:NAME must match the role's bound ServiceAccount; any other
-# JWT that is not empty is accepted without a binding check.
-k8s_login_role() { # k8s_login_role ROLE JWT
-  python3 - "$k8s_auth_dir/role-$1.json" "$2" "$1" <<'PY'
-import json, os, sys
-path, jwt, name = sys.argv[1:4]
-if not os.path.exists(path):
-    sys.exit('Error making API request.\n\nCode: 400. Errors:\n\n* invalid role name "%s"' % name)
-role = json.load(open(path))
-if not jwt:
-    sys.exit("Error making API request.\n\nCode: 400. Errors:\n\n* missing client token")
-if jwt.startswith("fake-sa:"):
-    _, namespace, account = jwt.split(":", 2)
-    names = role.get("bound_service_account_names", [])
-    namespaces = role.get("bound_service_account_namespaces", [])
-    if (account not in names and "*" not in names) or (namespace not in namespaces and "*" not in namespaces):
-        sys.exit("Error making API request.\n\nCode: 403. Errors:\n\n* permission denied")
-print(role.get("token_ttl", 0), role.get("token_max_ttl", 0), *[p for p in role.get("token_policies", []) if p])
+                               "orphan": orphan, "num_uses": uses}}))
+
+def login(role_name, jwt):
+    # A Kubernetes login needs a JWT of the form fake-sa:NAMESPACE:NAME that matches the
+    # role's bound ServiceAccount and namespace. Any other JWT is a bad credential.
+    def refuse(code, text):
+        sys.exit("Error making API request.\n\nCode: %d. Errors:\n\n* %s" % (code, text))
+    path = os.path.join(state, "k8s-auth", "role-%s.json" % role_name)
+    if not os.path.exists(path):
+        refuse(400, 'invalid role name "%s"' % role_name)
+    role = json.load(open(path))
+    if not jwt:
+        refuse(400, "missing client token")
+    parts = jwt.split(":", 2)
+    bound = lambda value, allowed: value in allowed or "*" in allowed
+    if (len(parts) != 3 or parts[0] != "fake-sa" or not bound(parts[2], role.get("bound_service_account_names", []))
+            or not bound(parts[1], role.get("bound_service_account_namespaces", []))):
+        refuse(403, "permission denied")
+    policies = ["default"] + [p for p in role.get("token_policies", []) if p and p != "default"]
+    issue("", True, seconds(str(role.get("token_ttl", 0))), seconds(str(role.get("token_max_ttl", 0))), "", True,
+          policies, "fake-k8s", "k8s-login")
+
+if op == "live":
+    sys.exit(0 if is_live(args[0]) else 1)
+elif op == "can":   # can NAME NEED...: a policy name or a legacy grant
+    sys.exit(0 if args[1:] and authorize(args[0], args[1:]) else 1)
+elif op == "capabilities":
+    print(capabilities(*args))
+elif op == "use":
+    print(consume_use(args[0]))
+elif op == "revoke":
+    revoke_tree(args[0])
+elif op == "revoke-accessor":   # exit 1 when no live token has the accessor
+    name = find(args[0])
+    sys.exit(1) if name is None else revoke_tree(name)
+elif op == "accessors":
+    print("\n".join(accessor_of(n, load(n)) for n in live_tokens()))
+elif op == "lookup":   # by accessor
+    name = find(args[0])
+    sys.exit(1) if name is None else print(json.dumps({"data": describe(name, False)}))
+elif op == "lookup-self":
+    print(json.dumps({"data": describe(args[0], True)}))
+elif op == "create":   # PARENT ORPHAN TTL EXPLICIT_MAX USE_LIMIT RENEWABLE NO_DEFAULT POLICY...
+    parent, orphan, ttl, explicit_max, limit, renewable, no_default = args[:7]
+    # The policies are lower case, without duplicates and in order. With none, the child
+    # inherits the policy of its root parent. The root policy stands alone, and the default
+    # policy is added, except with -no-default-policy.
+    wanted = {p.strip().lower() for p in args[7:] if p.strip()} or {"root"}
+    policies = ["root"] if "root" in wanted else sorted(wanted if no_default == "true" else wanted | {"default"})
+    # A root token without a use limit or an explicit maximum TTL is a short root token.
+    short = "root" in wanted and not limit and not explicit_max
+    issue(parent, orphan == "true", seconds(ttl), seconds(explicit_max), limit, renewable == "true", policies,
+          "fake-root-short" if short else "fake-scoped", "short-token" if short else "scoped-token")
+elif op == "login":
+    login(*args)
 PY
 }
 # The read-only configuration that the identity verifier reads, from $state/identity.json:
@@ -397,6 +458,16 @@ if [ "${1:-}" = status ] && ! tls_ok; then
   exit 1
 fi
 
+# The calls below are matched without -format=json: it is dropped once here, and json_out
+# says that it was there (a list without it prints the table of the CLI).
+json_out=""
+args=()
+for arg in "$@"; do
+  if [ "$arg" = -format=json ]; then json_out=1; else args+=("$arg"); fi
+done
+set -- ${args[@]+"${args[@]}"}
+norm="$*"
+
 # Only commands that the real CLI has: the command registry of v2.5.2 (command/commands.go)
 # and of v2.7.2 (internal/command/commands.go). A command that a play invented fails here
 # instead of passing against the fake.
@@ -405,69 +476,22 @@ case "${1:-} ${2:-}" in
   *) echo "bao: unknown command: $*" >&2; exit 127 ;;
 esac
 
-# Revoke NAME and every token below it that was made without -orphan: the children, their
-# children, and so on. An orphan keeps its own tree.
-revoke_children() { # revoke_children NAME
-  local record child
-  for record in "$tokens_dir"/*.json; do
-    [ -f "$record" ] || continue
-    child="$(basename "$record" .json)"
-    [ ! -f "$state/revoked-$child" ] || continue
-    if python3 - "$record" "$1" <<'PY'
-import json, sys
-record = json.load(open(sys.argv[1]))
-orphan = record.get("orphan")
-orphan = not record.get("parent") if orphan is None else bool(orphan)
-sys.exit(0 if record.get("parent") == sys.argv[2] and not orphan else 1)
-PY
-    then
-      touch "$state/revoked-$child"
-      revoke_children "$child"
-    fi
-  done
-}
-revoke_token() {
-  touch "$state/revoked-$1"
-  printf '%s =revoked\n' "$1" >> "$state/bao-calls.log"
-  revoke_children "$1"
-}
-# A scoped token is live until it is revoked or its lifetime is over.
-token_ok() {
-  [ -n "${BAO_TOKEN:-}" ] && [ ! -f "$state/revoked-$BAO_TOKEN" ] || return 1
-  [ -f "$tokens_dir/$BAO_TOKEN.json" ] || return 0
-  token_store live "$BAO_TOKEN"
-}
-# The handlers that answer the older callers (a fake-* token with no stored record) check
-# only that a token is present. A stored scoped token must also be live.
-scoped_live() { [ ! -f "$tokens_dir/${BAO_TOKEN:-none}.json" ] || token_ok; }
-# A token with a stored record has the power of its stored policies. Only a token without
-# one gets the answer that its name stands for (fake-root*, fake-scheduler*, ...).
-stored_token() { [ -f "$tokens_dir/${BAO_TOKEN:-none}.json" ]; }
-# A root token is a fake-root token or a stored token with the root policy.
-is_root() {
-  stored_token || { case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac; return 1; }
-  token_store policies "$BAO_TOKEN" | grep -qx root
-}
-# The scheduler token of the older tests has a name and no stored record.
-legacy_scheduler() { ! stored_token && case "${BAO_TOKEN:-}" in fake-scheduler*) true ;; *) false ;; esac; }
+# A token with a use limit spends one use on each request that it makes, allowed or not, as
+# OpenBao does. The request that spends the last use completes, and the token is revoked
+# with its descendants when that request ends.
+is_live() { token_model live "${BAO_TOKEN:-}"; }
+can() { token_model can "${BAO_TOKEN:-}" "$@"; }   # live, and root or holding a need
 # A call that reads the identity fixture answers from it whenever the file exists.
 fixture_present() { [ -f "$state/identity.json" ]; }
-# A token with a use limit spends one use on each request that it makes, allowed or not,
-# as OpenBao does, and is revoked once the request that spent its last use is done.
-json_out=""
-case " $* " in *" -format=json "*) json_out=1 ;; esac
-used_up=""
-if [ "${1:-}" != status ] && [ -f "$tokens_dir/${BAO_TOKEN:-none}.json" ] && [ ! -f "$state/revoked-${BAO_TOKEN:-none}" ]; then
-  used_up="$(token_store use "$BAO_TOKEN")"
+use_state=""
+if [ "${1:-}" != status ] && [ -f "$tokens_dir/${BAO_TOKEN:-none}.json" ]; then
+  use_state="$(token_model use "$BAO_TOKEN")"
 fi
-revoke_after_last_use() {
-  [ -z "$used_up" ] || [ -f "$state/revoked-$BAO_TOKEN" ] || revoke_token "$BAO_TOKEN"
-  return 0
-}
-trap revoke_after_last_use EXIT
+trap '[ "$use_state" != final ] || [ -f "$state/revoked-$BAO_TOKEN" ] || token_model revoke "$BAO_TOKEN"' EXIT
+
 
 case "$*" in
-  "status -format=json")
+  "status")
     if [ "${FAKE_INITIALIZED:-true}" = false ] || { [ -n "${FAKE_FRESH_INIT:-}" ] && [ ! -f "$state/initialized" ]; }; then
       printf '{"initialized":false,"sealed":true,"t":0,"n":0,"progress":0}\n'
       exit 2
@@ -485,7 +509,7 @@ case "$*" in
     fi
     exit 0
     ;;
-  "write -format=json sys/unseal -")
+  "write sys/unseal -")
     body="$(cat)"
     key="$(printf '%s' "$body" | python3 -c 'import json,sys
 d=json.load(sys.stdin)
@@ -533,19 +557,21 @@ PY
     [ "$key" = "-" ] && { echo "Error unsealing: invalid key" >&2; exit 2; }
     exit 2
     ;;
-  "write -format=json auth/userpass/login/"*" password=-")
+  "write auth/userpass/login/"*" password=-")
     pw="$(cat)"
     if [ "$pw" != "${FAKE_PASSWORD:-pw}" ]; then echo "Error writing data: invalid credentials" >&2; exit 2; fi
+    rm -f "$state/revoked-fake-ops-token"   # a login makes a new token, even under a name that was revoked
     printf '{"auth":{"client_token":"fake-ops-token","accessor":"fake-ops-accessor"}}\n'
     exit 0
     ;;
-  "write -format=json auth/userpass/login/"*" -")
+  "write auth/userpass/login/"*" -")
     pw="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("password", ""), end="")')"
     if [ "$pw" != "${FAKE_PASSWORD:-pw}" ]; then echo "Error writing data: invalid credentials" >&2; exit 2; fi
+    rm -f "$state/revoked-fake-reconciler-token"
     printf '{"auth":{"client_token":"fake-reconciler-token"}}\n'
     exit 0
     ;;
-  "write -format=json auth/approle/login -")
+  "write auth/approle/login -")
     # The AppRole login reads {"role_id": ..., "secret_id": ...} from stdin. Arguments
     # of the form role_id=... or secret_id=... are not a form of this case.
     creds="$(cat)"
@@ -558,16 +584,17 @@ PY
       echo "Error making API request: invalid role or secret ID" >&2
       exit 2
     fi
+    rm -f "$state/revoked-fake-approle-token"
     printf '{"auth":{"client_token":"fake-approle-token"}}\n'
     exit 0
     ;;
-  "read -format=json secret/data/apps/netbox/runtime")
-    scoped_live && { if stored_token; then is_root; else [ "${BAO_TOKEN:-}" = "fake-approle-token" ]; fi; } || { echo "Error reading secret/data/apps/netbox/runtime: permission denied" >&2; exit 2; }
+  "read secret/data/apps/netbox/runtime")
+    can legacy:approle || { echo "Error reading secret/data/apps/netbox/runtime: permission denied" >&2; exit 2; }
     printf '{"data":{"data":{"netbox_admin_token":"fake-netbox-admin-token"}}}\n'
     exit 0
     ;;
-  "read -format=json sys/storage/raft/autopilot/state"|"operator raft autopilot state -format=json")
-    [ -n "${BAO_TOKEN:-}" ] && scoped_live || { echo "Error reading autopilot state: permission denied" >&2; exit 2; }
+  "read sys/storage/raft/autopilot/state"|"operator raft autopilot state")
+    is_live || { echo "Error reading autopilot state: permission denied" >&2; exit 2; }
     n="$(count_call autopilot)"
     case "${FAKE_AUTOPILOT:-healthy}" in
       denied) echo "Error reading autopilot state: permission denied" >&2; exit 2 ;;
@@ -625,8 +652,8 @@ else:
 PY
     exit 0
     ;;
-  "read -format=json sys/storage/raft/configuration")
-    [ -n "${BAO_TOKEN:-}" ] && scoped_live || { echo "Error reading sys/storage/raft/configuration: permission denied" >&2; exit 2; }
+  "read sys/storage/raft/configuration")
+    is_live || { echo "Error reading sys/storage/raft/configuration: permission denied" >&2; exit 2; }
     mode="$(read_kv raft-config "${FAKE_RAFT_CONFIG:-healthy}")"
     [ "$mode" = denied ] && { echo "Error reading sys/storage/raft/configuration: permission denied" >&2; exit 2; }
     node1="openbao-0.${FAKE_PEER_DOMAIN:-openbao-internal.openbao.svc.cluster.local}:8201"
@@ -634,31 +661,14 @@ PY
     printf '{"request_id":"00000000-0000-4000-8000-000000000000","data":{"config":{"index":1,"servers":[{"address":"%s","leader":true,"node_id":"1","protocol_version":"3","voter":true}]}}}\n' "$node1"
     exit 0
     ;;
-  "token capabilities -format=json "*)
-    [ -n "${BAO_TOKEN:-}" ] && scoped_live || { echo "Error: permission denied" >&2; exit 2; }
-    path="${4:-}"
-    # A token whose name starts with fake-eso carries eso-reader. It can read the KV
-    # secrets and, unless FAKE_ESO_PKI_GRANT holds a capability list, has nothing on any
-    # other path: OpenBao answers a path without a grant with ["deny"]. A token of that
-    # name that has a stored record has only its stored policies.
-    case "${BAO_TOKEN:-}" in
-      fake-eso*)
-        if ! stored_token; then
-          case "$path" in
-            secret/*) printf '["read"]\n' ;;
-            pki/*) printf '%s\n' "${FAKE_ESO_PKI_GRANT:-[\"deny\"]}" ;;
-            *) printf '["deny"]\n' ;;
-          esac
-          exit 0
-        fi
-        ;;
-    esac
-    if pod_in "$path" "${FAKE_CAPS_MISSING:-}"; then printf '["deny"]\n'; else printf '%s\n' "${FAKE_CAPS_JSON:-[\"read\"]}"; fi
+  "token capabilities"*)
+    is_live || { echo "Error: permission denied" >&2; exit 2; }
+    token_model capabilities "$BAO_TOKEN" "${3:-}"
     exit 0
     ;;
-  "kv metadata get -mount=secret -format=json "*)
-    [ -n "${BAO_TOKEN:-}" ] && scoped_live || { echo "Error reading secret/metadata/x: permission denied" >&2; exit 2; }
-    path="${6:-}"
+  "kv metadata get -mount=secret "*)
+    is_live || { echo "Error reading secret/metadata/x: permission denied" >&2; exit 2; }
+    path="${5:-}"
     mode="$(read_kv kv-mode "${FAKE_KV_MODE:-ok}")"
     case "$mode" in
       denied) echo "Error reading secret/metadata/$path: Error making API request. Code: 403. Errors: * 1 error occurred: * permission denied" >&2; exit 2 ;;
@@ -677,29 +687,20 @@ seal_on_fail() {
 }
 if [ -n "${FAKE_SEAL_ON_FAIL:-}" ] && is_sealed; then echo "Error: Vault is sealed" >&2; exit 2; fi
 k8s_auth_dir="$state/k8s-auth"
-# The live caller holds POLICY. The ops-admin login token holds what its userpass user holds.
-has_policy() {
-  token_ok || return 1
-  is_root && return 0
-  if stored_token; then token_store policies "$BAO_TOKEN" | grep -qx "$1"; return; fi
-  case "$BAO_TOKEN" in
-    fake-ops-token) userpass_user show | python3 -c 'import json,sys; sys.exit(0 if sys.argv[1] in json.load(sys.stdin)["token_policies"] else 1)' "$1" ;;
-    *) return 1 ;;
-  esac
-}
-# The accessor calls need a root token or the revoker's policy, the identity reads a root
-# token or the verifier's. The fake checks the policy by name, not by its paths.
-can_revoke() { token_ok && { is_root || has_policy "${FAKE_REVOKER_POLICY:-token-revoker}"; }; }
-can_inspect() { token_ok && { is_root || has_policy "${FAKE_VERIFIER_POLICY:-identity-verifier}"; }; }
+revoker="${FAKE_REVOKER_POLICY:-token-revoker}"
+verifier="${FAKE_VERIFIER_POLICY:-identity-verifier}"
+# allow WHAT NEED...: 403 unless the caller is live and root or holds one of the needs. The
+# fake trusts a policy by name; README.md says how each policy file is checked.
+allow() { local what="$1"; shift; can "$@" || forbidden "$what"; }
 # The policy paths take a root token, or any live token when FAKE_POLICY_WRITER is set:
 # the policy-reconciler identity holds a grant on sys/policies/acl/*.
-policy_ok() { token_ok && { is_root || [ -n "${FAKE_POLICY_WRITER:-}" ]; }; }
+policy_ok() { if [ -n "${FAKE_POLICY_WRITER:-}" ]; then is_live; else can root; fi; }
 forbidden() { printf 'Error %s: Error making API request.\n\nCode: 403. Errors:\n\n* 1 error occurred:\n\t* permission denied\n' "$1" >&2; exit 2; }
 case "$*" in
   "secrets enable "*|"auth enable "*)
     # The mount is recorded as one line in $state/mounts.log. Enabling a path twice
     # fails as on the server.
-    token_ok && is_root || forbidden "enabling a mount"
+    allow "enabling a mount" root
     mount="${!#}"
     case "$1" in secrets) kind=secrets ;; *) kind=auth ;; esac
     for arg in "$@"; do case "$arg" in -path=*) mount="${arg#-path=}" ;; esac; done
@@ -720,47 +721,46 @@ case "$*" in
     echo "Success! Uploaded policy: $3"
     exit 0
     ;;
-  "write auth/approle/role/"*"/secret-id"|"write -format=json -force auth/approle/role/"*"/secret-id")
-    token_ok && is_root || forbidden "writing data to auth/approle/role secret-id"
+  "write auth/approle/role/"*"/secret-id"|"write -force auth/approle/role/"*"/secret-id")
+    allow "writing data to auth/approle/role secret-id" root
     printf '{"data":{"secret_id":"fake-secret-id","secret_id_accessor":"fake-secret-id-accessor"}}\n'
     exit 0
     ;;
   "write auth/approle/role/"*)
-    token_ok && is_root || forbidden "writing data to auth/approle/role"
+    allow "writing data to auth/approle/role" root
     exit 0
     ;;
   "operator generate-root "*)
-    # With FAKE_GENROOT_AUTH set the call behaves as on OpenBao 2.6 and later: only a
-    # token that the fake issued and has not revoked may make it (the ops-admin login
-    # token, a root token, or a scoped token that holds the generate-root policy). Without it the call behaves as on 2.5.2, which sends the
-    # legacy unauthenticated request and ignores the token. FAKE_GENROOT_THRESHOLD is
+    # With FAKE_GENROOT_AUTH set the call needs a live token that may generate a root token: the
+    # ops-admin login token, a root token, or a scoped token that holds the generate-root policy.
+    # Without it the call ignores the token, as OpenBao 2.5.2 does. FAKE_GENROOT_THRESHOLD is
     # the number of shares that complete the attempt (default 3). The shares go to
     # $state/genroot-shares.log, one per line. FAKE_OTP is the OTP (default fake-otp):
     # init and decode must both carry it. FAKE_DECODE_FAILS makes the decode fail after
     # the token was issued. The decoded token is a root token.
-    # On the 2.5.2 behaviour a standby answers the legacy unauthenticated endpoint with a 500,
-    # because those handlers do not forward to the active node. The authenticated endpoints of
-    # 2.6 and later are forwarded.
+    # A standby answers the unauthenticated endpoint of 2.5.2 with a 500, because those
+    # handlers do not forward to the active node. The authenticated endpoints of 2.6 and
+    # later are forwarded.
     if [ -z "${FAKE_GENROOT_AUTH:-}" ] && [ -n "${FAKE_ACTIVE_POD+x}" ] && ! pod_in "$pod" "$FAKE_ACTIVE_POD"; then
       echo "Error getting root generation status: Error making API request." >&2
       printf 'URL: GET https://127.0.0.1:8200/v1/sys/generate-root/attempt\nCode: 500. Errors:\n\n* node is not active\n' >&2
       exit 2
     fi
     if [ -n "${FAKE_GENROOT_AUTH:-}" ]; then
-      token_ok && { is_root || { ! stored_token && [ "$BAO_TOKEN" = fake-ops-token ]; } || has_policy generate-root; } || forbidden "generating the root token"
+      allow "generating the root token" generate-root legacy:ops-login
     fi
     shift 2
     otp="${FAKE_OTP:-fake-otp}"
     case " $* " in
       " -cancel ") exit 0 ;;
-      " -generate-otp -format=json ") printf '{"otp":"%s"}\n' "$otp"; exit 0 ;;
+      " -generate-otp ") printf '{"otp":"%s"}\n' "$otp"; exit 0 ;;
       *" -init "*)
         case " $* " in *" -otp=$otp "*) ;; *) echo "Error initializing root generation: invalid otp" >&2; exit 2 ;; esac
         rm -f "$state/genroot-shares.log"
         printf '{"started":true,"nonce":"fake-nonce"}\n'
         exit 0
         ;;
-      " -nonce=fake-nonce -format=json - ")
+      " -nonce=fake-nonce - ")
         share="$(cat)"
         [ -n "$share" ] || { echo "Error posting unseal key: empty key" >&2; exit 2; }
         printf '%s\n' "$share" >> "$state/genroot-shares.log"
@@ -776,6 +776,7 @@ case "$*" in
         cat > /dev/null
         case " $* " in *" -otp=$otp "*) ;; *) echo "Error decoding root token: invalid otp" >&2; exit 2 ;; esac
         [ -z "${FAKE_DECODE_FAILS:-}" ] || { echo "Error decoding root token: internal error" >&2; exit 2; }
+        rm -f "$state/revoked-${FAKE_DECODED_TOKEN:-fake-root-genroot}"
         printf '{"token":"%s"}\n' "${FAKE_DECODED_TOKEN:-fake-root-genroot}"
         exit 0
         ;;
@@ -785,7 +786,7 @@ case "$*" in
     ;;
   "write auth/userpass/users/"*"/policies -")
     # The policies endpoint changes the policy list and nothing else of the user.
-    token_ok && is_root || forbidden "writing data to auth/userpass/users policies"
+    allow "writing data to auth/userpass/users policies" root
     [ -z "${FAKE_POLICIES_WRITE_FAILS:-}" ] || { echo "Error writing data to auth/userpass/users policies: internal error" >&2; exit 2; }
     userpass_user set-policies
     exit 0
@@ -793,12 +794,12 @@ case "$*" in
   "write auth/userpass/users/"*" -")
     # The user endpoint applies every field of the body that it is given: a password
     # counts as a password write, and token_policies (or policies) replaces the list.
-    token_ok && is_root || forbidden "writing data to auth/userpass/users"
+    allow "writing data to auth/userpass/users" root
     [ -z "${FAKE_PASSWORD_WRITE_FAILS:-}" ] || { echo "Error writing data to auth/userpass/users: internal error" >&2; exit 2; }
     userpass_user write-user
     exit 0
     ;;
-  "token lookup -format=json")
+  "token lookup")
     # `bao token lookup` without an argument looks up the token of the caller. The
     # real CLI has no `token lookup-self`.
     # FAKE_LOOKUP_TRANSPORT_FAILS: the lookup of a revoked token never reaches the
@@ -812,24 +813,19 @@ case "$*" in
       esac
       printf '%s =refused\n' "$BAO_TOKEN" >> "$state/bao-calls.log"
     fi
-    token_ok || forbidden "looking up token"
+    is_live || forbidden "looking up token"
     # The request that spends the last use leaves no token to look up: the server answers bad token.
-    [ -z "$used_up" ] || forbidden "looking up token"
-    [ ! -f "$tokens_dir/$BAO_TOKEN.json" ] || { token_store lookup-self "$BAO_TOKEN"; exit 0; }
-    python3 - "$BAO_TOKEN" "$(userpass_user show)" <<'PY'
-import json, sys
-token, user = sys.argv[1], json.loads(sys.argv[2])
-policies = ["root"] if token.startswith("fake-root") else ["default"] + (user["token_policies"] if token == "fake-ops-token" else [])
-print(json.dumps({"data": {"policies": policies, "accessor": token + "-accessor"}}))
-PY
+    [ "$use_state" != final ] || forbidden "looking up token"
+    token_model lookup-self "$BAO_TOKEN"
     exit 0
     ;;
-  "token create "*)
-    token_ok && is_root || forbidden "creating a token"
+  "token create"*)
+    allow "creating a token" root
     # A token with a use limit cannot create tokens, or it could escape the limit. Its last
     # use leaves nothing to look up, which the server reports as a missing parent.
-    if token_store limited "$BAO_TOKEN"; then
-      if [ -n "$used_up" ]; then reason="parent token lookup failed: no parent found"; else reason="restricted use token cannot generate child tokens"; fi
+    if [ -n "$use_state" ]; then
+      reason="restricted use token cannot generate child tokens"
+      [ "$use_state" != final ] || reason="parent token lookup failed: no parent found"
       printf 'Error creating token: Error making API request.\n\nCode: 400. Errors:\n\n* %s\n' "$reason" >&2
       exit 2
     fi
@@ -847,24 +843,13 @@ PY
         -use-limit=*) use_limit="${flag#-use-limit=}" ;;
         -no-default-policy) no_default=true ;;
         -no-default-policy=*) no_default="${flag#-no-default-policy=}" ;;
-        -format=json) ;;
         *) echo "flag provided but not defined: ${flag%%=*}" >&2; exit 1 ;;
       esac
     done
     case "$use_limit" in *[!0-9]*) echo "invalid value \"$use_limit\" for flag -use-limit" >&2; exit 1 ;; esac
-    # With no policy the child inherits the policies of its root parent, so it is a root token.
-    [ -n "$policies" ] || policies=root
-    # A root-policy token without a use limit or an explicit maximum TTL is named fake-root-short-N
-    # and any other token fake-scoped-N. Every one of them is a record in the token store.
-    case " $policies " in *" root "*) root_policy=1 ;; *) root_policy="" ;; esac
-    if [ -n "$root_policy" ] && [ -z "$use_limit$explicit_max" ]; then
-      name="fake-root-short-$(( $(count_call short-token) + 1 ))"
-    else
-      name="fake-scoped-$(( $(count_call scoped-token) + 1 ))"
-    fi
     created="$state/create-answer.json"
     # shellcheck disable=SC2086
-    token_store create "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$explicit_max" "$use_limit" "$renewable" "$no_default" $policies > "$created" || exit 1
+    token_model create "$BAO_TOKEN" "$orphan" "$ttl" "$explicit_max" "$use_limit" "$renewable" "$no_default" $policies > "$created" || exit 1
     if [ -n "${FAKE_TOKEN_CREATE_LOST:-}" ]; then
       echo "Error creating token: read tcp 127.0.0.1:8200: connection reset by peer" >&2
       exit 2
@@ -873,7 +858,7 @@ PY
     exit 0
     ;;
   "token revoke -self")
-    token_ok || forbidden "revoking token"
+    is_live || forbidden "revoking token"
     # FAKE_REVOKE_FAILS: root, short, login or both make that kind of token's revoke fail
     # every time. FAKE_REVOKE_FAIL_FIRST: that many attempts fail for each kind, then it works.
     kind=login
@@ -886,11 +871,11 @@ PY
       echo "Error revoking token: connection refused" >&2
       exit 2
     fi
-    revoke_token "$BAO_TOKEN"
+    token_model revoke "$BAO_TOKEN"
     exit 0
     ;;
   "write auth/kubernetes/config "*)
-    token_ok && is_root || forbidden "writing data to auth/kubernetes/config"
+    allow "writing data to auth/kubernetes/config" root
     mkdir -p "$k8s_auth_dir"
     shift 2
     python3 - "$k8s_auth_dir/config.json" "$@" <<'PY'
@@ -907,8 +892,8 @@ json.dump(config, open(path, "w"))
 PY
     exit $?
     ;;
-  "read -format=json auth/kubernetes/config")
-    token_ok && is_root || forbidden "reading auth/kubernetes/config"
+  "read auth/kubernetes/config")
+    allow "reading auth/kubernetes/config" root
     [ -f "$k8s_auth_dir/config.json" ] || { echo "No value found at auth/kubernetes/config" >&2; exit 2; }
     python3 - "$k8s_auth_dir/config.json" "${FAKE_K8S_IGNORES_REVIEWER_FIELDS:-}" <<'PY'
 import json, sys
@@ -921,7 +906,7 @@ PY
     exit 0
     ;;
   "write auth/kubernetes/role/"*)
-    token_ok && is_root || forbidden "writing data to auth/kubernetes/role"
+    allow "writing data to auth/kubernetes/role" root
     [ -z "${FAKE_K8S_WRITE_FAILS:-}" ] || { echo "Error writing data to auth/kubernetes/role: internal error" >&2; exit 2; }
     mkdir -p "$k8s_auth_dir"
     name="${2#auth/kubernetes/role/}"
@@ -953,19 +938,14 @@ json.dump(role, open(path, "w"))
 PY
     exit $?
     ;;
-  "read -format=json sys/policies/acl/eso-reader")
-    scoped_live || forbidden "reading sys/policies/acl/eso-reader"
-    if stored_token; then is_root || forbidden "reading sys/policies/acl/eso-reader"; else
-      case "${BAO_TOKEN:-}" in fake-policy*) ;; *) forbidden "reading sys/policies/acl/eso-reader" ;; esac
-    fi
-    python3 -c 'import json,sys; print(json.dumps({"data": {"name": "eso-reader", "policy": open(sys.argv[1]).read()}}))' "${FAKE_ESO_POLICY_FILE:?FAKE_ESO_POLICY_FILE is not set}"
-    exit 0
-    ;;
-  "read -format=json sys/policies/acl/"*)
-    policy_ok || forbidden "reading sys/policies/acl"
-    name="${3#sys/policies/acl/}"
-    [ -f "$state/policies/$name" ] || { echo "No value found at sys/policies/acl/$name" >&2; exit 2; }
-    python3 -c 'import json,sys; print(json.dumps({"data": {"name": sys.argv[1], "policy": open(sys.argv[2]).read()}}))' "$name" "$state/policies/$name"
+  "read sys/policies/acl/"*)
+    # The legacy fake-policy token also reads eso-reader, from FAKE_ESO_POLICY_FILE when it is set.
+    name="${2#sys/policies/acl/}"
+    policy_ok || { [ "$name" = eso-reader ] && can legacy:policy-reader; } || forbidden "reading sys/policies/acl/$name"
+    file="$state/policies/$name"
+    [ "$name" != eso-reader ] || file="${FAKE_ESO_POLICY_FILE:-$file}"
+    [ -f "$file" ] || { echo "No value found at sys/policies/acl/$name" >&2; exit 2; }
+    python3 -c 'import json,sys; print(json.dumps({"data": {"name": sys.argv[1], "policy": open(sys.argv[2]).read()}}))' "$name" "$file"
     exit 0
     ;;
   "policy write "*" -")
@@ -976,27 +956,20 @@ PY
     echo "Success! Uploaded policy: $3"
     exit 0
     ;;
-esac
-# The calls below take -format=json or not, so each arm matches one spelling: the arguments
-# without -format=json. The answer is JSON for all but `list` without it, which prints the
-# table of the CLI. The identity and role reads are all here.
-norm="$(printf '%s' "$*" | sed 's/ -format=json//')"
-case "$norm" in
   "list auth/token/accessors")
-    can_revoke || forbidden "listing auth/token/accessors"
-    print_keys auth/token/accessors "$(token_store accessors)"
+    allow "listing auth/token/accessors" "$revoker"
+    print_keys auth/token/accessors "$(token_model accessors)"
     exit 0
     ;;
   "write auth/token/lookup-accessor "*)
-    can_revoke || forbidden "writing data to auth/token/lookup-accessor"
-    token_store lookup "$(field accessor "$@")" || { echo "Error writing data to auth/token/lookup-accessor: invalid accessor" >&2; exit 2; }
+    allow "writing data to auth/token/lookup-accessor" "$revoker"
+    token_model lookup "$(field accessor "$@")" || { echo "Error writing data to auth/token/lookup-accessor: invalid accessor" >&2; exit 2; }
     exit 0
     ;;
   "write auth/token/revoke-accessor "*)
-    can_revoke || forbidden "writing data to auth/token/revoke-accessor"
+    allow "writing data to auth/token/revoke-accessor" "$revoker"
     # An accessor that no live token has is not an error: the server only warns.
-    name="$(token_store name-of "$(field accessor "$@")")" || { echo "WARNING! The following warnings were returned from OpenBao:" >&2; echo "  * No token found with this accessor" >&2; exit 0; }
-    revoke_token "$name"
+    token_model revoke-accessor "$(field accessor "$@")" || { echo "WARNING! The following warnings were returned from OpenBao:" >&2; echo "  * No token found with this accessor" >&2; exit 0; }
     exit 0
     ;;
   "write auth/kubernetes/login "*)
@@ -1004,22 +977,17 @@ case "$norm" in
     # JWT is `jwt=-` (standard input) or a value.
     jwt="$(field jwt "$@")"
     [ "$jwt" != - ] || jwt="$(cat)"
-    role="$(field role "$@")"
-    grant="$(k8s_login_role "$role" "$jwt" 2>&1)" || { echo "Error writing data to auth/kubernetes/login: $grant" >&2; exit 2; }
-    read -r role_ttl role_max_ttl role_policies <<< "$grant"
-    name="fake-k8s-$(( $(count_call k8s-login) + 1 ))"
-    # shellcheck disable=SC2086
-    token_store create "$name" "" true "$role_ttl" "$role_max_ttl" "" true as-given $role_policies
+    token_model login "$(field role "$@")" "$jwt" || exit 2
     exit 0
     ;;
   "list auth/kubernetes/role")
-    can_inspect || forbidden "listing auth/kubernetes/role"
+    allow "listing auth/kubernetes/role" "$verifier"
     roles="$(cd "$k8s_auth_dir" 2>/dev/null && for f in role-*.json; do [ -f "$f" ] && { f="${f#role-}"; echo "${f%.json}"; }; done)"
     print_keys auth/kubernetes/role "$roles"
     exit 0
     ;;
   "read sys/auth")
-    can_inspect || forbidden "reading sys/auth"
+    allow "reading sys/auth" "$verifier"
     python3 - "$state/identity.json" <<'PY'
 import json, os, sys
 fixture = json.load(open(sys.argv[1])) if os.path.exists(sys.argv[1]) else {}
@@ -1029,12 +997,12 @@ PY
     exit 0
     ;;
   "list auth/userpass/users"|"list auth/approle/role"|"list auth/token/roles"|"list identity/entity/id"|"list identity/group/id")
-    can_inspect || forbidden "listing ${norm#list }"
+    allow "listing ${norm#list }" "$verifier"
     print_keys "${norm#list }" "$(identity_fixture "${norm#list }")"
     exit 0
     ;;
   "read auth/approle/role/"*"/role-id")
-    token_ok && is_root || forbidden "reading auth/approle/role role-id"
+    allow "reading auth/approle/role role-id" root
     # With identity.json the role must be one that it names, and its role_id is the fixture's.
     if fixture_present; then
       role="${norm#read auth/approle/role/}"; role="${role%/role-id}"
@@ -1045,24 +1013,25 @@ PY
     printf '{"data":{"role_id":"fake-role-id"}}\n'
     exit 0
     ;;
-  "read auth/approle/role/external-secrets")
-    # With identity.json, the fixture is the only source for every caller that may read the
-    # role (a token that may inspect, or the legacy scheduler token): the role it names, or no
-    # value. Without the file the answer is the scheduler's, and the scheduler's alone.
-    if fixture_present; then
-      can_inspect || legacy_scheduler || forbidden "reading auth/approle/role/external-secrets"
-      identity_fixture auth/approle/role external-secrets && exit 0
-      exit 2
+  "read auth/approle/role/"*)
+    # The legacy scheduler token also reads external-secrets. Without a fixture only it does,
+    # and the answer is FAKE_ESO_ROLE_POLICIES.
+    role="${norm##*/}"
+    grants="$verifier"
+    if [ "$role" = external-secrets ]; then
+      if fixture_present; then grants="$verifier legacy:scheduler"; else grants=legacy:scheduler; fi
     fi
-    scoped_live || forbidden "reading auth/approle/role/external-secrets"
-    if stored_token; then is_root || forbidden "reading auth/approle/role/external-secrets"; else
-      case "${BAO_TOKEN:-}" in fake-scheduler*) ;; *) forbidden "reading auth/approle/role/external-secrets" ;; esac
+    # shellcheck disable=SC2086
+    allow "reading auth/approle/role/$role" $grants
+    if [ "$role" = external-secrets ] && ! fixture_present; then
+      printf '{"data":{"token_policies":%s,"token_ttl":3600}}\n' "${FAKE_ESO_ROLE_POLICIES:-[\"eso-reader\"]}"
+      exit 0
     fi
-    printf '{"data":{"token_policies":%s,"token_ttl":3600}}\n' "${FAKE_ESO_ROLE_POLICIES:-[\"eso-reader\"]}"
+    identity_fixture auth/approle/role "$role" || exit 2
     exit 0
     ;;
   "read auth/userpass/users/"*)
-    can_inspect || forbidden "reading auth/userpass/users"
+    allow "reading auth/userpass/users" "$verifier"
     name="${norm##*/}"
     # With a fixture the users are the ones it names. Without one, the only user is ops-admin.
     if fixture_present; then identity_fixture auth/userpass/users "$name" && exit 0; exit 2; fi
@@ -1071,14 +1040,14 @@ PY
     exit 0
     ;;
   "read auth/kubernetes/role/"*)
-    can_inspect || forbidden "reading auth/kubernetes/role"
+    allow "reading auth/kubernetes/role" "$verifier"
     name="${norm#read auth/kubernetes/role/}"
     [ -f "$k8s_auth_dir/role-$name.json" ] || { echo "No value found at auth/kubernetes/role/$name" >&2; exit 2; }
     python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$k8s_auth_dir/role-$name.json"
     exit 0
     ;;
-  "read auth/approle/role/"*|"read auth/token/roles/"*|"read identity/entity/id/"*|"read identity/group/id/"*)
-    can_inspect || forbidden "reading ${norm#read }"
+  "read auth/token/roles/"*|"read identity/entity/id/"*|"read identity/group/id/"*)
+    allow "reading ${norm#read }" "$verifier"
     path="${norm#read }"
     identity_fixture "${path%/*}" "${path##*/}" || exit 2
     exit 0

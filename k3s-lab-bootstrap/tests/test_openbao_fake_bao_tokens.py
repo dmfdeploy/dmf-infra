@@ -267,7 +267,20 @@ class FakeBaoTokenTests(unittest.TestCase):
         self.assertNotEqual(self.login("executor", jwt="fake-sa:approvals:intruder").returncode, 0)
         self.assertNotEqual(self.login("executor", jwt="fake-sa:other:executor").returncode, 0)
         self.assertEqual(self.login("executor").returncode, 0)
-        self.assertEqual(self.login("executor", jwt="a-projected-token").returncode, 0)
+
+    def test_kubernetes_login_refuses_any_jwt_that_is_not_a_fake_service_account(self) -> None:
+        # Catches a login that trusts a JWT it cannot check: OpenBao verifies the signature,
+        # issuer and audience, so the fake accepts only fake-sa:NAMESPACE:NAME. A wildcard
+        # binding still matches by name.
+        self.role("executor", "generate-root")
+        for jwt in ("a-projected-token", "x", "fake-sa:approvals", "other:approvals:executor"):
+            with self.subTest(jwt=jwt):
+                refused = self.login("executor", jwt=jwt)
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn("permission denied", refused.stderr)
+        self.role("anyone", "generate-root", sa="*", namespace="*")
+        self.assertEqual(self.login("anyone", jwt="fake-sa:elsewhere:whoever").returncode, 0)
+        self.assertNotEqual(self.login("anyone", jwt="whoever").returncode, 0)
 
     def test_kubernetes_roles_are_listed_and_read_by_the_verifier_policy(self) -> None:
         # Catches role reads that a token without a grant may make.
@@ -275,7 +288,7 @@ class FakeBaoTokenTests(unittest.TestCase):
         verifier = self.call(["write", "auth/kubernetes/role/v", "bound_service_account_names=v",
                               "bound_service_account_namespaces=n", "token_policies=identity-verifier"], token=ROOT_TOKEN)
         self.assertEqual(verifier.returncode, 0)
-        token = json.loads(self.login("v", jwt="x").stdout)["auth"]["client_token"]
+        token = json.loads(self.login("v", jwt="fake-sa:n:v").stdout)["auth"]["client_token"]
         self.assertEqual(json.loads(self.call(["list", "-format=json", "auth/kubernetes/role"], token=token).stdout), ["executor", "v"])
         read = self.call(["read", "-format=json", "auth/kubernetes/role/executor"], token=token)
         self.assertEqual(json.loads(read.stdout)["data"]["token_policies"], ["generate-root"])
@@ -531,7 +544,7 @@ class FakeBaoTokenTests(unittest.TestCase):
                 self.assertNotEqual(self.call(args, token=name, **env).returncode, 0)
         self.seed("fake-eso-x", policies=["default"])
         caps = self.call(["token", "capabilities", "-format=json", "pki/x"], token="fake-eso-x")
-        self.assertEqual(json.loads(caps.stdout), ["read"])   # the generic answer, not the eso grant of the name
+        self.assertEqual(json.loads(caps.stdout), ["deny"])   # a record holds only its policies, not the grant of the name
         self.assertEqual(json.loads(self.call(["token", "capabilities", "-format=json", "pki/x"],
                                               token="fake-eso-legacy").stdout), ["deny"])
 
@@ -600,7 +613,7 @@ class FakeBaoTokenTests(unittest.TestCase):
         self.seed_raw("last-use", {"policies": ["root"], "orphan": True, "created": NOW, "ttl": 0, "uses_left": 1})
         first = self.call(self.CAPABILITIES, token="last-use")
         self.assertEqual(first.returncode, 0, first.stderr)
-        self.assertEqual(json.loads(first.stdout), ["read"])
+        self.assertEqual(json.loads(first.stdout), ["root"])   # a record with the root policy holds root
         self.assertTrue((self.state / "revoked-last-use").exists())
         self.assertNotEqual(self.call(self.CAPABILITIES, token="last-use").returncode, 0)
 
@@ -731,6 +744,66 @@ class FakeBaoTokenTests(unittest.TestCase):
         empty = self.call(["list", "-format=json", "auth/approle/role"], token=ROOT_TOKEN)
         self.assertEqual((empty.returncode, empty.stdout.strip()), (2, "{}"))
         self.assertIn("No value found", self.call(["list", "auth/approle/role"], token=ROOT_TOKEN).stderr)
+
+
+    def test_capabilities_follow_the_token_and_not_a_default(self) -> None:
+        # Catches capabilities that answer read to every token. A record holds root or nothing,
+        # a legacy name keeps the scenario answer, and a test can set the answer for all.
+        scoped = self.scoped()["client_token"]
+        root = self.create("-policy=root")["client_token"]
+
+        def caps(token, **env):
+            result = self.call(["token", "capabilities", "-format=json", "secret/x"], token=token, **env)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return json.loads(result.stdout)
+
+        self.assertEqual((caps(scoped), caps(root), caps(ROOT_TOKEN)), (["deny"], ["root"], ["read"]))
+        self.assertEqual(caps(scoped, FAKE_CAPS_JSON='["read", "list"]'), ["read", "list"])
+        self.assertEqual((caps(scoped, FAKE_CAPS_MISSING="secret/x"), caps(ROOT_TOKEN, FAKE_CAPS_MISSING="secret/x")),
+                         (["deny"], ["deny"]))
+
+    def test_a_token_ends_with_a_spent_ancestor_unless_it_is_an_orphan(self) -> None:
+        # Catches a liveness check that looks at the use limit of the leaf only.
+        self.seed_raw("spent-parent", {"policies": ["root"], "orphan": True, "created": NOW, "uses_left": 0})
+        self.seed_raw("heir", {"policies": ["root"], "parent": "spent-parent", "created": NOW})
+        self.seed_raw("orphan-heir", {"policies": ["root"], "parent": "spent-parent", "orphan": True, "created": NOW})
+        self.assertNotEqual(self.call(SELF_LOOKUP, token="heir").returncode, 0)
+        self.assertEqual(self.call(SELF_LOOKUP, token="orphan-heir").returncode, 0)
+        listed = self.call(LIST_ACCESSORS, token=ROOT_TOKEN).stdout.split()
+        self.assertNotIn("heir-accessor", listed)
+        self.assertIn("orphan-heir-accessor", listed)
+
+    def test_every_policy_that_the_fake_trusts_by_name_has_a_policy_file_with_a_static_test(self) -> None:
+        # The fake trusts a policy by name. Each real policy file has its paths and capabilities
+        # checked by its own static test, which names the file. A name with no file on this
+        # branch (the revoker and verifier policies arrive on a later branch) is skipped.
+        script = FAKE.read_text()
+        trusted = set(re.findall(r"FAKE_(?:REVOKER|VERIFIER)_POLICY:-([a-z-]+)\}", script))
+        trusted |= set(re.findall(r'allow "generating the root token" ([a-z-]+)', script))
+        self.assertEqual(trusted, {"token-revoker", "identity-verifier", "generate-root"})
+        policies = ROOT / "roles/stack/operator/openbao/files/policies"
+        tests = [p for p in (ROOT / "tests").glob("test_openbao_*.py") if p.name != Path(__file__).name]
+        for name in sorted(trusted):
+            with self.subTest(policy=name):
+                if not (policies / f"{name}.hcl").exists():
+                    continue
+                self.assertTrue([t.name for t in tests if f"{name}.hcl" in t.read_text()],
+                                f"no static test names {name}.hcl")
+
+
+    def test_a_new_login_makes_a_live_token_even_under_a_name_that_was_revoked(self) -> None:
+        # Catches a legacy name that stays revoked for good: a play that revokes its login
+        # token and logs in again gets a new token that works.
+        for login in (["write", "-format=json", "auth/userpass/login/ops-admin", "password=-"],
+                      ["write", "-format=json", "auth/approle/login", "-"]):
+            with self.subTest(login=login[2]):
+                body = "pw" if "userpass" in login[2] else json.dumps({"role_id": "fake-role-id", "secret_id": "fake-secret-id"})
+                token = json.loads(self.call(login, stdin=body).stdout)["auth"]["client_token"]
+                self.assertEqual(self.call(["token", "revoke", "-self"], token=token).returncode, 0)
+                self.assertNotEqual(self.call(SELF_LOOKUP, token=token).returncode, 0)
+                again = json.loads(self.call(login, stdin=body).stdout)["auth"]["client_token"]
+                self.assertEqual(again, token)
+                self.assertEqual(self.call(SELF_LOOKUP, token=again).returncode, 0)
 
 
 if __name__ == "__main__":
