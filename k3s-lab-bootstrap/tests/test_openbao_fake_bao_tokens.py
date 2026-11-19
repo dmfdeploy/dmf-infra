@@ -534,6 +534,45 @@ class FakeBaoTokenTests(unittest.TestCase):
         self.assertEqual(json.loads(self.call(["token", "capabilities", "-format=json", "pki/x"],
                                               token="fake-eso-legacy").stdout), ["deny"])
 
+    def test_a_root_policy_token_with_only_a_ttl_expires_for_every_call_and_in_the_accessor_store(self) -> None:
+        # Catches a root-policy token that stays authorized after its TTL because it is kept
+        # in a second form that the liveness check does not read.
+        auth = self.create("-policy=root", "-ttl=10m")
+        token = auth["client_token"]
+        self.assertTrue(token.startswith("fake-root-short-"))
+        early = NOW + 300
+        self.assertEqual(self.call(["token", "create", "-policy=x", "-format=json"], token=token, now=early).returncode, 0)
+        late = NOW + 700
+        created = self.call(["token", "create", "-policy=x", "-format=json"], token=token, now=late)
+        self.assertNotEqual(created.returncode, 0)
+        self.assertIn("permission denied", created.stderr)
+        self.assertNotEqual(self.call(SELF_LOOKUP, token=token, now=late).returncode, 0)
+        self.assertNotEqual(self.call(["token", "capabilities", "-format=json", "secret/x"], token=token, now=late).returncode, 0)
+        listed = self.call(LIST_ACCESSORS + ["-format=json"], token=ROOT_TOKEN, now=late)
+        self.assertNotIn(auth["accessor"], listed.stdout)
+        looked = self.call(["write", "auth/token/lookup-accessor", f"accessor={auth['accessor']}"], token=ROOT_TOKEN, now=late)
+        self.assertNotEqual(looked.returncode, 0)
+
+    def test_a_revoked_root_policy_token_is_refused_by_every_call(self) -> None:
+        # Catches a revoked fake-root-short token that an early handler still serves.
+        token = self.create("-policy=root")["client_token"]
+        self.assertEqual(self.call(["token", "revoke", "-self"], token=token).returncode, 0)
+        calls = [["token", "create", "-policy=x", "-format=json"], SELF_LOOKUP, LIST_ACCESSORS,
+                 ["token", "capabilities", "-format=json", "secret/x"],
+                 ["read", "-format=json", "sys/storage/raft/autopilot/state"],
+                 ["kv", "metadata", "get", "-mount=secret", "-format=json", "x"]]
+        for args in calls:
+            with self.subTest(args=args):
+                self.assertNotEqual(self.call(args, token=token).returncode, 0)
+
+    def test_every_token_that_token_create_makes_is_one_record_in_the_token_store(self) -> None:
+        # Catches a second storage form: the records of root-policy tokens in token-NAME.json.
+        short = self.create("-policy=root")["client_token"]
+        scoped = self.scoped()["client_token"]
+        self.assertEqual(sorted(p.name for p in (self.state / "tokens").glob("*.json")),
+                         sorted([f"{short}.json", f"{scoped}.json"]))
+        self.assertEqual(list(self.state.glob("token-*.json")), [])
+
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.
         listed = self.call(["list", "-format=json", "auth/userpass/users"], token=ROOT_TOKEN)

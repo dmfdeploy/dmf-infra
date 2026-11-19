@@ -27,13 +27,18 @@ GOOD_CALLS = HEAD + PROOF + [(SHORT, WRITE)] + TAIL
 GOOD_RECORD = {"parent": ROOT, "orphan": True, "policies": ["root"], "ttl": 900, "renewable": False}
 
 
+def store_path(state):
+    os.makedirs(os.path.join(state, "tokens"), exist_ok=True)
+    return os.path.join(state, "tokens", "%s.json" % SHORT)
+
+
 class TokenLifecycleCheckerTest(unittest.TestCase):
     def run_checker(self, calls, record=GOOD_RECORD, revoked=(ROOT, SHORT), minted=1):
         with tempfile.TemporaryDirectory() as state:
             with open(os.path.join(state, "bao-calls.log"), "w", encoding="utf-8") as handle:
                 handle.write("".join("%s %s\n" % call for call in calls))
             if record is not None:
-                with open(os.path.join(state, "token-%s.json" % SHORT), "w", encoding="utf-8") as handle:
+                with open(store_path(state), "w", encoding="utf-8") as handle:
                     json.dump(record, handle)
             for name in revoked:
                 open(os.path.join(state, "revoked-" + name), "w").close()
@@ -103,7 +108,7 @@ class TokenLifecycleCheckerTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as state:
             with open(os.path.join(state, "bao-calls.log"), "w", encoding="utf-8") as handle:
                 handle.write("".join("%s %s\n" % call for call in calls))
-            with open(os.path.join(state, "token-%s.json" % SHORT), "w", encoding="utf-8") as handle:
+            with open(store_path(state), "w", encoding="utf-8") as handle:
                 json.dump(GOOD_RECORD, handle)
             for name in (ROOT, SHORT):
                 open(os.path.join(state, "revoked-" + name), "w").close()
@@ -117,7 +122,7 @@ class TokenLifecycleCheckerTest(unittest.TestCase):
         before = [(ROOT, read)] + GOOD_CALLS
         after = GOOD_CALLS[:-4] + [(ROOT, read)] + TAIL
         with tempfile.TemporaryDirectory() as state:
-            with open(os.path.join(state, "token-%s.json" % SHORT), "w", encoding="utf-8") as handle:
+            with open(store_path(state), "w", encoding="utf-8") as handle:
                 json.dump(GOOD_RECORD, handle)
             for name in (ROOT, SHORT):
                 open(os.path.join(state, "revoked-" + name), "w").close()
