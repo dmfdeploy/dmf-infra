@@ -360,7 +360,7 @@ class FakeBaoTokenTests(unittest.TestCase):
 
     def seed(self, name, **fields):
         (self.state / "tokens").mkdir(exist_ok=True)
-        record = {"policies": ["default"], "orphan": True, "created": NOW, "ttl": 0, "uses_left": None, **fields}
+        record = {"policies": ["root"], "orphan": True, "created": NOW, "ttl": 0, "uses_left": None, **fields}
         (self.state / "tokens" / f"{name}.json").write_text(json.dumps(record))
         (self.state / f"revoked-{name}").unlink(missing_ok=True)
 
@@ -465,6 +465,74 @@ class FakeBaoTokenTests(unittest.TestCase):
         refused = self.call(SELF_LOOKUP, token=token)
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("permission denied", refused.stderr)
+
+    def test_a_user_missing_from_the_fixture_has_no_value_and_is_not_ops_admin(self) -> None:
+        # Catches a userpass read that falls back to the ops-admin record, and a list that
+        # adds ops-admin, when identity.json exists but does not name the user.
+        (self.state / "identity.json").write_text(json.dumps({"userpass_users": {"alice": {"token_policies": ["p1"]}}}))
+        token = self._verifier()
+        for flags in (["-format=json"], []):
+            with self.subTest(flags=flags):
+                missing = self.call(["read", *flags, "auth/userpass/users/ops-admin"], token=token)
+                self.assertEqual(missing.returncode, 2)
+                self.assertIn("No value found at auth/userpass/users/ops-admin", missing.stderr)
+                self.assertEqual(missing.stdout, "")
+        listed = self.call(["list", "-format=json", "auth/userpass/users"], token=token)
+        self.assertEqual(json.loads(listed.stdout), ["alice"])
+        (self.state / "identity.json").write_text(json.dumps({"approle_roles": {}}))
+        self.assertEqual(self.call(["list", "-format=json", "auth/userpass/users"], token=token).returncode, 2)
+        self.assertEqual(self.call(["read", "auth/userpass/users/ops-admin"], token=token).returncode, 2)
+
+    def test_without_a_fixture_only_ops_admin_is_a_userpass_user(self) -> None:
+        # Catches a read of any user name that answers with the ops-admin record.
+        self.assertEqual(self.call(["read", "-format=json", "auth/userpass/users/ops-admin"], token=ROOT_TOKEN).returncode, 0)
+        typo = self.call(["read", "-format=json", "auth/userpass/users/ops-admn"], token=ROOT_TOKEN)
+        self.assertEqual(typo.returncode, 2)
+        self.assertIn("No value found", typo.stderr)
+
+    def test_a_fixture_without_the_external_secrets_role_gives_no_value_to_an_inspector(self) -> None:
+        # Catches a missing role that answers 403 or the scheduler's role to a token that may inspect.
+        (self.state / "identity.json").write_text(json.dumps({"approle_roles": {"other": {"token_policies": ["p"]}}}))
+        result = self.call(["read", "-format=json", "auth/approle/role/external-secrets"], token=self._verifier())
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("No value found", result.stderr)
+
+    def test_token_create_without_a_policy_says_root_and_is_root(self) -> None:
+        # Catches a response that names default for a token that the fake then lets act as
+        # root. With no -policy the child inherits the policies of its root parent.
+        auth = self.mint(token=ROOT_TOKEN)
+        self.assertEqual((auth["policies"], auth["token_policies"]), (["root"], ["root"]))
+        self.assertEqual(self.lookup_accessor(auth)["policies"], ["root"])
+        self.assertEqual(json.loads(self.call(SELF_LOOKUP, token=auth["client_token"]).stdout)["data"]["policies"], ["root"])
+        self.assertEqual(self.call(["token", "create", "-policy=x", "-format=json"], token=auth["client_token"]).returncode, 0)
+
+    def test_a_default_only_token_is_refused_on_root_only_endpoints(self) -> None:
+        # Catches a token that holds only default but can create tokens or generate a root.
+        token = self.mint("-policy=default", token=ROOT_TOKEN)["client_token"]
+        created = self.call(["token", "create", "-policy=x", "-format=json"], token=token)
+        self.assertNotEqual(created.returncode, 0)
+        self.assertIn("permission denied", created.stderr)
+        generated = self.call(GENERATE_OTP, token=token)
+        self.assertNotEqual(generated.returncode, 0)
+        self.assertIn("permission denied", generated.stderr)
+
+    def test_a_stored_token_has_the_power_of_its_policies_not_of_its_name(self) -> None:
+        # Catches a name that grants power to a token that has a stored record: each of
+        # these names is a legacy token without one, and a stored default-only token is not.
+        for name, args, env in (
+                ("fake-root-x", ["token", "create", "-policy=x", "-format=json"], {}),
+                ("fake-ops-token", GENERATE_OTP, {}),
+                ("fake-scheduler-x", ["read", "-format=json", "auth/approle/role/external-secrets"], {}),
+                ("fake-approle-token", ["read", "-format=json", "secret/data/apps/netbox/runtime"], {}),
+                ("fake-policy-x", ["read", "-format=json", "sys/policies/acl/eso-reader"], {"FAKE_ESO_POLICY_FILE": "/dev/null"})):
+            with self.subTest(name=name):
+                self.seed(name, policies=["default"])
+                self.assertNotEqual(self.call(args, token=name, **env).returncode, 0)
+        self.seed("fake-eso-x", policies=["default"])
+        caps = self.call(["token", "capabilities", "-format=json", "pki/x"], token="fake-eso-x")
+        self.assertEqual(json.loads(caps.stdout), ["read"])   # the generic answer, not the eso grant of the name
+        self.assertEqual(json.loads(self.call(["token", "capabilities", "-format=json", "pki/x"],
+                                              token="fake-eso-legacy").stdout), ["deny"])
 
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.

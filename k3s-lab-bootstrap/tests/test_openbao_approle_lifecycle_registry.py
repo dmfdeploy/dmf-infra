@@ -115,10 +115,10 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/tests/test_openbao_scheduler_policy.py": 13,
     "k3s-lab-bootstrap/tasks/eso-secret-rotation-legacy.yml": 1,
     "k3s-lab-bootstrap/playbooks/tasks/verify-eso-role-policies.yml": 1,
-    "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": 9,
+    "k3s-lab-bootstrap/tests/fixtures/fake-bao/bao": 10,
     "k3s-lab-bootstrap/tests/test-openbao-k8s-auth.yml": 1,
     "k3s-lab-bootstrap/tests/fixtures/fake-bao/README.md": 1,
-    "k3s-lab-bootstrap/tests/test_openbao_fake_bao_tokens.py": 6,
+    "k3s-lab-bootstrap/tests/test_openbao_fake_bao_tokens.py": 8,
 }
 
 
