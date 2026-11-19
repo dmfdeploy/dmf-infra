@@ -711,11 +711,6 @@ case "$*" in
     token_ok && is_root || forbidden "writing data to auth/approle/role"
     exit 0
     ;;
-  "read -format=json auth/approle/role/"*"/role-id")
-    token_ok && is_root || forbidden "reading auth/approle/role role-id"
-    printf '{"data":{"role_id":"fake-role-id"}}\n'
-    exit 0
-    ;;
   "operator generate-root "*)
     # With FAKE_GENROOT_AUTH set the call behaves as on OpenBao 2.6 and later: only a
     # token that the fake issued and has not revoked may make it (the ops-admin login
@@ -769,16 +764,6 @@ case "$*" in
     esac
     echo "fake bao: unexpected generate-root call: $*" >&2
     exit 1
-    ;;
-  "read -format=json auth/userpass/users/"*|"read auth/userpass/users/"*)
-    can_inspect || forbidden "reading auth/userpass/users"
-    name="${!#}"
-    name="${name##*/}"
-    # With a fixture the users are the ones it names. Without one, the only user is ops-admin.
-    if fixture_present; then identity_fixture auth/userpass/users "$name" && exit 0; exit 2; fi
-    [ "$name" = ops-admin ] || { echo "No value found at auth/userpass/users/$name" >&2; exit 2; }
-    printf '{"data":%s}\n' "$(userpass_user show)"
-    exit 0
     ;;
   "write auth/userpass/users/"*"/policies -")
     # The policies endpoint changes the policy list and nothing else of the user.
@@ -958,17 +943,6 @@ PY
     python3 -c 'import json,sys; print(json.dumps({"data": {"name": "eso-reader", "policy": open(sys.argv[1]).read()}}))' "${FAKE_ESO_POLICY_FILE:?FAKE_ESO_POLICY_FILE is not set}"
     exit 0
     ;;
-  "read -format=json auth/approle/role/external-secrets")
-    # With identity.json, a token that may inspect gets the role it names, or no value, as
-    # every other identity read does. Without one the answer is the scheduler's.
-    if can_inspect && fixture_present; then identity_fixture auth/approle/role external-secrets && exit 0; exit 2; fi
-    scoped_live || forbidden "reading auth/approle/role/external-secrets"
-    if stored_token; then is_root || forbidden "reading auth/approle/role/external-secrets"; else
-      case "${BAO_TOKEN:-}" in fake-scheduler*) ;; *) forbidden "reading auth/approle/role/external-secrets" ;; esac
-    fi
-    printf '{"data":{"token_policies":%s,"token_ttl":3600}}\n' "${FAKE_ESO_ROLE_POLICIES:-[\"eso-reader\"]}"
-    exit 0
-    ;;
   "read -format=json sys/policies/acl/"*)
     policy_ok || forbidden "reading sys/policies/acl"
     name="${3#sys/policies/acl/}"
@@ -984,16 +958,10 @@ PY
     echo "Success! Uploaded policy: $3"
     exit 0
     ;;
-  "read -format=json auth/kubernetes/role/"*|"read auth/kubernetes/role/"*)
-    can_inspect || forbidden "reading auth/kubernetes/role"
-    name="${!#}"; name="${name#auth/kubernetes/role/}"
-    [ -f "$k8s_auth_dir/role-$name.json" ] || { echo "No value found at auth/kubernetes/role/$name" >&2; exit 2; }
-    python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$k8s_auth_dir/role-$name.json"
-    exit 0
-    ;;
 esac
-# The calls below take -format=json or not. The answer is JSON for all but `list` without it,
-# which prints the table of the CLI.
+# The calls below take -format=json or not, so each arm matches one spelling: the arguments
+# without -format=json. The answer is JSON for all but `list` without it, which prints the
+# table of the CLI. The identity and role reads are all here.
 norm="$(printf '%s' "$*" | sed 's/ -format=json//')"
 case "$norm" in
   "list auth/token/accessors")
@@ -1045,6 +1013,38 @@ PY
   "list auth/userpass/users"|"list auth/approle/role"|"list auth/token/roles"|"list identity/entity/id"|"list identity/group/id")
     can_inspect || forbidden "listing ${norm#list }"
     print_keys "${norm#list }" "$(identity_fixture "${norm#list }")"
+    exit 0
+    ;;
+  "read auth/approle/role/"*"/role-id")
+    token_ok && is_root || forbidden "reading auth/approle/role role-id"
+    printf '{"data":{"role_id":"fake-role-id"}}\n'
+    exit 0
+    ;;
+  "read auth/approle/role/external-secrets")
+    # With identity.json, a token that may inspect gets the role it names, or no value, as
+    # every other identity read does. Without one the answer is the scheduler's.
+    if can_inspect && fixture_present; then identity_fixture auth/approle/role external-secrets && exit 0; exit 2; fi
+    scoped_live || forbidden "reading auth/approle/role/external-secrets"
+    if stored_token; then is_root || forbidden "reading auth/approle/role/external-secrets"; else
+      case "${BAO_TOKEN:-}" in fake-scheduler*) ;; *) forbidden "reading auth/approle/role/external-secrets" ;; esac
+    fi
+    printf '{"data":{"token_policies":%s,"token_ttl":3600}}\n' "${FAKE_ESO_ROLE_POLICIES:-[\"eso-reader\"]}"
+    exit 0
+    ;;
+  "read auth/userpass/users/"*)
+    can_inspect || forbidden "reading auth/userpass/users"
+    name="${norm##*/}"
+    # With a fixture the users are the ones it names. Without one, the only user is ops-admin.
+    if fixture_present; then identity_fixture auth/userpass/users "$name" && exit 0; exit 2; fi
+    [ "$name" = ops-admin ] || { echo "No value found at auth/userpass/users/$name" >&2; exit 2; }
+    printf '{"data":%s}\n' "$(userpass_user show)"
+    exit 0
+    ;;
+  "read auth/kubernetes/role/"*)
+    can_inspect || forbidden "reading auth/kubernetes/role"
+    name="${norm#read auth/kubernetes/role/}"
+    [ -f "$k8s_auth_dir/role-$name.json" ] || { echo "No value found at auth/kubernetes/role/$name" >&2; exit 2; }
+    python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$k8s_auth_dir/role-$name.json"
     exit 0
     ;;
   "read auth/approle/role/"*|"read auth/token/roles/"*|"read identity/entity/id/"*|"read identity/group/id/"*)

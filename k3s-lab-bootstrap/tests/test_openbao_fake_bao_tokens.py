@@ -6,6 +6,7 @@ another copy of the fake.
 """
 import json
 import os
+import re
 import subprocess
 import tempfile
 import unittest
@@ -638,6 +639,37 @@ class FakeBaoTokenTests(unittest.TestCase):
         self.assertEqual(self.call(SELF_LOOKUP, token="bare").returncode, 0)
         data = self.call(SELF_LOOKUP, token="nulls")
         self.assertTrue(json.loads(data.stdout)["data"]["orphan"])
+
+    def test_every_documented_identity_call_works_with_and_without_the_json_flag(self) -> None:
+        # Catches a documented read or list that one spelling serves and the other does not.
+        # The calls come from the README table itself, so a new row is covered at once.
+        readme = (FAKE.parent / "README.md").read_text()
+        section = readme.split("## Identity reads", 1)[1].split("\n## ", 1)[0]
+        rows = [line for line in section.splitlines() if line.startswith("| `")]
+        self.assertTrue(rows, "no rows in the table of identity reads")
+        entry = {"token_policies": ["p"], "allowed_policies": ["p"], "name": "n", "policies": ["p"]}
+        (self.state / "identity.json").write_text(json.dumps({
+            "auth_methods": {"token/": {"type": "token"}}, "userpass_users": {"item": entry},
+            "approle_roles": {"item": entry}, "token_roles": {"item": entry},
+            "entities": {"item": entry}, "groups": {"item": entry}}))
+        token = self._verifier()
+        calls = []
+        for row in rows:
+            for text in re.findall(r"`([^`]+)`", row.split("|")[1]):
+                call = re.sub(r"/(NAME|ID)$", "/item", text)
+                if not re.fullmatch(r"(read|list) [a-z0-9/_.-]+", call):
+                    self.fail(f"cannot turn this README call into a command: {text!r} in row {row[:60]!r}")
+                calls.append(call.split())
+        self.assertTrue(calls)
+        for verb, path in calls:
+            with self.subTest(call=f"{verb} {path}"):
+                plain = self.call([verb, path], token=token)
+                flagged = self.call([verb, "-format=json", path], token=token)
+                self.assertEqual((plain.returncode, flagged.returncode), (0, 0), (plain.stderr, flagged.stderr))
+                if verb == "read":
+                    self.assertEqual(json.loads(plain.stdout), json.loads(flagged.stdout))
+                else:
+                    self.assertEqual(plain.stdout.split()[2:], json.loads(flagged.stdout))
 
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.
