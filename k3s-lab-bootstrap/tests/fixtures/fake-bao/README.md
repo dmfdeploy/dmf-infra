@@ -10,8 +10,10 @@ State lives in `$FAKE_STATE`. Each call takes the token from `BAO_TOKEN`.
 ## Tokens
 
 Every token that `bao token create` makes, and every token of a Kubernetes login, is
-one file in the token store, `$FAKE_STATE/tokens/NAME.json`. The checks for
-liveness, policies, accessors, and revocation read only that store. A root-policy
+one file in the token store, `$FAKE_STATE/tokens/NAME.json`. One model in the script,
+`token_model`, decides whether a token is live, what it may do, how many uses it has
+left, which accessor it has and what a revoke takes down. The handlers only ask it. A
+revoked token has a file `$FAKE_STATE/revoked-NAME`. A root-policy
 token with no `-use-limit` and no `-explicit-max-ttl` is named `fake-root-short-N`.
 Any other token is named `fake-scoped-N`. A call without `-policy` makes a
 `fake-root-short-N` token: the child inherits the policies of its root parent, so
@@ -19,8 +21,16 @@ its answer lists `root` only.
 
 A token that has a stored record in `tokens/` holds the policies of that record
 and nothing more. The names `fake-root*`, `fake-ops-token`, `fake-scheduler*`,
-`fake-policy*`, `fake-eso*` and `fake-approle-token` grant power only to a token
-that has no stored record.
+`fake-policy*`, `fake-eso*` and `fake-approle-token` are legacy tokens: they grant
+power only when no record exists, through one small profile map in the model. A
+profile never makes a token live and never skips use counting: a revoked legacy token is
+refused like any other.
+
+The fake trusts a policy by name: a token that holds `token-revoker`,
+`identity-verifier` or `generate-root` passes the matching calls. The paths and
+capabilities of each real policy file are checked by that file's own static test, and a
+test of the fake checks that every name the fake trusts maps to a policy file with such
+a test.
 
 Flags of `token create`: `-policy`, `-orphan`, `-ttl`, `-explicit-max-ttl`,
 `-use-limit`, `-renewable`, `-no-default-policy` and `-format`. Only the caller
@@ -34,7 +44,7 @@ also get `default` unless `-no-default-policy` is set.
 | Use limit | Each request that carries the token spends one use. A refused request spends one too. The token is revoked after the request that spends the last use, and that request can't look the token up. |
 | Lifetime | The lifetime is `-ttl`, cut to `-explicit-max-ttl` when that is shorter, and to 32 days. Without either, a `root` token never expires and can't be renewed, and other tokens live 32 days. A token past its lifetime, or whose parent's lifetime is over (unless it's an orphan), is refused. |
 | Clock | `FAKE_NOW` (epoch seconds, default `1800000000`) is the time of every call. A test moves it to age a token. |
-| Seeding | A test can write `tokens/NAME.json` with `policies`, `orphan`, `parent`, `created`, `ttl`, `explicit_max_ttl`, `uses_left`, `renewable` and an optional `accessor`. A token with the `root` policy acts as a root token. A missing or `null` `uses_left`, `ttl` or `explicit_max_ttl` means no limit, and a missing `created` means the time of the call. A `uses_left` of 0 or less means the token is spent: every call refuses it before dispatch, the accessor list leaves it out, and no lookup finds it. A `uses_left` of 1 allows one request. A token ends at the shorter of `ttl` and `explicit_max_ttl`. A negative lifetime, or a `created` after `FAKE_NOW`, makes the token not live. A missing `orphan` means the token is an orphan when it has no `parent`. A token also ends with any ancestor that ends, at any depth. A `parent` with no record is a legacy token when its name starts with `fake-`; any other missing parent, or a cycle of parents, makes the token not live. |
+| Seeding | A test can write `tokens/NAME.json` with `policies`, `orphan`, `parent`, `created`, `ttl`, `explicit_max_ttl`, `uses_left`, `renewable` and an optional `accessor`. A token with the `root` policy acts as a root token. A missing or `null` `uses_left`, `ttl` or `explicit_max_ttl` means no limit, and a missing `created` means the time of the call. A `uses_left` of 0 or less means the token is spent: every call refuses it, the accessor list leaves it out, and no lookup finds it. A `uses_left` of 1 allows one request. A token ends at the shorter of `ttl` and `explicit_max_ttl`. A negative lifetime, or a `created` after `FAKE_NOW`, makes the token not live. A missing `orphan` means the token is an orphan when it has no `parent`. A token also ends with any ancestor that is revoked, spent or past its lifetime, at any depth, unless it's an orphan. A `parent` with no record is a legacy token when its name starts with `fake-`; any other missing parent, or a cycle of parents, makes the token not live. |
 
 ## Accessor calls
 
@@ -59,12 +69,20 @@ the policies of the role, which a test sets with a `write auth/kubernetes/role/N
 call or by writing `k8s-auth/role-NAME.json`. The token lives for the role's
 `token_ttl`, cut to `token_max_ttl`.
 
-A JWT of the form `fake-sa:NAMESPACE:NAME` must match the role's bound
-ServiceAccount and namespace. Any other JWT that is not empty skips that check.
-An unknown role and an empty JWT fail.
+The JWT must have the form `fake-sa:NAMESPACE:NAME` and match the role's bound
+ServiceAccount and namespace (`*` matches any). Any other JWT is refused with 403, as a
+bad credential is. An unknown role and an empty JWT fail.
 
 `read auth/kubernetes/role/NAME` and `list auth/kubernetes/role` need a root token
 or the policy in `FAKE_VERIFIER_POLICY` (default `identity-verifier`).
+
+## Capabilities
+
+`token capabilities PATH` answers for the caller. A token with a record holding `root`
+gets `["root"]`. Any other token with a record gets `["deny"]`. A legacy token gets
+`["read"]`, and a `fake-eso*` legacy token gets `["read"]` on `secret/*`, `FAKE_ESO_PKI_GRANT`
+on `pki/*` and `["deny"]` elsewhere. A test can set `FAKE_CAPS_JSON` to answer for every
+other path and `FAKE_CAPS_MISSING` to deny listed paths.
 
 ## Generate-root
 
@@ -108,5 +126,19 @@ tool does: `{}` with the flag, "No value found" without it.
 | `FAKE_NOW` | The fake clock, in epoch seconds. |
 | `FAKE_REVOKER_POLICY` | The policy for the accessor calls (default `token-revoker`). |
 | `FAKE_VERIFIER_POLICY` | The policy for the identity reads (default `identity-verifier`). |
+
+## Not modelled
+
+- A policy grants its power to any token that holds its name. The fake doesn't read the rules in it.
+- A token that is not root can't create tokens, and the child policies are not checked
+  against the parent's, a role's or the `default` rules.
+- Kubernetes login doesn't verify a JWT's signature, issuer or audience, and sets the
+  TTL and policies from the role only.
+- A lookup is an approximation: it doesn't model renewal, and it reports `num_uses` as
+  0 for a token with no limit.
+- An ancestor that ends takes its descendants down at once. OpenBao revokes them as its
+  expiry manager runs.
+- `-no-default-policy`, policy case and the other policy rules are a small subset of the
+  server's.
 
 Tests of the fake itself: `tests/test_openbao_fake_bao_tokens.py`.
