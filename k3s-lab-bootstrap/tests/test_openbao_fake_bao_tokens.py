@@ -573,6 +573,72 @@ class FakeBaoTokenTests(unittest.TestCase):
                          sorted([f"{short}.json", f"{scoped}.json"]))
         self.assertEqual(list(self.state.glob("token-*.json")), [])
 
+    def seed_raw(self, name, record):
+        (self.state / "tokens").mkdir(exist_ok=True)
+        (self.state / "tokens" / f"{name}.json").write_text(json.dumps(record))
+
+    CAPABILITIES = ["token", "capabilities", "-format=json", "secret/x"]
+
+    def test_a_seeded_token_with_no_uses_left_is_refused_unlisted_and_unfound(self) -> None:
+        # Catches a pre-exhausted token (uses_left 0 or below) that the fake counts down to
+        # -1 and then authorizes. It must be refused before dispatch, by an early handler
+        # and by a main-case call, and the accessor store must not know it.
+        for left in (0, -1):
+            for label, args in (("early handler", self.CAPABILITIES), ("main case", SELF_LOOKUP)):
+                with self.subTest(uses_left=left, call=label):
+                    name = f"spent-{abs(left)}-{label[:2]}"
+                    self.seed_raw(name, {"policies": ["root"], "orphan": True, "created": NOW, "ttl": 0, "uses_left": left})
+                    self.assertNotIn(f"{name}-accessor", self.call(LIST_ACCESSORS, token=ROOT_TOKEN).stdout)
+                    found = self.call(["write", "auth/token/lookup-accessor", f"accessor={name}-accessor"], token=ROOT_TOKEN)
+                    self.assertNotEqual(found.returncode, 0)
+                    refused = self.call(args, token=name)
+                    self.assertNotEqual(refused.returncode, 0, refused.stdout)
+
+    def test_a_seeded_token_with_one_use_left_gets_exactly_one_completed_request(self) -> None:
+        # Catches a fix that refuses the last permitted use, or lets a second request through.
+        self.seed_raw("last-use", {"policies": ["root"], "orphan": True, "created": NOW, "ttl": 0, "uses_left": 1})
+        first = self.call(self.CAPABILITIES, token="last-use")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(json.loads(first.stdout), ["read"])
+        self.assertTrue((self.state / "revoked-last-use").exists())
+        self.assertNotEqual(self.call(self.CAPABILITIES, token="last-use").returncode, 0)
+
+    def test_seeded_lifetimes_that_cannot_occur_in_openbao_fail_closed(self) -> None:
+        # Catches negative lifetimes and a creation time after the clock that keep a token alive.
+        base = {"policies": ["root"], "orphan": True, "created": NOW, "ttl": 0, "uses_left": None}
+        for label, change in (("negative ttl", {"ttl": -5}), ("negative explicit max", {"explicit_max_ttl": -5}),
+                              ("created after the clock", {"created": NOW + 1000})):
+            with self.subTest(label):
+                self.seed_raw("odd", {**base, **change})
+                self.assertNotEqual(self.call(SELF_LOOKUP, token="odd").returncode, 0)
+
+    def test_a_seeded_explicit_maximum_ttl_ends_a_token_whose_ttl_is_zero(self) -> None:
+        # Catches an explicit maximum that is only reported: OpenBao ends the token at the
+        # shorter of the two.
+        self.seed_raw("capped", {"policies": ["root"], "orphan": True, "created": NOW, "ttl": 0,
+                                 "explicit_max_ttl": 60, "uses_left": None})
+        self.assertEqual(self.call(SELF_LOOKUP, token="capped", now=NOW + 30).returncode, 0)
+        self.assertNotEqual(self.call(SELF_LOOKUP, token="capped", now=NOW + 120).returncode, 0)
+
+    def test_missing_and_null_seed_fields_mean_no_limit_and_a_derived_orphan_flag(self) -> None:
+        # Catches a null or missing field that stops a token, and a missing orphan flag that
+        # keeps a child alive when its parent is revoked.
+        self.seed_raw("bare", {"policies": ["root"]})
+        self.seed_raw("nulls", {"policies": ["root"], "orphan": None, "parent": None, "created": None, "ttl": None,
+                                "explicit_max_ttl": None, "uses_left": None, "accessor": None, "renewable": None})
+        for name in ("bare", "nulls"):
+            with self.subTest(name):
+                for _ in range(3):
+                    self.assertEqual(self.call(SELF_LOOKUP, token=name, now=NOW + 10 ** 7).returncode, 0)
+                self.assertIn(f"{name}-accessor", self.call(LIST_ACCESSORS, token=ROOT_TOKEN).stdout)
+        self.seed_raw("boss", {"policies": ["root"], "orphan": True, "created": NOW, "ttl": 0})
+        self.seed_raw("kid", {"policies": ["root"], "parent": "boss"})
+        self.assertEqual(self.call(["token", "revoke", "-self"], token="boss").returncode, 0)
+        self.assertNotEqual(self.call(SELF_LOOKUP, token="kid").returncode, 0)
+        self.assertEqual(self.call(SELF_LOOKUP, token="bare").returncode, 0)
+        data = self.call(SELF_LOOKUP, token="nulls")
+        self.assertTrue(json.loads(data.stdout)["data"]["orphan"])
+
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.
         listed = self.call(["list", "-format=json", "auth/userpass/users"], token=ROOT_TOKEN)

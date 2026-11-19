@@ -185,12 +185,26 @@ def load(name):
         return json.load(open(path))
     return None
 
+def is_orphan(record):   # without the field, a token with no parent is an orphan
+    value = record.get("orphan")
+    return (not record.get("parent")) if value is None else bool(value)
+
+def spent(record):   # a use limit that is used up; null or missing is no limit
+    return record.get("uses_left") is not None and record["uses_left"] <= 0
+
 def expired(record, depth=0):
-    # A token whose parent lifetime is over goes with it, unless it is an orphan.
-    ttl = int(record.get("ttl") or 0)
-    if ttl > 0 and now >= record.get("created", now) + ttl:
+    # A token ends with the shorter of its TTL and explicit maximum TTL (0 or missing is none)
+    # and with the lifetime of its parent, unless it is an orphan. A negative lifetime is not
+    # a state of OpenBao, and a token made after the time of the call does not exist yet.
+    created = record.get("created")
+    created = now if created is None else int(created)
+    limits = [int(record.get(field) or 0) for field in ("ttl", "explicit_max_ttl")]
+    if created > now or min(limits) < 0:
         return True
-    parent = load(record["parent"]) if record.get("parent") and not record.get("orphan") and depth < 16 else None
+    limit = min([value for value in limits if value > 0], default=0)
+    if limit and now >= created + limit:
+        return True
+    parent = load(record["parent"]) if record.get("parent") and not is_orphan(record) and depth < 16 else None
     return parent is not None and expired(parent, depth + 1)
 
 def accessor_of(name, record):
@@ -198,7 +212,8 @@ def accessor_of(name, record):
 
 def live_names():
     names = [os.path.basename(p)[:-5] for p in glob.glob(os.path.join(tokens, "*.json"))]
-    return sorted(n for n in set(names) if not os.path.exists(os.path.join(state, "revoked-" + n)) and not expired(load(n)))
+    return sorted(n for n in set(names) if not os.path.exists(os.path.join(state, "revoked-" + n))
+                  and not expired(load(n)) and not spent(load(n)))
 
 def find(accessor):
     for name in live_names():
@@ -209,7 +224,7 @@ def find(accessor):
 def describe(name, record, show_id):
     created, ttl = record.get("created", now), int(record.get("ttl") or 0)
     return {"accessor": accessor_of(name, record), "id": name if show_id else "", "policies": record["policies"],
-            "orphan": bool(record.get("orphan")), "renewable": bool(record.get("renewable", True)),
+            "orphan": is_orphan(record), "renewable": bool(record.get("renewable", True)),
             "creation_time": created, "creation_ttl": ttl, "ttl": max(created + ttl - now, 0) if ttl else 0,
             "explicit_max_ttl": int(record.get("explicit_max_ttl") or 0),
             "num_uses": record.get("uses_left") or 0, "path": "auth/token/create", "display_name": "token"}
@@ -223,7 +238,9 @@ elif op == "live":    # exit 1 for a token whose lifetime is over
 elif op == "use":     # spend one use; print "final" when that was the last one
     path = os.path.join(tokens, args[0] + ".json")
     record = json.load(open(path))
-    if record.get("uses_left") is not None and not expired(record):
+    if spent(record):   # no use is left: the token is gone before the call is dispatched
+        open(os.path.join(state, "revoked-" + args[0]), "w").close()
+    elif record.get("uses_left") is not None and not expired(record):
         record["uses_left"] -= 1
         json.dump(record, open(path, "w"))
         print("final" if record["uses_left"] <= 0 else "")
@@ -383,7 +400,9 @@ revoke_children() { # revoke_children NAME
     if python3 - "$record" "$1" <<'PY'
 import json, sys
 record = json.load(open(sys.argv[1]))
-sys.exit(0 if record.get("parent") == sys.argv[2] and not record["orphan"] else 1)
+orphan = record.get("orphan")
+orphan = not record.get("parent") if orphan is None else bool(orphan)
+sys.exit(0 if record.get("parent") == sys.argv[2] and not orphan else 1)
 PY
     then
       touch "$state/revoked-$child"

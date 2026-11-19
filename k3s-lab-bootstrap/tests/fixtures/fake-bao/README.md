@@ -34,7 +34,7 @@ also get `default` unless `-no-default-policy` is set.
 | Use limit | Each request that carries the token spends one use. A refused request spends one too. The token is revoked after the request that spends the last use, and that request can't look the token up. |
 | Lifetime | The lifetime is `-ttl`, cut to `-explicit-max-ttl` when that is shorter, and to 32 days. Without either, a `root` token never expires and can't be renewed, and other tokens live 32 days. A token past its lifetime, or whose parent's lifetime is over (unless it's an orphan), is refused. |
 | Clock | `FAKE_NOW` (epoch seconds, default `1800000000`) is the time of every call. A test moves it to age a token. |
-| Seeding | A test can write `tokens/NAME.json` with `policies`, `orphan`, `created`, `ttl`, `uses_left` (`null` for no limit) and an optional `accessor`. A token with the `root` policy acts as a root token. |
+| Seeding | A test can write `tokens/NAME.json` with `policies`, `orphan`, `parent`, `created`, `ttl`, `explicit_max_ttl`, `uses_left`, `renewable` and an optional `accessor`. A token with the `root` policy acts as a root token. A missing or `null` `uses_left`, `ttl` or `explicit_max_ttl` means no limit, and a missing `created` means the time of the call. A `uses_left` of 0 or less means the token is spent: every call refuses it before dispatch, the accessor list leaves it out, and no lookup finds it. A `uses_left` of 1 allows one request. A token ends at the shorter of `ttl` and `explicit_max_ttl`. A negative lifetime, or a `created` after `FAKE_NOW`, makes the token not live. A missing `orphan` means the token is an orphan when it has no `parent`. |
 
 ## Accessor calls
 
