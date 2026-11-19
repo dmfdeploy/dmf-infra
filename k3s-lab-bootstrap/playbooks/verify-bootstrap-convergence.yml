@@ -62,8 +62,8 @@
           ops-admin is steady-state operator authority for app secret reads and
           writes, retained in the break-glass JSON by design.
         revisit_gate: >-
-          Rotate through vertical-orchestration/120-ops-admin-rotation.yml or
-          replace with stronger operator-bound authentication.
+          Rotate through the ops-admin-password-rotation entry of the approval
+          catalogue or replace with stronger operator-bound authentication.
       - id: openbao_policy_reconciler_userpass
         outcome: retained
         check_kind: openbao_userpass_login
@@ -304,15 +304,13 @@
     - name: Assert root token is not retained
       ansible.builtin.assert:
         that:
-          - openbao_dispose_root_token | default(true) | bool
           - >-
             _bootstrap_convergence_breakglass | dict2items
             | selectattr('key', 'search', '(?i)(root.*token|token.*root)')
             | list | length == 0
         fail_msg: >-
-          ADR-0028 D2 convergence failed: root token material is still retained
-          or root-token disposal is disabled. Revoke/remove bootstrap root
-          authority before completing bootstrap.
+          ADR-0028 D2 convergence failed: root token material is still retained.
+          Revoke/remove bootstrap root authority before completing bootstrap.
       no_log: true
 
     - name: Assert required retained break-glass scalar fields exist

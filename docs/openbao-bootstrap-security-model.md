@@ -39,7 +39,7 @@ flowchart TB
     Bootstrap["Bootstrap configuration\nengines, auth methods, policies, users, AppRoles"]
     Breakglass["Break-glass JSON\nunseal quorum + non-root credentials\nmode 0600, outside git"]
     Custody["Share custody\nseparate secure locations\noperator responsibility"]
-    RootGone["Root token revoked\nopenbao_dispose_root_token: true"]
+    RootGone["Root token revoked\nat the end of every fresh install"]
     Reconcile["Rerun path\npolicy-reconciler applies policy-as-code"]
     Ops["ops-admin\napp admin/runtime secret writes"]
     Eso["External Secrets Operator\nESO AppRole, read-only"]
@@ -103,8 +103,8 @@ flowchart TB
    capabilities on representative application paths, including the Zot admin
    path. This catches policy drift before later playbooks depend on those paths.
 
-8. If `openbao_dispose_root_token` is true, the initial root token is revoked at
-   the end of a fresh bootstrap. This is the intended steady state.
+8. The initial root token is revoked at the end of a fresh bootstrap. A fresh
+   install always does this.
 
 ## Initial Bootstrap Preconditions
 

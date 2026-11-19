@@ -583,10 +583,9 @@
           ESO's AppRole role ({{ verify_eso_approle_role }}) could not be checked,
           because the rotation scheduler cannot log in, and it is the only identity
           that can read that role. An extra policy on the role, such as one that
-          grants PKI issue, would go unnoticed. To fix this, run
-          playbooks/vertical-security/100-openbao.yml, then
-          playbooks/vertical-security/106-openbao-kubernetes-auth.yml with a
-          temporary root token, and run this verifier again.
+          grants PKI issue, would go unnoticed. The install of this release
+          (playbooks/vertical-security/100-openbao.yml) sets that login up, so
+          rebuild the environment, and run this verifier again.
       when:
         - verify_eso_auth_method == 'approle'
         - not (_verify_scheduler_ready | bool)

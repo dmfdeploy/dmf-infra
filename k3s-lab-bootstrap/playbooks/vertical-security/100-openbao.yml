@@ -3,8 +3,7 @@
 # fresh install. Its header (roles/stack/operator/openbao/tasks/main.yml) says how a fresh
 # install handles the init token: it trades that token for a short token, revokes the init
 # token with proof before the first write, writes with the short token, and revokes the
-# short token at the end. With openbao_dispose_root_token: false the role keeps the init
-# token and trades nothing.
+# short token at the end.
 #
 # The init token has no lifetime, and Ansible runs neither this rescue nor any other task
 # on a host that becomes UNREACHABLE. What an UNREACHABLE run leaves:
@@ -53,7 +52,6 @@
             _openbao_failed_init_unseal_keys_hex: >-
               {{ openbao_unseal_keys_hex | default((openbao_init_raw.stdout | from_json).unseal_keys_hex | default([]), true) }}
           when:
-            - openbao_dispose_root_token | default(true) | bool
             - openbao_init_raw is defined
             - openbao_init_raw.changed | default(false)
           no_log: true

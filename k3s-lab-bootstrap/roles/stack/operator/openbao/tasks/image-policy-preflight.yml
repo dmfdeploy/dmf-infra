@@ -1,8 +1,9 @@
 ---
-# Refuse to roll an installed server to OpenBao 2.6 or later before ops-admin holds
-# the generate-root policy. A 2.6 server accepts root token generation only from a
-# caller that holds the policy, and only a root token can attach it, so a server that
-# runs 2.6 before the attach cannot get a root token to repair that. The check runs
+# Refuse to roll an installed server to OpenBao 2.6 or later unless the approval
+# executor's Kubernetes-auth role holds the generate-root policy. A 2.6 server accepts
+# root token generation only from a caller that holds the policy. Only the executor
+# holds it (ADR-0051, Amendment 2026-11-18), so a server that runs 2.6 without the
+# policy on that role has no caller that can generate a root token. The check runs
 # first in workload.yml, and the grow-HA play runs it before its first change, so
 # every play that applies or replaces the StatefulSet is covered. The grow-HA play
 # sets openbao_image_policy_checked: its later workload run must not call bao again,
@@ -12,9 +13,10 @@
 # claim data-openbao-0 exists, so an interrupted migration that left only the pod or
 # the volume is not taken for a new install. The check does nothing for a new
 # install, when the image does not change, when it is older than 2.6, or when the
-# server is not initialized. Otherwise it logs in as ops-admin with the password of
-# the break-glass file, reads the policies of the login token, revokes the token,
-# and stops unless the policy is there. The password reaches the pod on stdin.
+# server is not initialized. Otherwise it logs in as policy-reconciler with the
+# password of the break-glass file, reads the executor's role with the identity
+# verifier policy that policy-reconciler holds, revokes the login token, and stops
+# unless the role lists the policy. The password reaches the pod on stdin.
 - name: Skip the check when the play has run it already
   ansible.builtin.set_fact:
     _openbao_preflight_skip: "{{ openbao_image_policy_checked | default(false) | bool }}"
@@ -75,7 +77,7 @@
       }}
   when: not (_openbao_preflight_skip | bool)
 
-- name: Check the policy of ops-admin before the image changes
+- name: Check the policy of the executor role before the image changes
   when: not (_openbao_preflight_skip | bool) and (_openbao_preflight_needed | bool)
   block:
     - name: Read the init status of the running server
@@ -106,18 +108,18 @@
         _openbao_preflight_status.stdout | default('') is not match('(?s)\s*\{')
         or 'initialized' not in (_openbao_preflight_status.stdout | from_json)
 
-    - name: Check the policy of ops-admin on an initialized server
+    - name: Check the policy of the executor role on an initialized server
       when: (_openbao_preflight_status.stdout | from_json).initialized | bool
       block:
         - name: Stop while the server is sealed
           ansible.builtin.fail:
             msg: >-
-              openbao-0 is sealed. The play logs in as ops-admin to check the
-              generate-root policy before it changes the image, so unseal OpenBao
-              first.
+              openbao-0 is sealed. The play logs in as policy-reconciler to check the
+              generate-root policy on the {{ openbao_executor_k8s_role }} role before
+              it changes the image, so unseal OpenBao first.
           when: (_openbao_preflight_status.stdout | from_json).sealed | bool
 
-        # The same precedence as the rotation play: the ESO break-glass file when it is
+        # The same precedence as the install: the ESO break-glass file when it is
         # set, otherwise the JSON next to the key path.
         - name: Read the break-glass JSON of the operator host
           ansible.builtin.slurp:
@@ -127,15 +129,15 @@
           become: false
           no_log: true
 
-        - name: Log in as ops-admin
+        - name: Log in as policy-reconciler
           ansible.builtin.shell:
             cmd: >-
               kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
               -n {{ openbao_namespace }}
               exec -i openbao-0
-              -- bao write -format=json auth/userpass/login/{{ openbao_operator_username }} password=-
-            stdin: "{{ (_openbao_preflight_breakglass.content | b64decode | from_json).ops_admin_password | default('') }}"
-            stdin_add_newline: false
+              -- sh -c '
+              bao write -format=json auth/userpass/login/{{ openbao_policy_reconciler_username }} -'
+            stdin: "{{ {'password': (_openbao_preflight_breakglass.content | b64decode | from_json).policy_reconciler_password | default('')} | to_json }}\n"
           register: _openbao_preflight_login
           changed_when: false
           no_log: true
@@ -146,8 +148,7 @@
             _openbao_preflight_accessor: "{{ (_openbao_preflight_login.stdout | from_json).auth.accessor | default('unknown') }}"
           no_log: true
 
-        # `bao token lookup` without an argument looks up the token of the caller.
-        - name: Read the policies of the login token
+        - name: Read the executor's Kubernetes-auth role
           ansible.builtin.shell:
             cmd: >-
               kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
@@ -156,10 +157,11 @@
               -- sh -c '
               IFS= read -r BAO_TOKEN;
               export BAO_TOKEN;
-              bao token lookup -format=json'
+              bao read -format=json auth/kubernetes/role/{{ openbao_executor_k8s_role }}'
             stdin: "{{ _openbao_preflight_token }}\n"
-          register: _openbao_preflight_lookup
+          register: _openbao_preflight_role
           changed_when: false
+          failed_when: false
           no_log: true
       always:
         - name: Revoke the login token
@@ -182,27 +184,42 @@
           no_log: true
           when: _openbao_preflight_token is defined
 
-        - name: Stop because the ops-admin login token may still be live
+        - name: Stop because the policy-reconciler login token may still be live
           ansible.builtin.fail:
             msg: >-
-              The revoke of the ops-admin login token failed three times, so the token
-              may stay valid until it expires. Its accessor is
+              The revoke of the policy-reconciler login token failed three times, so the
+              token may stay valid until it expires. Its accessor is
               {{ _openbao_preflight_accessor | default('unknown') }}. Revoke it with
               `bao token revoke -accessor <accessor>`.
           when:
             - _openbao_preflight_token is defined
             - _openbao_preflight_revoke.rc | default(1) != 0
 
-    - name: Stop until the generate-root policy is attached
+    - name: Stop when the executor role cannot be read
       ansible.builtin.fail:
         msg: >-
-          The image changes to {{ openbao_image }}, and ops-admin does not hold the
-          {{ openbao_generate_root_policy_name }} policy. OpenBao 2.6 and later accept
-          root token generation only from a caller that holds it. Attach the
-          generate-root policy first: run 120-ops-admin-rotation.yml with
-          -e ops_admin_rotation_attach_only=true, and run this play with
-          -e openbao_image=<the image that runs now> until then. The order of runs is
-          in roles/stack/operator/openbao/README.md.
+          The image changes to {{ openbao_image }}, and the play could not read the
+          {{ openbao_executor_k8s_role }} role of the Kubernetes auth method. Check that
+          the role exists, and that policy-reconciler holds the
+          {{ openbao_identity_verifier_policy_name }} policy. OpenBao 2.6 and later accept
+          root token generation only from a caller that holds the
+          {{ openbao_generate_root_policy_name }} policy, and only the executor's role
+          may hold it. Run this play with -e openbao_image=<the image that runs now>
+          until then.
       when:
         - (_openbao_preflight_status.stdout | from_json).initialized | bool
-        - openbao_generate_root_policy_name not in (_openbao_preflight_lookup.stdout | from_json).data.policies
+        - _openbao_preflight_role.rc != 0
+
+    - name: Stop until the executor role holds the generate-root policy
+      ansible.builtin.fail:
+        msg: >-
+          The image changes to {{ openbao_image }}, and the {{ openbao_executor_k8s_role }}
+          role does not hold the {{ openbao_generate_root_policy_name }} policy. OpenBao
+          2.6 and later accept root token generation only from a caller that holds it,
+          and only the executor's role may hold it. Rebuild the environment with the
+          install of this release, or run this play with
+          -e openbao_image=<the image that runs now>. The role README explains why no
+          other path to a root token exists.
+      when:
+        - (_openbao_preflight_status.stdout | from_json).initialized | bool
+        - openbao_generate_root_policy_name not in ((_openbao_preflight_role.stdout | from_json).data.token_policies | default([]))

@@ -110,9 +110,8 @@ class CatalogueDigests(unittest.TestCase):
     def test_request_count_equals_the_documented_request_list(self):
         # Catches a count that no longer matches the entry's own request list, which would
         # leave the token with a spare use or too few. The list is the entry's own design:
-        # the entry sets a password with one request and does not copy the steps of
-        # playbooks/vertical-orchestration/120-ops-admin-rotation.yml, whose policy steps
-        # retire with the old ops-admin path.
+        # the entry sets a password with one request. It is the only way left to rotate
+        # the ops-admin password: the old rotation playbook is gone.
         for e in catalogue()["entries"]:
             pairs = [(r["path"], r["capability"]) for r in e["requests"]]
             self.assertEqual(len(pairs), len(set(pairs)), e["name"])

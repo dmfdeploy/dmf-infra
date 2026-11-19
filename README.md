@@ -175,10 +175,10 @@ B=../dmf-infra/k3s-lab-bootstrap
 # Provision, pre-seed: host baseline, k3s, cert-manager, Zot, OpenBao, ESO
 bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-provision-pre-seed.yml
 
-# Seed boundary: check the seal, unseal OpenBao if it is sealed, then seed
+# Seed boundary: check the seal, and unseal OpenBao if it is sealed. The pre-seed
+# wrapper already seeded OpenBao, with the install's own token.
 bin/unseal-openbao.sh <env-name> --status
 bin/unseal-openbao.sh <env-name>    # only when --status reports sealed
-bin/bootstrap-secrets.sh seed-bao <env-name>
 
 # Provision, post-seed: Authentik, NetBox, Forgejo, AWX, console, monitoring
 bin/run-playbook.sh <env-name> $B/bootstrap-sandbox-provision-post-seed.yml
@@ -195,7 +195,7 @@ passes key shares on standard input only. To unseal by hand instead, follow the
 in-pod steps in
 [Emergency unseal](docs/SECURITY-REMEDIATION-GUIDE.md#emergency-unseal). Post-seed starts
 with a guard that checks OpenBao for `secret/platform/bootstrap_admin` and
-`secret/platform/k3s/cluster`, and it stops when `seed-bao` hasn't written
+`secret/platform/k3s/cluster`, and it stops when the install's seed step hasn't written
 them. The sandbox wrappers import `bootstrap-sandbox-profile.yml`, which
 selects `local-path` storage, single-node ingress and a local CA. They leave
 out Longhorn, private ingress, Headscale and Tailscale, and backup archival.

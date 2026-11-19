@@ -7,7 +7,7 @@
 #
 # reviewer-install-guard.yml catches the old install by its ServiceAccount, before the
 # workload changes. It cannot catch a run that moved the workload to OpenBao's own
-# ServiceAccount (playbook 106 does this before it writes the mount config) and stopped
+# ServiceAccount (an older install did this before it wrote the mount config) and stopped
 # before the write: that StatefulSet looks right, and the stored token is still the old
 # one. Only a login tells. This file mints a short-lived token for the token revoker's
 # ServiceAccount, which the role always installs with a Kubernetes-auth role, logs in with

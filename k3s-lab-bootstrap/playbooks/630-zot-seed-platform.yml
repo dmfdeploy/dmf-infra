@@ -370,11 +370,11 @@
           - vault_zot_service_password is defined
           - vault_zot_service_password | length > 0
         fail_msg: >-
-          vault_zot_service_password is missing/empty. This is the scoped
-          zot-svc machine-write account password (ADR-0033). Run:
-          dmf-env/bin/bootstrap-secrets.sh seed-bao <env> (then re-run this),
-          or use bin/upgrade-in-place.sh <env> which seeds first.
-          (ADR-0033 secret not yet backfilled to OpenBao.)
+          vault_zot_service_password is missing or empty. This is the scoped
+          zot-svc machine-write account password (ADR-0033). dmf-env passes it
+          to the playbooks from the environment's bootstrap bundle, through
+          "bin/bootstrap-secrets.sh export-vars". For the bundle commands, see
+          the usage notes at the top of dmf-env/bin/bootstrap-secrets.sh.
 
     - name: Assert required vars are set
       ansible.builtin.assert:

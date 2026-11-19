@@ -1,7 +1,8 @@
 ---
 # DMF bootstrap: Provision — Pre-seed (EBU white paper §Provision stage).
 # Installs platform capabilities up to and including OpenBao + ESO readiness.
-# Stops before the local seed boundary (dmf-env bootstrap-secrets.sh seed-bao).
+# The openbao role seeds OpenBao inside this wrapper, with the install's own token
+# (openbao_install_seed_command, which dmf-env/bin/run-playbook.sh sets).
 #
 # After this wrapper completes:
 #   1. k3s is running, ingress + cert-manager + Longhorn are deployed
@@ -9,8 +10,7 @@
 #   3. ESO is deployed with ClusterSecretStore
 #   4. Base network policies are in place
 #
-# Next step: dmf-env/bin/bootstrap-secrets.sh seed-bao <env>
-# Then: bootstrap-provision-post-seed.yml
+# Next: bootstrap-provision-post-seed.yml
 
 # ── Layer 2xx — Host Platform (preflight + baseline + hardening) ─────────────
 - import_playbook: playbooks/219-host-verify.yml
@@ -61,5 +61,3 @@
   tags: [vertical-orchestration, secrets, eso]
 - import_playbook: playbooks/vertical-orchestration/110-eso-secret-rotation.yml
   tags: [vertical-orchestration, secrets, eso, rotation]
-- import_playbook: playbooks/vertical-orchestration/120-ops-admin-rotation.yml
-  tags: [vertical-orchestration, secrets, openbao, rotation]

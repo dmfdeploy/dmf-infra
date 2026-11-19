@@ -177,7 +177,7 @@
       - _at_pod_delete | int > 0
   when: case.id == 'service_address'
 
-# The check for the generate-root policy is the only caller of `bao token lookup`. It runs once,
+# The check for the generate-root policy is the only reader of the executor's role. It runs once,
 # before the certificate is reissued and before the StatefulSet is deleted. The workload run
 # after the delete does not repeat it: the in-pod CLI fails TLS after the reissue until pod 0
 # restarts.
@@ -188,5 +188,5 @@
       - _events.index(_lookup_events[0]) < _at_reissue | int
       - _events.index(_lookup_events[0]) < _at_sts_delete | int
   vars:
-    _lookup_events: "{{ _events | select('equalto', 'bao openbao-0 token lookup -format=json') | list }}"
+    _lookup_events: "{{ _events | select('equalto', 'bao openbao-0 read -format=json auth/kubernetes/role/' ~ openbao_executor_k8s_role) | list }}"
   when: case.id == 'policy_first'

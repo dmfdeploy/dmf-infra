@@ -1,9 +1,7 @@
 ---
 # Write the Kubernetes auth config of the OpenBao mount and, when ESO uses
-# Kubernetes auth, ESO's role. Then read both back and check every field. Included by main.yml on a fresh install (with
-# the initial root token) and by the installed-environment play
-# (playbooks/vertical-security/106-openbao-kubernetes-auth.yml, with a temporary
-# root token). The caller sets openbao_k8s_auth_token. No other identity holds
+# Kubernetes auth, ESO's role. Then read both back and check every field. Included by main.yml on a fresh install, with the
+# install's write token. The caller sets openbao_k8s_auth_token. No other identity holds
 # the power to write auth/kubernetes/config.
 #
 # The config uses local-file reviewer mode: OpenBao reads the CA and the token

@@ -6,9 +6,9 @@ the repository as text. They guard four properties:
 
 - the server and the snapshot job run one release, pinned by tag and digest;
 - the listener reloads a renewed certificate by itself;
-- ops-admin carries a narrow policy for the two endpoints;
-- every caller of generate-root logs in as ops-admin, passes the login token on
-  stdin and revokes it in an `always` section.
+- a narrow policy covers the two endpoints, and the approval executor's role and
+  ops-admin carry it;
+- no playbook or role in this repository calls `bao operator generate-root`.
 """
 import re
 import unittest
@@ -19,7 +19,6 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 OPENBAO_ROLE = ROOT / "roles/stack/operator/openbao"
 SNAPSHOT_ROLE = ROOT / "roles/base/openbao-raft-snapshot"
-ROTATION_PLAY = ROOT / "playbooks/vertical-orchestration/120-ops-admin-rotation.yml"
 POLICY = OPENBAO_ROLE / "files/policies/generate-root.hcl"
 
 PINNED = re.compile(r"^docker\.io/openbao/openbao:2\.7\.\d+@sha256:[0-9a-f]{64}$")
@@ -148,14 +147,21 @@ class PolicyTests(unittest.TestCase):
 
     def test_ops_admin_carries_the_policy(self) -> None:
         main = (OPENBAO_ROLE / "tasks/main.yml").read_text()
-        rotation = yaml.safe_load(ROTATION_PLAY.read_text())[0]
 
         upsert = main.index("- name: Upsert operator userpass user")
         self.assertIn("openbao_generate_root_policy_name", main[upsert:upsert + 1200])
-        self.assertIn(
-            "{{ openbao_generate_root_policy_name | default('generate-root') }}",
-            rotation["vars"]["ops_admin_rotation_attach_policy"],
+
+    def test_only_the_executor_role_carries_the_policy_among_the_kubernetes_roles(self) -> None:
+        defaults = yaml.safe_load((OPENBAO_ROLE / "defaults/main.yml").read_text())
+        holders = sorted(
+            key
+            for key, value in defaults.items()
+            if key.endswith("_k8s_auth_role")
+            and isinstance(value, dict)
+            and "{{ openbao_generate_root_policy_name }}" in str(value.get("policy"))
         )
+
+        self.assertEqual(holders, ["openbao_executor_k8s_auth_role"])
 
 
 class CallerTests(unittest.TestCase):
@@ -166,81 +172,21 @@ class CallerTests(unittest.TestCase):
             if any(INVOCATION.search(line) for _, line in code_lines(path))
         ]
 
-    def test_the_rotation_play_is_the_only_caller(self) -> None:
-        self.assertEqual([p.relative_to(ROOT) for p in self.callers()], [ROTATION_PLAY.relative_to(ROOT)])
+    def test_no_file_of_this_repository_calls_generate_root(self) -> None:
+        self.assertEqual([str(p.relative_to(ROOT)) for p in self.callers()], [])
 
-    def test_every_caller_logs_in_as_ops_admin_and_revokes_the_login_token(self) -> None:
-        for path in self.callers():
-            with self.subTest(path=str(path.relative_to(ROOT))):
-                play = yaml.safe_load(path.read_text())[0]
-                block = next(t for t in play["tasks"] if "block" in t)
-                names = [t["name"] for t in block["block"]]
+    def test_the_ops_admin_rotation_path_stays_retired(self) -> None:
+        # The rotation of the ops-admin password is an entry of the approval catalogue,
+        # run by the executor. The old play minted a root token as ops-admin.
+        self.assertFalse((ROOT / "playbooks/vertical-orchestration/120-ops-admin-rotation.yml").exists())
+        offenders = [
+            f"{path.relative_to(ROOT)}:{number}"
+            for path in repository_files()
+            for number, line in enumerate(path.read_text().splitlines(), 1)
+            if re.search(r"120-ops-admin-rotation|ops_admin_rotation_", line)
+        ]
 
-                self.assertEqual(names[0], "Log in as ops-admin for root token generation")
-                login = block["block"][0]["ansible.builtin.shell"]
-                self.assertIn("auth/userpass/login/", login["cmd"])
-                self.assertIn("password=-", login["cmd"])
-                tokens = next(t for t in block["always"] if t["name"] == "Revoke the tokens")
-                # The short-lived write token and the generate-root token go through the
-                # shared revoke of the openbao role, which revokes with `bao token revoke
-                # -self` on stdin and then proves that the server refuses the token.
-                for task, token in [
-                    (tokens["block"][0], "write"),
-                    (tokens["block"][1], "root"),
-                ]:
-                    role = task["ansible.builtin.include_role"]
-                    self.assertEqual(role["tasks_from"], "kubernetes-auth-revoke.yml")
-                    self.assertEqual(task["vars"]["openbao_k8s_revoke_token"], "{{ _ops_admin_rotation_" + token + "_token }}")
-                    self.assertEqual(task["vars"]["openbao_k8s_revoke_flag"], "_ops_admin_rotation_" + token + "_gone")
-                login = tokens["always"][0]["ansible.builtin.shell"]
-                self.assertIn("bao token revoke -self", login["cmd"])
-                self.assertEqual(login["stdin"], "{{ _ops_admin_rotation_login_token }}\n")
-                self.assertEqual(tokens["always"][0]["when"], "_ops_admin_rotation_login_token is defined")
-
-    def test_every_caller_runs_in_the_active_pod(self) -> None:
-        for path in self.callers():
-            text = path.read_text()
-            with self.subTest(path=str(path.relative_to(ROOT))):
-                self.assertIn("tasks_from: find-active-pod.yml", text)
-                self.assertNotIn("resources[0].metadata.name", text)
-
-    def test_the_otp_is_passed_on_stdin_and_never_in_an_argument(self) -> None:
-        for path in self.callers():
-            for number, line in code_lines(path):
-                if "-otp=" in line:
-                    with self.subTest(path=str(path.relative_to(ROOT)), line=number):
-                        self.assertIn('-otp="$OTP"', line)
-            play = yaml.safe_load(path.read_text())[0]
-            script = play["vars"]["ops_admin_rotation_generate_root_otp_script"]
-            self.assertIn("IFS= read -r OTP", script)
-            block = next(t for t in play["tasks"] if "block" in t)["block"]
-            for task in block:
-                text = str(task.get("ansible.builtin.shell", task.get("ansible.builtin.command", "")))
-                if "_otp_script" in text:
-                    with self.subTest(task=task["name"]):
-                        module = next(v for k, v in task.items() if k.startswith("ansible.builtin."))
-                        self.assertIn("_rotation_otp }}", module["stdin"])
-                        self.assertNotIn("_rotation_otp", module.get("cmd", "") + " ".join(map(str, module.get("argv", []))))
-
-    def test_every_generate_root_task_takes_the_token_on_stdin(self) -> None:
-        for path in self.callers():
-            play = yaml.safe_load(path.read_text())[0]
-            script = play["vars"]["ops_admin_rotation_generate_root_script"]
-            self.assertIn("IFS= read -r BAO_TOKEN", script)
-            self.assertIn('exec bao operator generate-root "$@"', script)
-            self.assertNotIn("{{", script)
-
-            block = next(t for t in play["tasks"] if "block" in t)["block"]
-            users = [t for t in block if "ops_admin_rotation_generate_root_" in str(t)]
-            self.assertEqual(len(users), 6)
-            for task in users:
-                with self.subTest(task=task["name"]):
-                    module = next(v for k, v in task.items() if k.startswith("ansible.builtin."))
-                    self.assertTrue(task["no_log"])
-                    self.assertTrue(module["stdin"].startswith("{{ _ops_admin_rotation_login_token }}\n"))
-                    self.assertNotIn("environment", task)
-                    command = module.get("cmd", "") + " ".join(map(str, module.get("argv", [])))
-                    self.assertNotIn("_login_token", command)
+        self.assertEqual(offenders, [])
 
 
 if __name__ == "__main__":

@@ -27,8 +27,8 @@
         namespace: "{{ openbao_namespace }}"
 
 # Writing a Kubernetes-auth role needs a privileged token, as for the executor: a
-# fresh install writes the role here with its short token, and an installed
-# environment gets it from playbooks/vertical-security/106-openbao-kubernetes-auth.yml.
+# fresh install writes the role here with its short token. An installed environment
+# without the role is rebuilt.
 - name: Write the token revoker Kubernetes-auth role
   ansible.builtin.include_tasks: kubernetes-auth-role.yml
   vars:

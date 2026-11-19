@@ -139,11 +139,9 @@
 # Writing a Kubernetes-auth role needs a privileged token. `policy-writer`
 # covers only `sys/policies/acl/*`, so a rerun has no identity that can write
 # `auth/kubernetes/role/*`. A fresh install writes the role here with its short
-# token, which holds the root policy (main.yml says when the init token stays). An
-# installed environment gets it from
-# playbooks/vertical-security/106-openbao-kubernetes-auth.yml, which writes it with
-# a temporary root token when it is missing. A rerun of this role leaves the role
-# as it is. The identity verifier fails when the role is missing.
+# token, which holds the root policy (main.yml says when the init token stays). A
+# rerun of this role leaves the role as it is, and an installed environment without
+# the role is rebuilt. The identity verifier fails when the role is missing.
 - name: Write the setup issuer Kubernetes-auth role
   ansible.builtin.include_tasks: kubernetes-auth-role.yml
   vars:
