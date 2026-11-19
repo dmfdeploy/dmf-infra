@@ -192,20 +192,36 @@ def is_orphan(record):   # without the field, a token with no parent is an orpha
 def spent(record):   # a use limit that is used up; null or missing is no limit
     return record.get("uses_left") is not None and record["uses_left"] <= 0
 
-def expired(record, depth=0):
-    # A token ends with the shorter of its TTL and explicit maximum TTL (0 or missing is none)
-    # and with the lifetime of its parent, unless it is an orphan. A negative lifetime is not
-    # a state of OpenBao, and a token made after the time of the call does not exist yet.
+def lapsed(record):
+    # A token ends with the shorter of its TTL and explicit maximum TTL (0 or missing is none).
+    # A negative lifetime is not a state of OpenBao, and a token made after the time of the
+    # call does not exist yet.
     created = record.get("created")
     created = now if created is None else int(created)
     limits = [int(record.get(field) or 0) for field in ("ttl", "explicit_max_ttl")]
     if created > now or min(limits) < 0:
         return True
     limit = min([value for value in limits if value > 0], default=0)
-    if limit and now >= created + limit:
+    return bool(limit) and now >= created + limit
+
+def expired(record):
+    # A token also ends with every ancestor it was made without -orphan, however deep the
+    # chain. A parent without a record is a legacy token (its name starts with fake-) and
+    # ends the chain. A cycle, or any other missing parent, fails closed.
+    if lapsed(record):
         return True
-    parent = load(record["parent"]) if record.get("parent") and not is_orphan(record) and depth < 16 else None
-    return parent is not None and expired(parent, depth + 1)
+    seen, current = set(), record
+    while current.get("parent") and not is_orphan(current):
+        name = current["parent"]
+        if name in seen:
+            return True
+        seen.add(name)
+        current = load(name)
+        if current is None:
+            return not name.startswith("fake-")
+        if lapsed(current):
+            return True
+    return False
 
 def accessor_of(name, record):
     return record.get("accessor") or name + "-accessor"

@@ -695,6 +695,33 @@ class FakeBaoTokenTests(unittest.TestCase):
                         self.assertEqual(json.loads(plain.stdout), json.loads(flagged.stdout))
                         self.assertIn(f"/{path.rsplit('/', 1)[1]}", json.loads(flagged.stdout)["data"]["marker"])
 
+    def test_a_token_ends_with_an_expired_ancestor_however_deep_the_chain_is(self) -> None:
+        # Catches a walk up the parents that stops after a fixed number of levels: the leaf
+        # of a 20-deep chain stayed live and listed after the top of the chain expired.
+        names = [f"link-{n:02d}" for n in range(20)]
+        for n, name in enumerate(names):
+            record = {"policies": ["root"], "orphan": n == 0, "created": NOW, "ttl": 60 if n == 0 else 0}
+            if n:
+                record["parent"] = names[n - 1]
+            self.seed_raw(name, record)
+        self.assertEqual(self.call(SELF_LOOKUP, token=names[-1], now=NOW + 30).returncode, 0)
+        late = NOW + 120
+        self.assertNotEqual(self.call(SELF_LOOKUP, token=names[-1], now=late).returncode, 0)
+        self.assertNotIn(f"{names[-1]}-accessor", self.call(LIST_ACCESSORS, token=ROOT_TOKEN, now=late).stdout)
+
+    def test_a_parent_cycle_or_a_parent_with_no_record_fails_closed(self) -> None:
+        # Catches a cycle that a bounded walk lets through, and a vanished parent that leaves
+        # its child live. A parent named fake-* with no record is a legacy token and is fine.
+        self.seed_raw("loop-a", {"policies": ["root"], "parent": "loop-b"})
+        self.seed_raw("loop-b", {"policies": ["root"], "parent": "loop-a"})
+        self.seed_raw("loop-self", {"policies": ["root"], "parent": "loop-self"})
+        self.seed_raw("orphaned-child", {"policies": ["root"], "parent": "ghost"})
+        self.seed_raw("legacy-child", {"policies": ["root"], "parent": "fake-root-genroot"})
+        for name in ("loop-a", "loop-b", "loop-self", "orphaned-child"):
+            with self.subTest(name):
+                self.assertNotEqual(self.call(SELF_LOOKUP, token=name).returncode, 0)
+        self.assertEqual(self.call(SELF_LOOKUP, token="legacy-child").returncode, 0)
+
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.
         listed = self.call(["list", "-format=json", "auth/userpass/users"], token=ROOT_TOKEN)
