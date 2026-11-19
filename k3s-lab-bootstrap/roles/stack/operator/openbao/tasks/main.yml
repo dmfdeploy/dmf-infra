@@ -94,6 +94,13 @@
       metadata:
         name: "{{ openbao_namespace }}"
 
+# The revoker revokes any root-policy token that the executor's record does not
+# hold, and the install makes such tokens. A run therefore stops the revoker and
+# waits for its pods to end before the workload, the init and every other task that
+# can create or use a root-policy token. Only revoker-resume.yml starts it again.
+- name: Stop the revoker before any task that can create or use a root token
+  ansible.builtin.include_tasks: revoker-pause.yml
+
 - name: Apply the OpenBao workload
   ansible.builtin.include_tasks: workload.yml
 
@@ -1317,6 +1324,21 @@
   no_log: true
   when: openbao_is_initialized | bool
 
+# The token revoker's policy, written before the role that names it.
+- name: Write the token-revoker policy
+  ansible.builtin.shell:
+    cmd: >-
+      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
+      -n {{ openbao_namespace }}
+      exec -i {{ openbao_pod }}
+      -- sh -c '
+      IFS= read -r BAO_TOKEN;
+      export BAO_TOKEN;
+      bao policy write {{ openbao_revoker_policy_name }} -'
+    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/token-revoker.hcl') }}\n"
+  no_log: true
+  when: openbao_is_initialized | bool
+
 - name: Set up the setup-only issuer identity and the receipt namespace
   ansible.builtin.include_tasks: setup-issuer.yml
 
@@ -1325,6 +1347,9 @@
 
 - name: Set up the approval executor identity
   ansible.builtin.include_tasks: setup-executor.yml
+
+- name: Set up the standing token revoker
+  ansible.builtin.include_tasks: setup-revoker.yml
 
 - name: Write the catalogue policies and the catalogue ConfigMap
   ansible.builtin.include_tasks: catalogue.yml
@@ -1821,6 +1846,17 @@
       The rescue of 100-openbao.yml tries again, and the token expires on its own
       within {{ openbao_k8s_write_token_ttl }}.
   when: _openbao_init_trade | bool
+
+# The install has finished. The revoker starts only when no root token of the install
+# is live: a rerun has none, and a fresh install that traded its init token has
+# proved both the init token and the short token revoked above. A fresh install that
+# keeps the init token (openbao_dispose_root_token: false) leaves the revoker stopped.
+- name: Start the revoker once the installer's tokens are revoked
+  ansible.builtin.include_tasks: revoker-resume.yml
+  vars:
+    openbao_revoker_installer_token_revoked: >-
+      {{ not (openbao_init_raw is defined and openbao_init_raw.changed | default(false))
+         or ((_openbao_init_trade | bool) and (_openbao_init_gone | bool) and (_openbao_short_gone | bool)) }}
 
 # ---------------------------------------------------------------------------
 # Report

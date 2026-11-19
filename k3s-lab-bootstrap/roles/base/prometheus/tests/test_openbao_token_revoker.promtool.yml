@@ -1,0 +1,84 @@
+# Rule tests for the OpenBao token revoker's two alerts.
+# Render alerts.yaml.j2 as described in test_awx_replica_divergence_424.promtool.yml.
+rule_files:
+  - rendered_alerts.yml
+evaluation_interval: 1m
+
+tests:
+  # The record is unreadable for the whole window: the alert fires.
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_revoker_record_readable{pod="token-revoker-0"}'
+        values: "0x10"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: OpenBaoRevokerRecordUnreadable
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              category: security
+              pod: token-revoker-0
+            exp_annotations:
+              summary: The OpenBao token revoker cannot read the audit record
+              description: >-
+                The record is missing, unreadable or fails its chain check. The revoker
+                treats no token as recorded and revokes root-policy tokens older than its
+                grace period. Read the revoker log line that starts with ALERT.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-token-revoker
+  # One unreadable sample in an otherwise readable record does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_revoker_record_readable{pod="token-revoker-0"}'
+        values: "1 1 0 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: OpenBaoRevokerRecordUnreadable
+        exp_alerts: []
+  # The last scan finished at time 0 and the series stays at that value: it fires.
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_revoker_last_scan_timestamp_seconds{pod="token-revoker-0"}'
+        values: "0x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OpenBaoRevokerNotScanning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: security
+              pod: token-revoker-0
+            exp_annotations:
+              summary: The OpenBao token revoker has not completed a scan
+              description: >-
+                No scan finished for more than 5 minutes, or no revoker pod reports, so tokens
+                that outlive their change stay valid. Read the log of the revoker pod, and
+                check that the Deployment has one replica.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-token-revoker
+  # No revoker pod reports at all (the Deployment sits at zero replicas): it fires.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="prometheus"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OpenBaoRevokerNotScanning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: security
+            exp_annotations:
+              summary: The OpenBao token revoker has not completed a scan
+              description: >-
+                No scan finished for more than 5 minutes, or no revoker pod reports, so tokens
+                that outlive their change stay valid. Read the log of the revoker pod, and
+                check that the Deployment has one replica.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-token-revoker
+  # A scan finished a minute ago: it stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_revoker_last_scan_timestamp_seconds{pod="token-revoker-0"}'
+        values: "0 60 120 180 240 300 360 420 480 540 600 660 720 780 840 900"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OpenBaoRevokerNotScanning
+        exp_alerts: []

@@ -8,3 +8,5 @@ network_policies_openbao_allow_eso_namespace: external-secrets
 # Label of the approval executor's pods (openbao_executor_pod_label in the openbao
 # role). The executor runs in the OpenBao namespace.
 network_policies_openbao_allow_executor_pod_label: approval-executor
+# Label of the token revoker's pods (openbao_revoker_name in the openbao role).
+network_policies_openbao_allow_revoker_pod_label: token-revoker

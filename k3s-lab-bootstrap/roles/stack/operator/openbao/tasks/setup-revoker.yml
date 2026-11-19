@@ -1,0 +1,59 @@
+---
+# Standing token revoker: its ServiceAccount, its Kubernetes-auth role, the volume
+# claim of the executor's audit record, the script's ConfigMap and the Deployment.
+# Included from main.yml after the approval executor. The token-revoker policy that
+# the role names is written earlier in main.yml.
+#
+# The Deployment is applied with zero replicas. revoker-resume.yml starts it, and
+# only after the install has finished and the installer's token is revoked, so a
+# run of this role never leaves the revoker scanning while a root token of the
+# install is live.
+
+- name: Refuse a record volume without a node
+  ansible.builtin.assert:
+    that: openbao_record_node | length > 0
+    fail_msg: >-
+      openbao_record_node is empty. Set it to the Kubernetes node that holds the
+      audit record of the approval executor: the executor and the revoker both run
+      there.
+
+- name: Create the token revoker ServiceAccount
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: "{{ openbao_revoker_service_account }}"
+        namespace: "{{ openbao_namespace }}"
+
+# Writing a Kubernetes-auth role needs a privileged token, as for the executor: a
+# fresh install writes the role here with its short token, and an installed
+# environment gets it from playbooks/vertical-security/106-openbao-kubernetes-auth.yml.
+- name: Write the token revoker Kubernetes-auth role
+  ansible.builtin.include_tasks: kubernetes-auth-role.yml
+  vars:
+    openbao_k8s_auth_role: "{{ openbao_revoker_k8s_auth_role }}"
+    openbao_k8s_auth_token: "{{ _openbao_write_token }}"
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Create the volume claim of the audit record
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'record-pvc.yml.j2') | from_yaml }}"
+
+- name: Create the revoker script ConfigMap
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'revoker-configmap.yml.j2') | from_yaml }}"
+
+- name: Create the revoker Deployment with zero replicas
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition: "{{ lookup('template', 'revoker-deployment.yml.j2') | from_yaml }}"

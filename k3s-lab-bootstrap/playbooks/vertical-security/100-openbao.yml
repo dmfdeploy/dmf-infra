@@ -144,6 +144,18 @@
               `bao token revoke -accessor <accessor>`.
           when: _openbao_failed_tokens_left | bool
 
+        # The role stopped the revoker before its first root task. Both install tokens are
+        # revoked and refused now (the assert above ended the rescue otherwise), so the
+        # revoker may scan again. A mint whose answer was lost leaves a token that this play
+        # cannot name, so that case leaves the revoker stopped: its absence is alerted
+        # (OpenBaoRevokerNotScanning).
+        - name: Start the revoker again once the install's tokens are proven revoked
+          ansible.builtin.include_role:
+            name: stack/operator/openbao
+            tasks_from: revoker-resume.yml
+          vars:
+            openbao_revoker_installer_token_revoked: "{{ not (_openbao_failed_mint_unread | default(false) | bool) }}"
+
         - name: Re-fail after fresh-root cleanup preserves bootstrap evidence
           vars:
             _openbao_failed_mint_text: >-

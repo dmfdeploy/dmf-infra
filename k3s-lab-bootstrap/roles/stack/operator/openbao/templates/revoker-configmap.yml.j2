@@ -1,0 +1,11 @@
+{# The script's bytes and the catalogue's policy names reach the pod unchanged. The names come from
+   the role's own catalogue file because the pod cannot mount the catalogue's ConfigMap. #}
+{% set catalogue = lookup('ansible.builtin.file', role_path ~ '/files/catalogue.yml') | from_yaml %}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ (openbao_revoker_name ~ '-script') | to_json }}
+  namespace: {{ openbao_namespace | to_json }}
+data:
+  revoker.py: {{ lookup('ansible.builtin.file', role_path ~ '/files/revoker/revoker.py', rstrip=False) | to_json }}
+  catalogue-policies.json: {{ (catalogue.entries | map(attribute='policy_name') | list | to_json) | to_json }}
