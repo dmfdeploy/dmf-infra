@@ -640,36 +640,60 @@ class FakeBaoTokenTests(unittest.TestCase):
         data = self.call(SELF_LOOKUP, token="nulls")
         self.assertTrue(json.loads(data.stdout)["data"]["orphan"])
 
-    def test_every_documented_identity_call_works_with_and_without_the_json_flag(self) -> None:
-        # Catches a documented read or list that one spelling serves and the other does not.
-        # The calls come from the README table itself, so a new row is covered at once.
+    def test_every_documented_identity_call_works_in_both_forms_for_every_caller_from_the_fixture(self) -> None:
+        # Catches a documented read or list that one spelling serves and the other does not,
+        # and a caller (a legacy token name included) that is answered from a legacy default
+        # when identity.json exists. The calls come from the README table itself, so a new row
+        # is covered at once. The fixture differs from every legacy default.
         readme = (FAKE.parent / "README.md").read_text()
         section = readme.split("## Identity reads", 1)[1].split("\n## ", 1)[0]
         rows = [line for line in section.splitlines() if line.startswith("| `")]
         self.assertTrue(rows, "no rows in the table of identity reads")
-        entry = {"token_policies": ["p"], "allowed_policies": ["p"], "name": "n", "policies": ["p"]}
+        names = ("item", "external-secrets")
+        sections = ("userpass_users", "approle_roles", "token_roles", "entities", "groups")
         (self.state / "identity.json").write_text(json.dumps({
-            "auth_methods": {"token/": {"type": "token"}}, "userpass_users": {"item": entry},
-            "approle_roles": {"item": entry}, "token_roles": {"item": entry},
-            "entities": {"item": entry}, "groups": {"item": entry}}))
-        token = self._verifier()
+            "auth_methods": {"token/": {"type": "token"}, "fixture-auth/": {"type": "fixture"}},
+            **{name: {entry: {"marker": f"{name}/{entry}", "token_policies": ["fixture-only"], "role_id": f"id-{entry}"}
+                      for entry in names} for name in sections}}))
+        callers = {"root": ROOT_TOKEN, "verifier": self._verifier(), "scheduler": "fake-scheduler-1",
+                   "policy reader": "fake-policy-1", "eso": "fake-eso-1", "approle": "fake-approle-token",
+                   "ops-admin": "fake-ops-token", "outsider": self.scoped()["client_token"]}
         calls = []
         for row in rows:
             for text in re.findall(r"`([^`]+)`", row.split("|")[1]):
-                call = re.sub(r"/(NAME|ID)$", "/item", text)
-                if not re.fullmatch(r"(read|list) [a-z0-9/_.-]+", call):
+                if not re.fullmatch(r"(read|list) [A-Za-z0-9/_.-]+", text):
                     self.fail(f"cannot turn this README call into a command: {text!r} in row {row[:60]!r}")
-                calls.append(call.split())
-        self.assertTrue(calls)
-        for verb, path in calls:
-            with self.subTest(call=f"{verb} {path}"):
-                plain = self.call([verb, path], token=token)
-                flagged = self.call([verb, "-format=json", path], token=token)
-                self.assertEqual((plain.returncode, flagged.returncode), (0, 0), (plain.stderr, flagged.stderr))
-                if verb == "read":
-                    self.assertEqual(json.loads(plain.stdout), json.loads(flagged.stdout))
+                verb, path = text.split()
+                if path.endswith(("/NAME", "/ID")):
+                    calls += [(verb, path.rsplit("/", 1)[0] + "/" + entry) for entry in names]
                 else:
-                    self.assertEqual(plain.stdout.split()[2:], json.loads(flagged.stdout))
+                    calls.append((verb, path))
+        self.assertTrue(calls)
+        calls.append(("read", "auth/approle/role/item/role-id"))
+        for verb, path in calls:
+            for who, token in callers.items():
+                with self.subTest(call=f"{verb} {path}", caller=who):
+                    plain = self.call([verb, path], token=token, FAKE_ESO_ROLE_POLICIES='["legacy-default"]')
+                    flagged = self.call([verb, "-format=json", path], token=token, FAKE_ESO_ROLE_POLICIES='["legacy-default"]')
+                    self.assertEqual(plain.returncode == 0, flagged.returncode == 0)
+                    self.assertNotIn("legacy-default", plain.stdout + flagged.stdout)
+                    may_read = who == "root" or (who == "verifier" and not path.endswith("/role-id"))
+                    if may_read:
+                        self.assertEqual((plain.returncode, flagged.returncode), (0, 0), (plain.stderr, flagged.stderr))
+                    if flagged.returncode != 0:
+                        continue   # a caller that may not read the path is refused
+                    if verb == "list":
+                        keys = json.loads(flagged.stdout)
+                        self.assertEqual(plain.stdout.split()[2:], keys)
+                        self.assertEqual(sorted(keys), sorted(names))
+                    elif path == "sys/auth":
+                        self.assertIn("fixture-auth/", flagged.stdout)
+                        self.assertEqual(json.loads(plain.stdout), json.loads(flagged.stdout))
+                    elif path.endswith("/role-id"):
+                        self.assertEqual(json.loads(flagged.stdout)["data"]["role_id"], "id-item")
+                    else:
+                        self.assertEqual(json.loads(plain.stdout), json.loads(flagged.stdout))
+                        self.assertIn(f"/{path.rsplit('/', 1)[1]}", json.loads(flagged.stdout)["data"]["marker"])
 
     def test_without_a_fixture_the_userpass_reads_keep_their_old_answer(self) -> None:
         # Catches a change to the ops-admin record that the rotation tests read.

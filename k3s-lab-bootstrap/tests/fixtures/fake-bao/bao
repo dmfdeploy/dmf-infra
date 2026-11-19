@@ -432,6 +432,8 @@ is_root() {
   stored_token || { case "${BAO_TOKEN:-}" in fake-root*) return 0 ;; esac; return 1; }
   token_store policies "$BAO_TOKEN" | grep -qx root
 }
+# The scheduler token of the older tests has a name and no stored record.
+legacy_scheduler() { ! stored_token && case "${BAO_TOKEN:-}" in fake-scheduler*) true ;; *) false ;; esac; }
 # A call that reads the identity fixture answers from it whenever the file exists.
 fixture_present() { [ -f "$state/identity.json" ]; }
 # A token with a use limit spends one use on each request that it makes, allowed or not,
@@ -1017,13 +1019,25 @@ PY
     ;;
   "read auth/approle/role/"*"/role-id")
     token_ok && is_root || forbidden "reading auth/approle/role role-id"
+    # With identity.json the role must be one that it names, and its role_id is the fixture's.
+    if fixture_present; then
+      role="${norm#read auth/approle/role/}"; role="${role%/role-id}"
+      entry="$(identity_fixture auth/approle/role "$role")" || exit 2
+      printf '%s' "$entry" | python3 -c 'import json,sys; print(json.dumps({"data": {"role_id": json.load(sys.stdin)["data"].get("role_id", "fake-role-id")}}))'
+      exit 0
+    fi
     printf '{"data":{"role_id":"fake-role-id"}}\n'
     exit 0
     ;;
   "read auth/approle/role/external-secrets")
-    # With identity.json, a token that may inspect gets the role it names, or no value, as
-    # every other identity read does. Without one the answer is the scheduler's.
-    if can_inspect && fixture_present; then identity_fixture auth/approle/role external-secrets && exit 0; exit 2; fi
+    # With identity.json, the fixture is the only source for every caller that may read the
+    # role (a token that may inspect, or the legacy scheduler token): the role it names, or no
+    # value. Without the file the answer is the scheduler's, and the scheduler's alone.
+    if fixture_present; then
+      can_inspect || legacy_scheduler || forbidden "reading auth/approle/role/external-secrets"
+      identity_fixture auth/approle/role external-secrets && exit 0
+      exit 2
+    fi
     scoped_live || forbidden "reading auth/approle/role/external-secrets"
     if stored_token; then is_root || forbidden "reading auth/approle/role/external-secrets"; else
       case "${BAO_TOKEN:-}" in fake-scheduler*) ;; *) forbidden "reading auth/approle/role/external-secrets" ;; esac
