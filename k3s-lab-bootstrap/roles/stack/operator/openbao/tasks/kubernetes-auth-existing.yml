@@ -85,13 +85,6 @@
         openbao_pod: openbao-0
         _openbao_k8s_pod_known: true
 
-    # A revoker that scans while this play holds a root token revokes it. The play stops
-    # the revoker before it uses any token, and starts it again only after it has proved
-    # every token of the run revoked. It runs after the pod is known so that the `always`
-    # section can still revoke the operator's temporary token when the stop fails.
-    - name: Stop the revoker before any task that can use a root token
-      ansible.builtin.include_tasks: revoker-pause.yml
-
     - name: Wait until the cluster is ready
       ansible.builtin.include_role:
         name: "{{ openbao_k8s_readiness_role }}"
@@ -322,14 +315,6 @@
           {{ _openbao_k8s_mint_attempted | default(false) | bool
              and _openbao_k8s_write_token | default('') | length == 0 }}
 
-    - name: Note whether every token of the play is proved revoked
-      ansible.builtin.set_fact:
-        _openbao_k8s_tokens_revoked: >-
-          {{ (_openbao_k8s_temp_root | default('') | length == 0)
-             or ((_openbao_k8s_root_gone | default(false) | bool)
-                 and ((_openbao_k8s_write_token | default('') | length == 0)
-                      or (_openbao_k8s_write_gone | default(false) | bool))) }}
-
     - name: Clear the tokens from memory
       ansible.builtin.set_fact:
         _openbao_k8s_temp_root: ""
@@ -347,10 +332,3 @@
           `bao list auth/token/accessors`, look each up with
           `bao token lookup -accessor <accessor>`, and revoke the orphan token with the
           root policy and that lifetime with `bao token revoke -accessor <accessor>`.
-
-# Reached only when the block and its `always` section passed, which fail the play
-# when a token is not revoked.
-- name: Start the revoker once every token of the play is revoked
-  ansible.builtin.include_tasks: revoker-resume.yml
-  vars:
-    openbao_revoker_installer_token_revoked: "{{ _openbao_k8s_tokens_revoked | default(false) | bool }}"

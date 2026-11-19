@@ -4,23 +4,11 @@ FAKE_K8S_INFO_FAILS is set. When FAKE_K8S_UNREACHABLE is KIND or KIND/NAME and t
 is of that object, the result says the host is unreachable, as a lost connection does.
 When FAKE_K8S_WRITE_AFTER_READ is set, a read of a ClusterSecretStore returns the stored
 object and then raises its metadata.resourceVersion by one, as another writer that
-changes the store right after the read does. A label selector of the form KEY=VALUE keeps
-the objects whose metadata.labels hold it. An object with no labels counts as a pod of
-the OpenBao server (app.kubernetes.io/name=openbao)."""
+changes the store right after the read does."""
 import json
 import os
 
 from ansible.module_utils.basic import AnsibleModule
-
-
-def selected(resource, selectors):
-    labels = (resource.get("metadata", {}) or {}).get("labels") or {"app.kubernetes.io/name": "openbao"}
-    for selector in selectors:
-        if "=" in selector and "!=" not in selector:
-            key, value = selector.split("=", 1)
-            if labels.get(key) != value:
-                return False
-    return True
 
 
 def main():
@@ -53,7 +41,6 @@ def main():
         data["metadata"]["resourceVersion"] = str(int(data["metadata"]["resourceVersion"]) + 1)
         with open(path, "w") as handle:
             json.dump(data, handle)
-    resources = [r for r in resources if selected(r, module.params["label_selectors"] or [])]
     module.exit_json(changed=False, resources=resources)
 
 
