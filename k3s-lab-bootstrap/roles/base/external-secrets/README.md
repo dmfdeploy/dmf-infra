@@ -56,9 +56,7 @@ the other method's key, the task replaces the store, and a check after the apply
 fails unless the store holds exactly the selected method.
 
 On a new install, the openbao role writes the Kubernetes auth config and the
-ESO role. On an installed environment, run
-`playbooks/vertical-security/106-openbao-kubernetes-auth.yml` first, then this
-role. The decision is `docs/decisions/0051-eso-main-store-kubernetes-auth.md` in
+ESO role. An installed environment without them is rebuilt. The decision is `docs/decisions/0051-eso-main-store-kubernetes-auth.md` in
 the umbrella repo.
 
 ## Smoke test

@@ -15,7 +15,6 @@
 # policy that expires on its own after openbao_k8s_write_token_ttl. It revokes the init
 # token, proves that the server refuses it, and only then makes the first write. Every
 # write of the install uses the short token, and the end of the role revokes it.
-# openbao_dispose_root_token: false skips the trade and keeps the init token on purpose.
 # A rerun has no init token and makes none of this.
 #
 # What an UNREACHABLE run leaves, by the point where the connection is lost:
@@ -28,10 +27,11 @@
 # A failure that is not UNREACHABLE ends in the rescue of 100-openbao.yml, which revokes
 # what is left. If the answer to the mint is lost, the short token may exist while the
 # role never saw it: it expires on its own, and 100-openbao.yml says how to find it.
-# To revoke a token by its accessor, use a session that may revoke tokens, such as a
-# root token from the procedure in README.md: `bao token revoke -accessor <accessor>`.
-# Find the accessors with `bao list auth/token/accessors` and
-# `bao token lookup -accessor <accessor>`. A failed install ends in a rebuild.
+# Every step of the install that needs root runs in this role, on the init token or the
+# short token that the role mints from it. To revoke a token by its accessor, use a session
+# that may revoke tokens: `bao token revoke -accessor <accessor>`. Find the accessors
+# with `bao list auth/token/accessors` and `bao token lookup -accessor <accessor>`. A
+# failed install ends in a rebuild.
 # ---------------------------------------------------------------------------
 
 - name: Refuse an unsupported replica count
@@ -239,6 +239,18 @@
       re-enable distribution to keep the 3-of-5 break-glass recovery model.
   when: not (openbao_breakglass_distribution_enabled | bool)
 
+# The seed step runs inside the install, with the install's own token, and the role revokes
+# that token at the end. A fresh install without a seed command would end with nothing
+# seeded and no way to seed later, so it stops here, before init makes any token.
+- name: Check that a fresh install has a seed command
+  ansible.builtin.assert:
+    that: openbao_install_seed_command | length > 0
+    fail_msg: >-
+      openbao_install_seed_command is empty, so this install would seed nothing, and the
+      role revokes the install's tokens at the end of the run. Run the install through
+      dmf-env/bin/run-playbook.sh, which names the command.
+  when: not openbao_is_initialized | bool
+
 # The short token that a fresh install writes with may outlive an UNREACHABLE run, so
 # its lifetime is bounded here, before init changes anything.
 - name: Check that the write token lifetime is 10 to 15 minutes
@@ -248,9 +260,7 @@
       openbao_k8s_write_token_ttl is {{ openbao_k8s_write_token_ttl }}. Set it to
       10m to 15m: a token with the root policy may outlive an unreachable run by
       that long, and no longer.
-  when:
-    - not openbao_is_initialized | bool
-    - openbao_dispose_root_token | bool
+  when: not openbao_is_initialized | bool
 
 - name: Run Shamir init
   ansible.builtin.command:
@@ -557,18 +567,14 @@
   when: not (openbao_init_raw is defined and openbao_init_raw.changed | default(false))
 
 # ---------------------------------------------------------------------------
-# Trade the init token for a short token (fresh install only, and only while
-# openbao_dispose_root_token is true). The header of this file says why. The
+# Trade the init token for a short token (fresh install only). The header of this file says why. The
 # steps run in this order: the Raft check, the lookup of the init token, the mint,
 # the revoke of the init token with proof, and then every write.
 # ---------------------------------------------------------------------------
 
 - name: Note which token the writes of this run use
   ansible.builtin.set_fact:
-    _openbao_init_trade: >-
-      {{ openbao_init_raw is defined
-         and openbao_init_raw.changed | default(false)
-         and openbao_dispose_root_token | bool }}
+    _openbao_init_trade: "{{ openbao_init_raw is defined and openbao_init_raw.changed | default(false) }}"
     _openbao_write_token: "{{ openbao_root_token | default('') }}"
     _openbao_short_token: ""
     _openbao_init_gone: false
@@ -682,8 +688,7 @@
 
 # ---------------------------------------------------------------------------
 # Bootstrap-only tasks below need a root token and only run on init. They write
-# with _openbao_write_token: the short token after the trade, or the init token
-# when openbao_dispose_root_token is false.
+# with _openbao_write_token: the short token that the trade makes.
 # ---------------------------------------------------------------------------
 
 - name: Enable kv-v2 secrets engine
@@ -924,8 +929,8 @@
         }
         # ADR-0033: scoped machine-write service accounts (e.g. zot-svc at
         # secret/apps/zot/service). Operator can read/rotate them via break-glass,
-        # symmetric with +/admin and +/breakglass. Routine seeding uses the
-        # temp-root path in bootstrap-secrets.sh, not this policy.
+        # symmetric with +/admin and +/breakglass. Seeding at install uses the
+        # installer's initial token, not this policy.
         path "secret/data/apps/+/service" {
           capabilities = ["create", "read", "update", "delete"]
         }
@@ -1294,11 +1299,8 @@
 # later (files/policies/generate-root.hcl). The write comes before the writer of
 # every role that names the policy. It converges on every run and is valid on older
 # releases, so the policy is in place before the image changes. A fresh install
-# attaches it to ops-admin in the user upsert below. An installed
-# environment attaches it with playbooks/vertical-orchestration/120-ops-admin-rotation.yml
-# and -e ops_admin_rotation_attach_only=true, which sets the policies with a temporary
-# root token and writes no password, because no standing identity may write
-# `auth/userpass/users/*`.
+# attaches it to ops-admin in the user upsert below. The seed steps that still run
+# after the install take their temporary root token through that grant.
 - name: Write the generate-root policy
   ansible.builtin.shell:
     cmd: >-
@@ -1812,30 +1814,48 @@
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# Raft cluster check. A fresh install that trades its init token made this check
-# before the trade. A fresh install that keeps the init token
-# (openbao_dispose_root_token: false) still holds a token that can read the Raft
-# state, so it waits here for every pod to be a healthy voter. A rerun has no such
-# token, so it checks the seal state only. That check authorizes no restart: the
-# restart guard (ha-guard.yml) still needs its own token.
+# Seal check. A fresh install made its Raft check before the trade. A rerun has no token
+# that can read the Raft state, so it checks the seal state only. That check authorizes no
+# restart: the restart guard (ha-guard.yml) still needs its own token.
 # ---------------------------------------------------------------------------
-
-- name: Wait for the new Raft cluster to have every pod as a healthy voter
-  ansible.builtin.include_tasks: ha-guard-poll.yml
-  vars:
-    openbao_guard_token: "{{ openbao_root_token }}"
-  no_log: true
-  when:
-    - not (_openbao_init_trade | bool)
-    - openbao_replicas | int > 1
-    - openbao_init_raw is defined
-    - openbao_init_raw.changed | default(false)
 
 - name: Verify every pod of the Raft cluster is unsealed
   ansible.builtin.include_tasks: seal-check.yml
   when:
     - openbao_replicas | int > 1
     - openbao_init_raw is not defined or not (openbao_init_raw.changed | default(false))
+
+# The seed step. Every secret that needs a root token is written now, with the token
+# that this run holds, so the seed does not need a root token after the install. The
+# command takes the token on stdin and never in an argument. Its own messages never
+# hold the token, so they are shown. A failed seed ends the run: the rescue of
+# 100-openbao.yml revokes the tokens and proves that the server refuses them.
+- name: Seed OpenBao with the installer's token before it is revoked
+  ansible.builtin.command:
+    argv: "{{ openbao_install_seed_command }}"
+    stdin: "{{ _openbao_write_token }}"
+  delegate_to: localhost
+  become: false
+  register: _openbao_seed
+  changed_when: true
+  failed_when: false
+  no_log: true
+  when:
+    - openbao_init_raw is defined
+    - openbao_init_raw.changed | default(false)
+
+- name: Show what the seed step said
+  ansible.builtin.debug:
+    msg: "{{ _openbao_seed.stderr_lines | default([]) }}"
+  when: _openbao_seed is defined and _openbao_seed.stderr_lines is defined
+
+- name: Stop when the seed step failed
+  ansible.builtin.fail:
+    msg: >-
+      The seed step ended with status {{ _openbao_seed.rc }}. The seed may be partial:
+      some secrets may be written and others not. The rescue of 100-openbao.yml revokes the install's tokens. Rebuild the
+      environment after you fix the cause.
+  when: _openbao_seed is defined and _openbao_seed.rc | default(0) != 0
 
 - name: Revoke the short-lived write token
   ansible.builtin.include_tasks: kubernetes-auth-revoke.yml

@@ -42,7 +42,6 @@ ROOT = Path(__file__).resolve().parent.parent
 FILES = sorted(
     list((ROOT / "roles/stack/operator/openbao/tasks").glob("*.yml"))
     + list((ROOT / "playbooks/vertical-security").glob("10*-openbao*.yml"))
-    + [ROOT / "playbooks/vertical-orchestration/120-ops-admin-rotation.yml"]
 )
 JINJA = re.compile(r"\{\{(.*?)\}\}")
 # A credential key set to an expanded shell variable: password="$P", secret_id="$S".
@@ -371,7 +370,7 @@ class OpenBaoNoSecretArgvTest(unittest.TestCase):
         scanned = {path.relative_to(ROOT).parts[0] for path in ENV_CLEAN}
         self.assertTrue({"roles", "playbooks", "tasks"} <= scanned, scanned)
         names = {path.name for path in ENV_CLEAN}
-        for expected in ("main.yml", "300-k3s.yml", "696-cms-authentik-api.yml", "120-ops-admin-rotation.yml"):
+        for expected in ("main.yml", "300-k3s.yml", "696-cms-authentik-api.yml"):
             self.assertIn(expected, names)
 
     def test_every_allowed_entry_still_matches_a_command_line(self):

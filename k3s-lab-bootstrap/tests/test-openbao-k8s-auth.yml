@@ -12,16 +12,7 @@
 #      store as it was.
 #   3. The config step writes the reviewer config without a CA and a stored token, reads
 #      it back, writes nothing on a rerun, and fails when the mount ignores the fields.
-#   4. The installed-environment path checks a temporary root token, trades it for a
-#      short-lived orphan token with the root policy, revokes the temporary token before
-#      the first write, writes with the short token and revokes that token before it
-#      exits, also when a step fails (fixtures/token_lifecycle.py checks the order and
-#      the token it records); with no token it writes nothing. It writes the
-#      Kubernetes-auth roles of the setup issuer, the rotation scheduler and the approval
-#      executor once when they are missing, writes nothing for roles that exist and leaves them as they are, and, when a
-#      ServiceAccount or a policy is missing, writes no role, fails with the names and revokes
-#      the token.
-#   5. The verifier's refresh probe passes when ESO publishes the synced resource version
+#   4. The verifier's refresh probe passes when ESO publishes the synced resource version
 #      that it computes for the annotated metadata, with Ready, and then the later
 #      attempts set no further annotation. It fails after its attempts when the status
 #      stays as it was, and when the status carries the version of other metadata. It
@@ -31,10 +22,10 @@
 #      annotation value embeds the marker text: the compatibility read fails with a message
 #      about the marker, the stale-status collision does not pass, and the read that
 #      decides an attempt counts such an object as not refreshed.
-#   6. The verifier's PKI probe passes when the ESO token has no capability on the PKI
+#   5. The verifier's PKI probe passes when the ESO token has no capability on the PKI
 #      issue path (`deny`, or an empty list) and fails, naming the path, when the token
 #      still holds a grant there. The token reaches the pod on stdin, not as an argument.
-#   7. The verifier's reads of the policy and the role, which need no ESO login. The
+#   6. The verifier's reads of the policy and the role, which need no ESO login. The
 #      policy check passes with the policy text that the role writes, and fails, naming
 #      the stanza or the capability, when the live policy holds a PKI stanza or a
 #      capability beyond read and list. The role check passes with token_policies equal
@@ -189,203 +180,6 @@
         loop_var: case
         index_var: case_index
         label: "{{ case.name }}"
-
-    # ── 4. The installed-environment path ───────────────────────────────────
-    - name: Run the installed-environment path
-      ansible.builtin.include_tasks: _openbao-k8s-auth-case.yml
-      loop:
-        - name: token, everything works
-          token: "{{ _root }}"
-          expect: pass
-          wrote: true
-          revoked: true
-          rbac: true
-          config_writes: 1
-          records: 1
-          role: true
-          eso_role_written: "true"
-          standing_role_writes: 4
-        - name: rerun with a new token writes and records nothing more
-          state: 0
-          token: fake-root-token-2
-          expect: pass
-          wrote: true
-          revoked: true
-          config_writes: 1
-          records: 1
-          standing_role_writes: 4
-        - name: no token
-          expect: pass
-          rbac: true
-          wrote: false
-          revoked: false
-        - name: token, the role write fails
-          token: "{{ _root }}"
-          env: {FAKE_K8S_WRITE_FAILS: "yes"}
-          expect: fail
-          wrote: true
-          revoked: true
-        - name: token that is not a root token
-          token: fake-ops-token
-          expect: fail
-          wrote: false
-          revoked: true
-        - name: token, a pod is sealed
-          token: "{{ _root }}"
-          env: {FAKE_SEALED: openbao-0}
-          expect: fail
-          wrote: false
-          revoked: true
-        - name: token, the reviewer variable is off
-          token: "{{ _root }}"
-          reviewer: false
-          expect: fail
-          wrote: false
-          revoked: true
-        - name: token, the cluster is not ready
-          token: "{{ _root }}"
-          readiness_fails: true
-          expect: fail
-          wrote: false
-          revoked: true
-        - name: token, the pod is missing
-          token: "{{ _root }}"
-          no_pod: true
-          expect: fail
-          wrote: false
-          revoked: false
-          message: was NOT revoked
-          nothing_ran_except_lookup: true
-        - name: token, the pod lookup fails
-          token: "{{ _root }}"
-          env: {FAKE_K8S_INFO_FAILS: "yes"}
-          expect: fail
-          wrote: false
-          revoked: false
-          message: was NOT revoked
-          nothing_ran_except_lookup: true
-        - name: token, the mint of the short-lived token fails
-          token: "{{ _root }}"
-          env: {FAKE_TOKEN_CREATE_FAILS: "yes"}
-          expect: fail
-          wrote: false
-          revoked: true
-        - name: token, the answer to the mint is lost
-          token: "{{ _root }}"
-          env: {FAKE_TOKEN_CREATE_LOST: "yes"}
-          expect: fail
-          wrote: false
-          revoked: true
-          minted: 1
-          short_revoked: false
-          message: may exist that nothing revoked
-        - name: token, the revoke of the generate-root token fails
-          token: "{{ _root }}"
-          env: {FAKE_REVOKE_FAILS: root}
-          expect: fail
-          wrote: false
-          revoked: false
-          minted: 1
-          max_revokes: 9
-          message: NOT revoked
-        - name: token, the lookup that proves the revoke loses its connection
-          token: "{{ _root }}"
-          env: {FAKE_LOOKUP_TRANSPORT_FAILS: refused}
-          expect: fail
-          wrote: false
-          revoked: true
-          minted: 1
-          max_revokes: 9
-          message: NOT revoked
-        - name: token, the lookup that proves the revoke hits a local permission error
-          token: "{{ _root }}"
-          env: {FAKE_LOOKUP_TRANSPORT_FAILS: local-denied}
-          expect: fail
-          wrote: false
-          revoked: true
-          minted: 1
-          max_revokes: 9
-          message: NOT revoked
-        - name: token, an overridden write token lifetime above 15 minutes
-          token: "{{ _root }}"
-          ttl: 1h
-          expect: fail
-          wrote: false
-          revoked: true
-          minted: 0
-          message: Set it to 10m to 15m
-        - name: token, the revoke of the short-lived token fails
-          token: "{{ _root }}"
-          env: {FAKE_REVOKE_FAILS: short}
-          expect: fail
-          late_failure: true
-          wrote: true
-          revoked: true
-          short_revoked: false
-          standing_role_writes: 4
-          max_revokes: 5
-          message: NOT revoked
-        - name: reviewer on, ESO on AppRole, token
-          token: "{{ _root }}"
-          method: approle
-          expect: pass
-          wrote: true
-          revoked: true
-          config_writes: 1
-          role: false
-          standing_role_writes: 4
-        - name: token, every standing role exists already
-          token: "{{ _root }}"
-          roles_present: [setup-issuer, approle-rotation-scheduler, approval-executor, token-revoker]
-          present_role_ttl: 99
-          expect: pass
-          wrote: true
-          revoked: true
-          standing_role_writes: 0
-        - name: token, one standing role exists already
-          token: "{{ _root }}"
-          roles_present: [setup-issuer]
-          present_role_ttl: 99
-          expect: pass
-          wrote: true
-          revoked: true
-          standing_role_writes: 3
-        - name: token, a standing ServiceAccount is missing
-          token: "{{ _root }}"
-          missing_sa: [approle-rotation-scheduler]
-          expect: fail
-          wrote: true
-          revoked: true
-          standing_role_writes: 0
-          message: "Missing ServiceAccounts in namespace openbao: approle-rotation-scheduler"
-        - name: token, a standing policy is missing
-          token: "{{ _root }}"
-          missing_policy: [setup-issuer]
-          expect: fail
-          wrote: true
-          revoked: true
-          standing_role_writes: 0
-          message: "Missing policies: setup-issuer"
-        - name: token, the executor's ServiceAccount and policy are missing
-          token: "{{ _root }}"
-          missing_sa: [approval-executor]
-          missing_policy: [generate-root]
-          expect: fail
-          wrote: true
-          revoked: true
-          standing_role_writes: 0
-          message: "Missing ServiceAccounts in namespace openbao: approval-executor. Missing policies: generate-root."
-      loop_control:
-        loop_var: case
-        index_var: case_index
-        label: "{{ case.name }}"
-
-    - name: Assert the outcome of every installed-environment case
-      ansible.builtin.assert:
-        that:
-          - _outcomes | length == 23
-          - _outcomes | rejectattr('ok') | list | length == 0
-        fail_msg: "{{ _outcomes | rejectattr('ok') | map(attribute='name') | join('; ') }}"
 
     # With the variable off, the workload creates no ServiceAccount, ClusterRole or
     # binding for OpenBao.
@@ -884,7 +678,7 @@
         that: not (_verify_refreshed | bool)
         fail_msg: An object whose metadata could hide the marker counted as the refresh.
 
-    # ── 6. The verifier's PKI probe ─────────────────────────────────────────
+    # ── 5. The verifier's PKI probe ─────────────────────────────────────────
     # The fake bao answers `bao token capabilities` for a token named fake-eso* as
     # eso-reader would: ["deny"] on the PKI path unless FAKE_ESO_PKI_GRANT sets a grant.
     - name: PKI probe — set what the verifier holds after the ESO login
@@ -960,7 +754,7 @@
           - "'fake-eso-token' not in (_pki_argv.content | b64decode)"
         fail_msg: The probe did not ask about the PKI path, or a token reached an argument list.
 
-    # ── 7. The verifier's policy and role reads (no ESO login) ──────────────
+    # ── 6. The verifier's policy and role reads (no ESO login) ──────────────
     # The policy text comes from the task that writes it
     # (tests/fixtures/eso_reader_policy_hcl.py). The fake bao serves it to the
     # policy-reconciler token and serves the role's token_policies to the scheduler token.

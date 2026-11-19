@@ -74,9 +74,10 @@
         # later workload run look like an install in progress. So the check for the
         # generate-root policy runs before the first change, and the log of changes stays
         # empty.
-        - name: The image changes to 2.7 and ops-admin lacks the generate-root policy
+        - name: The image changes to 2.7 and the executor role lacks the generate-root policy
           sts_image: openbao/openbao:2.5.2
-          message: Attach the generate-root policy first
+          executor_policies: [default]
+          message: role does not hold the generate-root policy
           expect_kv_read: false
         - name: Pod 0 is sealed
           env: {FAKE_SEALED: openbao-0}
@@ -150,9 +151,8 @@
           name: A complete run
           expect: pass
         - id: policy_first
-          name: The image changes to 2.7 and ops-admin holds the generate-root policy
+          name: The image changes to 2.7 and the executor role holds the generate-root policy
           sts_image: openbao/openbao:2.5.2
-          env: {FAKE_OPS_POLICIES: "app-admin-writer,generate-root"}
           expect: pass
         - id: custom_service
           name: A complete run with another headless Service name

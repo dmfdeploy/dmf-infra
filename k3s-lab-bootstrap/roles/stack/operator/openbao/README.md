@@ -39,8 +39,7 @@ Four identities log in to OpenBao with a projected ServiceAccount token and hold
 no stored credential. Each is a mapping in `openbao_standing_k8s_auth_roles`. A
 fresh install writes the roles in `setup-issuer.yml`,
 `setup-rotation-scheduler.yml`, `setup-executor.yml` and `setup-revoker.yml`. An installed
-environment gets the missing ones from
-`playbooks/vertical-security/106-openbao-kubernetes-auth.yml`.
+environment without them is rebuilt.
 
 | Identity | ServiceAccount and role | Namespace | Policy | Login token |
 |---|---|---|---|---|
@@ -159,10 +158,26 @@ Log lines hold accessors and never a token.
 ### Install order
 
 The role installs the revoker stopped: the Deployment has zero replicas and nothing in
-the role or the playbooks scales it up. A running revoker would revoke the temporary
-root tokens that playbook 106, playbook 120 and the seed steps still make, because the
-record holds no entry for them. The step that retires the temporary-root procedure
-starts the revoker.
+the role or the playbooks scales it up. The revoker starts in a later change, after
+every path that makes a temporary root token is gone, because a running revoker would
+revoke those tokens: the record holds no entry for them.
+
+### Seed step
+
+Secrets that need a root token (`secret/platform/*` and the per-app admin paths) are
+written during the install, because nothing after it makes a root token. Just before
+the role revokes its short write token, it runs `openbao_install_seed_command` on the
+operator host (`delegate_to: localhost`), with that token on the first line of stdin
+and in no argument. dmf-env's `bin/run-playbook.sh` sets the command to
+`bootstrap-secrets.sh seed-install <env>` for the pre-seed wrappers and
+`100-openbao.yml`. The role shows the command's messages, and a non-zero status ends
+the run: the rescue of `100-openbao.yml` revokes the tokens and proves that the server
+refuses them. The seed may then be partial, because it makes several writes, so an
+environment whose seed failed is rebuilt. A fresh install with an empty command stops
+before init makes any token. A rerun holds no token and seeds nothing.
+
+The write token lives 10 to 15 minutes (`openbao_k8s_write_token_ttl`), counted from the
+mint, so the seed shares that time with the install's own writes.
 
 ## Root token generation
 
@@ -175,180 +190,32 @@ as before.
 - The policy `generate-root` (`files/policies/generate-root.hcl`) grants the
   two paths that the command uses, and nothing else. The role writes it on every
   run. Its name is `openbao_generate_root_policy_name`.
-- `ops-admin` carries the policy next to `app-admin-writer` and
-  `app-runtime-writer`. A new install attaches it when it creates the user. On an
-  installed environment, run `playbooks/vertical-orchestration/120-ops-admin-rotation.yml`
-  with `-e ops_admin_rotation_attach_only=true`. The play sets the policies of the
-  user through the policies endpoint of the userpass mount, with a temporary root
-  token, and writes no password. The break-glass file stays as it is, so no offline
-  copy goes stale. Without the variable the play also rotates the password. Only a
-  root token can write `auth/userpass/users/*`.
-- Every caller logs in as `ops-admin`, passes the login token to
-  `bao operator generate-root` on stdin, and revokes it when it ends, after a
-  failure too. The callers are the rotation play and `acquire_temp_root` in
-  `dmf-env/bin/bootstrap-secrets.sh`. On 2.5.x the command ignores the token and
-  uses the legacy endpoints, so the callers work before and after the upgrade.
-- A caller without the credentials of `ops-admin` cannot generate a root token.
-  That case needs OpenBao recovery mode, which this role does not cover yet.
+- The approval executor's Kubernetes-auth role holds the policy, and so does `ops-admin`.
+  A fresh install attaches it when it creates the user. The seed steps that still run
+  after the install log in as `ops-admin` to get a temporary root token through it.
+- The install does every step that needs a root token with its own initial token
+  (the init token, and the short token that the role mints from it), and revokes both
+  at the end of the install.
+- No playbook or role in this repository calls `bao operator generate-root`. The seed
+  steps in dmf-env's `bin/bootstrap-secrets.sh` do, until a later change removes them
+  and the grant on `ops-admin`.
 
-### Root token procedure (2.6 and later)
+### No manual procedure
 
-Use this to get a temporary root token on a 2.6 or later server and to give it to
-`106-openbao-kubernetes-auth.yml`. You need the break-glass file (the `ops_admin_*`
-keys and the unseal shares), OpenBao unsealed, and `ops-admin` holding the
-`generate-root` policy. Run the steps one by one in one shell and check each result
-before you go on. This is not a script: no step runs by itself, and the shell keeps
-the tokens in variables.
+This role has no manual procedure for a root token on an installed environment. If the
+executor can't run, the way back is a rebuild: environments installed before this
+change are rebuilt, and no step removes the policy from a live environment.
+OpenBao's recovery mode gives only a short-lived recovery token for repairs to
+storage, never a root token, and its procedure is hazardous. Long-lived sites decide
+their own way back before they rely on this model.
 
-**What stays off the command line.** No token, OTP, share or password appears in a
-local, SSH or `kubectl` argument: each goes to the pod on stdin. One value is
-visible for a short time: `bao operator generate-root` takes the OTP only as a flag,
-so while that command runs, the OTP is in the arguments of the `bao` process inside
-the pod. It is single use and worthless without the encoded token. Never write a
-token, OTP or share to a file.
+Two changes used to need a root token after the install:
 
-**The rule.** If any step after you submit the last share fails, or you are unsure
-whether it worked, stop and go to Recovery. Do not submit the share again.
-
-Find the active pod first. A standby answers the legacy generate-root endpoint of OpenBao
-2.5.2 with a 500, so every call below must go to the active pod. `bao status` needs no
-token and prints `"is_self": true` on the active node only (the field is left out on a
-standby, and a sealed pod has none). The loop asks every pod with the OpenBao label, so it
-covers any replica count:
-
-```bash
-for p in $(kubectl -n openbao get pods -l app.kubernetes.io/name=openbao -o name); do
-  kubectl -n openbao exec "$p" -- bao status -format=json | jq -e '.is_self == true' >/dev/null && echo "${p#pod/}"
-done
-```
-
-Check: exactly one pod name is printed. If none or two are, stop: unseal every pod and
-wait until one pod leads.
-
-Set up once. `K` reaches that active pod, for example `kubectl -n openbao exec -i openbao-1 --`,
-or its form over ssh. `BG` is the break-glass file.
-
-```bash
-BG=<the break-glass file>
-K="kubectl -n openbao exec -i <the active pod> --"
-# Token on the first line of stdin, more stdin after it.
-bao_as() { local t=$1; shift; { printf '%s\n' "$t"; cat; } | $K sh -c \
-  'IFS= read -r BAO_TOKEN; export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN; exec bao "$@"' bao "$@"; }
-# Token and OTP on the first two lines of stdin, more stdin after them.
-bao_otp() { local t=$1 o=$2; shift 2; { printf '%s\n%s\n' "$t" "$o"; cat; } | $K sh -c \
-  'IFS= read -r BAO_TOKEN; IFS= read -r OTP; export BAO_ADDR=https://127.0.0.1:8200 BAO_TOKEN; exec bao operator generate-root "$@" -otp="$OTP"' bao "$@"; }
-```
-
-1. Log in as ops-admin. The password is the whole of stdin (`password=-`).
-
-   ```bash
-   login=$(jq -j .ops_admin_password "$BG" | $K bao write -format=json auth/userpass/login/ops-admin password=-)
-   login_token=$(jq -r .auth.client_token <<<"$login"); login_accessor=$(jq -r .auth.accessor <<<"$login")
-   ```
-
-   Check: `login_token` and `login_accessor` are not empty. Keep the accessor.
-2. Generate the OTP, then start the attempt.
-
-   ```bash
-   otp=$(bao_as "$login_token" operator generate-root -generate-otp -format=json </dev/null | jq -r .otp)
-   nonce=$(bao_otp "$login_token" "$otp" -init -format=json </dev/null | jq -r .nonce)
-   ```
-
-   Check: `otp` and `nonce` are not empty. If a step fails here, cancel with
-   `bao_as "$login_token" operator generate-root -cancel </dev/null`, revoke the login
-   token (step 7), and start again. No token exists yet.
-3. Submit every share except the last, one call each. Repeat with `i` set to 0, 1, and so
-   on, up to the threshold minus two. With a threshold of 1 there is nothing to do here.
-
-   ```bash
-   jq -j ".unseal_keys_hex[$i]" "$BG" | bao_as "$login_token" operator generate-root -nonce="$nonce" -format=json -
-   ```
-
-   Check: each call prints `"complete": false`. A failure here means no token exists:
-   cancel as in step 2, revoke the login token, and start again.
-4. Submit the last share. **From here on, the rule applies.**
-
-   ```bash
-   out=$(jq -j ".unseal_keys_hex[<threshold minus 1>]" "$BG" | bao_as "$login_token" operator generate-root -nonce="$nonce" -format=json -)
-   encoded=$(jq -r '.encoded_token // empty' <<<"$out")
-   ```
-
-   Check: `encoded` is not empty. If the call failed, or `encoded` is empty, a token may
-   exist: go to Recovery.
-5. Decode the token with the OTP.
-
-   ```bash
-   root=$(printf '%s' "$encoded" | bao_otp "$login_token" "$otp" -decode=- -format=json | jq -r .token)
-   ```
-
-   Check: `root` is not empty. If it is, go to Recovery.
-6. Note the accessor of the root token.
-
-   ```bash
-   root_accessor=$(bao_as "$root" token lookup -format=json </dev/null | jq -r .data.accessor)
-   ```
-
-   Check: `root_accessor` is not empty. If it is, still go on, and use Recovery to find
-   the accessor later.
-7. Revoke the login token at once.
-
-   ```bash
-   bao_as "$login_token" token revoke -self </dev/null
-   ```
-
-   Check: exit status 0. If it fails, try again twice. If it still fails, note
-   `login_accessor` and revoke the token by its accessor in Recovery.
-8. Hand the root token to 106 in its environment variable, for that command only.
-
-   ```bash
-   OPENBAO_TEMP_ROOT_TOKEN="$root" bin/run-playbook.sh <env> <path to>/106-openbao-kubernetes-auth.yml
-   ```
-
-   Play 106 owns the root token from here. It mints a short-lived orphan token with the
-   root policy, revokes the generate-root token before the first write, writes with the
-   short token, and revokes the short token in an `always` section, also after a failure.
-   The server refuses each revoked token, and the play proves it.
-9. Check that the token is gone, then clear the variables.
-
-   ```bash
-   bao_as "$root" token lookup </dev/null; echo "exit status $?"   # must not be 0
-   unset root encoded otp login_token
-   ```
-
-   If the token is still valid (exit status 0), or 106 said that the revoke failed,
-   revoke it by its accessor in Recovery with `$root_accessor`. When 106 ended with
-   `UNREACHABLE`, the same check applies: the token is usually gone already, because 106
-   revokes it before its first write, and the short-lived token that 106 minted expires on
-   its own within 15 minutes.
-
-#### Recovery
-
-Use this when a step after the last share fails, when you are unsure whether a root
-token was issued, or when a token may still be valid. Work from a new session: do not
-reuse the old tokens.
-
-1. Log in again as ops-admin (step 1), generate a new temporary root token with the
-   quorum (steps 2 to 5), and call it `new_root`.
-2. List the token accessors: `bao_as "$new_root" list auth/token/accessors </dev/null`.
-3. Look each accessor up and find the root tokens that you did not just create, and the
-   old ops-admin login token (`login_accessor`, if you noted it):
-   `bao_as "$new_root" token lookup -accessor <accessor> </dev/null`.
-4. Revoke the orphan root token and the old login token:
-   `bao_as "$new_root" token revoke -accessor <accessor> </dev/null`.
-5. Revoke the new tokens: `bao_as "$new_root" token revoke -self </dev/null`, and the new
-   login token the same way.
-
-`120-ops-admin-rotation.yml` and `acquire_temp_root` in `dmf-env` run steps 1 to 5 for
-themselves, keep the root token in memory, and revoke it and the login token when they
-end. They retry a failed revoke and then stop with the accessor, and they warn when a
-root token may exist. They do not hand the token to another play.
-
-`120-ops-admin-rotation.yml` also trades the generate-root token at once, as 106 does: it
-mints a short-lived orphan token with the root policy, revokes the generate-root token
-before the first write, and writes with the short token. When 120 ends with `UNREACHABLE`,
-the header of the play says what can be left: after the revoke only the short token, which
-expires on its own within 15 minutes, and before the revoke the generate-root token, which
-you revoke by its accessor.
+- Rotating the `ops-admin` password is the `ops-admin-password-rotation` entry of the
+  catalogue, which the executor runs.
+- Writing the Kubernetes auth config or a missing standing role on an installed
+  environment has no catalogue entry. The installed-environment playbook that did it
+  is retired, and an environment that needs the change is rebuilt.
 
 ## Catalogue of setup requests
 
@@ -434,11 +301,9 @@ run. `token-revoker is missing from OpenBao` means that the role has not written
 run also says whether the executor and the revoker roles are installed. Where one is not,
 no principal may hold its policy.
 
-The fresh install still attaches `generate-root` to `ops-admin`, and the verifier fails
-on that, with a message that says so. The change that stops the install from attaching
-it removes the failure. Only a fresh install attaches `identity-verifier` to
-`policy-reconciler`. An environment installed before slice B is rebuilt (ADR-0051), not
-migrated.
+A fresh install passes the verifier: `ops-admin` holds no `generate-root` policy.
+Only a fresh install attaches `identity-verifier` to `policy-reconciler`. An environment
+installed before slice B is rebuilt (ADR-0051), not migrated.
 
 The tests in `tests/test-openbao-identity-verifier.yml` run the verifier against the
 fake bao with an identity fixture.
@@ -453,33 +318,23 @@ fix for request forwarding between nodes of different minor versions is in
 
 Take a snapshot first. Then, from `dmf-env`:
 
-1. Run `100-openbao.yml` with the image that runs now
-   (`-e openbao_image=openbao/openbao:2.5.2`). It writes the `generate-root`
-   policy and changes no pod.
-2. Run `120-ops-admin-rotation.yml -e ops_admin_rotation_attach_only=true` once.
-   It attaches the policy to `ops-admin` and keeps the password. On 2.5.x the
-   command needs no policy to run.
-3. Run `100-openbao.yml` without the override. The StatefulSet gets the new image
+1. Run `100-openbao.yml` without the override. The StatefulSet gets the new image
    and the listener setting.
    - A single pod restarts by itself, and the role unseals it.
    - A Raft cluster restarts nothing. Run `103-openbao-restart-pod.yml` for one
      pod at a time, standbys first and the leader last, and unseal each pod
      before the next. The restart guard refuses to start while a pod is sealed
      or not a healthy voter.
-4. Run `320-cert-manager.yml`. It confirms that each pod serves the current
+2. Run `320-cert-manager.yml`. It confirms that each pod serves the current
    certificate.
-5. Run `vertical-resilience/120-openbao-raft-snapshot.yml`, so the snapshot job
+3. Run `vertical-resilience/120-openbao-raft-snapshot.yml`, so the snapshot job
    runs the same release.
 
-Steps 1 and 2 come first because a 2.7 server refuses root token generation from
-a caller that lacks the policy, and a pod that already runs 2.7 cannot give
-`120-ops-admin-rotation.yml` that policy.
-
-Both plays revoke every token they issue when they end, after a failure too.
-
-A check protects this order: before the StatefulSet changes to an image of 2.6 or
-later, the role logs in as ops-admin (password from the break-glass file), reads the
-policies of the login token, revokes it, and stops unless the `generate-root` policy
-is there. It runs in `tasks/workload.yml`, so `100-openbao.yml`,
-`106-openbao-kubernetes-auth.yml` and the grow-HA play are all covered. A new
-install, an unchanged image and an image older than 2.6 skip it.
+A 2.7 server refuses root token generation from a caller that lacks the policy, and
+only the approval executor's role may hold it. A check protects the upgrade: before
+the StatefulSet changes to an image of 2.6 or later, the role logs in as
+policy-reconciler (password from the break-glass file), reads the
+`approval-executor` role, revokes the login token, and stops unless the role lists
+the `generate-root` policy. It runs in `tasks/workload.yml`, so `100-openbao.yml` and the grow-HA play are both covered. A new
+install, an unchanged image and an image older than 2.6 skip it. An environment
+installed before the executor existed has no such role: rebuild it.

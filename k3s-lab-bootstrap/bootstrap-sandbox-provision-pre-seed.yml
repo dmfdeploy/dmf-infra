@@ -6,8 +6,9 @@
 # private ingress, Headscale/Tailscale, Longhorn, audit archival, and the
 # Longhorn-shaped container-platform verifier.
 #
-# Next step: dmf-env/bin/bootstrap-secrets.sh seed-bao <env>
-# Then: bootstrap-sandbox-provision-post-seed.yml
+# The openbao role seeds OpenBao inside this wrapper, with the install's own token
+# (openbao_install_seed_command, which dmf-env/bin/run-playbook.sh sets).
+# Next: bootstrap-sandbox-provision-post-seed.yml
 
 - import_playbook: bootstrap-sandbox-profile.yml
   tags: [always, sandbox, release-profile]
@@ -51,5 +52,3 @@
   tags: [vertical-orchestration, secrets, eso]
 - import_playbook: playbooks/vertical-orchestration/110-eso-secret-rotation.yml
   tags: [vertical-orchestration, secrets, eso, rotation]
-- import_playbook: playbooks/vertical-orchestration/120-ops-admin-rotation.yml
-  tags: [vertical-orchestration, secrets, openbao, rotation]

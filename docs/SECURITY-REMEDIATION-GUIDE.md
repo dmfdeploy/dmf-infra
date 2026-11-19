@@ -13,9 +13,8 @@ To report a vulnerability, see [SECURITY.md](../SECURITY.md).
   files.
 - Keep at least a threshold quorum of key shares readable, protected, and
   stored in separate places. Your environment decides where.
-- Dispose of the initial root token after bootstrap. The OpenBao role does this
-  by default (`openbao_dispose_root_token: true`). Use the key shares for
-  privileged recovery instead.
+- Dispose of the initial root token after bootstrap. The OpenBao role always
+  does this. Use the key shares for privileged recovery instead.
 - Keep the break-glass automation file outside the repository, with mode `0600`.
 
 ## Emergency unseal

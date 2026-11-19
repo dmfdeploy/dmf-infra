@@ -431,8 +431,8 @@ class EsoRoleCheckGateTests(unittest.TestCase):
         self.assertIn("ESO's AppRole role (external-secrets) could not be checked", out)
         self.assertIn("rotation scheduler cannot log in", out)
         self.assertIn("would go unnoticed", out)
-        self.assertIn("playbooks/vertical-security/100-openbao.yml, then playbooks/vertical-security/106-openbao-kubernetes-auth.yml", out)
-        self.assertIn("temporary root token", out)
+        self.assertIn("playbooks/vertical-security/100-openbao.yml) sets that login up", out)
+        self.assertIn("rebuild the environment", out)
 
     def test_approle_mode_passes_the_gate_when_the_scheduler_is_ready(self):
         rc, out = self.run_case("approle", True)

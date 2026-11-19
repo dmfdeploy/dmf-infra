@@ -1,7 +1,7 @@
 ---
 # DMF bootstrap: Provision — Post-seed (EBU white paper §Provision stage).
 # Installs monitoring base and Layer 6 applications in vanilla form.
-# Must run after OpenBao has been seeded via dmf-env/bin/bootstrap-secrets.sh seed-bao.
+# Must run after the pre-seed wrapper, whose openbao install seeds OpenBao.
 #
 # Apps installed here use the shared bootstrap admin identity
 # (vault_bootstrap_admin_*) for their local admin surface.
@@ -67,7 +67,7 @@
 
 # ── Audit log archival to S3-compatible Object Lock bucket ────────────────────
 # Runs after monitoring is up so any deploy-time failures surface alongside
-# the Loki / Prometheus health checks. Requires seed-bao to have populated
+# the Loki / Prometheus health checks. Requires the seed to have populated
 # inventory-side AWS creds OR the operator to have set
 # audit_log_aws_access_key_id / audit_log_aws_secret_access_key in inventory
 # group_vars (kept out of git per ADR-0007).

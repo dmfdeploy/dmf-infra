@@ -5,8 +5,8 @@ The init token that `bao operator init` returns has no lifetime. The role trades
 after the unseal for a short token, revokes the init token with proof before the first
 write, and writes with the short token. These tests read the calls that the fake bao
 recorded, token by token, and the files it keeps for each token (fixtures/token_lifecycle.py
-judges them). They cover a good run, a rerun, a run with openbao_dispose_root_token set to
-false, and the failures and the lost connection that the play headers describe.
+judges them). They cover a good run, a rerun, and the failures and the lost connection
+that the play headers describe.
 
 The fake kubernetes.core can make only its own tasks unreachable. A lost connection in the
 middle of a `kubectl exec` is not modeled.
@@ -85,6 +85,8 @@ def play(testcase, replicas=1, env=None, extra=None, state=None, keys=None):
         # One poll and no pause, so a Raft check that fails does so at once.
         "openbao_guard_wait_timeout_seconds": 0,
     }
+    # A fresh install refuses to start without a seed command, so every run names a harmless one.
+    variables["openbao_install_seed_command"] = ["true"]
     variables.update(extra or {})
     environment = {
         **os.environ,
@@ -227,19 +229,6 @@ class FailureTest(unittest.TestCase):
         self.assertIn("UNREACHABLE", run.output)
         self.assertTrue(run.writes())
         self.assertEqual(problems(run, 1, "yes", "no"), [])
-
-
-class KeepTheInitTokenTest(unittest.TestCase):
-    def test_a_run_with_openbao_dispose_root_token_false_keeps_todays_behavior(self):
-        run = play(self, replicas=3, extra={"openbao_dispose_root_token": False})
-        self.assertEqual(run.returncode, 0, run.output)
-        self.assertTrue(run.writes())
-        self.assertEqual({token for token, _ in run.writes()}, {INIT})
-        self.assertEqual([args for args in run.by(INIT) if args.startswith("token ")], [])
-        self.assertFalse((run.state / ("revoked-" + INIT)).exists())
-        self.assertFalse(list((run.state / "tokens").glob("*.json")))
-        last_write = max(run.index(call) for call in run.writes())
-        self.assertGreater(run.index((INIT, RAFT_READ)), last_write)
 
 
 if __name__ == "__main__":

@@ -6,11 +6,10 @@
 #
 # For a fresh bootstrap, the canonical path is:
 #   1. dmf-env/bin/bootstrap-secrets.sh init <env>
-#   2. dmf-env/bin/bootstrap-secrets.sh seed-bao <env>
-#   3. dmf-env/bin/run-playbook.sh <env> bootstrap-provision-pre-seed.yml
-#   4. dmf-env/bin/run-playbook.sh <env> bootstrap-provision-post-seed.yml
-#   5. dmf-env/bin/run-playbook.sh <env> bootstrap-configure.yml
-#   6. dmf-env/bin/run-playbook.sh <env> bootstrap-verify.yml
+#   2. dmf-env/bin/run-playbook.sh <env> bootstrap-provision-pre-seed.yml (seeds OpenBao)
+#   3. dmf-env/bin/run-playbook.sh <env> bootstrap-provision-post-seed.yml
+#   4. dmf-env/bin/run-playbook.sh <env> bootstrap-configure.yml
+#   5. dmf-env/bin/run-playbook.sh <env> bootstrap-verify.yml
 #
 # This wrapper re-runs the full sequence as one playbook. It is NOT the
 # canonical first-run path unless the encrypted bundle has already been

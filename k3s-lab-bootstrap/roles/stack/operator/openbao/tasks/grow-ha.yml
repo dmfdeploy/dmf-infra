@@ -119,7 +119,7 @@
 # Before the first change: the play deletes the StatefulSet, and a pod that is left
 # behind makes the later workload run look like an install in progress. The check
 # runs while the original StatefulSet and the old certificate are in place.
-- name: Refuse an image change to 2.6 or later before ops-admin holds the generate-root policy
+- name: Refuse an image change to 2.6 or later unless the executor role holds the generate-root policy
   ansible.builtin.include_tasks: image-policy-preflight.yml
 
 - name: Refuse a grow on an install that uses the old Kubernetes auth reviewer

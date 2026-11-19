@@ -1,9 +1,7 @@
 """Check the token lifecycle that the fake bao recorded for a play that trades a
-generate-root token for a short-lived one: the installed-environment play
-(roles/stack/operator/openbao/tasks/kubernetes-auth-existing.yml) and the ops-admin
-rotation (playbooks/vertical-orchestration/120-ops-admin-rotation.yml). A fresh install
-of the same role (playbooks/vertical-security/100-openbao.yml) trades its init token
-the same way; this text calls the token that is traded the generate-root token.
+root token for a short-lived one: the fresh install of the openbao role
+(playbooks/vertical-security/100-openbao.yml) trades its init token. This text calls
+the token that is traded the generate-root token.
 
 The fake bao keeps $FAKE_STATE/bao-calls.log ("TOKEN ARGS" per call, in order),
 tokens/NAME.json for each token that `token create` made, and revoked-NAME for each

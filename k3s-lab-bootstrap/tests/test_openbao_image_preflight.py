@@ -1,9 +1,8 @@
-"""The openbao role stops an image change to 2.6 or later before ops-admin holds the
-generate-root policy.
+"""The openbao role stops an image change to 2.6 or later unless the approval executor's
+Kubernetes-auth role holds the generate-root policy.
 
 The check lives in tasks/image-policy-preflight.yml, which workload.yml runs first, so every
-play that applies the StatefulSet is covered: 100-openbao.yml, 106-openbao-kubernetes-auth.yml
-(through kubernetes-auth-existing.yml) and the grow-HA play. The tests run workload.yml for
+play that applies the StatefulSet is covered: 100-openbao.yml and the grow-HA play. The tests run workload.yml for
 real against the fake cluster and the fake bao of tests/fixtures.
 """
 import json
@@ -21,7 +20,7 @@ ROLE = ROOT / "roles/stack/operator/openbao"
 FIXTURES = ROOT / "tests/fixtures"
 OLD = "openbao/openbao:2.5.2"
 NEW = "docker.io/openbao/openbao:2.7.2@sha256:" + "a" * 64
-WITH_POLICY = "app-admin-writer,app-runtime-writer,generate-root"
+EXECUTOR_ROLE = "approval-executor"
 
 
 class StaticTests(unittest.TestCase):
@@ -31,7 +30,7 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(tasks[0]["ansible.builtin.include_tasks"], "image-policy-preflight.yml")
 
     def test_every_entry_point_that_applies_the_workload_goes_through_workload_yml(self) -> None:
-        for name in ("main.yml", "kubernetes-auth-existing.yml", "grow-ha.yml"):
+        for name in ("main.yml", "grow-ha.yml"):
             with self.subTest(task_file=name):
                 self.assertIn("ansible.builtin.include_tasks: workload.yml", (ROLE / "tasks" / name).read_text())
 
@@ -47,7 +46,8 @@ class StaticTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("ansible-playbook"), "ansible-playbook is not on PATH")
 class PreflightRunTests(unittest.TestCase):
-    def run_workload(self, installed=OLD, target=NEW, env=None, orphan_pod=None, pvc=False, extra_vars=None):
+    def run_workload(self, installed=OLD, target=NEW, env=None, orphan_pod=None, pvc=False, extra_vars=None,
+                     executor_policies=("generate-root",), reconciler_policies=("default", "identity-verifier")):
         work = Path(tempfile.mkdtemp(prefix="image-preflight-"))
         self.addCleanup(shutil.rmtree, work, ignore_errors=True)
         state = work / "state"
@@ -63,7 +63,8 @@ class PreflightRunTests(unittest.TestCase):
                 {"metadata": {"name": "openbao-0"}, "spec": {"containers": [{"name": "openbao", "image": orphan_pod}]}}))
         if pvc:
             (state / "k8s/PersistentVolumeClaim-data-openbao-0.json").write_text(json.dumps({"metadata": {"name": "data-openbao-0"}}))
-        (work / "breakglass.json").write_text(json.dumps({"ops_admin_username": "ops-admin", "ops_admin_password": "pw"}))
+        self.seed_identity(state, executor_policies, reconciler_policies)
+        (work / "breakglass.json").write_text(json.dumps({"policy_reconciler_username": "policy-reconciler", "policy_reconciler_password": "pw"}))
         playbook = work / "play.yml"
         playbook.write_text(yaml.safe_dump([{
             "hosts": "localhost", "connection": "local", "gather_facts": False,
@@ -88,6 +89,16 @@ class PreflightRunTests(unittest.TestCase):
         result = subprocess.run(["ansible-playbook", str(playbook)], capture_output=True, text=True, env=run_env, cwd=ROOT)
         return result, state
 
+    def seed_identity(self, state, executor_policies, reconciler_policies):
+        # The executor's role, and the stored record of the token that the policy-reconciler
+        # login returns, so that the fake lets it read roles only when it holds the verifier policy.
+        if executor_policies is not None:
+            (state / "k8s-auth").mkdir(exist_ok=True)
+            (state / "k8s-auth" / f"role-{EXECUTOR_ROLE}.json").write_text(json.dumps({"token_policies": list(executor_policies)}))
+        (state / "tokens").mkdir(exist_ok=True)
+        (state / "tokens/fake-reconciler-token.json").write_text(json.dumps(
+            {"policies": list(reconciler_policies), "orphan": True, "created": 1800000000, "ttl": 0, "uses_left": None}))
+
     def mutations(self, state):
         path = state / "k8s-mutations.log"
         return path.read_text() if path.exists() else ""
@@ -96,28 +107,61 @@ class PreflightRunTests(unittest.TestCase):
         path = state / "bao-argv.log"
         return path.exists() and "auth/userpass/login" in path.read_text()
 
-    def test_an_installed_2_5_2_server_without_the_policy_stops_before_any_workload_change(self) -> None:
-        result, state = self.run_workload()
+    def test_an_installed_server_whose_executor_role_lacks_the_policy_stops_before_any_workload_change(self) -> None:
+        result, state = self.run_workload(executor_policies=("default",))
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Attach the generate-root policy first", result.stdout)
-        self.assertIn("ops_admin_rotation_attach_only=true", result.stdout)
+        self.assertIn("role does not hold the generate-root policy", result.stdout)
+        self.assertIn("Rebuild the environment", result.stdout)
+        self.assertNotIn("ops_admin_rotation", result.stdout)
         self.assertEqual(self.mutations(state), "")
-        self.assertTrue((state / "revoked-fake-ops-token").exists())
+        self.assertTrue((state / "revoked-fake-reconciler-token").exists())
+
+    def test_ops_admin_holding_the_policy_does_not_satisfy_the_check(self) -> None:
+        # The check reads the executor's role. A user that holds the policy is the old
+        # model, and counts for nothing.
+        result, state = self.run_workload(executor_policies=("default",), env={"FAKE_OPS_POLICIES": "app-admin-writer,generate-root"})
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("role does not hold the generate-root policy", result.stdout)
+        self.assertEqual(self.mutations(state), "")
+
+    def test_the_check_never_logs_in_as_ops_admin(self) -> None:
+        result, state = self.run_workload()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("auth/userpass/login/policy-reconciler", (state / "bao-argv.log").read_text())
+        self.assertNotIn("auth/userpass/login/ops-admin", (state / "bao-argv.log").read_text())
+
+    def test_a_missing_executor_role_stops_the_play(self) -> None:
+        result, state = self.run_workload(executor_policies=None)
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not read the approval-executor role", result.stdout)
+        self.assertEqual(self.mutations(state), "")
+
+    def test_a_reconciler_without_the_verifier_policy_cannot_read_the_role(self) -> None:
+        result, state = self.run_workload(reconciler_policies=("default",))
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("could not read the approval-executor role", result.stdout)
+        self.assertIn("identity-verifier", result.stdout)
+        self.assertEqual(self.mutations(state), "")
+        self.assertTrue((state / "revoked-fake-reconciler-token").exists())
 
     def test_with_the_policy_present_the_workload_applies(self) -> None:
-        result, state = self.run_workload(env={"FAKE_OPS_POLICIES": WITH_POLICY})
+        result, state = self.run_workload()
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("present StatefulSet openbao", self.mutations(state))
-        self.assertTrue((state / "revoked-fake-ops-token").exists())
+        self.assertTrue((state / "revoked-fake-reconciler-token").exists())
 
     def test_the_check_reads_the_eso_break_glass_file_when_it_is_set(self) -> None:
         # The key path points at nothing, so only the override can supply the credentials.
         override = Path(tempfile.mkdtemp(prefix="image-preflight-override-"))
         self.addCleanup(shutil.rmtree, override, ignore_errors=True)
-        (override / "elsewhere.json").write_text(json.dumps({"ops_admin_username": "ops-admin", "ops_admin_password": "pw"}))
-        result, state = self.run_workload(env={"FAKE_OPS_POLICIES": WITH_POLICY}, extra_vars={
+        (override / "elsewhere.json").write_text(json.dumps({"policy_reconciler_username": "policy-reconciler", "policy_reconciler_password": "pw"}))
+        result, state = self.run_workload(extra_vars={
             "openbao_key_path": str(override / "missing"),
             "eso_openbao_breakglass_file": str(override / "elsewhere.json"),
         })
@@ -152,14 +196,14 @@ class PreflightRunTests(unittest.TestCase):
 
     def test_an_orphan_pod_without_a_statefulset_counts_as_installed(self) -> None:
         # An interrupted migration: the StatefulSet is gone, the initialized 2.5.2 pod stays.
-        result, state = self.run_workload(installed=None, orphan_pod=OLD)
+        result, state = self.run_workload(installed=None, orphan_pod=OLD, executor_policies=("default",))
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Attach the generate-root policy first", result.stdout)
+        self.assertIn("role does not hold the generate-root policy", result.stdout)
         self.assertEqual(self.mutations(state), "")
 
     def test_an_orphan_pod_with_the_policy_present_lets_the_workload_apply(self) -> None:
-        result, state = self.run_workload(installed=None, orphan_pod=OLD, env={"FAKE_OPS_POLICIES": WITH_POLICY})
+        result, state = self.run_workload(installed=None, orphan_pod=OLD)
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("present StatefulSet openbao", self.mutations(state))
@@ -178,12 +222,12 @@ class PreflightRunTests(unittest.TestCase):
         self.assertEqual(self.mutations(state), "")
 
     def test_a_login_revoke_that_keeps_failing_names_the_accessor(self) -> None:
-        result, state = self.run_workload(env={"FAKE_OPS_POLICIES": WITH_POLICY, "FAKE_REVOKE_FAILS": "login"})
+        result, state = self.run_workload(env={"FAKE_REVOKE_FAILS": "login"})
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("may stay valid until it expires", result.stdout)
-        self.assertIn("fake-ops-accessor", result.stdout)
-        self.assertNotIn("fake-ops-token", result.stdout)
+        self.assertIn("Its accessor is", result.stdout)
+        self.assertNotIn("fake-reconciler-token", result.stdout)
         self.assertEqual((state / "count-revoke-login").read_text().strip(), "3")
 
     def test_a_sealed_server_stops_the_play_before_any_workload_change(self) -> None:

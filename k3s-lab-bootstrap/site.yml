@@ -9,7 +9,6 @@
 #   bootstrap-configure.yml → bootstrap-verify.yml
 #
 # For a fresh bootstrap, the canonical path runs through dmf-env:
-#   dmf-env/bin/bootstrap-secrets.sh seed-bao <env>
 #   dmf-env/bin/run-playbook.sh <env> bootstrap-provision-pre-seed.yml
 #   dmf-env/bin/run-playbook.sh <env> bootstrap-provision-post-seed.yml
 #   dmf-env/bin/run-playbook.sh <env> bootstrap-configure.yml

@@ -166,22 +166,19 @@ openbao_eso_kubernetes_token_max_ttl: 3600
 openbao_service_account: openbao
 openbao_token_review_cluster_role: openbao-token-review
 
-# The temporary root token that the installed-environment play checks and then trades
-# for a short-lived write token. Pass it in the environment of the play, never as an
-# argument or in a file. The play revokes it before the first write.
-openbao_k8s_temp_root_token: "{{ lookup('ansible.builtin.env', 'OPENBAO_TEMP_ROOT_TOKEN') }}"
+# The seed step of the install: a command (a list of arguments) that the role runs on
+# the operator host while the install's write token is live, with the token on the first
+# line of stdin and in no argument. dmf-env's bin/run-playbook.sh sets it for the
+# playbooks that run the install. The secrets that need a root token are written here,
+# before the role revokes the token. An empty list seeds nothing.
+openbao_install_seed_command: []
 
-# The lifetime of the write token that a play mints from a root token: the temporary
-# root token of the installed-environment play, or the init token of a fresh install. It
+# The lifetime of the write token that the install mints from its init token. It
 # holds the root policy and expires on its own, so a run that ends with the host
 # UNREACHABLE leaves a token that is valid for at most this long. It has to cover the
 # writes that start right after the mint and make no long waits: keep it between 10 and
 # 15 minutes.
 openbao_k8s_write_token_ttl: 15m
-
-# The role that waits for the cluster before the installed-environment play uses
-# a token. The play runs it inside the block that revokes the token.
-openbao_k8s_readiness_role: base/cluster-ready
 
 # The reviewer config of the Kubernetes auth mount. OpenBao reads the CA and
 # the token from the pod's own files, so a rotated token or a new cluster needs
@@ -204,12 +201,6 @@ openbao_internal_url: "https://{{ openbao_service_name }}.{{ openbao_namespace }
 
 # Self-signed cert is trusted via the mounted CA bundle, so do not skip verify.
 openbao_skip_tls_verify: false
-
-# Init token disposal. True: a fresh install trades the init token for a short token
-# (openbao_k8s_write_token_ttl), revokes the init token before the first write, and
-# revokes the short token at the end. False: the install keeps the init token on purpose
-# and trades nothing.
-openbao_dispose_root_token: true
 
 # Operator userpass retrieval path (Phase 5)
 # Human identity for pulling per-app admin credentials and writing the
@@ -350,10 +341,8 @@ openbao_executor_pod_label: approval-executor
 # The Kubernetes-auth roles of the four standing identities, one
 # mapping each. A fresh install writes them in setup-issuer.yml,
 # setup-rotation-scheduler.yml, setup-executor.yml and setup-revoker.yml.
-# An installed environment gets the missing ones from
-# playbooks/vertical-security/106-openbao-kubernetes-auth.yml. Both paths write a
-# role from these mappings through tasks/kubernetes-auth-role.yml, so a fresh
-# install and an installed environment end with the same roles.
+# Each is written from its mapping through tasks/kubernetes-auth-role.yml. An
+# installed environment without a role is rebuilt.
 openbao_setup_issuer_k8s_auth_role:
   name: "{{ openbao_setup_issuer_k8s_role }}"
   service_account: "{{ openbao_setup_issuer_service_account }}"

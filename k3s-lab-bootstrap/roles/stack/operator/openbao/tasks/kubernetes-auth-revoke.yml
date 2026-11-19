@@ -1,8 +1,6 @@
 ---
 # Revoke one token of a play that trades a root token for a short-lived one, then
-# prove that the server refuses it. Included by kubernetes-auth-existing.yml, by
-# playbooks/vertical-orchestration/120-ops-admin-rotation.yml, by main.yml for the init
-# token of a fresh install and by the rescue of playbooks/vertical-security/100-openbao.yml,
+# prove that the server refuses it. Included by main.yml for the init token of a fresh install and by the rescue of playbooks/vertical-security/100-openbao.yml,
 # each for the root token that is traded and for the short-lived write token. The caller sets
 # openbao_namespace, openbao_pod, openbao_k8s_revoke_token and
 # openbao_k8s_revoke_flag (the name of the fact that this file sets).

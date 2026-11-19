@@ -149,11 +149,8 @@ handoff are separate dependencies in other repositories.
 The setup issuer's Kubernetes-auth role needs `auth/kubernetes/role/*`, which
 no rerun identity holds: `policy-writer` covers only `sys/policies/acl/*`, and
 ADR-0021 closes `approle-reconciler`. A fresh install writes the role with the
-initial root token. An existing environment gets it from
-`playbooks/vertical-security/106-openbao-kubernetes-auth.yml`, which writes it
-when it is missing with the temporary root token from the generate-root
-procedure, then revokes that token. The rotation scheduler's role takes the
-same two paths. A rerun of the openbao role leaves an
+initial root token. An existing environment without the role is rebuilt. The
+rotation scheduler's role takes the same path. A rerun of the openbao role leaves an
 existing role as it is, and the identity verifier fails when the role is
 missing. The policy itself is written on every pass.
 
