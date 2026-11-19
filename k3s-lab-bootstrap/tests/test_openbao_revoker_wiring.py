@@ -1,4 +1,4 @@
-"""The standing token revoker's policy, identity, volume, Deployment and install order.
+"""The standing token revoker's policy, identity, volume and stopped Deployment.
 
 These tests read the role as text and render its templates with Ansible's templating, so run
 them with the Python of Ansible. Behaviour of the script itself is in test_openbao_revoker.py.
@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parent.parent
 ROLE = ROOT / "roles/stack/operator/openbao"
 NETPOL = ROOT / "roles/base/network-policies"
 PROMETHEUS = ROOT / "roles/base/prometheus"
-PLAYBOOK = ROOT / "playbooks/vertical-security/100-openbao.yml"
 MAX_LOGIN_TTL_SECONDS = 5 * 60
 UNITS = {"s": 1, "m": 60, "h": 3600}
 
@@ -175,7 +174,6 @@ class Render(unittest.TestCase):
         self.assertEqual(render_template("record-pvc.yml.j2", dmf_storage_class="longhorn")["spec"]["storageClassName"], "longhorn")
 
     def test_the_deployment_is_one_stopped_replica_with_recreate(self):
-        # The play starts it only after the install (revoker-resume.yml).
         spec = self.deployment()["spec"]
         self.assertEqual(spec["replicas"], 0)
         self.assertEqual(spec["strategy"], {"type": "Recreate"})
@@ -272,121 +270,20 @@ class Alert(unittest.TestCase):
         self.assertIn("alert: OpenBaoRevokerRecordUnreadable", rules)
 
 
-class Order(unittest.TestCase):
-    """The revoker never scans while a root token of the install is live."""
+class Stopped(unittest.TestCase):
+    """The role installs the revoker and nothing in it starts the revoker."""
 
-    main = tasks("main.yml")
-    names = [t["name"] for t in main]
-
-    def index(self, name):
-        return self.names.index(name)
-
-    def first_using_a_root_token(self):
-        for number, task in enumerate(self.main):
-            text = yaml.safe_dump(task)
-            if any(marker in text for marker in ("operator init", "token create", "root_token")):
-                return number
-        self.fail("no task makes or uses a root token")
-
-    def test_the_revoker_stops_before_any_task_that_makes_or_uses_a_root_token(self):
-        # Catches a pause that comes after the init, which would leave a window in which the
-        # revoker scans while the init token is live.
-        pause = self.index("Stop the revoker before any task that can create or use a root token")
-        self.assertLess(pause, self.first_using_a_root_token())
-        self.assertLess(pause, self.index("Apply the OpenBao workload"))
-        include = self.main[pause]["ansible.builtin.include_tasks"]
-        self.assertEqual(include, "revoker-pause.yml")
-
-    def test_the_pause_scales_to_zero_and_then_waits_for_the_pods_to_end(self):
-        pause = tasks("revoker-pause.yml")
-        order = [t["name"] for t in pause]
-        scale = next(t for t in pause if "kubernetes.core.k8s_scale" in t)
-        self.assertEqual(scale["kubernetes.core.k8s_scale"]["replicas"], 0)
-        wait = next(t for t in pause if t["name"] == "Wait until no revoker pod is left")
-        self.assertLess(order.index(scale["name"]), order.index(wait["name"]))
-        self.assertEqual(wait["kubernetes.core.k8s_info"]["kind"], "Pod")
-        self.assertIn("length == 0", wait["until"])
-        self.assertIn("app.kubernetes.io/name={{ openbao_revoker_name }}", wait["kubernetes.core.k8s_info"]["label_selectors"])
-
-    def test_the_revoker_starts_only_after_the_installer_token_is_shown_revoked(self):
-        resume = self.index("Start the revoker once the installer's tokens are revoked")
-        self.assertGreater(resume, self.index("Require the short-lived write token to be revoked"))
-        self.assertGreater(resume, self.index("Revoke the short-lived write token"))
-        for later in self.main[resume + 1:]:
-            text = yaml.safe_dump(later)
-            self.assertNotIn("_openbao_write_token", text)
-            self.assertNotIn("_openbao_short_token", text)
-            self.assertNotIn("root_token", text)
-
-    def test_only_the_resume_file_scales_the_revoker_up(self):
-        # Catches a second place that starts the revoker, or a Deployment template that renders
-        # one replica: a rerun would then leave it scanning while the installer's token is live.
-        for path in list(ROLE.rglob("*.yml")) + list(ROLE.rglob("*.j2")):
+    def test_the_deployment_has_zero_replicas_and_nothing_scales_it(self):
+        # Catches a task or a template that starts the revoker before the temporary-root paths
+        # are gone: it would revoke their root tokens at its next scan.
+        self.assertEqual(render_template("revoker-deployment.yml.j2")["spec"]["replicas"], 0)
+        playbooks = ROOT / "playbooks"
+        for path in [*ROLE.rglob("*.yml"), *ROLE.rglob("*.j2"), *playbooks.rglob("*.yml")]:
             text = path.read_text()
-            if path.name == "revoker-resume.yml":
-                self.assertIn("replicas: 1", text)
-            elif "revoker" in text:
+            if "revoker" in text:
+                self.assertNotIn("k8s_scale", text, str(path))
                 self.assertNotRegex(text, r"(?m)^\s*replicas:\s*[1-9]", str(path))
 
-    def test_a_rerun_cannot_leave_the_revoker_scanning_while_the_installer_token_is_live(self):
-        # The resume runs only when this expression is true. Every state of the run with a live
-        # root token of the install must make it false, and a rerun (no init) must make it true.
-        # The expression is the text that main.yml passes to the resume file.
-        resume = next(t for t in self.main if t["name"] == "Start the revoker once the installer's tokens are revoked")
-        text = resume["vars"]["openbao_revoker_installer_token_revoked"]
-        guard = tasks("revoker-resume.yml")
-        for task in guard:
-            if "kubernetes.core.k8s_scale" in task:
-                self.assertIn("openbao_revoker_installer_token_revoked | bool", task["when"])
-        for fresh in (True, False):
-            for trade in (True, False):
-                for init_gone in (True, False):
-                    for short_gone in (True, False):
-                        state = {
-                            "openbao_init_raw": {"changed": fresh} if fresh else {"changed": False},
-                            "_openbao_init_trade": trade, "_openbao_init_gone": init_gone,
-                            "_openbao_short_gone": short_gone,
-                        }
-                        allowed = str(expression(text, **state)).strip() == "True"
-                        token_live = fresh and not (trade and init_gone and short_gone)
-                        with self.subTest(**{k: v for k, v in state.items() if k != "openbao_init_raw"}, fresh=fresh):
-                            self.assertEqual(allowed, not token_live)
-        # A rerun on a play that never read the init output has no installer token either.
-        self.assertEqual(str(expression(text, _openbao_init_trade=False, _openbao_init_gone=False,
-                                        _openbao_short_gone=False)).strip(), "True")
-
-    def test_a_failed_run_leaves_the_revoker_stopped_and_only_a_finished_run_starts_it(self):
-        # In the main play the resume task sits outside every block that a failure could run
-        # through. In the rescue of the playbook it comes only after the assert that proves
-        # the install's tokens revoked, so a failed proof ends the rescue with the revoker
-        # still stopped, and a mint whose answer was lost keeps it stopped too.
-        playbook = PLAYBOOK.read_text()
-        self.assertEqual(playbook.count("tasks_from: revoker-resume.yml"), 1)
-        resume = playbook.index("tasks_from: revoker-resume.yml")
-        self.assertLess(playbook.index("- name: Assert failed-bootstrap root disposal succeeded"), resume)
-        self.assertLess(resume, playbook.index("- name: Re-fail after fresh-root cleanup"))
-        self.assertIn("_openbao_failed_mint_unread", playbook[resume:resume + 400])
-        self.assertEqual(sum("revoker-resume.yml" in yaml.safe_dump(t) for t in self.main), 1)
-        resume_task = next(t for t in self.main if "revoker-resume.yml" in yaml.safe_dump(t))
-        self.assertNotIn("block", resume_task)
-        existing = tasks("kubernetes-auth-existing.yml")
-        self.assertIn("revoker-resume.yml", yaml.safe_dump(existing[-1]))
-        block = next(t for t in existing if "block" in t)
-        self.assertNotIn("revoker-resume.yml", yaml.safe_dump(block))
-
-    def test_the_installed_environment_play_stops_the_revoker_before_it_uses_a_token(self):
-        existing = tasks("kubernetes-auth-existing.yml")
-        block = next(t for t in existing if "block" in t)["block"]
-        names = [t["name"] for t in block]
-        pause = names.index("Stop the revoker before any task that can use a root token")
-        self.assertEqual(block[pause]["ansible.builtin.include_tasks"], "revoker-pause.yml")
-        self.assertLess(names.index("Name the pod"), pause)
-        inner = next(t for t in block if t.get("name") == "Write the config and the roles")
-        self.assertLess(pause, block.index(inner))
-        self.assertEqual(names[pause - 1], "Name the pod")
-        flag = existing[-1]["vars"]["openbao_revoker_installer_token_revoked"]
-        self.assertIn("_openbao_k8s_tokens_revoked", flag)
-        self.assertEqual(existing[-1]["name"], "Start the revoker once every token of the play is revoked")
 
 if __name__ == "__main__":
     unittest.main()

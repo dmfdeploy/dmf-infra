@@ -167,10 +167,10 @@ groups:
             treats no token as recorded and revokes root-policy tokens older than its
             grace period. Read the revoker log line that starts with ALERT.
           runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-token-revoker"
-      # The pod runs, but its scans do not finish: the login or the listing fails. With no
-      # pod (the install left the Deployment at zero replicas) the gauge is absent.
+      # The pod runs, but its scans do not finish: the login or the listing fails. A
+      # stopped revoker reports no gauge, so this rule stays quiet while it is stopped.
       - alert: OpenBaoRevokerNotScanning
-        expr: time() - dmf_openbao_revoker_last_scan_timestamp_seconds > 300 or absent(dmf_openbao_revoker_last_scan_timestamp_seconds)
+        expr: time() - dmf_openbao_revoker_last_scan_timestamp_seconds > 300
         for: 5m
         labels:
           severity: warning
@@ -178,9 +178,8 @@ groups:
         annotations:
           summary: The OpenBao token revoker has not completed a scan
           description: >-
-            No scan finished for more than 5 minutes, or no revoker pod reports, so tokens
-            that outlive their change stay valid. Read the log of the revoker pod, and
-            check that the Deployment has one replica.
+            No scan finished for more than 5 minutes, so tokens that outlive their change
+            stay valid. Read the log of the revoker pod.
           runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-token-revoker"
   - name: dmf-watchdog
     rules:

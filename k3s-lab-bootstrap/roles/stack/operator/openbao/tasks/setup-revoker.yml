@@ -4,10 +4,8 @@
 # Included from main.yml after the approval executor. The token-revoker policy that
 # the role names is written earlier in main.yml.
 #
-# The Deployment is applied with zero replicas. revoker-resume.yml starts it, and
-# only after the install has finished and the installer's token is revoked, so a
-# run of this role never leaves the revoker scanning while a root token of the
-# install is live.
+# The Deployment is applied with zero replicas and nothing in this role starts it.
+# The step that retires the temporary-root procedure starts it.
 
 - name: Refuse a record volume without a node
   ansible.builtin.assert:

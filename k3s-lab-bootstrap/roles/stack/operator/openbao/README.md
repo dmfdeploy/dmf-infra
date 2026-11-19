@@ -133,21 +133,18 @@ annotations, so the `kubernetes-pods` job scrapes it.
 
 Two rules in `roles/base/prometheus/templates/rules/alerts.yaml.j2` use them:
 `OpenBaoRevokerRecordUnreadable` (critical, after 3 minutes) and
-`OpenBaoRevokerNotScanning` (warning, when no scan finishes for 5 minutes). To find
-the cause, read the log of the revoker pod: the `ALERT` line gives the reason, and
-`revoked ACCESSOR: reason` lines show every revoke. Log lines hold accessors and
-never a token.
+`OpenBaoRevokerNotScanning` (warning, when no scan finishes for 5 minutes; a stopped
+revoker reports nothing). To find the cause, read the log of the revoker pod: the
+`ALERT` line gives the reason, and `revoked ACCESSOR: reason` lines show every revoke.
+Log lines hold accessors and never a token.
 
 ### Install order
 
-The revoker would revoke the installer's own root token, because the record holds no
-entry for it. So `main.yml` stops the revoker (`revoker-pause.yml`) before the first
-task that can create or use a root-policy token, and waits for its pods to end. The
-Deployment is applied with zero replicas. Only `revoker-resume.yml` sets one replica,
-after the install has finished and the init token and the short write token are
-proved revoked. A fresh install with `openbao_dispose_root_token: false` keeps the
-init token and leaves the revoker stopped. `106-openbao-kubernetes-auth.yml` stops
-and starts it the same way around its own tokens.
+The role installs the revoker stopped: the Deployment has zero replicas and nothing in
+the role or the playbooks scales it up. A running revoker would revoke the temporary
+root tokens that playbook 106, playbook 120 and the seed steps still make, because the
+record holds no entry for them. The step that retires the temporary-root procedure
+starts the revoker.
 
 ## Root token generation
 

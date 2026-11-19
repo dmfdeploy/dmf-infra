@@ -1,5 +1,4 @@
-{# One replica of the standing revoker. The play renders it with zero replicas and starts it
-   only after the install has finished and the installer's token is revoked (revoker-resume.yml). #}
+{# The standing revoker. The play renders it with zero replicas and nothing here starts it. #}
 {% set script_text = lookup('ansible.builtin.file', role_path ~ '/files/revoker/revoker.py', rstrip=False) %}
 {% set catalogue = lookup('ansible.builtin.file', role_path ~ '/files/catalogue.yml') | from_yaml %}
 apiVersion: apps/v1
