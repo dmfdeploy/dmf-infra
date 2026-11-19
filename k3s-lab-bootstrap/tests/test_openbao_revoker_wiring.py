@@ -7,6 +7,7 @@ import json
 import re
 import unittest
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 from ansible.parsing.dataloader import DataLoader
@@ -209,7 +210,11 @@ class Render(unittest.TestCase):
         self.assertEqual(env["REVOKER_GRACE_SECONDS"], "300")
         self.assertEqual(env["REVOKER_SCAN_INTERVAL_SECONDS"], "60")
         self.assertEqual(env["REVOKER_RECORD_DIR"], "/record")
-        self.assertTrue(env["REVOKER_BAO_ADDR"].startswith("https://openbao.openbao.svc"))
+        address = urlsplit(env["REVOKER_BAO_ADDR"])
+        self.assertEqual(
+            (address.scheme, address.hostname, address.port),
+            ("https", "openbao.openbao.svc.cluster.local", 8200),
+        )
         self.assertEqual(self.pod()["containers"][0]["command"], ["python", "/config/revoker.py"])
 
     def test_the_pod_is_scraped_on_its_metrics_port(self):
