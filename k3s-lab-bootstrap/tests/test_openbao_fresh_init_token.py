@@ -224,6 +224,14 @@ class FailureTest(unittest.TestCase):
         self.assertNotEqual(run.returncode, 0, run.output)
         self.assertNotIn("k8s scale Deployment token-revoker replicas=1", lines)
 
+    def test_the_rescue_leaves_the_revoker_stopped_when_the_install_keeps_its_init_token(self):
+        # With openbao_dispose_root_token false the init token stays live on purpose, and
+        # the revoker would revoke it.
+        run, lines = self.revoker_events(
+            env={"FAKE_POLICY_WRITE_FAILS": "1"}, extra={"openbao_dispose_root_token": False})
+        self.assertNotEqual(run.returncode, 0, run.output)
+        self.assertNotIn("k8s scale Deployment token-revoker replicas=1", lines)
+
     def test_a_failed_revoke_of_the_init_token_stops_before_any_write(self):
         run = play(self, env={"FAKE_REVOKE_FAILS": "root"})
         self.assertNotEqual(run.returncode, 0, run.output)
