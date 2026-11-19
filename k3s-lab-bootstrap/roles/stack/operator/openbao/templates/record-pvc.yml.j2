@@ -1,0 +1,14 @@
+{# The executor's audit record. The executor mounts it read-write, the revoker read-only.
+   The claim is pinned to one node by the nodeSelector of both pods (see defaults/main.yml). #}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ openbao_record_pvc_name | to_json }}
+  namespace: {{ openbao_namespace | to_json }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: {{ openbao_record_storage_class | to_json }}
+  resources:
+    requests:
+      storage: {{ openbao_record_size | to_json }}

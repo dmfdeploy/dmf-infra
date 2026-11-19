@@ -160,7 +160,7 @@
           records: 1
           role: true
           eso_role_written: "true"
-          standing_role_writes: 3
+          standing_role_writes: 4
         - name: rerun with a new token writes and records nothing more
           state: 0
           token: fake-root-token-2
@@ -169,7 +169,7 @@
           revoked: true
           config_writes: 1
           records: 1
-          standing_role_writes: 3
+          standing_role_writes: 4
         - name: no token
           expect: pass
           rbac: true
@@ -278,7 +278,7 @@
           wrote: true
           revoked: true
           short_revoked: false
-          standing_role_writes: 3
+          standing_role_writes: 4
           max_revokes: 5
           message: NOT revoked
         - name: reviewer on, ESO on AppRole, token
@@ -289,10 +289,10 @@
           revoked: true
           config_writes: 1
           role: false
-          standing_role_writes: 3
+          standing_role_writes: 4
         - name: token, every standing role exists already
           token: "{{ _root }}"
-          roles_present: [setup-issuer, approle-rotation-scheduler, approval-executor]
+          roles_present: [setup-issuer, approle-rotation-scheduler, approval-executor, token-revoker]
           present_role_ttl: 99
           expect: pass
           wrote: true
@@ -305,7 +305,7 @@
           expect: pass
           wrote: true
           revoked: true
-          standing_role_writes: 2
+          standing_role_writes: 3
         - name: token, a standing ServiceAccount is missing
           token: "{{ _root }}"
           missing_sa: [approle-rotation-scheduler]

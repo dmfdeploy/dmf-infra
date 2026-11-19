@@ -334,9 +334,9 @@ openbao_executor_token_ttl: 5m
 openbao_executor_token_max_ttl: 10m
 openbao_executor_pod_label: approval-executor
 
-# The Kubernetes-auth roles of the three standing identities, one
+# The Kubernetes-auth roles of the four standing identities, one
 # mapping each. A fresh install writes them in setup-issuer.yml,
-# setup-rotation-scheduler.yml and setup-executor.yml.
+# setup-rotation-scheduler.yml, setup-executor.yml and setup-revoker.yml.
 # An installed environment gets the missing ones from
 # playbooks/vertical-security/106-openbao-kubernetes-auth.yml. Both paths write a
 # role from these mappings through tasks/kubernetes-auth-role.yml, so a fresh
@@ -365,11 +365,65 @@ openbao_executor_k8s_auth_role:
   policy: "{{ openbao_generate_root_policy_name }}"
   token_ttl: "{{ openbao_executor_token_ttl }}"
   token_max_ttl: "{{ openbao_executor_token_max_ttl }}"
+openbao_revoker_k8s_auth_role:
+  name: "{{ openbao_revoker_k8s_role }}"
+  service_account: "{{ openbao_revoker_service_account }}"
+  namespace: "{{ openbao_namespace }}"
+  audience: "{{ openbao_revoker_audience }}"
+  policy: "{{ openbao_revoker_policy_name }}"
+  token_ttl: "{{ openbao_revoker_token_ttl }}"
+  token_max_ttl: "{{ openbao_revoker_token_max_ttl }}"
 openbao_standing_k8s_auth_roles:
   - "{{ openbao_setup_issuer_k8s_auth_role }}"
   - "{{ openbao_rotation_scheduler_k8s_auth_role }}"
   - "{{ openbao_executor_k8s_auth_role }}"
+  - "{{ openbao_revoker_k8s_auth_role }}"
 
 # Name of the ConfigMap that carries the catalogue of setup requests and its pinned
 # policy files. It lives in openbao_setup_requests_namespace.
 openbao_catalogue_configmap_name: setup-catalogue
+
+# Standing token revoker (ADR-0051, Amendment 2026-11-18). A Deployment that scans
+# every openbao_revoker_scan_interval_seconds and revokes the executor tokens that
+# have outlived their change (files/revoker/revoker.py, README.md). It logs in with
+# its projected ServiceAccount token on every scan, so the login token is short:
+# one scan takes seconds. Its only policy is token-revoker (files/policies/token-revoker.hcl).
+openbao_revoker_name: token-revoker
+openbao_revoker_service_account: token-revoker
+openbao_revoker_k8s_role: token-revoker
+openbao_revoker_policy_name: token-revoker
+openbao_revoker_audience: openbao
+openbao_revoker_token_ttl: 2m
+openbao_revoker_token_max_ttl: 5m
+
+# A token that outlives its change is revoked after this long, measured from the
+# creation time that the server reports. The executor abandons a request after 2
+# minutes, so 5 minutes leaves it time to close the request.
+openbao_revoker_grace_seconds: 300
+openbao_revoker_scan_interval_seconds: 60
+openbao_revoker_metrics_port: 9102
+
+# Python image of the script. The role mounts the script from a ConfigMap, as the
+# ntfy bridge does (roles/base/prometheus, prometheus_ntfy_bridge_image).
+openbao_revoker_image: python:3.13-alpine
+openbao_revoker_cpu_request: 10m
+openbao_revoker_memory_request: 32Mi
+openbao_revoker_cpu_limit: 100m
+openbao_revoker_memory_limit: 64Mi
+
+# The audit record of the approval executor: a volume that only the executor writes
+# and the revoker reads. Both pods mount the claim and both carry a nodeSelector on
+# openbao_record_node, so the two pods land on the node that holds the volume.
+# openbao_record_node is a Kubernetes node name. A k3s node is named after its
+# inventory host, so the default is the first control host. The storage class is the
+# site's default (dmf_storage_class). On a local-path class (the sandbox lane) the
+# provisioner is rancher.io/local-path: it creates the volume as a directory on the
+# node of the first pod that mounts the claim and pins the volume to that node with a
+# node affinity on kubernetes.io/hostname. On longhorn, the default of the other
+# lanes, a ReadWriteOnce volume attaches to one node at a time and follows its first
+# pod; the nodeSelector keeps both pods on the same node.
+openbao_record_pvc_name: approval-executor-record
+openbao_record_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
+openbao_record_size: 1Gi
+openbao_record_node: "{{ (groups['k3s_control'] | default([''])) | first }}"
+openbao_record_mount_path: /record

@@ -187,7 +187,7 @@
                   (_record.content | default('e30=') | b64decode | from_json).data.eso_role_written | default('') == case.eso_role_written))
                 and ((case.role is not defined) or (('write auth/kubernetes/role/' ~ openbao_eso_kubernetes_role_name ~ ' ') in _argv) == case.role)
                 and ((case.standing_role_writes is not defined) or (
-                  _argv | regex_findall('(?m)^write auth/kubernetes/role/(?:setup-issuer|approle-rotation-scheduler|approval-executor) -$') | length == case.standing_role_writes))
+                  _argv | regex_findall('(?m)^write auth/kubernetes/role/(?:setup-issuer|approle-rotation-scheduler|approval-executor|token-revoker) -$') | length == case.standing_role_writes))
                 and (_standing_roles_kept | from_json == _standing_roles_expected | from_json)
                 and ((case.message is not defined) or (case.message in _message))
                 and ((case.nothing_ran_except_lookup is not defined) or (_argv == '' and _mutations == ''))

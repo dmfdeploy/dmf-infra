@@ -1,0 +1,118 @@
+{# One replica of the standing revoker. The play renders it with zero replicas and starts it
+   only after the install has finished and the installer's token is revoked (revoker-resume.yml). #}
+{% set script_text = lookup('ansible.builtin.file', role_path ~ '/files/revoker/revoker.py', rstrip=False) %}
+{% set catalogue = lookup('ansible.builtin.file', role_path ~ '/files/catalogue.yml') | from_yaml %}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ openbao_revoker_name | to_json }}
+  namespace: {{ openbao_namespace | to_json }}
+  labels:
+    app.kubernetes.io/name: {{ openbao_revoker_name | to_json }}
+spec:
+  replicas: 0
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ openbao_revoker_name | to_json }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ openbao_revoker_name | to_json }}
+      annotations:
+        openbao-revoker/script-checksum: {{ ((script_text ~ (catalogue.entries | map(attribute='policy_name') | list | to_json)) | hash('sha256')) | to_json }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ openbao_revoker_metrics_port | string | to_json }}
+        prometheus.io/path: /metrics
+    spec:
+      serviceAccountName: {{ openbao_revoker_service_account | to_json }}
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/hostname: {{ openbao_record_node | to_json }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: revoker
+          image: {{ openbao_revoker_image | to_json }}
+          command:
+            - python
+            - /config/revoker.py
+          env:
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: PYTHONUNBUFFERED
+              value: "1"
+            - name: REVOKER_BAO_ADDR
+              value: {{ openbao_internal_url | to_json }}
+            - name: REVOKER_CA_FILE
+              value: /tls/ca.crt
+            - name: REVOKER_ROLE
+              value: {{ openbao_revoker_k8s_role | to_json }}
+            - name: REVOKER_JWT_FILE
+              value: /var/run/secrets/openbao/token
+            - name: REVOKER_RECORD_DIR
+              value: {{ openbao_record_mount_path | to_json }}
+            - name: REVOKER_CATALOGUE_FILE
+              value: /config/catalogue-policies.json
+            - name: REVOKER_GRACE_SECONDS
+              value: {{ openbao_revoker_grace_seconds | string | to_json }}
+            - name: REVOKER_SCAN_INTERVAL_SECONDS
+              value: {{ openbao_revoker_scan_interval_seconds | string | to_json }}
+            - name: REVOKER_METRICS_PORT
+              value: {{ openbao_revoker_metrics_port | string | to_json }}
+          ports:
+            - name: metrics
+              containerPort: {{ openbao_revoker_metrics_port | int }}
+          resources:
+            requests:
+              cpu: {{ openbao_revoker_cpu_request | to_json }}
+              memory: {{ openbao_revoker_memory_request | to_json }}
+            limits:
+              cpu: {{ openbao_revoker_cpu_limit | to_json }}
+              memory: {{ openbao_revoker_memory_limit | to_json }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: script
+              mountPath: /config
+              readOnly: true
+            - name: record
+              mountPath: {{ openbao_record_mount_path | to_json }}
+              readOnly: true
+            - name: openbao-token
+              mountPath: /var/run/secrets/openbao
+              readOnly: true
+            - name: openbao-ca
+              mountPath: /tls
+              readOnly: true
+      volumes:
+        - name: script
+          configMap:
+            name: {{ (openbao_revoker_name ~ '-script') | to_json }}
+            defaultMode: 0444
+        - name: record
+          persistentVolumeClaim:
+            claimName: {{ openbao_record_pvc_name | to_json }}
+            readOnly: true
+        - name: openbao-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ openbao_revoker_audience | to_json }}
+                  expirationSeconds: 600
+                  path: token
+        - name: openbao-ca
+          secret:
+            secretName: {{ openbao_tls_secret_name | to_json }}
+            items:
+              - key: ca.crt
+                path: ca.crt

@@ -35,10 +35,10 @@ Keep the check in any case, because it is the proof.
 
 ## Standing Kubernetes-auth identities
 
-Three identities log in to OpenBao with a projected ServiceAccount token and hold
+Four identities log in to OpenBao with a projected ServiceAccount token and hold
 no stored credential. Each is a mapping in `openbao_standing_k8s_auth_roles`. A
 fresh install writes the roles in `setup-issuer.yml`,
-`setup-rotation-scheduler.yml` and `setup-executor.yml`. An installed
+`setup-rotation-scheduler.yml`, `setup-executor.yml` and `setup-revoker.yml`. An installed
 environment gets the missing ones from
 `playbooks/vertical-security/106-openbao-kubernetes-auth.yml`.
 
@@ -47,12 +47,107 @@ environment gets the missing ones from
 | Setup issuer | `setup-issuer` | `openbao` | `setup-issuer` | 5 minutes, at most 10 |
 | Rotation scheduler | `approle-rotation-scheduler` | `openbao` | `approle-rotation-scheduler` | 20 minutes, at most 30 |
 | Approval executor | `approval-executor` | `openbao` | `generate-root` | 5 minutes, at most 10 |
+| Token revoker | `token-revoker` | `openbao` | `token-revoker` | 2 minutes, at most 5 |
 
 The approval executor has no workload until slice D builds its image. Until then
 only its ServiceAccount, role and network rules exist. Its only policy is
 `generate-root`. Two NetworkPolicies in `roles/base/network-policies` cover it:
 one admits its pods, labelled `app.kubernetes.io/name: approval-executor`, to the
 OpenBao API port. The other admits only pods inside the cluster to the executor.
+
+## Token revoker
+
+The token revoker is a standing Deployment in the `openbao` namespace. It ends the
+tokens that the approval executor leaves behind, so that a failed or abandoned
+change cannot leave a root-policy token valid.
+
+### What it revokes
+
+The script (`files/revoker/revoker.py`, standard library only) runs from a ConfigMap
+on `python:3.13-alpine`, the image of the ntfy bridge in `roles/base/prometheus`.
+Every 60 seconds it logs in with its projected ServiceAccount token, lists the
+accessors of the live tokens, and looks each one up. It logs in again on every scan
+and keeps no token between scans, so it stores no token on disk. A lookup that fails,
+or that has no `policies` list, is logged and the token is left alone.
+
+An *executor token* is a token whose policies include `root` or any policy named in
+`files/catalogue.yml` (all start with `catalogue-`). The revoker leaves every
+other token alone, including the executor's login token, ESO's tokens, and its own.
+
+A scan revokes, by accessor:
+
+- every recorded accessor (either of a `minted` entry's two) whose request has a
+  `closed` entry, and every recorded accessor older than the grace period;
+- every unrecorded executor token when no intent is open, and every unrecorded
+  executor token older than the grace period.
+
+The grace period is 5 minutes (`openbao_revoker_grace_seconds`), measured from the
+token's creation time on the server. The executor abandons a request after 2
+minutes, so a token older than the grace period has outlived its change.
+
+### The audit record
+
+The revoker reads the record through a read-only mount of the executor's volume
+claim (`approval-executor-record`, `openbao_record_pvc_name`). Only the executor
+writes the volume. Before it reads anything, the revoker checks the whole chain the
+way dmf-init's `verify` does (sequence, `prev`, `hash`, segment order, the restore
+and anchor rules). The port cites dmf-init revision `ade3967`.
+
+Both pods mount the same claim and both carry a `nodeSelector` on
+`openbao_record_node`, which defaults to the first control host. On the
+`local-path` class, which the sandbox lane uses, the provisioner is
+`rancher.io/local-path`: it creates the volume as a directory on the node of the
+first pod that mounts the claim and pins the volume there with a node affinity on
+`kubernetes.io/hostname`. The default class of the other lanes is `longhorn`, which
+is not node-local: a ReadWriteOnce volume attaches to one node at a time, and the
+`nodeSelector` is what keeps both pods on that node.
+
+### The fail-closed rule
+
+When the record is missing, unreadable, or fails the chain check (a hash mismatch, a
+sequence gap, a truncated newest entry), no accessor counts as recorded. The
+revoker then revokes only executor tokens older than the grace period, whether an
+intent is open or not. It never revokes a younger token, because a request may be
+in flight. A scan with an unreadable record logs one line that starts with `ALERT
+revoker-record-unreadable` and sets the metric below to 0.
+
+### Trust boundary
+
+The read-only mount stops the revoker from changing the record. It does not make the
+record authentic. The chain has no key, so whoever can write the volume or the node
+can rewrite the record with matching hashes, and the revoker accepts it. Only the
+executor holds write access to the volume. A compromise of the node or of root on it
+is outside this control.
+
+### Reading its alert
+
+The pod serves `GET /metrics` on port 9102 and carries the `prometheus.io/scrape`
+annotations, so the `kubernetes-pods` job scrapes it.
+
+| Metric | Meaning |
+|---|---|
+| `dmf_openbao_revoker_record_readable` | 1 when the last scan read a valid record, 0 when it did not |
+| `dmf_openbao_revoker_last_scan_timestamp_seconds` | When the last scan that logged in finished |
+| `dmf_openbao_revoker_revoked_total` | Tokens revoked since the pod started |
+| `dmf_openbao_revoker_failures` | Failed lists, lookups, and revokes in the last scan |
+
+Two rules in `roles/base/prometheus/templates/rules/alerts.yaml.j2` use them:
+`OpenBaoRevokerRecordUnreadable` (critical, after 3 minutes) and
+`OpenBaoRevokerNotScanning` (warning, when no scan finishes for 5 minutes). To find
+the cause, read the log of the revoker pod: the `ALERT` line gives the reason, and
+`revoked ACCESSOR: reason` lines show every revoke. Log lines hold accessors and
+never a token.
+
+### Install order
+
+The revoker would revoke the installer's own root token, because the record holds no
+entry for it. So `main.yml` stops the revoker (`revoker-pause.yml`) before the first
+task that can create or use a root-policy token, and waits for its pods to end. The
+Deployment is applied with zero replicas. Only `revoker-resume.yml` sets one replica,
+after the install has finished and the init token and the short write token are
+proved revoked. A fresh install with `openbao_dispose_root_token: false` keeps the
+init token and leaves the revoker stopped. `106-openbao-kubernetes-auth.yml` stops
+and starts it the same way around its own tokens.
 
 ## Root token generation
 

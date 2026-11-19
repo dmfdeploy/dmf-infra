@@ -1,0 +1,36 @@
+---
+# Start the revoker, only when the caller says that the installer's token is
+# revoked. The caller sets openbao_revoker_installer_token_revoked to true only
+# after the install has finished and the server has been shown to refuse every
+# root token of the run. Anything else leaves the revoker at zero replicas.
+
+- name: Say why the revoker stays stopped
+  ansible.builtin.debug:
+    msg: >-
+      The revoker stays at zero replicas: a root token of this run is not proven
+      revoked, or the run keeps the init token (openbao_dispose_root_token is
+      false). The revoker would revoke that token.
+  when: not (openbao_revoker_installer_token_revoked | bool)
+
+- name: Look for the revoker Deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openbao_revoker_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_revoker_to_start
+  when: openbao_revoker_installer_token_revoked | bool
+
+- name: Scale the revoker to one replica
+  kubernetes.core.k8s_scale:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openbao_revoker_name }}"
+    namespace: "{{ openbao_namespace }}"
+    replicas: 1
+    wait: false
+  when:
+    - openbao_revoker_installer_token_revoked | bool
+    - _openbao_revoker_to_start.resources | default([]) | length > 0

@@ -85,6 +85,34 @@
               - protocol: TCP
                 port: 8200
 
+# The token revoker logs in, lists, looks up and revokes through the API port only.
+# The rule selects pods by label in the OpenBao namespace, so it admits no other
+# namespace and no peer port.
+- name: Create allow ingress policy for the token revoker
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: openbao-allow-from-token-revoker
+        namespace: "{{ network_policies_openbao_namespace }}"
+      spec:
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: "{{ network_policies_openbao_service_name }}"
+        policyTypes:
+          - Ingress
+        ingress:
+          - from:
+              - podSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: "{{ network_policies_openbao_allow_revoker_pod_label }}"
+            ports:
+              - protocol: TCP
+                port: 8200
+
 # The executor's own pods take connections from pods inside the cluster only: the
 # peer is a namespaceSelector that matches every namespace, and there is no
 # ipBlock. The rule admits every port for now, because the executor's port and its
