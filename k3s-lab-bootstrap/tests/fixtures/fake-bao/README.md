@@ -90,6 +90,12 @@ With `FAKE_GENROOT_AUTH` set, `bao operator generate-root` needs a live token th
 is the `ops-admin` login token, a root token, or a scoped token with the
 `generate-root` policy.
 
+## Policies
+
+`bao write sys/policies/acl/NAME` stores the text in `$FAKE_STATE/policies/NAME`, `bao read
+sys/policies/acl/NAME` returns it, and `bao list sys/policies/acl` lists the files of that
+directory. All three need a root token, or any live token when `FAKE_POLICY_WRITER` is set.
+
 ## Identity reads
 
 These need a root token or the policy in `FAKE_VERIFIER_POLICY`. All answers

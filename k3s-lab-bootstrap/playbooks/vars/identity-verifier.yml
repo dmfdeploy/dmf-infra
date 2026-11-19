@@ -1,0 +1,36 @@
+---
+# The inputs of the identity check (tasks/verify-identity-holders.yml), the policy digests
+# (tasks/verify-policy-digests.yml) and the generate-root grants
+# (tasks/verify-generate-root-grants.yml). The test
+# (tests/test-openbao-identity-verifier.yml) loads this file, and so does the verifier's
+# playbook once it includes the checks, so the test cannot run against a stale copy. The
+# allowlist is the auth methods that the OpenBao role enables.
+verify_role_path: "{{ playbook_dir }}/../roles/stack/operator/openbao"
+verify_identity_allowed_auth_types: [userpass, kubernetes, approle, token]
+verify_ops_admin_user: "{{ openbao_operator_username | default('ops-admin') }}"
+verify_executor_k8s_role: "{{ openbao_executor_k8s_role | default('approval-executor') }}"
+verify_revoker_k8s_role: "{{ openbao_revoker_k8s_role | default('token-revoker') }}"
+verify_generate_root_policy: "{{ openbao_generate_root_policy_name | default('generate-root') }}"
+verify_revoker_policy: "{{ openbao_revoker_policy_name | default('token-revoker') }}"
+verify_catalogue_prefix: catalogue-
+verify_catalogue_entries: "{{ (lookup('ansible.builtin.file', verify_role_path ~ '/files/catalogue.yml') | from_yaml).entries }}"
+verify_catalogue_policy_names: "{{ verify_catalogue_entries | map(attribute='policy_name') | list }}"
+# The paths of OpenBao's generate-root endpoints. Only the executor's policy may grant them.
+verify_generate_root_paths:
+  - sys/generate-root-token/attempt
+  - sys/generate-root-token/update
+  - sys/generate-root/attempt
+  - sys/generate-root/update
+# The policies that the role writes from a file, and the files.
+verify_policy_files: >-
+  {%- set files = [
+        {'name': verify_generate_root_policy, 'file': 'files/policies/generate-root.hcl'},
+        {'name': verify_revoker_policy, 'file': 'files/policies/token-revoker.hcl'},
+        {'name': openbao_setup_issuer_policy_name | default('setup-issuer'), 'file': 'files/policies/setup-issuer.hcl'},
+        {'name': openbao_rotation_scheduler_policy_name | default('approle-rotation-scheduler'), 'file': 'files/policies/rotation-scheduler.hcl'},
+        {'name': openbao_identity_verifier_policy_name | default('identity-verifier'), 'file': 'files/policies/identity-verifier.hcl'}
+      ] -%}
+  {%- for entry in verify_catalogue_entries -%}
+  {%- set _ = files.append({'name': entry.policy_name, 'file': entry.policy_file}) -%}
+  {%- endfor -%}
+  {{ files }}

@@ -97,7 +97,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4]
     env:
       PLAYBOOKS: |
         1 fakes tests/test-openbao-k8s-auth.yml
@@ -116,6 +116,7 @@ jobs:
         3 fakes tests/test-openbao-init-status.yml
         3 fakes tests/test-openbao-tls-secret-wait.yml
         3 fakes tests/test-born-inventory-breakglass-login.yml
+        4 fakes tests/test-openbao-identity-verifier.yml
     defaults:
       run:
         working-directory: k3s-lab-bootstrap

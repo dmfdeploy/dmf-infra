@@ -1,0 +1,125 @@
+---
+# Tests of the identity verifier's three checks (playbooks/tasks/verify-identity-holders.yml,
+# verify-policy-digests.yml and verify-generate-root-grants.yml) against the fake bao and its
+# identity fixture:
+#
+#   - the clean fixture passes, also when the approval executor and the revoker are not
+#     installed, and when a live policy has one trailing newline more than its file;
+#   - an auth method outside the allowlist fails and the message names the mount;
+#   - an empty sys/auth answer, one without the token/ mount, and an entry without a type
+#     fail: the verifier must have read the inventory of enabled methods;
+#   - generate-root on a userpass user, an AppRole role, a token role (listed, or by a
+#     glob), an identity entity, a group, a group below a group, a group three deep,
+#     an entity through a group, or a Kubernetes role other than the executor's fails and
+#     names the principal, as does the executor's role holding the revoker's policy;
+#   - the revoker's policy on a Kubernetes role other than the revoker's fails;
+#   - a catalogue policy on any principal fails, the executor's role included;
+#   - ops-admin holding generate-root fails, and the message says that the install still
+#     attaches it;
+#   - a policy that differs from its file fails and names the policy, and so does a
+#     policy that is missing;
+#   - a policy other than the executor's that grants a path under sys/generate-root fails and
+#     names the policy and the path: an exact path, a prefix, `sys/*`, `*`, a `+` segment, a
+#     stanza after one with nested braces, a JSON policy. A deny stanza, a commented stanza and
+#     a policy for other sys paths pass.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
+#   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
+#   ansible-playbook tests/test-openbao-identity-verifier.yml
+
+- name: Identity verifier
+  hosts: localhost
+  gather_facts: false
+  connection: local
+  vars_files:
+    - ../roles/stack/operator/openbao/defaults/main.yml
+    - ../playbooks/vars/identity-verifier.yml
+  vars:
+    verify_openbao_namespace: openbao
+    _verify_openbao_pod: openbao-0
+    _verify_token_identity_reader: fake-reader
+    # What a fresh install holds once the executor and the revoker are installed and
+    # ops-admin no longer carries generate-root.
+    _clean_identity:
+      auth_methods:
+        token/: {type: token}
+        kubernetes/: {type: kubernetes}
+        userpass/: {type: userpass}
+        approle/: {type: approle}
+      userpass_users:
+        ops-admin: {token_policies: [app-admin-writer, app-runtime-writer]}
+        policy-reconciler: {token_policies: [policy-writer, identity-verifier]}
+        approle-reconciler: {token_policies: [approle-reconciler-writer]}
+      approle_roles:
+        external-secrets: {token_policies: [eso-reader]}
+      entities:
+        E1: {name: alice, policies: [default]}
+      groups:
+        G1: {name: operators, policies: [app-admin-reader], member_entity_ids: [E1]}
+    _clean_k8s_roles:
+      approval-executor: [generate-root]
+      token-revoker: [token-revoker]
+      setup-issuer: [setup-issuer]
+      approle-rotation-scheduler: [approle-rotation-scheduler]
+      external-secrets: [eso-reader]
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-identity-verifier-
+      register: _state
+      changed_when: false
+
+    - name: Run each case
+      ansible.builtin.include_tasks: _openbao-identity-case.yml
+      loop_control:
+        loop_var: _case
+        label: "{{ _case.name }}"
+      loop:
+        - {name: clean}
+        - {name: clean-with-a-final-newline-more, drift: {generate-root: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/stack/operator/openbao/files/policies/generate-root.hcl') }}\n\n\n"}}
+        - {name: extra-auth-method, patch: {auth_methods: {ldap/: {type: ldap}}}, expect: ["ldap/", "type ldap"]}
+        - {name: empty-auth-answer, replace: {auth_methods: {}}, expect: ["did not list the enabled auth methods"]}
+        - {name: auth-answer-without-the-token-mount, replace: {auth_methods: {userpass/: {type: userpass}}}, expect: ["did not list the enabled auth methods"]}
+        - {name: auth-entry-without-a-type, replace: {auth_methods: {token/: {type: token}, ldap/: {}}}, expect: ["did not list the enabled auth methods"]}
+        - {name: extra-auth-method-second-userpass-mount, patch: {auth_methods: {oidc/: {type: oidc}}}, expect: ["oidc/"]}
+        - {name: userpass-user-generate-root, patch: {userpass_users: {mallory: {token_policies: [default, generate-root]}}}, expect: ["userpass user userpass/mallory holds generate-root"]}
+        - {name: approle-role-generate-root, patch: {approle_roles: {rogue: {token_policies: [generate-root]}}}, expect: ["AppRole role approle/rogue holds generate-root"]}
+        - {name: token-role-generate-root, patch: {token_roles: {minter: {allowed_policies: [generate-root]}}}, expect: ["token role token/minter holds generate-root"]}
+        - {name: token-role-glob, patch: {token_roles: {minter: {allowed_policies_glob: ["generate-*"]}}}, expect: ["token role token/minter holds generate-root"]}
+        - {name: entity-generate-root, patch: {entities: {E2: {name: bob, policies: [generate-root]}}}, expect: ["identity entity bob (E2) holds generate-root"]}
+        - {name: group-generate-root, patch: {groups: {G2: {name: admins, policies: [generate-root]}}}, expect: ["identity group admins (G2) holds generate-root"]}
+        - name: nested-group-generate-root
+          patch: {groups: {P: {name: parent, policies: [generate-root], member_group_ids: [C]}, C: {name: child, policies: []}}}
+          expect: ["identity group child (C) holds generate-root through a group"]
+        - name: group-three-deep-generate-root
+          patch: {groups: {A: {name: top, policies: [generate-root], member_group_ids: [B]}, B: {name: middle, policies: [], member_group_ids: [C]}, C: {name: bottom, policies: []}}}
+          expect: ["identity group bottom (C) holds generate-root through a group"]
+        - name: entity-through-group-generate-root
+          patch: {groups: {G2: {name: admins, policies: [generate-root], member_entity_ids: [E1]}}}
+          expect: ["identity entity alice (E1) holds generate-root through a group"]
+        - {name: other-k8s-role-generate-root, k8s: {intruder: [generate-root]}, expect: ["Kubernetes role kubernetes/intruder holds generate-root"]}
+        - {name: executor-role-holds-revoker-policy, k8s: {approval-executor: [generate-root, token-revoker]}, expect: ["Kubernetes role kubernetes/approval-executor holds token-revoker"]}
+        - {name: other-k8s-role-revoker-policy, k8s: {intruder: [token-revoker]}, expect: ["Kubernetes role kubernetes/intruder holds token-revoker"]}
+        - {name: revoker-role-holds-generate-root, k8s: {token-revoker: [token-revoker, generate-root]}, expect: ["Kubernetes role kubernetes/token-revoker holds generate-root"]}
+        - {name: userpass-user-revoker-policy, patch: {userpass_users: {mallory: {token_policies: [token-revoker]}}}, expect: ["userpass user userpass/mallory holds token-revoker"]}
+        - {name: userpass-user-catalogue-policy, patch: {userpass_users: {mallory: {token_policies: [catalogue-ops-admin-password-rotation]}}}, expect: ["userpass user userpass/mallory holds catalogue-ops-admin-password-rotation"]}
+        - {name: catalogue-policy-not-in-the-catalogue-file, patch: {approle_roles: {rogue: {token_policies: [catalogue-made-up]}}}, expect: ["AppRole role approle/rogue holds the catalogue-* policies"]}
+        - {name: executor-role-holds-catalogue-policy, k8s: {approval-executor: [generate-root, catalogue-ops-admin-password-rotation]}, expect: ["Kubernetes role kubernetes/approval-executor holds catalogue-ops-admin-password-rotation"]}
+        - {name: group-catalogue-glob, patch: {groups: {G2: {name: admins, policies: ["catalogue-*"]}}}, expect: ["identity group admins (G2) holds the catalogue-* policies"]}
+        - {name: ops-admin-generate-root, patch: {userpass_users: {ops-admin: {token_policies: [app-admin-writer, app-runtime-writer, generate-root]}}}, expect: ["userpass user userpass/ops-admin holds generate-root", "ADR-0051", "fresh install still attaches it"]}
+        - {name: policy-drift, drift: {generate-root: "path \"sys/*\" {\n  capabilities = [\"sudo\"]\n}\n"}, expect: ["generate-root differs from files/policies/generate-root.hcl"]}
+        - {name: catalogue-policy-drift, drift: {catalogue-ops-admin-password-rotation: "# changed\n"}, expect: ["catalogue-ops-admin-password-rotation differs from files/policies/catalogue/ops-admin-password-rotation.hcl"]}
+        - {name: policy-missing, drift: {token-revoker: null}, expect: ["token-revoker is missing from OpenBao"]}
+        - {name: other-policy-grants-the-attempt-path, policies: {rogue: "path \"sys/generate-root-token/attempt\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/attempt\")", "Only the approval executor's policy may grant"]}
+        - {name: other-policy-grants-the-update-path-by-prefix, policies: {rogue: "path \"sys/generate-root-token/*\" {\n  capabilities = [\"update\", \"read\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/*\")"]}
+        - {name: other-policy-grants-all-of-sys, policies: {rogue: "path \"sys/*\" {\n  capabilities = [\"sudo\"]\n}\n"}, expect: ["rogue (path \"sys/*\")"]}
+        - {name: other-policy-grants-a-prefix-of-the-endpoint, policies: {rogue: "path \"sys/generate-root*\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root*\")"]}
+        - {name: other-policy-grants-through-a-segment-wildcard, policies: {rogue: "path \"sys/+/attempt\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/+/attempt\")"]}
+        - {name: other-policy-grants-all-paths, policies: {rogue: "path \"*\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"*\")"]}
+        - {name: grant-after-a-stanza-with-nested-braces, policies: {rogue: "path \"secret/data/x\" {\n  capabilities = [\"create\"]\n  allowed_parameters = {\n    \"a\" = []\n  }\n}\npath \"sys/generate-root-token/update\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/update\")"]}
+        - {name: grant-in-a-json-policy, policies: {rogue: "{\"path\": {\"sys/generate-root-token/attempt\": {\"capabilities\": [\"update\"]}}}"}, expect: ["rogue (path \"sys/generate-root-token/attempt\")"]}
+        - {name: a-deny-stanza-grants-nothing, policies: {guard: "path \"sys/generate-root-token/*\" {\n  capabilities = [\"deny\"]\n}\n"}}
+        - {name: a-commented-stanza-grants-nothing, policies: {note: "# path \"sys/generate-root-token/attempt\" { capabilities = [\"update\"] }\npath \"secret/data/x\" {\n  capabilities = [\"read\"]\n}\n"}}
+        - {name: a-policy-for-other-sys-paths-passes, policies: {other: "path \"sys/policies/acl/*\" {\n  capabilities = [\"read\", \"list\"]\n}\npath \"sys/capabilities-self\" {\n  capabilities = [\"update\"]\n}\n"}}
