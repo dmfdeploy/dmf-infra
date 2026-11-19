@@ -284,7 +284,7 @@ class RotationRunTests(unittest.TestCase):
         self.assertIn("did not read the token from the answer", text)
         self.assertNotIn(SHORT_TOKEN, result.stdout)
         self.assertEqual(self.write_calls(state), [])
-        self.assertTrue((state / "token-fake-root-short-1.json").exists())
+        self.assertTrue((state / "tokens" / "fake-root-short-1.json").exists())
         self.assertTrue(self.revoked(state, ROOT_TOKEN))
         self.assertTrue(self.revoked(state, LOGIN_TOKEN))
         self.assertFalse(self.revoked(state, SHORT_TOKEN))

@@ -233,7 +233,7 @@ class KeepTheInitTokenTest(unittest.TestCase):
         self.assertEqual({token for token, _ in run.writes()}, {INIT})
         self.assertEqual([args for args in run.by(INIT) if args.startswith("token ")], [])
         self.assertFalse((run.state / ("revoked-" + INIT)).exists())
-        self.assertFalse(list(run.state.glob("token-*.json")))
+        self.assertFalse(list((run.state / "tokens").glob("*.json")))
         last_write = max(run.index(call) for call in run.writes())
         self.assertGreater(run.index((INIT, RAFT_READ)), last_write)
 

@@ -15,15 +15,13 @@
 #     (command/kv_metadata_get.go).
 #   - `bao token capabilities -format=json` prints a JSON list.
 #   - `bao token create` takes -orphan, -policy, -ttl, -explicit-max-ttl, -use-limit,
-#     -renewable and -format, as the CLI does (command/token_create.go), and refuses any
-#     other flag. The caller needs a root token. The new token is recorded in
-#     $FAKE_STATE/token-NAME.json with its parent, orphan flag, policies, creation time and
-#     TTL in seconds. A token created without -orphan is revoked with its parent.
-#   - A token that `token create` makes with policies that exclude root, or with a use limit
-#     or an explicit maximum TTL, is a scoped token: it is recorded in
-#     $FAKE_STATE/tokens/NAME.json instead, and the file README.md in this directory lists
-#     what the fake does for those tokens (use limits, expiry, accessors, Kubernetes
-#     login, the identity reads) and the variables that it adds.
+#     -no-default-policy, -renewable and -format, as the CLI does (command/token_create.go),
+#     and refuses any other flag. The caller needs a root token. Every new token is a record
+#     in $FAKE_STATE/tokens/NAME.json with its parent, orphan flag, policies, creation time
+#     and TTL in seconds. A token created without -orphan is revoked with its parent. The
+#     file README.md in this directory lists what the fake does for these tokens (use
+#     limits, expiry, accessors, Kubernetes login, the identity reads) and the variables
+#     that it adds.
 #   - `bao read -format=json sys/storage/raft/autopilot/state` prints the API
 #     response: the state object, with snake_case keys (healthy, failure_tolerance,
 #     leader, voters, servers), is under "data".
@@ -163,12 +161,12 @@ count_call() { # count_call NAME -> prints the number of earlier calls, then rec
   printf '%s' "$n"
 }
 
-# The fake clock and the token store. A scoped token is a file $state/tokens/NAME.json:
+# The fake clock and the token store. A token is a file $state/tokens/NAME.json:
 # policies (with default), orphan, parent, created (epoch seconds), ttl (seconds, 0 for
 # none), explicit_max_ttl, renewable, uses_left (null for no limit) and use_limit. A test
 # may write such a file to seed a token, with an optional "accessor"; the accessor of a
-# token without one is NAME-accessor. The token-NAME.json records of root-policy tokens
-# that `token create` made are part of the store as far as accessors go.
+# token without one is NAME-accessor. Every token that `token create` or a Kubernetes login
+# makes is such a file, and a token with no file is a legacy token.
 now="${FAKE_NOW:-1800000000}"
 tokens_dir="$state/tokens"
 token_store() { # token_store OP ARGS...: see the operations in the script below
@@ -185,11 +183,6 @@ def load(name):
     path = os.path.join(tokens, name + ".json")
     if os.path.exists(path):
         return json.load(open(path))
-    path = os.path.join(state, "token-" + name + ".json")
-    if os.path.exists(path):
-        record = json.load(open(path))
-        return {"policies": record["policies"] if "root" in record["policies"] else ["default"] + record["policies"], "orphan": record["orphan"], "ttl": record["ttl"],
-                "renewable": record.get("renewable", True), "created": record.get("created", now), "uses_left": None}
     return None
 
 def expired(record, depth=0):
@@ -205,7 +198,6 @@ def accessor_of(name, record):
 
 def live_names():
     names = [os.path.basename(p)[:-5] for p in glob.glob(os.path.join(tokens, "*.json"))]
-    names += [os.path.basename(p)[len("token-"):-5] for p in glob.glob(os.path.join(state, "token-*.json"))]
     return sorted(n for n in set(names) if not os.path.exists(os.path.join(state, "revoked-" + n)) and not expired(load(n)))
 
 def find(accessor):
@@ -384,9 +376,9 @@ esac
 # children, and so on. An orphan keeps its own tree.
 revoke_children() { # revoke_children NAME
   local record child
-  for record in "$state"/token-*.json "$tokens_dir"/*.json; do
+  for record in "$tokens_dir"/*.json; do
     [ -f "$record" ] || continue
-    child="$(basename "$record" .json)"; child="${child#token-}"
+    child="$(basename "$record" .json)"
     [ ! -f "$state/revoked-$child" ] || continue
     if python3 - "$record" "$1" <<'PY'
 import json, sys
@@ -838,40 +830,19 @@ PY
       esac
     done
     case "$use_limit" in *[!0-9]*) echo "invalid value \"$use_limit\" for flag -use-limit" >&2; exit 1 ;; esac
-    scoped=""
-    case " $policies " in *" root "*) ;; *) [ -z "$policies" ] || scoped=1 ;; esac
-    [ -z "$use_limit$explicit_max" ] || scoped=1
-    if [ -n "$scoped" ]; then
-      # A scoped token has the policies it was asked for and no more, and is not a root token.
+    # With no policy the child inherits the policies of its root parent, so it is a root token.
+    [ -n "$policies" ] || policies=root
+    # A root-policy token without a use limit or an explicit maximum TTL is named fake-root-short-N
+    # and any other token fake-scoped-N. Every one of them is a record in the token store.
+    case " $policies " in *" root "*) root_policy=1 ;; *) root_policy="" ;; esac
+    if [ -n "$root_policy" ] && [ -z "$use_limit$explicit_max" ]; then
+      name="fake-root-short-$(( $(count_call short-token) + 1 ))"
+    else
       name="fake-scoped-$(( $(count_call scoped-token) + 1 ))"
-      created="$state/create-answer.json"
-      # shellcheck disable=SC2086
-      token_store create "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$explicit_max" "$use_limit" "$renewable" "$no_default" $policies > "$created" || exit 1
-      if [ -n "${FAKE_TOKEN_CREATE_LOST:-}" ]; then
-        echo "Error creating token: read tcp 127.0.0.1:8200: connection reset by peer" >&2
-        exit 2
-      fi
-      cat "$created"
-      exit 0
     fi
-    # The name starts with fake-root so the fake treats the token as a root token, as a
-    # token with the root policy is.
-    n=$(( $(count_call short-token) + 1 ))
-    name="fake-root-short-$n"
     created="$state/create-answer.json"
-    python3 - "$state/token-$name.json" "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$policies" "$renewable" "$now" > "$created" <<'PY'
-import json, sys
-path, name, parent, orphan, ttl, policies, renewable, now = sys.argv[1:9]
-units = {"s": 1, "m": 60, "h": 3600}
-seconds = int(ttl[:-1]) * units[ttl[-1]] if ttl and ttl[-1] in units else int(ttl or 0)
-# Without a policy the child inherits the policies of its root parent, so it is a root token.
-record = {"parent": parent, "orphan": orphan == "true", "policies": ["root"], "ttl": seconds,
-          "renewable": renewable == "true", "created": int(now)}
-json.dump(record, open(path, "w"))
-print(json.dumps({"auth": {"client_token": name, "accessor": name + "-accessor", "policies": record["policies"],
-                           "token_policies": record["policies"], "lease_duration": seconds,
-                           "renewable": record["renewable"], "orphan": record["orphan"]}}))
-PY
+    # shellcheck disable=SC2086
+    token_store create "$name" "$BAO_TOKEN" "$orphan" "$ttl" "$explicit_max" "$use_limit" "$renewable" "$no_default" $policies > "$created" || exit 1
     if [ -n "${FAKE_TOKEN_CREATE_LOST:-}" ]; then
       echo "Error creating token: read tcp 127.0.0.1:8200: connection reset by peer" >&2
       exit 2

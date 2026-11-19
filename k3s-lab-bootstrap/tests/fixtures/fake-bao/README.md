@@ -7,14 +7,15 @@ configuration for the approval executor and the revoker.
 
 State lives in `$FAKE_STATE`. Each call takes the token from `BAO_TOKEN`.
 
-## Scoped tokens
+## Tokens
 
-`bao token create` makes a scoped token when its policies exclude `root`, or when
-it sets `-use-limit` or `-explicit-max-ttl`. A scoped token is a file
-`$FAKE_STATE/tokens/NAME.json`, named `fake-scoped-N`. Other tokens that `token
-create` makes keep their old form: `fake-root-short-N`, a root token that is
-recorded in `token-NAME.json`. A call without `-policy` makes one of these: the
-child inherits the policies of its root parent, so its answer lists `root` only.
+Every token that `bao token create` makes, and every token of a Kubernetes login, is
+one file in the token store, `$FAKE_STATE/tokens/NAME.json`. The checks for
+liveness, policies, accessors, and revocation read only that store. A root-policy
+token with no `-use-limit` and no `-explicit-max-ttl` is named `fake-root-short-N`.
+Any other token is named `fake-scoped-N`. A call without `-policy` makes a
+`fake-root-short-N` token: the child inherits the policies of its root parent, so
+its answer lists `root` only.
 
 A token that has a stored record in `tokens/` holds the policies of that record
 and nothing more. The names `fake-root*`, `fake-ops-token`, `fake-scheduler*`,

@@ -6,7 +6,7 @@ of the same role (playbooks/vertical-security/100-openbao.yml) trades its init t
 the same way; this text calls the token that is traded the generate-root token.
 
 The fake bao keeps $FAKE_STATE/bao-calls.log ("TOKEN ARGS" per call, in order),
-token-NAME.json for each token that `token create` made, and revoked-NAME for each
+tokens/NAME.json for each token that `token create` made, and revoked-NAME for each
 revoked token. For one generate-root token, this module lists what is wrong:
 
   - the generate-root token made a call other than the policy lookup, the mint, the
@@ -52,10 +52,11 @@ def problems(state, root_token, minted_expected, root_revoked, short_revoked, wr
                 calls.append((token, args))
     revoked = {name[len("revoked-"):] for name in os.listdir(state) if name.startswith("revoked-")}
     minted = {}
-    for name in sorted(os.listdir(state)):
-        match = re.fullmatch(r"token-(.+)\.json", name)
+    store = os.path.join(state, "tokens")
+    for name in sorted(os.listdir(store) if os.path.isdir(store) else []):
+        match = re.fullmatch(r"(.+)\.json", name)
         if match:
-            with open(os.path.join(state, name), encoding="utf-8") as handle:
+            with open(os.path.join(store, name), encoding="utf-8") as handle:
                 record = json.load(handle)
             if record["parent"] == root_token:
                 minted[match.group(1)] = record
