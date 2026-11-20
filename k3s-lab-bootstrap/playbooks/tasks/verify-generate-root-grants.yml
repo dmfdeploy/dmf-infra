@@ -4,10 +4,14 @@
 # gives its holder the power that only the approval executor's policy may give.
 #
 # It lists every live ACL policy with the identity reader's token, reads each one except
-# `root` and the executor's own policy (verify_generate_root_policy), and fails when any
-# of them has a path stanza that matches one of verify_generate_root_paths and grants a
-# capability other than deny. A path in a policy is exact, or has `+` for one segment, or
-# ends in `*` for a prefix. A policy in JSON form is read as well as one in HCL.
+# `root` and the executor's own policy (verify_generate_root_policy), and fails when any of
+# them names a path that matches one of verify_generate_root_paths. It does not parse the
+# policy text. Every double-quoted string in it is a candidate path, in HCL and in JSON form,
+# comments included, and the capabilities are ignored, so a deny stanza fails as well. A
+# candidate is decoded as a JSON string first, because OpenBao decodes escapes such as `\/`
+# and `\u0073`; a string that does not decode counts as an offence. A decoded candidate is
+# exact, or has `+` for one segment, or ends in `*` for a prefix. To pass, remove the
+# policy's mention of the path.
 #
 # What this does not cover: the policy-reconciler identity can rewrite any ACL policy, the
 # identity reader's policy included, so the check is as strong as that identity is trusted.
@@ -46,40 +50,35 @@
   loop_control:
     label: "{{ item }}"
 
-- name: Work out which policies grant a path under sys/generate-root
+- name: Work out which policies name a path under sys/generate-root
   ansible.builtin.set_fact:
     _verify_generate_root_grants: >-
       {%- set found = namespace(list=[]) -%}
       {%- for read in _verify_acl_reads.results -%}
-      {%- set text = (read.stdout | from_json).data.policy | regex_replace('(?m)^\s*#.*$', '') -%}
-      {%- set stanzas = namespace(list=[]) -%}
-      {%- if text | trim | first == '{' -%}
-      {%- for path, body in ((text | from_json).path | default({})).items() -%}
-      {%- set stanzas.list = stanzas.list + [[path, (body.capabilities | default([])) | join(',')]] -%}
-      {%- endfor -%}
+      {%- for path in (read.stdout | from_json).data.policy | regex_findall('"((?:[^"\\\\]|\\\\.)*)"') -%}
+      {%- set literal = '"' ~ path ~ '"' -%}
+      {%- if literal is not regex('^"(?:[^"\\\\\\x00-\\x1f]|\\\\["\\\\/bfnrt]|\\\\u[0-9a-fA-F]{4})*"$') -%}
+      {%- set found.list = found.list + [read.item ~ ' (string "' ~ path ~ '" that does not decode)'] -%}
       {%- else -%}
-      {%- for chunk in text.split('path "')[1:] -%}
-      {%- set caps = chunk | regex_search('capabilities\s*=\s*\[([^\]]*)\]', '\\1') -%}
-      {%- set stanzas.list = stanzas.list + [[chunk.split('"')[0], caps[0] if caps else '']] -%}
-      {%- endfor -%}
-      {%- endif -%}
-      {%- for path, caps in stanzas.list -%}
-      {%- set regex = '^' ~ (path | replace('+', '[^/]+') | regex_replace('[*]$', '.*')) ~ '$' -%}
-      {%- if caps | regex_replace('[\s",]', '') | length > 0 and 'deny' not in caps
-             and (verify_generate_root_paths | select('regex', regex) | list | length > 0) -%}
+      {%- set decoded = literal | from_json -%}
+      {%- set prefix = decoded[:-1] if decoded.endswith('*') else decoded -%}
+      {%- set regex = '^' ~ (prefix | regex_escape | replace('\\+', '[^/]+')) ~ ('.*' if decoded.endswith('*') else '') ~ '$' -%}
+      {%- if verify_generate_root_paths | select('regex', regex) | list | length > 0 -%}
       {%- set found.list = found.list + [read.item ~ ' (path "' ~ path ~ '")'] -%}
+      {%- endif -%}
       {%- endif -%}
       {%- endfor -%}
       {%- endfor -%}
       {{ found.list }}
   no_log: true
 
-- name: Assert that only the executor's policy grants a path under sys/generate-root
+- name: Assert that only the executor's policy names a path under sys/generate-root
   ansible.builtin.assert:
     that: _verify_generate_root_grants | length == 0
     fail_msg: >-
-      A policy other than {{ verify_generate_root_policy }} grants a path under
-      sys/generate-root, so whoever holds it can start or finish a generate-root attempt:
-      {{ _verify_generate_root_grants | join('; ') }}.
-      Only the approval executor's policy may grant these paths. Remove the grant, then
-      investigate who wrote the policy.
+      A policy other than {{ verify_generate_root_policy }} names a path under
+      sys/generate-root, so whoever holds it may be able to start or finish a generate-root
+      attempt: {{ _verify_generate_root_grants | join('; ') }}.
+      The check reads every quoted string in the policy text, whatever the capabilities, and
+      a comment counts. A string with an escape that JSON does not know also fails. Only the approval executor's policy may name these paths. Remove the
+      policy's mention of the path, then investigate who wrote the policy.
