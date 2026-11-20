@@ -1,4 +1,4 @@
-"""The standing token revoker's policy, identity, volume and stopped Deployment.
+"""The standing token revoker's policy, identity, volume, Deployment and install order.
 
 These tests read the role as text and render its templates with Ansible's templating, so run
 them with the Python of Ansible. Behaviour of the script itself is in test_openbao_revoker.py.
@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 ROLE = ROOT / "roles/stack/operator/openbao"
 NETPOL = ROOT / "roles/base/network-policies"
 PROMETHEUS = ROOT / "roles/base/prometheus"
+PLAYBOOK = ROOT / "playbooks/vertical-security/100-openbao.yml"
 MAX_LOGIN_TTL_SECONDS = 5 * 60
 UNITS = {"s": 1, "m": 60, "h": 3600}
 
@@ -174,6 +175,7 @@ class Render(unittest.TestCase):
         self.assertEqual(render_template("record-pvc.yml.j2", dmf_storage_class="longhorn")["spec"]["storageClassName"], "longhorn")
 
     def test_the_deployment_is_one_stopped_replica_with_recreate(self):
+        # The play starts it only after the install (revoker-resume.yml).
         spec = self.deployment()["spec"]
         self.assertEqual(spec["replicas"], 0)
         self.assertEqual(spec["strategy"], {"type": "Recreate"})
@@ -272,19 +274,119 @@ class Alert(unittest.TestCase):
             self.assertIn(f"alert: {alert}", rules)
 
 
-class Stopped(unittest.TestCase):
-    """The role installs the revoker and nothing in it starts the revoker."""
+class Order(unittest.TestCase):
+    """The revoker never scans while a root token of the install is live."""
 
-    def test_the_deployment_has_zero_replicas_and_nothing_scales_it(self):
-        # Catches a task or a template that starts the revoker before the temporary-root paths
-        # are gone: it would revoke their root tokens at its next scan.
-        self.assertEqual(render_template("revoker-deployment.yml.j2")["spec"]["replicas"], 0)
-        playbooks = ROOT / "playbooks"
-        for path in [*ROLE.rglob("*.yml"), *ROLE.rglob("*.j2"), *playbooks.rglob("*.yml")]:
+    main = tasks("main.yml")
+    names = [t["name"] for t in main]
+
+    def index(self, name):
+        return self.names.index(name)
+
+    def first_using_a_root_token(self):
+        for number, task in enumerate(self.main):
+            text = yaml.safe_dump(task)
+            if any(marker in text for marker in ("operator init", "token create", "root_token")):
+                return number
+        self.fail("no task makes or uses a root token")
+
+    def test_the_revoker_stops_only_on_a_fresh_init_and_before_the_init_makes_a_token(self):
+        # Catches a pause that comes after the init, which would leave a window in which the
+        # revoker scans while the init token is live, and a pause on every run, which would
+        # drop the revoker for a rerun that makes no root token.
+        pause = self.index("Stop the revoker before the init makes a root token")
+        self.assertLess(pause, self.first_using_a_root_token())
+        self.assertLess(pause, self.index("Run Shamir init"))
+        self.assertEqual(self.main[pause]["ansible.builtin.include_tasks"], "revoker-pause.yml")
+        self.assertEqual(self.main[pause]["when"], "not openbao_is_initialized | bool")
+        flagged = tasks("revoker-pause.yml")[0]
+        self.assertEqual(flagged["ansible.builtin.set_fact"], {"_openbao_revoker_paused": True})
+
+    def test_the_pause_scales_to_zero_and_then_waits_for_the_pods_to_end(self):
+        pause = tasks("revoker-pause.yml")
+        order = [t["name"] for t in pause]
+        scale = next(t for t in pause if "kubernetes.core.k8s_scale" in t)
+        self.assertEqual(scale["kubernetes.core.k8s_scale"]["replicas"], 0)
+        wait = next(t for t in pause if t["name"] == "Wait until no revoker pod is left")
+        self.assertLess(order.index(scale["name"]), order.index(wait["name"]))
+        self.assertEqual(wait["kubernetes.core.k8s_info"]["kind"], "Pod")
+        self.assertIn("length == 0", wait["until"])
+        self.assertIn("app.kubernetes.io/name={{ openbao_revoker_name }}", wait["kubernetes.core.k8s_info"]["label_selectors"])
+
+    def test_the_revoker_starts_only_after_the_installer_token_is_shown_revoked(self):
+        resume = self.index("Start the revoker once the installer's tokens are revoked")
+        self.assertGreater(resume, self.index("Require the short-lived write token to be revoked"))
+        self.assertGreater(resume, self.index("Revoke the short-lived write token"))
+        for later in self.main[resume + 1:]:
+            text = yaml.safe_dump(later)
+            self.assertNotIn("_openbao_write_token", text)
+            self.assertNotIn("_openbao_short_token", text)
+            self.assertNotIn("root_token", text)
+
+    def test_only_the_resume_file_scales_the_revoker_up(self):
+        # Catches a second place that starts the revoker, or a Deployment template that renders
+        # one replica: a rerun would then leave it scanning while the installer's token is live.
+        for path in list(ROLE.rglob("*.yml")) + list(ROLE.rglob("*.j2")):
             text = path.read_text()
-            if "revoker" in text:
-                self.assertNotIn("k8s_scale", text, str(path))
+            if path.name == "revoker-resume.yml":
+                self.assertIn("replicas: 1", text)
+            elif "revoker" in text:
                 self.assertNotRegex(text, r"(?m)^\s*replicas:\s*[1-9]", str(path))
+
+    def test_the_resume_runs_only_after_a_pause_and_only_when_both_tokens_are_proved_revoked(self):
+        # The resume runs only when the run stopped the revoker, and starts it only when this
+        # expression is true: the init token and the short token are both proved revoked.
+        resume = next(t for t in self.main if t["name"] == "Start the revoker once the installer's tokens are revoked")
+        self.assertEqual(resume["when"], "_openbao_revoker_paused | default(false) | bool")
+        text = resume["vars"]["openbao_revoker_installer_token_revoked"]
+        for task in tasks("revoker-resume.yml"):
+            if "kubernetes.core.k8s_scale" in task:
+                self.assertIn("openbao_revoker_installer_token_revoked | bool", task["when"])
+        for init_gone in (True, False):
+            for short_gone in (True, False):
+                with self.subTest(init_gone=init_gone, short_gone=short_gone):
+                    allowed = str(expression(text, _openbao_init_gone=init_gone, _openbao_short_gone=short_gone)).strip()
+                    self.assertEqual(allowed == "True", init_gone and short_gone)
+
+    def test_the_resume_waits_for_a_ready_replica_and_fails_without_one(self):
+        # Catches a resume that scales up and goes on: a revoker that cannot log in would pass.
+        resume = tasks("revoker-resume.yml")
+        names = [t["name"] for t in resume]
+        wait = resume[names.index("Wait until the revoker has finished a scan")]
+        stop = resume[names.index("Stop when the revoker has not finished a scan")]
+        self.assertGreater(names.index(wait["name"]), names.index("Scale the revoker to one replica"))
+        self.assertIn("readyReplicas", wait["until"])
+        self.assertIn("ansible.builtin.fail", stop)
+        self.assertIn("readyReplicas", " ".join(stop["when"]))
+
+    def test_an_apply_of_an_existing_deployment_keeps_the_replica_count(self):
+        # Catches a setup that resets the revoker to zero on every run.
+        new = render_template("revoker-deployment.yml.j2")["spec"]
+        kept = render_template("revoker-deployment.yml.j2", openbao_revoker_deployment_exists=True)["spec"]
+        self.assertEqual(new["replicas"], 0)
+        self.assertNotIn("replicas", kept)
+        setup = tasks("setup-revoker.yml")
+        apply = next(t for t in setup if t["name"] == "Create or update the revoker Deployment")
+        self.assertIn("_openbao_revoker_deployment.resources", apply["vars"]["openbao_revoker_deployment_exists"])
+
+    def test_the_pod_is_ready_only_after_a_complete_scan(self):
+        probe = render_template("revoker-deployment.yml.j2")["spec"]["template"]["spec"]["containers"][0]["readinessProbe"]
+        self.assertEqual(probe["httpGet"]["path"], "/ready")
+
+    def test_a_failed_run_leaves_the_revoker_stopped_and_only_a_finished_run_starts_it(self):
+        # In the main play the resume task sits outside every block that a failure could run
+        # through. In the rescue of the playbook it comes only after the assert that proves
+        # the install's tokens revoked, so a failed proof ends the rescue with the revoker
+        # still stopped, and a mint whose answer was lost keeps it stopped too.
+        playbook = PLAYBOOK.read_text()
+        self.assertEqual(playbook.count("tasks_from: revoker-resume.yml"), 1)
+        resume = playbook.index("tasks_from: revoker-resume.yml")
+        self.assertLess(playbook.index("- name: Assert failed-bootstrap root disposal succeeded"), resume)
+        self.assertLess(resume, playbook.index("- name: Re-fail after fresh-root cleanup"))
+        self.assertIn("_openbao_failed_mint_unread", playbook[resume:resume + 400])
+        self.assertEqual(sum("revoker-resume.yml" in yaml.safe_dump(t) for t in self.main), 1)
+        resume_task = next(t for t in self.main if "revoker-resume.yml" in yaml.safe_dump(t))
+        self.assertNotIn("block", resume_task)
 
 
 if __name__ == "__main__":

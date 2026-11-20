@@ -1,4 +1,5 @@
-{# The standing revoker. The play renders it with zero replicas and nothing here starts it. #}
+{# The standing revoker. A new Deployment has zero replicas, and revoker-resume.yml starts it.
+   An existing one is rendered without a replica count, so an apply keeps the current one. #}
 {% set script_text = lookup('ansible.builtin.file', role_path ~ '/files/revoker/revoker.py', rstrip=False) %}
 {% set catalogue = lookup('ansible.builtin.file', role_path ~ '/files/catalogue.yml') | from_yaml %}
 apiVersion: apps/v1
@@ -9,7 +10,9 @@ metadata:
   labels:
     app.kubernetes.io/name: {{ openbao_revoker_name | to_json }}
 spec:
+{% if not (openbao_revoker_deployment_exists | default(false) | bool) %}
   replicas: 0
+{% endif %}
   strategy:
     type: Recreate
   selector:
@@ -67,6 +70,13 @@ spec:
           ports:
             - name: metrics
               containerPort: {{ openbao_revoker_metrics_port | int }}
+          # Ready only while a complete scan finished within three scan intervals.
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: metrics
+            periodSeconds: 10
+            failureThreshold: 2
           resources:
             requests:
               cpu: {{ openbao_revoker_cpu_request | to_json }}

@@ -21,6 +21,7 @@ import os
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -997,6 +998,52 @@ class LogsAndLogin(RevokerCase):
         metrics.update(self.result, NOW)
         self.assertIn("dmf_openbao_revoker_record_readable 0", metrics.render())
         self.assertIn(f"dmf_openbao_revoker_last_scan_timestamp_seconds {NOW}", metrics.render())
+
+
+class ReadyEndpoint(RevokerCase):
+    """/ready answers 200 only while a complete scan finished recently: the readiness probe."""
+
+    WINDOW = 180
+
+    def setUp(self):
+        super().setUp()
+        self.metrics = revoker.Metrics()
+        self.server = revoker.serve_metrics(self.metrics, 0, self.WINDOW)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+
+    def status(self, path="/ready"):
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{self.server.server_address[1]}{path}") as answer:
+                return answer.status
+        except urllib.error.HTTPError as error:
+            return error.code
+
+    def test_it_is_not_ready_before_the_first_complete_scan(self):
+        self.assertEqual(self.status(), 503)
+        self.assertEqual(self.status("/metrics"), 200)
+
+    def test_it_is_ready_after_a_complete_scan(self):
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.scan()
+        self.metrics.update(self.result, time.time())
+        self.assertTrue(self.result["ran"])
+        self.assertEqual(self.status(), 200)
+
+    def test_an_incomplete_scan_does_not_make_it_ready(self):
+        # Catches a probe that follows the pod instead of the scans.
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        (self.dir / "jwt").write_text("fake-sa:openbao:somebody-else")
+        self.scan()
+        self.metrics.update(self.result, time.time())
+        self.assertEqual(self.status(), 503)
+
+    def test_it_stops_being_ready_when_no_complete_scan_finished_within_the_window(self):
+        self.metrics.update({"revoked": 0, "failed": 0, "ran": True, "readable": True}, 1000)
+        self.assertTrue(self.metrics.ready(1000 + self.WINDOW, self.WINDOW))
+        self.assertFalse(self.metrics.ready(1000 + self.WINDOW + 1, self.WINDOW))
 
 
 class RecordsFromTheWriter(unittest.TestCase):

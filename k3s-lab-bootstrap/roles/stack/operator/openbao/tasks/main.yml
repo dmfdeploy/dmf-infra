@@ -28,7 +28,8 @@
 # what is left. If the answer to the mint is lost, the short token may exist while the
 # role never saw it: it expires on its own, and 100-openbao.yml says how to find it.
 # Every step of the install that needs root runs in this role, on the init token or the
-# short token that the role mints from it. To revoke a token by its accessor, use a session
+# short token that the role mints from it. Nothing after the install creates a root
+# token outside the approval executor. To revoke a token by its accessor, use a session
 # that may revoke tokens: `bao token revoke -accessor <accessor>`. Find the accessors
 # with `bao list auth/token/accessors` and `bao token lookup -accessor <accessor>`. A
 # failed install ends in a rebuild.
@@ -260,6 +261,14 @@
       openbao_k8s_write_token_ttl is {{ openbao_k8s_write_token_ttl }}. Set it to
       10m to 15m: a token with the root policy may outlive an unreachable run by
       that long, and no longer.
+  when: not openbao_is_initialized | bool
+
+# The revoker revokes any root-policy token that the executor's record does not hold, and
+# the init makes the first one. A fresh init therefore stops the revoker and waits for its
+# pods to end first. A rerun makes no such token and leaves the revoker running. Only
+# revoker-resume.yml starts it again.
+- name: Stop the revoker before the init makes a root token
+  ansible.builtin.include_tasks: revoker-pause.yml
   when: not openbao_is_initialized | bool
 
 - name: Run Shamir init
@@ -1294,13 +1303,11 @@
     - born_inventory_secret_id_raw.stdout is defined
   no_log: true
 
-# The approval executor's Kubernetes-auth role (setup-executor.yml) and ops-admin
-# carry this policy so that `bao operator generate-root` works on OpenBao 2.6 and
-# later (files/policies/generate-root.hcl). The write comes before the writer of
-# every role that names the policy. It converges on every run and is valid on older
-# releases, so the policy is in place before the image changes. A fresh install
-# attaches it to ops-admin in the user upsert below. The seed steps that still run
-# after the install take their temporary root token through that grant.
+# Only the approval executor's Kubernetes-auth role (setup-executor.yml) carries this
+# policy, so that `bao operator generate-root` works on OpenBao 2.6 and later
+# (files/policies/generate-root.hcl). ops-admin never holds it: the user upsert below
+# attaches no generate-root policy. The write comes before the writer of every role
+# that names the policy. It converges on every run.
 - name: Write the generate-root policy
   ansible.builtin.shell:
     cmd: >-
@@ -1431,7 +1438,7 @@
       IFS= read -r BAO_TOKEN;
       export BAO_TOKEN;
       bao write auth/userpass/users/{{ openbao_operator_username }} -'
-    stdin: "{{ _openbao_write_token }}\n{{ {'password': openbao_operator_password, 'token_policies': openbao_operator_policy_name ~ ',' ~ openbao_operator_runtime_policy_name ~ ',' ~ openbao_generate_root_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
+    stdin: "{{ _openbao_write_token }}\n{{ {'password': openbao_operator_password, 'token_policies': openbao_operator_policy_name ~ ',' ~ openbao_operator_runtime_policy_name, 'token_ttl': '1h', 'token_max_ttl': '4h'} | to_json }}\n"
   no_log: true
   when:
     - openbao_init_raw is defined
@@ -1826,10 +1833,11 @@
     - openbao_init_raw is not defined or not (openbao_init_raw.changed | default(false))
 
 # The seed step. Every secret that needs a root token is written now, with the token
-# that this run holds, so the seed does not need a root token after the install. The
+# that this run holds, because nothing after the install makes one (decision 90). The
 # command takes the token on stdin and never in an argument. Its own messages never
 # hold the token, so they are shown. A failed seed ends the run: the rescue of
-# 100-openbao.yml revokes the tokens and proves that the server refuses them.
+# 100-openbao.yml revokes the tokens, proves that the server refuses them, and then
+# starts the revoker.
 - name: Seed OpenBao with the installer's token before it is revoked
   ansible.builtin.command:
     argv: "{{ openbao_install_seed_command }}"
@@ -1853,7 +1861,8 @@
   ansible.builtin.fail:
     msg: >-
       The seed step ended with status {{ _openbao_seed.rc }}. The seed may be partial:
-      some secrets may be written and others not. The rescue of 100-openbao.yml revokes the install's tokens. Rebuild the
+      some secrets may be written and others not. The rescue of 100-openbao.yml revokes
+      the install's tokens. Rebuild the
       environment after you fix the cause.
   when: _openbao_seed is defined and _openbao_seed.rc | default(0) != 0
 
@@ -1873,6 +1882,14 @@
       The rescue of 100-openbao.yml tries again, and the token expires on its own
       within {{ openbao_k8s_write_token_ttl }}.
   when: _openbao_init_trade | bool
+
+# The install has finished. A run that stopped the revoker starts it again, once the init
+# token and the short token are proved revoked above.
+- name: Start the revoker once the installer's tokens are revoked
+  ansible.builtin.include_tasks: revoker-resume.yml
+  vars:
+    openbao_revoker_installer_token_revoked: "{{ (_openbao_init_gone | bool) and (_openbao_short_gone | bool) }}"
+  when: _openbao_revoker_paused | default(false) | bool
 
 # ---------------------------------------------------------------------------
 # Report

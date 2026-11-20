@@ -1,0 +1,71 @@
+---
+# Start the revoker, only when the caller says that the installer's token is revoked, and
+# check that it works. The caller sets openbao_revoker_installer_token_revoked to true only
+# after the server has been shown to refuse every root token of the run. Anything else leaves
+# the revoker at zero replicas.
+#
+# The pod is ready only after it has finished a complete scan, and not ready again when no
+# complete scan has finished for three scan intervals, so a ready Deployment means that the
+# revoker logged in, listed the tokens and looked each one up.
+
+- name: Say why the revoker stays stopped
+  ansible.builtin.debug:
+    msg: >-
+      The revoker stays at zero replicas: a root token of this run is not proven
+      revoked, and the revoker would revoke it.
+  when: not (openbao_revoker_installer_token_revoked | bool)
+
+- name: Look for the revoker Deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openbao_revoker_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_revoker_to_start
+  when: openbao_revoker_installer_token_revoked | bool
+
+- name: Scale the revoker to one replica
+  kubernetes.core.k8s_scale:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openbao_revoker_name }}"
+    namespace: "{{ openbao_namespace }}"
+    replicas: 1
+    wait: false
+  when:
+    - openbao_revoker_installer_token_revoked | bool
+    - _openbao_revoker_to_start.resources | default([]) | length > 0
+
+- name: Wait until the revoker has finished a scan
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openbao_revoker_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_revoker_ready
+  until: >-
+    (_openbao_revoker_ready.resources | default([]) | length > 0)
+    and ((_openbao_revoker_ready.resources[0].status | default({})).readyReplicas | default(0)) >= 1
+  retries: "{{ openbao_revoker_ready_retries }}"
+  delay: "{{ openbao_revoker_ready_delay }}"
+  failed_when: false
+  when:
+    - openbao_revoker_installer_token_revoked | bool
+    - _openbao_revoker_to_start.resources | default([]) | length > 0
+
+- name: Stop when the revoker has not finished a scan
+  ansible.builtin.fail:
+    msg: >-
+      The revoker was started and did not report ready within
+      {{ openbao_revoker_ready_retries | int * openbao_revoker_ready_delay | int }} seconds. It reports
+      ready only after a complete scan, so it cannot log in, list the tokens or look
+      them up, and nothing would revoke a token that outlives its change. Read the log
+      of the pod {{ openbao_revoker_name }} in {{ openbao_namespace }}: each failed step has a line.
+  when:
+    - openbao_revoker_installer_token_revoked | bool
+    - _openbao_revoker_to_start.resources | default([]) | length > 0
+    - (_openbao_revoker_ready.resources | default([]) | length == 0)
+      or ((_openbao_revoker_ready.resources[0].status | default({})).readyReplicas | default(0)) < 1

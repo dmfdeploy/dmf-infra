@@ -10,6 +10,7 @@
 #   notes     text that the installed-roles note must hold, all of it
 #   drift     policy name: the live text, in place of the file's text. null: the policy is missing
 #   policies  extra live policies, name: text, that the role does not write
+#   revoker   the revoker Deployment object (default: one ready replica). null: none exists
 #   expect    text that the failure message must hold, all of it. Empty: the case must pass.
 #   marker    a file name that must not exist in the state directory or the working directory after the checks, whether
 #             they pass or fail: a name that holds shell syntax must not have run
@@ -24,7 +25,7 @@
         path: "{{ _state.path }}/{{ _case.name }}/{{ item }}"
         state: directory
         mode: "0700"
-      loop: [tokens, k8s-auth, policies]
+      loop: [tokens, k8s-auth, policies, k8s]
 
     - name: "Identity verifier — {{ _case.name }}: seed the reader's token"
       ansible.builtin.copy:
@@ -92,6 +93,13 @@
       loop_control:
         label: "{{ item.key }}"
 
+    - name: "Identity verifier — {{ _case.name }}: write the revoker Deployment"
+      ansible.builtin.copy:
+        dest: "{{ _state.path }}/{{ _case.name }}/k8s/Deployment-token-revoker.json"
+        content: "{{ _case.revoker | default({'spec': {'replicas': 1}, 'status': {'readyReplicas': 1}}) | to_json }}"
+        mode: "0600"
+      when: _case.revoker is not defined or _case.revoker is not none
+
     - name: "Identity verifier — {{ _case.name }}: run the checks"
       ansible.builtin.include_tasks: "{{ item }}"
       vars:
@@ -100,6 +108,7 @@
         - ../playbooks/tasks/verify-identity-holders.yml
         - ../playbooks/tasks/verify-policy-digests.yml
         - ../playbooks/tasks/verify-generate-root-grants.yml
+        - ../playbooks/tasks/verify-revoker-running.yml
 
     - name: "Identity verifier — {{ _case.name }}: assert the installed-roles note"
       ansible.builtin.assert:

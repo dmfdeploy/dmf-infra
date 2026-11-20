@@ -4,8 +4,9 @@
 # Included from main.yml after the approval executor. The token-revoker policy that
 # the role names is written earlier in main.yml.
 #
-# The Deployment is applied with zero replicas and nothing in this role starts it.
-# The step that retires the temporary-root procedure starts it.
+# A new Deployment is created with zero replicas, and revoker-resume.yml starts it once the
+# install's tokens are revoked. An existing Deployment is applied without a replica count, so
+# a rerun leaves the revoker as it is: running, or stopped by a run that is still in progress.
 
 - name: Refuse a record volume without a node
   ansible.builtin.assert:
@@ -50,8 +51,19 @@
     state: present
     definition: "{{ lookup('template', 'revoker-configmap.yml.j2') | from_yaml }}"
 
-- name: Create the revoker Deployment with zero replicas
+- name: Look for an existing revoker Deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openbao_revoker_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_revoker_deployment
+
+- name: Create or update the revoker Deployment
   kubernetes.core.k8s:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     state: present
     definition: "{{ lookup('template', 'revoker-deployment.yml.j2') | from_yaml }}"
+  vars:
+    openbao_revoker_deployment_exists: "{{ _openbao_revoker_deployment.resources | default([]) | length > 0 }}"

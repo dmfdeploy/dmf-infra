@@ -502,6 +502,11 @@ class Metrics:
                 self.complete_at = now
             self.revoked_total += result["revoked"]
 
+    def ready(self, now: float, window: float) -> bool:
+        """True while a complete scan finished within the window."""
+        with self.lock:
+            return self.complete_at is not None and now - self.complete_at <= window
+
     def render(self) -> str:
         with self.lock:
             lines = [
@@ -526,16 +531,24 @@ class Metrics:
             return "\n".join(lines) + "\n"
 
 
-def serve_metrics(metrics: Metrics, port: int) -> http.server.HTTPServer:
+def serve_metrics(metrics: Metrics, port: int, ready_window: float) -> http.server.HTTPServer:
+    """Serve /metrics, and /ready for the readiness probe: 200 while a complete scan finished
+    within ready_window seconds, 503 before the first one and after a long gap."""
+
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
-            body = metrics.render().encode()
-            self.send_response(200 if self.path == "/metrics" else 404)
-            self.send_header("Content-Type", "text/plain; version=0.0.4")
-            self.send_header("Content-Length", str(len(body) if self.path == "/metrics" else 0))
-            self.end_headers()
             if self.path == "/metrics":
-                self.wfile.write(body)
+                code, body = 200, metrics.render().encode()
+            elif self.path == "/ready":
+                ready = metrics.ready(time.time(), ready_window)
+                code, body = (200, b"ready\n") if ready else (503, b"no complete scan\n")
+            else:
+                code, body = 404, b""
+            self.send_response(code)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
 
         def log_message(self, *args):
             pass
@@ -561,7 +574,7 @@ def attempt(config: Config) -> dict:
 def main() -> int:
     config = Config()
     metrics = Metrics()
-    serve_metrics(metrics, config.metrics_port)
+    serve_metrics(metrics, config.metrics_port, 3 * config.interval)
     while True:
         started = time.time()
         metrics.update(attempt(config), started)

@@ -6,9 +6,10 @@ the repository as text. They guard four properties:
 
 - the server and the snapshot job run one release, pinned by tag and digest;
 - the listener reloads a renewed certificate by itself;
-- a narrow policy covers the two endpoints, and the approval executor's role and
-  ops-admin carry it;
-- no playbook or role in this repository calls `bao operator generate-root`.
+- a narrow policy covers the two endpoints, and only the approval executor's role
+  carries it (ops-admin never does);
+- no playbook, role or script in this repository calls `bao operator generate-root`:
+  the approval executor is the only caller, in a later slice.
 """
 import re
 import unittest
@@ -145,13 +146,15 @@ class PolicyTests(unittest.TestCase):
         self.assertIn("files/policies/generate-root.hcl", write["ansible.builtin.shell"]["stdin"])
         self.assertEqual(write["when"], "openbao_is_initialized | bool")
 
-    def test_ops_admin_carries_the_policy(self) -> None:
+    def test_the_install_never_attaches_the_policy_to_ops_admin(self) -> None:
         main = (OPENBAO_ROLE / "tasks/main.yml").read_text()
 
         upsert = main.index("- name: Upsert operator userpass user")
-        self.assertIn("openbao_generate_root_policy_name", main[upsert:upsert + 1200])
+        end = main.index("- name:", upsert + 1)
+        self.assertNotIn("generate_root", main[upsert:end])
+        self.assertNotIn("generate-root", main[upsert:end])
 
-    def test_only_the_executor_role_carries_the_policy_among_the_kubernetes_roles(self) -> None:
+    def test_only_the_executor_role_carries_the_policy(self) -> None:
         defaults = yaml.safe_load((OPENBAO_ROLE / "defaults/main.yml").read_text())
         holders = sorted(
             key

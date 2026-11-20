@@ -19,6 +19,7 @@ verify_executor_k8s_role: "{{ openbao_executor_k8s_role | default('approval-exec
 verify_revoker_k8s_role: "{{ openbao_revoker_k8s_role | default('token-revoker') }}"
 verify_generate_root_policy: "{{ openbao_generate_root_policy_name | default('generate-root') }}"
 verify_revoker_policy: "{{ openbao_revoker_policy_name | default('token-revoker') }}"
+verify_revoker_deployment: "{{ openbao_revoker_name | default('token-revoker') }}"
 verify_catalogue_prefix: catalogue-
 verify_catalogue_entries: "{{ (lookup('ansible.builtin.file', verify_role_path ~ '/files/catalogue.yml') | from_yaml).entries }}"
 verify_catalogue_policy_names: "{{ verify_catalogue_entries | map(attribute='policy_name') | list }}"

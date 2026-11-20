@@ -148,19 +148,29 @@ does not parse is a failure.
 
 Three rules in `roles/base/prometheus/templates/rules/alerts.yaml.j2` use them:
 `OpenBaoRevokerRecordUnreadable` (critical, after 3 minutes),
-`OpenBaoRevokerNotScanning` (warning, when no complete scan finishes for 5 minutes) and
+`OpenBaoRevokerNotScanning` (warning, when no complete scan finishes for 5 minutes, or no
+revoker pod reports) and
 `OpenBaoRevokerScanFailing` (warning, when the failures gauge stays above zero for 3
-minutes). A stopped revoker reports nothing, so the last two stay quiet while it is
-stopped. To find the cause, read the log of the revoker pod: the
+minutes). To find the cause, read the log of the revoker pod: the
 `ALERT` line gives the reason, and `revoked ACCESSOR: reason` lines show every revoke.
 Log lines hold accessors and never a token.
 
 ### Install order
 
-The role installs the revoker stopped: the Deployment has zero replicas and nothing in
-the role or the playbooks scales it up. The revoker starts in a later change, after
-every path that makes a temporary root token is gone, because a running revoker would
-revoke those tokens: the record holds no entry for them.
+The revoker would revoke the installer's own root token, because the record holds no
+entry for it. So a fresh init stops the revoker (`revoker-pause.yml`) before `bao operator
+init` makes the first token, and waits for its pods to end. A rerun makes no root token and
+leaves the revoker running, and applies the Deployment without a replica count so that the
+apply keeps it as it is. A new Deployment has zero replicas.
+
+`revoker-resume.yml` sets one replica after the init token and the short write token are
+proved revoked, and then waits for the Deployment to report a ready replica. The pod is ready
+only after a complete scan, and stops being ready when none finished within three scan
+intervals, so the wait ends when the revoker has logged in, listed the tokens and looked
+each one up. If that does not happen within `openbao_revoker_ready_retries` times
+`openbao_revoker_ready_delay` seconds, the install fails and names the pod to read. The
+rescue of `100-openbao.yml` starts the revoker again after it has proved the install's
+tokens refused, unless the answer to the mint was lost, because that token cannot be named.
 
 ### Seed step
 
@@ -190,15 +200,15 @@ as before.
 - The policy `generate-root` (`files/policies/generate-root.hcl`) grants the
   two paths that the command uses, and nothing else. The role writes it on every
   run. Its name is `openbao_generate_root_policy_name`.
-- The approval executor's Kubernetes-auth role holds the policy, and so does `ops-admin`.
-  A fresh install attaches it when it creates the user. The seed steps that still run
-  after the install log in as `ops-admin` to get a temporary root token through it.
+- Only the approval executor's Kubernetes-auth role holds the policy. `ops-admin`
+  never does: the install doesn't attach it, so the password and the unseal shares
+  together are no second path to a root token. The identity verifier fails when any
+  other principal holds the policy.
 - The install does every step that needs a root token with its own initial token
   (the init token, and the short token that the role mints from it), and revokes both
-  at the end of the install.
-- No playbook or role in this repository calls `bao operator generate-root`. The seed
-  steps in dmf-env's `bin/bootstrap-secrets.sh` do, until a later change removes them
-  and the grant on `ops-admin`.
+  before the revoker starts. See "Install order" above.
+- After the install, no playbook, role or script in this repository creates a root
+  token. The executor is the only caller, in a later slice.
 
 ### No manual procedure
 
@@ -247,8 +257,8 @@ To change a policy, edit the file and update `policy_sha256` in the same change.
 
 ## The identity verifier
 
-The identity verifier checks that nothing in the identity configuration holds power it
-should not hold. It reads with the
+`playbooks/verify-openbao-identity-model.yml` checks, among other things, that nothing
+in the identity configuration holds power it should not hold. It reads with the
 `identity-verifier` policy (`files/policies/identity-verifier.hcl`: read and list of
 `sys/auth`, the users, roles, entities and groups, and nothing that returns a secret),
 which `policy-reconciler` carries on a fresh install. It logs in as `policy-reconciler`,
@@ -257,9 +267,7 @@ The list stanzas of the policy end in a slash, because OpenBao matches a list re
 slash on its path. `tests/test_openbao_identity_verifier_paths.py` reads every path that the
 verifier's tasks request and checks it against the policy.
 
-The playbook does not run these checks yet: `playbooks/tasks/verify-identity-holders.yml`
-and `verify-policy-digests.yml` run only in `tests/test-openbao-identity-verifier.yml`, until
-the change that retires the temporary-root procedure includes them in the playbook.
+`bootstrap-verify.yml` runs the playbook.
 
 What it checks:
 
@@ -301,10 +309,17 @@ run. `token-revoker is missing from OpenBao` means that the role has not written
 run also says whether the executor and the revoker roles are installed. Where one is not,
 no principal may hold its policy.
 
-A fresh install does not pass the verifier yet: `ops-admin` still holds `generate-root`,
-and the verifier flags it. A later change retires that grant.
+A fresh install passes the verifier: `ops-admin` holds no `generate-root` policy.
 Only a fresh install attaches `identity-verifier` to `policy-reconciler`. An environment
 installed before slice B is rebuilt (ADR-0051), not migrated.
+
+- **Revoker.** `tasks/verify-revoker-running.yml` fails when the revoker Deployment is
+  missing, stopped, or has no ready replica. The pod is ready only after a complete scan, so a
+  ready replica means that the last complete scan is recent.
+
+A new allowed auth mount needs a branch for its type in "Work out which sources of principals
+to read" in `tasks/verify-identity-holders.yml`; a test fails when a type in
+`verify_identity_allowed_auth_mounts` has no such branch.
 
 The tests in `tests/test-openbao-identity-verifier.yml` run the verifier against the
 fake bao with an identity fixture.
