@@ -67,8 +67,7 @@ The script (`files/revoker/revoker.py`, standard library only) runs from a Confi
 on `python:3.13-alpine`, the image of the ntfy bridge in `roles/base/prometheus`.
 Every 60 seconds it logs in with its projected ServiceAccount token, lists the
 accessors of the live tokens, and looks each one up. It logs in again on every scan
-and keeps no token between scans, so it stores no token on disk. A lookup that fails,
-or that has no `policies` list, is logged and the token is left alone.
+and keeps no token between scans, so it stores no token on disk.
 
 An *executor token* is a token whose policies include `root` or any policy named in
 `files/catalogue.yml` (all start with `catalogue-`). The revoker leaves every
@@ -77,7 +76,7 @@ other token alone, including the executor's login token, ESO's tokens, and its o
 A scan revokes, by accessor:
 
 - every recorded accessor (either of a `minted` entry's two) whose request has a
-  `closed` entry, and every recorded accessor older than the grace period;
+  `closed` entry, and every recorded root accessor older than the grace period;
 - every unrecorded executor token when no intent is open, and every unrecorded
   executor token older than the grace period.
 
@@ -127,14 +126,22 @@ annotations, so the `kubernetes-pods` job scrapes it.
 | Metric | Meaning |
 |---|---|
 | `dmf_openbao_revoker_record_readable` | 1 when the last scan read a valid record, 0 when it did not |
-| `dmf_openbao_revoker_last_scan_timestamp_seconds` | When the last scan that logged in finished |
+| `dmf_openbao_revoker_last_scan_timestamp_seconds` | When the last complete scan finished |
 | `dmf_openbao_revoker_revoked_total` | Tokens revoked since the pod started |
-| `dmf_openbao_revoker_failures` | Failed lists, lookups, and revokes in the last scan |
+| `dmf_openbao_revoker_failures` | Steps that failed in the latest scan: the login, the listing, a lookup or a revoke |
 
-Two rules in `roles/base/prometheus/templates/rules/alerts.yaml.j2` use them:
-`OpenBaoRevokerRecordUnreadable` (critical, after 3 minutes) and
-`OpenBaoRevokerNotScanning` (warning, when no scan finishes for 5 minutes; a stopped
-revoker reports nothing). To find the cause, read the log of the revoker pod: the
+A scan is complete only when every step of it succeeded and returned a well-formed answer.
+A malformed listing is rejected whole. A failed or malformed step is logged, the scan goes
+on to the next token, and the scan then counts as incomplete: it leaves the last-scan time
+where it was and raises the failures gauge. HTTP 400 on a lookup or a revoke means that the
+token is gone, and is not a failure.
+
+Three rules in `roles/base/prometheus/templates/rules/alerts.yaml.j2` use them:
+`OpenBaoRevokerRecordUnreadable` (critical, after 3 minutes),
+`OpenBaoRevokerNotScanning` (warning, when no complete scan finishes for 5 minutes) and
+`OpenBaoRevokerScanFailing` (warning, when the failures gauge stays above zero for 3
+minutes). A stopped revoker reports nothing, so the last two stay quiet while it is
+stopped. To find the cause, read the log of the revoker pod: the
 `ALERT` line gives the reason, and `revoked ACCESSOR: reason` lines show every revoke.
 Log lines hold accessors and never a token.
 

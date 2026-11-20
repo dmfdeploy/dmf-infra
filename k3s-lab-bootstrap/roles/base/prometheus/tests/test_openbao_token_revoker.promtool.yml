@@ -1,4 +1,4 @@
-# Rule tests for the OpenBao token revoker's two alerts.
+# Rule tests for the OpenBao token revoker's three alerts.
 # Render alerts.yaml.j2 as described in test_awx_replica_divergence_424.promtool.yml.
 rule_files:
   - rendered_alerts.yml
@@ -70,4 +70,42 @@ tests:
     alert_rule_test:
       - eval_time: 15m
         alertname: OpenBaoRevokerNotScanning
+        exp_alerts: []
+  # Scans fail steps for the whole window: the failures alert fires.
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_revoker_failures{pod="token-revoker-0"}'
+        values: "2x10"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: OpenBaoRevokerScanFailing
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: security
+              pod: token-revoker-0
+            exp_annotations:
+              summary: The OpenBao token revoker fails steps of its scans
+              description: >-
+                The latest scans of the revoker failed a login, a listing, a lookup or a revoke,
+                so a token that should be revoked may stay valid. Read the log of the revoker
+                pod: each failed step has a line that names it.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-token-revoker
+  # One failed scan between clean ones does not fire.
+  - interval: 1m
+    input_series:
+      - series: 'dmf_openbao_revoker_failures{pod="token-revoker-0"}'
+        values: "0 0 1 0 0 0 0 0"
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: OpenBaoRevokerScanFailing
+        exp_alerts: []
+  # No revoker pod reports (the Deployment sits at zero replicas): the failures alert stays quiet.
+  - interval: 1m
+    input_series:
+      - series: 'up{job="prometheus"}'
+        values: "1x20"
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: OpenBaoRevokerScanFailing
         exp_alerts: []
