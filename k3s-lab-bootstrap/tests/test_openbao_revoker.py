@@ -728,6 +728,47 @@ class LogsAndLogin(RevokerCase):
         self.assertIn(f"dmf_openbao_revoker_last_scan_timestamp_seconds {NOW}", metrics.render())
 
 
+class RecordsFromTheWriter(unittest.TestCase):
+    """Records that dmf-init's writer produced, parsed by the revoker's copy of the parser.
+
+    The writer is AuditLog in dmf-init, src/dmf_init/audit/chain.py. The two directories under
+    tests/fixtures/audit-record/ are its output. dmf-init's tests/test_audit_revoker_fixture.py
+    writes the same records again and compares them byte for byte, so the fixtures change only
+    together with the writer, and these tests then show whether the parser follows.
+    """
+
+    FIXTURES = ROOT / "tests/fixtures/audit-record"
+    ACCESSORS = {"acc-closed-1": "r-closed", "acc-closed-2": "r-closed",
+                 "acc-open-1": "r-open", "acc-open-2": "r-open"}
+
+    def test_a_record_over_two_segments_is_readable_and_holds_the_facts(self):
+        record = revoker.read_record(self.FIXTURES / "rolled")
+
+        self.assertTrue(record.readable, record.reason)
+        self.assertEqual(record.accessors, self.ACCESSORS)
+        self.assertEqual(record.closed, {"r-closed"})
+        self.assertEqual(record.open_count, 1)
+
+    def test_a_trimmed_record_that_starts_at_an_anchor_is_readable_and_holds_the_facts(self):
+        record = revoker.read_record(self.FIXTURES / "trimmed")
+
+        self.assertTrue(record.readable, record.reason)
+        self.assertEqual(record.accessors, self.ACCESSORS)
+        self.assertEqual(record.closed, {"r-closed"})
+        self.assertEqual(record.open_count, 1)
+
+    def test_an_edited_byte_in_a_fixture_makes_the_record_unreadable(self):
+        # Shows that the fixtures are checked by the hash chain and not only parsed.
+        copy = Path(tempfile.mkdtemp(prefix="record-fixture-"))
+        self.addCleanup(lambda: subprocess.run(["rm", "-rf", str(copy)]))
+        for path in (self.FIXTURES / "rolled").iterdir():
+            (copy / path.name).write_bytes(path.read_bytes())
+        first = copy / "segment-00000001.jsonl"
+        first.write_text(first.read_text().replace("r-closed", "r-closer", 1))
+
+        self.assertFalse(revoker.read_record(copy).readable)
+
+
 class PortedRecord(unittest.TestCase):
     """The snapshot of a record, on chains that have a restore and a trim anchor."""
 
