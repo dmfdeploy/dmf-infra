@@ -649,13 +649,11 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.assertTrue(self.result["ran"])
         self.assertEqual(self.result["failed"], 0)
 
-    def test_a_revoke_that_says_a_documented_absence_message_counts_as_a_gone_token(self):
+    def test_a_revoke_that_says_token_not_found_counts_as_a_gone_token(self):
         write_chain(self.record, [intent("r1"), closed("r1")])
-        for accessor, message in (("k-invalid", "invalid accessor"), ("k-notfound", "token not found")):
-            self.token(accessor, ["root"], 10)
-            self.refuse("revoke", accessor, self.errors(message))
+        self.token("k-notfound", ["root"], 10)
+        self.refuse("revoke", "k-notfound", self.errors("token not found"))
         self.scan()
-        self.assertIn("revoke k-invalid: the token is gone", self.log)
         self.assertIn("revoke k-notfound: the token is gone", self.log)
         self.assertTrue(self.result["ran"])
         self.assertEqual(self.result["failed"], 0)
@@ -663,14 +661,19 @@ class FailuresDoNotStopTheScan(RevokerCase):
     def test_any_other_400_makes_the_scan_incomplete(self):
         # Catches a scan that reports complete while a root token stays live behind a refused request.
         write_chain(self.record, [intent("r1"), closed("r1")])
-        bodies = {
-            "other message": self.errors("missing client token"),
-            "invalid request": self.errors("invalid request"),
-            "no errors list": b'{"errors": "invalid accessor"}',
-            "not json": b"Bad Request",
-            "empty": b"",
-        }
+        def make_bodies(step):
+            return {
+                "other message": self.errors("missing client token"),
+                "invalid request": self.errors("invalid request"),
+                "no errors list": b'{"errors": "invalid accessor"}',
+                "not json": b"Bad Request",
+                "empty": b"",
+                "mixed list": self.errors("invalid accessor", "permission denied"),
+                "mixed list, revoke message": self.errors("token not found", "permission denied"),
+                "other endpoint's message": self.errors("token not found" if step == "lookup" else "invalid accessor"),
+            }
         for step in ("lookup", "revoke"):
+            bodies = make_bodies(step)
             for name, body in bodies.items():
                 with self.subTest(step=step, body=name):
                     accessor = "m-" + step + "-" + name.replace(" ", "-")

@@ -139,10 +139,11 @@ annotations, so the `kubernetes-pods` job scrapes it.
 A scan is complete only when every step of it succeeded and returned a well-formed answer.
 A malformed listing is rejected whole. A failed or malformed step is logged, the scan goes
 on to the next token, and the scan then counts as incomplete: it leaves the last-scan time
-where it was and raises the failures gauge. A lookup or a revoke that gets HTTP 400 with the
-message `invalid accessor` or, on a revoke, `token not found` means that the token is gone,
-and is not a failure. OpenBao uses 400 for any invalid request, so every other 400, and a 400
-whose body is not an OpenBao error list, is a failure.
+where it was and raises the failures gauge. A lookup that gets HTTP 400 with the single error `invalid accessor`, or a revoke that gets
+HTTP 400 with the single error `token not found`, means that the token is gone, and is not a
+failure. OpenBao uses 400 for any invalid request, so every other 400 is a failure: another
+message, a list with more than one message, the other endpoint's message, or a body that is
+not an OpenBao error list.
 
 Three rules in `roles/base/prometheus/templates/rules/alerts.yaml.j2` use them:
 `OpenBaoRevokerRecordUnreadable` (critical, after 3 minutes),
