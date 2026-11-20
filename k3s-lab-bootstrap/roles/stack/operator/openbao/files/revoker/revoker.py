@@ -40,8 +40,9 @@ A scan is complete only when every step of it succeeded: the login, the listing,
 lookup and every revoke, each with a well-formed answer. A failed or malformed step is
 logged and the scan goes on to the next token, but the scan then counts as incomplete:
 it does not move the last-scan gauge, and the failures gauge shows how many steps failed.
-One answer is not a failure: HTTP 400 on a lookup or a revoke means that the token is
-gone, as a token that expires between the listing and the lookup is. A log line never
+One answer is not a failure: HTTP 400 with the message OpenBao gives for an accessor that
+no token has. A token that expires between the listing and the lookup is gone in this way.
+OpenBao answers 400 to any invalid request, so every other 400 is a failure. A log line never
 holds a token. The script logs in with the projected ServiceAccount token on every scan
 and keeps the OpenBao token in memory only.
 """
@@ -211,9 +212,28 @@ def _read_record(directory: Path) -> Record:
 class BaoError(Exception):
     """A request that OpenBao refused or that failed on the way. Never holds a token."""
 
-    def __init__(self, message: str, status: int | None = None):
+    def __init__(self, message: str, status: int | None = None, errors: list | None = None):
         super().__init__(message)
         self.status = status
+        self.errors = errors
+
+
+# The messages OpenBao puts in a 400 answer when no token has the accessor: lookup-accessor
+# says "invalid accessor", revoke-accessor says "invalid accessor" or "token not found".
+GONE_MESSAGES = ("invalid accessor", "token not found")
+
+
+def token_is_gone(error: BaoError) -> bool:
+    """True only for a 400 whose error list holds a documented "no such accessor" message.
+
+    OpenBao uses 400 for any invalid request, so the status alone proves nothing. A 400 with
+    another message, or with a body that is not an OpenBao error list, is a failure.
+    """
+    return (
+        error.status == 400
+        and isinstance(error.errors, list)
+        and any(message in GONE_MESSAGES for message in error.errors)
+    )
 
 
 def http_date(value: str | None) -> float | None:
@@ -243,8 +263,15 @@ class Bao:
                 text = response.read().decode() or "{}"
                 self.server_time = http_date(response.headers.get("Date"))
         except urllib.error.HTTPError as error:
+            errors = None
+            try:
+                body = json.loads(error.read().decode())
+                if isinstance(body, dict) and isinstance(body.get("errors"), list):
+                    errors = body["errors"]
+            except (OSError, ValueError):
+                pass
             error.close()
-            raise BaoError(f"{method} {path}: HTTP {error.code}", error.code) from None
+            raise BaoError(f"{method} {path}: HTTP {error.code}", error.code, errors) from None
         except (urllib.error.URLError, OSError, ValueError) as error:
             raise BaoError(f"{method} {path}: {type(error).__name__}") from None
         try:
@@ -328,7 +355,7 @@ def scan(bao: Bao, config: Config, policies: set) -> dict:
         try:
             data = bao.lookup(accessor)
         except BaoError as error:
-            if error.status == 400:
+            if token_is_gone(error):
                 log(f"lookup {accessor}: the token is gone")
             else:
                 log(f"lookup {accessor} failed: {error}")
@@ -368,7 +395,7 @@ def scan(bao: Bao, config: Config, policies: set) -> dict:
         try:
             bao.revoke(accessor)
         except BaoError as error:
-            if error.status == 400:
+            if token_is_gone(error):
                 log(f"revoke {accessor}: the token is gone")
             else:
                 log(f"revoke {accessor} failed: {error}")
