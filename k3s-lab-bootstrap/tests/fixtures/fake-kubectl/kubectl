@@ -31,6 +31,9 @@
 #   `sh -c 'kill -HUP 1'` is the reload signal. With FAKE_TLS_MODEL set it makes the
 #   pod serve the projected tls.crt (state file served-POD), unless FAKE_HUP_IGNORED is
 #   set. The fake never runs `kill`: a real one would signal the host.
+#   With FAKE_BAO_PATH_AS_ARGUMENT set, a `sh -c PROGRAM sh PATH` call whose program runs
+#   `bao read` or `bao list` must read the path as "$1": the fake refuses a program that
+#   holds the path in its text. The identity verifier test sets it.
 # Every call is logged to $FAKE_STATE/events.log. Any other call fails, so a test
 # notices a new kind of call.
 set -u
@@ -172,6 +175,21 @@ if [ $# -eq 3 ] && [ "$1" = sh ] && [ "$2" = -c ] && [ "$3" = "kill -HUP 1" ]; t
     projected tls.crt > "$state/served-$pod"
   fi
   exit 0
+fi
+# FAKE_BAO_PATH_AS_ARGUMENT set: a `sh -c 'PROGRAM' sh PATH` call whose program runs
+# `bao read` or `bao list` must take its path from its first argument (`"$1"`). A path
+# written into the program text is the form that lets a name from OpenBao reach a shell,
+# so the fake refuses it.
+if [ -n "${FAKE_BAO_PATH_AS_ARGUMENT:-}" ] && [ "$1" = sh ] && [ "${2:-}" = -c ]; then
+  case "${3:-}" in
+    *"bao read "*|*"bao list "*)
+      case "${3}" in *'"$1"'*) ;; *) bad=1 ;; esac
+      if [ "${bad:-}" = 1 ] || [ $# -ne 5 ] || [ "$4" != sh ]; then
+        echo "fake kubectl: a bao read or list must receive its path as an argument after sh, not inside the program text" >&2
+        exit 1
+      fi
+      ;;
+  esac
 fi
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export FAKE_POD="$pod"

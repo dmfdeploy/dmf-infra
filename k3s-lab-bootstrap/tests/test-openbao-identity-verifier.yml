@@ -31,6 +31,11 @@
 #     string and ignores capabilities. A policy for other sys paths, a comment that names
 #     generate-root without quotes, and a path with regex characters pass.
 #
+#   - a userpass user and an ACL policy whose name holds `'`, `;`, `$(...)` and a space are read
+#     under that exact name and judged like any other (the user holds generate-root, the policy
+#     names its path), and the shell does not run the name: the marker file that it would
+#     create does not exist. A clean principal and policy with such names pass.
+#
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
 #   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
@@ -116,6 +121,20 @@
           k8s: {approval-executor: null, token-revoker: null}
           k8s_mounts: {k8s-two/: {approval-executor: [], token-revoker: []}}
           notes: ["approval executor role approval-executor is not installed", "token revoker role token-revoker is not installed"]
+        # Names that hold shell syntax. Each is read as the path it is, found and judged like any
+        # other name, and the shell never runs it: the case then looks for the marker file.
+        - name: userpass-name-with-shell-syntax-is-read-as-a-name
+          patch: {userpass_users: {"x'; cd $(printenv FAKE_STATE); touch MARKER; echo $(touch MARKER) '": {token_policies: [default, generate-root]}}}
+          expect: ["userpass user userpass/x'; cd $(printenv FAKE_STATE); touch MARKER; echo $(touch MARKER) ' holds generate-root"]
+          marker: MARKER
+        - name: policy-name-with-shell-syntax-is-read-as-a-name
+          policies: {"x'; cd $(printenv FAKE_STATE); touch MARKER; echo $(touch MARKER) '": "path \"sys/generate-root-token/attempt\" {\n  capabilities = [\"update\"]\n}\n"}
+          expect: ["x'; cd $(printenv FAKE_STATE); touch MARKER; echo $(touch MARKER) ' (path \"sys/generate-root-token/attempt\")"]
+          marker: MARKER
+        - name: names-with-shell-syntax-that-hold-nothing-pass
+          patch: {userpass_users: {"x'; cd $(printenv FAKE_STATE); touch MARKER; echo $(touch MARKER) '": {token_policies: [default]}}}
+          policies: {"x'; cd $(printenv FAKE_STATE); touch MARKER; echo $(touch MARKER) '": "path \"secret/data/x\" {\n  capabilities = [\"read\"]\n}\n"}
+          marker: MARKER
         - {name: userpass-user-generate-root, patch: {userpass_users: {mallory: {token_policies: [default, generate-root]}}}, expect: ["userpass user userpass/mallory holds generate-root"]}
         - {name: approle-role-generate-root, patch: {approle_roles: {rogue: {token_policies: [generate-root]}}}, expect: ["AppRole role approle/rogue holds generate-root"]}
         - {name: token-role-generate-root, patch: {token_roles: {minter: {allowed_policies: [generate-root]}}}, expect: ["token role token/minter holds generate-root"]}

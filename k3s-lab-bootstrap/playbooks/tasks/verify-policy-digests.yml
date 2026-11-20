@@ -23,15 +23,22 @@
   no_log: true
 
 - name: Read the live policies that the role writes
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ verify_openbao_namespace }}
-      exec -i {{ _verify_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao read -format=json sys/policies/acl/{{ item.name | quote }}'
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ verify_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _verify_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao read -format=json "$1"'
+      - sh
+      - "sys/policies/acl/{{ item.name }}"
     stdin: "{{ _verify_token_identity_reader }}\n"
   register: _verify_policy_reads
   changed_when: false

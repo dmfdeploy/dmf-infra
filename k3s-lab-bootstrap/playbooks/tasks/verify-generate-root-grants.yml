@@ -18,30 +18,44 @@
 # See the role's README, "The identity verifier".
 
 - name: List the live ACL policies
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ verify_openbao_namespace }}
-      exec -i {{ _verify_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao list -format=json sys/policies/acl'
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ verify_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _verify_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao list -format=json "$1"'
+      - sh
+      - "sys/policies/acl"
     stdin: "{{ _verify_token_identity_reader }}\n"
   register: _verify_acl_list
   changed_when: false
   no_log: true
 
 - name: Read every live ACL policy except root and the executor's
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ verify_openbao_namespace }}
-      exec -i {{ _verify_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao read -format=json sys/policies/acl/{{ item | quote }}'
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ verify_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _verify_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao read -format=json "$1"'
+      - sh
+      - "sys/policies/acl/{{ item }}"
     stdin: "{{ _verify_token_identity_reader }}\n"
   register: _verify_acl_reads
   changed_when: false

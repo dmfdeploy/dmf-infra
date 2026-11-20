@@ -11,17 +11,28 @@
 #
 # The caller holds the token in _verify_token_identity_reader and the pod in
 # _verify_openbao_pod. The token goes in on stdin.
+#
+# Names come from OpenBao, which the verifier does not trust, so no name goes into a shell
+# program. Each call runs `command` with an argument list, and the path reaches the program
+# in the pod as its first argument (`"$1"`).
 
 - name: "Identity check: list {{ _verify_src.list_path }}"
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ verify_openbao_namespace }}
-      exec -i {{ _verify_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao list -format=json {{ _verify_src.list_path | quote }}'
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ verify_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _verify_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao list -format=json "$1"'
+      - sh
+      - "{{ _verify_src.list_path }}"
     stdin: "{{ _verify_token_identity_reader }}\n"
   register: _verify_src_list
   changed_when: false
@@ -31,15 +42,22 @@
   no_log: true
 
 - name: "Identity check: read each name under {{ _verify_src.list_path }}"
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ verify_openbao_namespace }}
-      exec -i {{ _verify_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao read -format=json {{ (_verify_src.list_path ~ "/" ~ item) | quote }}'
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ verify_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _verify_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao read -format=json "$1"'
+      - sh
+      - "{{ _verify_src.list_path ~ '/' ~ item }}"
     stdin: "{{ _verify_token_identity_reader }}\n"
   register: _verify_src_reads
   changed_when: false

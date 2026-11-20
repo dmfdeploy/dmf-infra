@@ -416,7 +416,7 @@ print_keys() { # print_keys PATH KEYS: the answer of `bao list`, as JSON or as t
     exit 2
   fi
   if [ -n "$json_out" ]; then
-    printf '%s\n' "$2" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().split()))'
+    printf '%s\n' "$2" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read().splitlines()))'
   else
     printf 'Keys\n----\n%s\n' "$2"
   fi
