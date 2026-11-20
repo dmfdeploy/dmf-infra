@@ -1,0 +1,2 @@
+{"accessors":["acc-closed-1","acc-closed-2"],"event":"minted","hash":"52f024cb0cff1c227cdfcae465726263c48abeeef39984e00abe06cc8f503493","prev":"bc2bb038f3dd57e857a6c5cadada34578610c978b575f568fae4306dedba43e9","request_id":"r-closed","seq":4,"session":"s1","time":"2026-11-19T10:00:03Z"}
+{"event":"closed","hash":"e617ad8e1a5dbe75208af9f71ec2be82947d3e52f02b6a1f1d1a6222ada002db","outcome":"ok","prev":"52f024cb0cff1c227cdfcae465726263c48abeeef39984e00abe06cc8f503493","request_id":"r-closed","seq":5,"time":"2026-11-19T10:00:05Z"}

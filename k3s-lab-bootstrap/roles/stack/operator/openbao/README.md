@@ -93,6 +93,10 @@ claim (`approval-executor-record`, `openbao_record_pvc_name`). Only the executor
 writes the volume. Before it reads anything, the revoker checks the whole chain the
 way dmf-init's `verify` does (sequence, `prev`, `hash`, segment order, the restore
 and anchor rules). The port cites dmf-init revision `ade3967`.
+The writer is `AuditLog` in dmf-init (`src/dmf_init/audit/chain.py`). Two records that it
+wrote are in `tests/fixtures/audit-record/`; the revoker's tests parse them, and dmf-init's
+`tests/test_audit_revoker_fixture.py` writes them again and compares the bytes, so a
+change to the format fails one side until both change.
 
 Both pods mount the same claim and both carry a `nodeSelector` on
 `openbao_record_node`, which defaults to the first control host. On the
