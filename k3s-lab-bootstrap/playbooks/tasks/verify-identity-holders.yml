@@ -1,17 +1,19 @@
 # The verifier's check of who holds power in OpenBao's identity configuration. It reads
 # with the identity-verifier policy (files/policies/identity-verifier.hcl) and checks:
 #
-#   1. Every enabled auth method is one the role enables. The allowlist is
-#      verify_identity_allowed_auth_types. A method outside it fails the run, and the
-#      message names the mount.
-#   2. Under the allowed methods, every userpass user, AppRole role, token role and
+#   1. Every enabled auth mount is one the role enables, with the type that the role
+#      gives it. The allowlist is verify_identity_allowed_auth_mounts (mount path to
+#      type). A mount outside it, or a listed mount of another type, fails the run, and
+#      the message names the mount and its type.
+#   2. Under the allowed mounts, every userpass user, AppRole role, token role and
 #      Kubernetes role, and every identity entity and group, is read. A principal
 #      holds a policy when its own list names it. A group also passes its policies to its
 #      member groups, to any depth, and to its member entities.
-#   3. No principal other than the approval executor's Kubernetes role holds
-#      generate-root. No principal other than the revoker's Kubernetes role holds the
-#      revoker's policy. No principal holds a catalogue policy: those policies are
-#      attached only to the scoped tokens that the executor mints.
+#   3. No principal other than the approval executor's Kubernetes role (on the
+#      verify_k8s_auth_mount mount) holds generate-root. No principal other than the
+#      revoker's Kubernetes role (on the same mount) holds the revoker's policy. No
+#      principal holds a catalogue policy: those policies are attached only to the
+#      scoped tokens that the executor mints.
 #
 # A token role holds the policies that it may hand out (`allowed_policies`, and
 # `allowed_policies_glob`, in which an entry that ends in `*` matches by prefix). A
@@ -56,27 +58,27 @@
       token/ mount, or holds an entry without a type. The verifier cannot tell which
       methods are enabled, so it stops here.
 
-- name: Work out the auth methods that are outside the allowlist
+- name: Work out the auth mounts that are outside the allowlist
   ansible.builtin.set_fact:
     _verify_auth_unexpected: >-
       {%- set ns = namespace(found=[]) -%}
       {%- for mount, info in _verify_auth_mounts.items() -%}
-      {%- if info.type not in verify_identity_allowed_auth_types -%}
+      {%- if verify_identity_allowed_auth_mounts[mount] | default(none) != info.type -%}
       {%- set ns.found = ns.found + [mount ~ ' (type ' ~ info.type ~ ')'] -%}
       {%- endif -%}
       {%- endfor -%}
       {{ ns.found }}
   no_log: true
 
-- name: Assert that no auth method is enabled outside the allowlist
+- name: Assert that no auth mount is enabled outside the allowlist
   ansible.builtin.assert:
     that: _verify_auth_unexpected | length == 0
     fail_msg: >-
-      An auth method outside the allowlist is enabled: {{ _verify_auth_unexpected | join(', ') }}.
-      The role enables {{ verify_identity_allowed_auth_types | join(', ') }} and nothing
-      else. A method that the role does not enable is a way to log in that nothing
-      here accounts for. Disable the mount, or add its type to
-      verify_identity_allowed_auth_types in the same change that enables it in the role.
+      An auth mount outside the allowlist is enabled: {{ _verify_auth_unexpected | join(', ') }}.
+      The role enables {{ verify_identity_allowed_auth_mounts.keys() | join(', ') }} and nothing
+      else, each with the type that the allowlist gives it. A mount that the role does not
+      enable is a way to log in that nothing here accounts for. Disable the mount, or add it
+      to verify_identity_allowed_auth_mounts in the same change that enables it in the role.
 
 - name: Work out which sources of principals to read
   ansible.builtin.set_fact:
@@ -139,7 +141,7 @@
   no_log: true
 
 # One rule per policy that is restricted. `allowed_k8s_role` names the one Kubernetes
-# role that may hold it ('' for none). A rule with `prefix` matches every policy whose
+# role, on the verify_k8s_auth_mount mount, that may hold it ('' for none). A rule with `prefix` matches every policy whose
 # name starts with it.
 - name: Work out the rules of who may hold what
   ansible.builtin.set_fact:
@@ -175,7 +177,7 @@
       {%- set ns.own = ns.own or e in p.policies -%}
       {%- endif -%}
       {%- endfor -%}
-      {%- if ns.hit and not (p.kind == 'Kubernetes role' and rule.allowed_k8s_role | length > 0 and p.name == rule.allowed_k8s_role) -%}
+      {%- if ns.hit and not (p.kind == 'Kubernetes role' and p.mount == verify_k8s_auth_mount and rule.allowed_k8s_role | length > 0 and p.name == rule.allowed_k8s_role) -%}
       {%- set label = p.kind ~ ' ' ~ p.mount ~ p.name ~ (' (' ~ p.id ~ ')' if p.kind.startswith('identity') else '') -%}
       {%- set hint = rule.hint if (p.kind == 'userpass user' and p.name == verify_ops_admin_user and rule.hint is defined) else '' -%}
       {%- set inherited = '' if ns.own else ' through a group' -%}
@@ -186,9 +188,11 @@
       {{ ns.found }}
     _verify_executor_role_present: >-
       {{ _verify_principals | selectattr('kind', 'equalto', 'Kubernetes role')
+         | selectattr('mount', 'equalto', verify_k8s_auth_mount)
          | selectattr('name', 'equalto', verify_executor_k8s_role) | list | length > 0 }}
     _verify_revoker_role_present: >-
       {{ _verify_principals | selectattr('kind', 'equalto', 'Kubernetes role')
+         | selectattr('mount', 'equalto', verify_k8s_auth_mount)
          | selectattr('name', 'equalto', verify_revoker_k8s_role) | list | length > 0 }}
   no_log: true
 

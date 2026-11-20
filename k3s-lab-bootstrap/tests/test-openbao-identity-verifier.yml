@@ -5,7 +5,9 @@
 #
 #   - the clean fixture passes, also when the approval executor and the revoker are not
 #     installed, and when a live policy has one trailing newline more than its file;
-#   - an auth method outside the allowlist fails and the message names the mount;
+#   - an auth mount outside the allowlist fails and the message names the mount and its type:
+#     an unknown type, a second mount of a listed type, a second Kubernetes mount, and a
+#     listed mount with another type;
 #   - an empty sys/auth answer, one without the token/ mount, and an entry without a type
 #     fail: the verifier must have read the inventory of enabled methods;
 #   - generate-root on a userpass user, an AppRole role, a token role (listed, or by a
@@ -13,6 +15,9 @@
 #     an entity through a group, or a Kubernetes role other than the executor's fails and
 #     names the principal, as does the executor's role holding the revoker's policy;
 #   - the revoker's policy on a Kubernetes role other than the revoker's fails;
+#   - the executor's and the revoker's names on another Kubernetes mount hold nothing: with the
+#     allowlist widened to reach the holder check, the grant fails, and the role does not count
+#     as installed;
 #   - a catalogue policy on any principal fails, the executor's role included;
 #   - ops-admin holding generate-root fails, and the message says that the install still
 #     attaches it;
@@ -64,6 +69,11 @@
       approle-rotation-scheduler: [approle-rotation-scheduler]
       external-secrets: [eso-reader]
   tasks:
+    # The real allowlist, resolved now: a case that replaces it must not template against itself.
+    - name: Keep the real mount allowlist
+      ansible.builtin.set_fact:
+        _allowed_mounts_real: "{{ verify_identity_allowed_auth_mounts }}"
+
     - name: Make a state directory for the fake cluster
       ansible.builtin.tempfile:
         state: directory
@@ -83,7 +93,26 @@
         - {name: empty-auth-answer, replace: {auth_methods: {}}, expect: ["did not list the enabled auth methods"]}
         - {name: auth-answer-without-the-token-mount, replace: {auth_methods: {userpass/: {type: userpass}}}, expect: ["did not list the enabled auth methods"]}
         - {name: auth-entry-without-a-type, replace: {auth_methods: {token/: {type: token}, ldap/: {}}}, expect: ["did not list the enabled auth methods"]}
-        - {name: extra-auth-method-second-userpass-mount, patch: {auth_methods: {oidc/: {type: oidc}}}, expect: ["oidc/"]}
+        - {name: extra-auth-method-oidc-mount, patch: {auth_methods: {oidc/: {type: oidc}}}, expect: ["oidc/", "type oidc"]}
+        - {name: second-userpass-mount, patch: {auth_methods: {userpass-two/: {type: userpass}}}, expect: ["userpass-two/", "type userpass"]}
+        - {name: second-kubernetes-mount, patch: {auth_methods: {k8s-two/: {type: kubernetes}}}, expect: ["k8s-two/", "type kubernetes"]}
+        - {name: listed-mount-with-another-type, patch: {auth_methods: {approle/: {type: userpass}}}, expect: ["approle/", "type userpass"]}
+        - name: executor-role-on-a-second-mount-holds-generate-root
+          allowed_mounts: {token/: token, userpass/: userpass, kubernetes/: kubernetes, approle/: approle, k8s-two/: kubernetes}
+          patch: {auth_methods: {k8s-two/: {type: kubernetes}}}
+          k8s_mounts: {k8s-two/: {approval-executor: [generate-root]}}
+          expect: ["Kubernetes role k8s-two/approval-executor holds generate-root"]
+        - name: revoker-role-on-a-second-mount-holds-its-policy
+          allowed_mounts: {token/: token, userpass/: userpass, kubernetes/: kubernetes, approle/: approle, k8s-two/: kubernetes}
+          patch: {auth_methods: {k8s-two/: {type: kubernetes}}}
+          k8s_mounts: {k8s-two/: {token-revoker: [token-revoker]}}
+          expect: ["Kubernetes role k8s-two/token-revoker holds token-revoker"]
+        - name: executor-role-only-on-a-second-mount-is-not-installed
+          allowed_mounts: {token/: token, userpass/: userpass, kubernetes/: kubernetes, approle/: approle, k8s-two/: kubernetes}
+          patch: {auth_methods: {k8s-two/: {type: kubernetes}}}
+          k8s: {approval-executor: null, token-revoker: null}
+          k8s_mounts: {k8s-two/: {approval-executor: [], token-revoker: []}}
+          notes: ["approval executor role approval-executor is not installed", "token revoker role token-revoker is not installed"]
         - {name: userpass-user-generate-root, patch: {userpass_users: {mallory: {token_policies: [default, generate-root]}}}, expect: ["userpass user userpass/mallory holds generate-root"]}
         - {name: approle-role-generate-root, patch: {approle_roles: {rogue: {token_policies: [generate-root]}}}, expect: ["AppRole role approle/rogue holds generate-root"]}
         - {name: token-role-generate-root, patch: {token_roles: {minter: {allowed_policies: [generate-root]}}}, expect: ["token role token/minter holds generate-root"]}

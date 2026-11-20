@@ -4,6 +4,10 @@
 #   patch     identity fixture entries to add to or replace in the clean fixture
 #   replace   top-level fixture keys to replace as a whole (patch merges into them)
 #   k8s       Kubernetes roles (name: list of policies) to add to or replace in the clean set
+#   k8s_mounts  roles on a further Kubernetes mount: mount (with its trailing slash): {name: policies}
+#   allowed_mounts  the mount allowlist to use in place of the real one, to reach checks that
+#             come after the allowlist check
+#   notes     text that the installed-roles note must hold, all of it
 #   drift     policy name: the live text, in place of the file's text. null: the policy is missing
 #   policies  extra live policies, name: text, that the role does not write
 #   expect    text that the failure message must hold, all of it. Empty: the case must pass.
@@ -36,9 +40,35 @@
         dest: "{{ _state.path }}/{{ _case.name }}/k8s-auth/role-{{ item.key }}.json"
         content: "{{ {'token_policies': item.value} | to_json }}"
         mode: "0600"
-      loop: "{{ _clean_k8s_roles | combine(_case.k8s | default({})) | dict2items }}"
+      loop: "{{ _clean_k8s_roles | combine(_case.k8s | default({})) | dict2items | rejectattr('value', 'none') | list }}"
       loop_control:
         label: "{{ item.key }}"
+
+    - name: "Identity verifier — {{ _case.name }}: make the directories of further Kubernetes mounts"
+      ansible.builtin.file:
+        path: "{{ _state.path }}/{{ _case.name }}/k8s-auth-{{ item | regex_replace('/$', '') }}"
+        state: directory
+        mode: "0700"
+      loop: "{{ (_case.k8s_mounts | default({})).keys() | list }}"
+
+    - name: "Identity verifier — {{ _case.name }}: write the roles of further Kubernetes mounts"
+      ansible.builtin.copy:
+        dest: "{{ _state.path }}/{{ _case.name }}/k8s-auth-{{ item.mount | regex_replace('/$', '') }}/role-{{ item.name }}.json"
+        content: "{{ {'token_policies': item.policies} | to_json }}"
+        mode: "0600"
+      loop: >-
+        {{ _mount_roles }}
+      loop_control:
+        label: "{{ item.mount }}{{ item.name }}"
+      vars:
+        _mount_roles: >-
+          {%- set ns = namespace(found=[]) -%}
+          {%- for mount, roles in (_case.k8s_mounts | default({})).items() -%}
+          {%- for name, policies in roles.items() -%}
+          {%- set ns.found = ns.found + [{'mount': mount, 'name': name, 'policies': policies}] -%}
+          {%- endfor -%}
+          {%- endfor -%}
+          {{ ns.found }}
 
     - name: "Identity verifier — {{ _case.name }}: write the live policies"
       ansible.builtin.copy:
@@ -61,10 +91,18 @@
 
     - name: "Identity verifier — {{ _case.name }}: run the checks"
       ansible.builtin.include_tasks: "{{ item }}"
+      vars:
+        verify_identity_allowed_auth_mounts: "{{ _case.allowed_mounts | default(_allowed_mounts_real) }}"
       loop:
         - ../playbooks/tasks/verify-identity-holders.yml
         - ../playbooks/tasks/verify-policy-digests.yml
         - ../playbooks/tasks/verify-generate-root-grants.yml
+
+    - name: "Identity verifier — {{ _case.name }}: assert the installed-roles note"
+      ansible.builtin.assert:
+        that: item in (_verify_identity_notes | join(' | '))
+        fail_msg: "The note did not hold {{ item }}: {{ _verify_identity_notes | default('') }}"
+      loop: "{{ _case.notes | default([]) }}"
 
     - name: "Identity verifier — {{ _case.name }}: fail when the checks passed a case that must fail"
       ansible.builtin.fail:
