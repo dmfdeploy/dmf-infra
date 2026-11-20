@@ -10,11 +10,11 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  ansible:
+  ansible-checks:
+    # Lint, the small unit tests, syntax checks and chart lint. The slow OpenBao
+    # tests run in the jobs below; the `ansible` job reports all of them as one check.
     runs-on: ubuntu-24.04
-    # The OpenBao unit tests and the playbook tests run against fakes, one after
-    # another; together they take about 30 minutes, so allow 45.
-    timeout-minutes: 45
+    timeout-minutes: 15
     defaults:
       run:
         working-directory: k3s-lab-bootstrap
@@ -42,8 +42,6 @@ jobs:
         run: python3 tests/test-forgejo-contributor-policy.py
       - name: Forgejo admin identity audit fixture tests (dmfdeploy/dmfdeploy#15)
         run: python3 -m unittest discover -s tests -p 'test_audit_forgejo_identities.py' -v
-      - name: OpenBao AppRole lifecycle registry and setup issuer tests (dmfdeploy/dmfdeploy#11, #396)
-        run: python3 -m unittest discover -s tests -p 'test_openbao_*.py' -v
       - name: setup request catalogue digests, pinned policies and ConfigMap render
         run: python3 -m unittest discover -s tests -p 'test_openbao_catalogue.py' -v
       - name: CoreDNS custom zone forwards unlisted names
@@ -67,26 +65,6 @@ jobs:
             echo "=== syntax-check: $pb ==="
             ansible-playbook "$pb" --syntax-check
           done
-      - name: OpenBao Raft render, guard, unseal and migration tests
-        run: |
-          ansible-playbook tests/test-openbao-ha-render.yml
-          ansible-playbook tests/test-openbao-ha-guard.yml
-          export PATH="$PWD/tests/fixtures/fake-kubectl:$PATH"
-          export ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections"
-          ansible-playbook tests/test-openbao-ha-guard-collect.yml
-          ansible-playbook tests/test-openbao-guard-poll.yml
-          ansible-playbook tests/test-openbao-unseal.yml
-          ansible-playbook tests/test-openbao-data-read.yml
-          ansible-playbook tests/test-openbao-capabilities.yml
-          ansible-playbook tests/test-openbao-restart-guard.yml
-          ansible-playbook tests/test-openbao-grow-ha.yml
-          ansible-playbook tests/test-openbao-k8s-auth.yml
-          ansible-playbook tests/test-openbao-raft-snapshot.yml
-          ansible-playbook tests/test-openbao-cert-issuance.yml
-          ansible-playbook tests/test-openbao-ca-bundle.yml
-          ansible-playbook tests/test-openbao-init-status.yml
-          ansible-playbook tests/test-openbao-tls-secret-wait.yml
-          ansible-playbook tests/test-born-inventory-breakglass-login.yml
       - name: harden fail2ban ignoreip validation (dmfdeploy/dmfdeploy#142)
         run: ansible-playbook tests/test-harden-fail2ban-ignoreip.yml
       - name: whole-index mirror keeps the index digest (dmfdeploy/dmfdeploy#808)
@@ -107,6 +85,135 @@ jobs:
             echo "=== helm-lint: $chart_dir ==="
             helm lint "$chart_dir"
           done
+
+  ansible-openbao:
+    # Each line of PLAYBOOKS is "<shard> <fakes|plain> <playbook>". Shard N runs its
+    # lines in order; "fakes" puts the fake kubectl and the fake collections in front.
+    # A playbook is in one place, so it runs in exactly one shard. About 6, 3 and 3
+    # minutes of tests per shard, plus about 2 minutes of setup.
+    name: ansible-openbao (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    env:
+      PLAYBOOKS: |
+        1 fakes tests/test-openbao-k8s-auth.yml
+        2 fakes tests/test-openbao-grow-ha.yml
+        2 fakes tests/test-openbao-raft-snapshot.yml
+        2 fakes tests/test-openbao-unseal.yml
+        2 fakes tests/test-openbao-data-read.yml
+        2 fakes tests/test-openbao-capabilities.yml
+        2 fakes tests/test-openbao-restart-guard.yml
+        3 plain tests/test-openbao-ha-render.yml
+        3 plain tests/test-openbao-ha-guard.yml
+        3 fakes tests/test-openbao-ha-guard-collect.yml
+        3 fakes tests/test-openbao-guard-poll.yml
+        3 fakes tests/test-openbao-cert-issuance.yml
+        3 fakes tests/test-openbao-ca-bundle.yml
+        3 fakes tests/test-openbao-init-status.yml
+        3 fakes tests/test-openbao-tls-secret-wait.yml
+        3 fakes tests/test-born-inventory-breakglass-login.yml
+    defaults:
+      run:
+        working-directory: k3s-lab-bootstrap
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install ansible tooling
+        run: |
+          python3 -m pip install --user --upgrade pip
+          python3 -m pip install --user ansible
+          python3 -m pip install --user -r requirements.txt
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install collections
+        run: |
+          ansible-galaxy collection install -r requirements.yml -r ee/requirements.yml
+      - name: Every OpenBao test playbook is in the list, once
+        run: |
+          set -eu
+          listed=$(echo "$PLAYBOOKS" | awk 'NF {print $3}' | sort)
+          dups=$(echo "$listed" | uniq -d)
+          [ -z "$dups" ] || { echo "Listed twice: $dups"; exit 1; }
+          present=$(printf '%s\n' tests/test-openbao-*.yml | sort)
+          missing=$(comm -23 <(echo "$present") <(echo "$listed"))
+          [ -z "$missing" ] || { echo "Not in a shard: $missing"; exit 1; }
+          unknown=$(comm -13 <(printf '%s\n' tests/test-*.yml | sort) <(echo "$listed"))
+          [ -z "$unknown" ] || { echo "Listed but missing: $unknown"; exit 1; }
+      - name: OpenBao Raft render, guard, unseal and migration tests
+        run: |
+          set -eu
+          echo "$PLAYBOOKS" | awk -v shard="$SHARD" 'NF && $1 == shard {print $2, $3}' |
+          while read -r mode playbook; do
+            echo "=== $playbook ($mode) ==="
+            if [ "$mode" = fakes ]; then
+              PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
+              ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
+                ansible-playbook "$playbook" </dev/null
+            else
+              ansible-playbook "$playbook" </dev/null
+            fi
+          done
+        env:
+          SHARD: ${{ matrix.shard }}
+
+  ansible-unit:
+    # The OpenBao unit tests, split by file. Files are dealt out in name order, so a
+    # new test file lands in a shard without a change here. About 5, 3 and 1 minutes.
+    name: ansible-unit (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    defaults:
+      run:
+        working-directory: k3s-lab-bootstrap
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Install ansible tooling
+        run: |
+          python3 -m pip install --user --upgrade pip
+          python3 -m pip install --user ansible
+          python3 -m pip install --user -r requirements.txt
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install collections
+        run: |
+          ansible-galaxy collection install -r requirements.yml -r ee/requirements.yml
+      - name: OpenBao AppRole lifecycle registry and setup issuer tests (dmfdeploy/dmfdeploy#11, #396)
+        run: |
+          set -eu
+          modules=$(printf '%s\n' tests/test_openbao_*.py | sort |
+            awk -v shard="$SHARD" -v total=3 '(NR - 1) % total == shard - 1 {print $0}' |
+            sed 's|^tests/||; s|\.py$||')
+          echo "$modules"
+          echo "$modules" | PYTHONPATH=tests xargs python3 -m unittest -v
+        env:
+          SHARD: ${{ matrix.shard }}
+
+  ansible:
+    # The required check. It passes only when every job it waits for passed.
+    needs: [ansible-checks, ansible-openbao, ansible-unit]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every ansible job passed
+        run: |
+          echo "ansible-checks:  $CHECKS"
+          echo "ansible-openbao: $OPENBAO"
+          echo "ansible-unit:    $UNIT"
+          [ "$CHECKS" = success ] && [ "$OPENBAO" = success ] && [ "$UNIT" = success ]
+        env:
+          CHECKS: ${{ needs.ansible-checks.result }}
+          OPENBAO: ${{ needs.ansible-openbao.result }}
+          UNIT: ${{ needs.ansible-unit.result }}
 
   review-comments:
     # Comments state why, not which review prompted them
