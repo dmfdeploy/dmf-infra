@@ -25,8 +25,11 @@
 #     policy that is missing;
 #   - a policy other than the executor's that grants a path under sys/generate-root fails and
 #     names the policy and the path: an exact path, a prefix, `sys/*`, `*`, a `+` segment, a
-#     stanza after one with nested braces, a JSON policy. A deny stanza, a commented stanza and
-#     a policy for other sys paths pass.
+#     stanza after one with nested braces, a JSON policy. A path with an escape that decodes to a generate-root path (`\/`, `\u0073`) or
+#     with an escape that does not decode, a deny stanza, a quoted path in a comment, a capabilities
+#     list with an inline comment and a `]` in a comment fail too: the scan reads every quoted
+#     string and ignores capabilities. A policy for other sys paths, a comment that names
+#     generate-root without quotes, and a path with regex characters pass.
 #
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
@@ -141,7 +144,7 @@
         - {name: policy-drift, drift: {generate-root: "path \"sys/*\" {\n  capabilities = [\"sudo\"]\n}\n"}, expect: ["generate-root differs from files/policies/generate-root.hcl"]}
         - {name: catalogue-policy-drift, drift: {catalogue-ops-admin-password-rotation: "# changed\n"}, expect: ["catalogue-ops-admin-password-rotation differs from files/policies/catalogue/ops-admin-password-rotation.hcl"]}
         - {name: policy-missing, drift: {token-revoker: null}, expect: ["token-revoker is missing from OpenBao"]}
-        - {name: other-policy-grants-the-attempt-path, policies: {rogue: "path \"sys/generate-root-token/attempt\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/attempt\")", "Only the approval executor's policy may grant"]}
+        - {name: other-policy-grants-the-attempt-path, policies: {rogue: "path \"sys/generate-root-token/attempt\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/attempt\")", "Only the approval executor's policy may name"]}
         - {name: other-policy-grants-the-update-path-by-prefix, policies: {rogue: "path \"sys/generate-root-token/*\" {\n  capabilities = [\"update\", \"read\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/*\")"]}
         - {name: other-policy-grants-all-of-sys, policies: {rogue: "path \"sys/*\" {\n  capabilities = [\"sudo\"]\n}\n"}, expect: ["rogue (path \"sys/*\")"]}
         - {name: other-policy-grants-a-prefix-of-the-endpoint, policies: {rogue: "path \"sys/generate-root*\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root*\")"]}
@@ -149,6 +152,16 @@
         - {name: other-policy-grants-all-paths, policies: {rogue: "path \"*\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"*\")"]}
         - {name: grant-after-a-stanza-with-nested-braces, policies: {rogue: "path \"secret/data/x\" {\n  capabilities = [\"create\"]\n  allowed_parameters = {\n    \"a\" = []\n  }\n}\npath \"sys/generate-root-token/update\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/update\")"]}
         - {name: grant-in-a-json-policy, policies: {rogue: "{\"path\": {\"sys/generate-root-token/attempt\": {\"capabilities\": [\"update\"]}}}"}, expect: ["rogue (path \"sys/generate-root-token/attempt\")"]}
-        - {name: a-deny-stanza-grants-nothing, policies: {guard: "path \"sys/generate-root-token/*\" {\n  capabilities = [\"deny\"]\n}\n"}}
-        - {name: a-commented-stanza-grants-nothing, policies: {note: "# path \"sys/generate-root-token/attempt\" { capabilities = [\"update\"] }\npath \"secret/data/x\" {\n  capabilities = [\"read\"]\n}\n"}}
+        - {name: a-deny-stanza-fails-too, policies: {guard: "path \"sys/generate-root-token/*\" {\n  capabilities = [\"deny\"]\n}\n"}, expect: ["guard (path \"sys/generate-root-token/*\")"]}
+        - {name: a-quoted-path-in-a-comment-fails, policies: {note: "# path \"sys/generate-root-token/attempt\" { capabilities = [\"update\"] }\npath \"secret/data/x\" {\n  capabilities = [\"read\"]\n}\n"}, expect: ["note (path \"sys/generate-root-token/attempt\")"]}
+        - {name: inline-comment-with-deny-after-update, policies: {rogue: "path \"sys/generate-root-token/attempt\" { capabilities = [\"update\", # deny\n] }"}, expect: ["rogue (path \"sys/generate-root-token/attempt\")"]}
+        - {name: bracket-in-a-block-comment-in-the-capabilities, policies: {rogue: "path \"sys/generate-root/update\" {\n  capabilities = [\"update\", /* ] */ \"read\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root/update\")"]}
+        - {name: wildcard-star-under-sys-fails-with-odd-spacing, policies: {rogue: "path   \"sys/*\"{capabilities=[\"update\"]}"}, expect: ["rogue (path \"sys/*\")"]}
+        - {name: segment-wildcard-in-a-line-comment, policies: {rogue: "// path \"sys/+/attempt\"\npath \"secret/data/x\" {\n  capabilities = [\"read\"]\n}\n"}, expect: ["rogue (path \"sys/+/attempt\")"]}
+        - {name: json-policy-with-update-path, policies: {rogue: "{\"path\": {\"sys/generate-root/update\": {\"capabilities\": [\"update\"]}}}"}, expect: ["rogue (path \"sys/generate-root/update\")"]}
+        - {name: json-escaped-slashes-in-a-path, policies: {rogue: "{\"path\": {\"sys\\/generate-root-token\\/attempt\": {\"capabilities\": [\"update\"]}}}"}, expect: ["rogue (path \"sys\\/generate-root-token\\/attempt\")"]}
+        - {name: hcl-unicode-escape-in-a-path, policies: {rogue: "path \"\\u0073ys/generate-root-token/attempt\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"\\u0073ys/generate-root-token/attempt\")"]}
+        - {name: string-with-an-escape-json-does-not-know, policies: {rogue: "path \"sys\\x2fgenerate-root/update\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (string \"sys\\x2fgenerate-root/update\" that does not decode)"]}
+        - {name: unrelated-paths-and-an-unquoted-comment-pass, policies: {other: "# keeps generate-root out of reach\npath \"secret/data/foo\" {\n  capabilities = [\"read\"]\n}\n"}}
+        - {name: regex-metacharacters-in-a-path-do-not-widen-the-match, policies: {other: "path \"sys/(.*)\" {\n  capabilities = [\"read\"]\n}\n"}}
         - {name: a-policy-for-other-sys-paths-passes, policies: {other: "path \"sys/policies/acl/*\" {\n  capabilities = [\"read\", \"list\"]\n}\npath \"sys/capabilities-self\" {\n  capabilities = [\"update\"]\n}\n"}}
