@@ -98,6 +98,8 @@ class Bridge(http.server.ThreadingHTTPServer):
         self.state = state
         self.fail_lookup, self.fail_revoke, self.hide_policies = set(), set(), set()
         self.gone, self.data_list = set(), set()
+        # accessor -> the raw body of a 400 answer; the key is ("lookup" | "revoke", accessor)
+        self.bad_request = {}
         self.fail_list = False
         self.list_keys = None
         self.date_header = http_date(NOW)  # the Date header of every answer; None sends none
@@ -130,6 +132,12 @@ class Bridge(http.server.ThreadingHTTPServer):
             self.end_headers()
             self.wfile.write(data)
 
+        def reply_raw(self, code, data):
+            self.send_response(code)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
         def handle_any(self):
             server = self.server
             length = int(self.headers.get("Content-Length") or 0)
@@ -154,13 +162,15 @@ class Bridge(http.server.ThreadingHTTPServer):
             if path == "auth/token/lookup-accessor":
                 if accessor in server.fail_lookup:
                     return self.reply(500)
+                if ("lookup", accessor) in server.bad_request:
+                    return self.reply_raw(400, server.bad_request[("lookup", accessor)])
                 if accessor in server.gone:
-                    return self.reply(400)
+                    return self.reply(400, {"errors": ["invalid accessor"]})
                 if accessor in server.data_list:
                     return self.reply(200, {"data": []})
                 result = server.bao(["write", "-format=json", path, f"accessor={accessor}"], token)
                 if result.returncode != 0:
-                    return self.reply(400)
+                    return self.reply(400, {"errors": ["invalid accessor"]})
                 answer = json.loads(result.stdout)
                 if accessor in server.hide_policies:
                     answer["data"].pop("policies")
@@ -168,6 +178,8 @@ class Bridge(http.server.ThreadingHTTPServer):
             if path == "auth/token/revoke-accessor":
                 if accessor in server.fail_revoke:
                     return self.reply(500)
+                if ("revoke", accessor) in server.bad_request:
+                    return self.reply_raw(400, server.bad_request[("revoke", accessor)])
                 result = server.bao(["write", path, f"accessor={accessor}"], token)
                 return self.reply(204 if result.returncode == 0 else 403, {})
             return self.reply(404)
@@ -613,7 +625,7 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.assertEqual(self.result["failed"], 1)
 
     def test_a_token_that_expired_between_the_listing_and_the_lookup_is_not_a_failure(self):
-        # HTTP 400 on a lookup means that the token is gone. Short-lived tokens make that routine.
+        # HTTP 400 with `invalid accessor` means that the token is gone. Short-lived tokens make that routine.
         write_chain(self.record, [intent("r1"), closed("r1")])
         self.token("i-gone", ["root"], 10)
         self.bridge.gone.add("i-gone")
@@ -621,6 +633,57 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.assertIn("i-gone: the token is gone", self.log)
         self.assertTrue(self.result["ran"])
         self.assertEqual(self.result["failed"], 0)
+
+    def errors(self, *messages):
+        return json.dumps({"errors": list(messages)}).encode()
+
+    def refuse(self, step, accessor, body):
+        self.bridge.bad_request[(step, accessor)] = body
+
+    def test_a_lookup_that_says_invalid_accessor_counts_as_a_gone_token(self):
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.token("j-root", ["root"], 10)
+        self.refuse("lookup", "j-root", self.errors("invalid accessor"))
+        self.scan()
+        self.assertIn("j-root: the token is gone", self.log)
+        self.assertTrue(self.result["ran"])
+        self.assertEqual(self.result["failed"], 0)
+
+    def test_a_revoke_that_says_a_documented_absence_message_counts_as_a_gone_token(self):
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        for accessor, message in (("k-invalid", "invalid accessor"), ("k-notfound", "token not found")):
+            self.token(accessor, ["root"], 10)
+            self.refuse("revoke", accessor, self.errors(message))
+        self.scan()
+        self.assertIn("revoke k-invalid: the token is gone", self.log)
+        self.assertIn("revoke k-notfound: the token is gone", self.log)
+        self.assertTrue(self.result["ran"])
+        self.assertEqual(self.result["failed"], 0)
+
+    def test_any_other_400_makes_the_scan_incomplete(self):
+        # Catches a scan that reports complete while a root token stays live behind a refused request.
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        bodies = {
+            "other message": self.errors("missing client token"),
+            "invalid request": self.errors("invalid request"),
+            "no errors list": b'{"errors": "invalid accessor"}',
+            "not json": b"Bad Request",
+            "empty": b"",
+        }
+        for step in ("lookup", "revoke"):
+            for name, body in bodies.items():
+                with self.subTest(step=step, body=name):
+                    accessor = "m-" + step + "-" + name.replace(" ", "-")
+                    self.token(accessor, ["root"], 10)
+                    self.refuse(step, accessor, body)
+                    self.scan()
+                    self.assertKept(accessor)
+                    self.assertIn(f"{step} {accessor} failed", self.log)
+                    self.assertFalse(self.result["ran"])
+                    self.assertGreaterEqual(self.result["failed"], 1)
+                    self.bridge.bad_request.clear()
+                    self.tokens.pop(accessor)
+                    (self.state / "tokens" / f"{accessor}-token.json").unlink()
 
     def test_a_failed_login_skips_the_scan(self):
         # The JWT binds another ServiceAccount, so the fake refuses the login.
