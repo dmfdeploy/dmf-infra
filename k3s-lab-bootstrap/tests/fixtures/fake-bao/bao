@@ -1007,6 +1007,14 @@ PY
     print_keys "${norm#list }" "$(identity_fixture "${norm#list }")"
     exit 0
     ;;
+  "list auth/"*"/role")
+    # A second Kubernetes mount: its roles are the files under $state/k8s-auth-MOUNT.
+    allow "listing ${norm#list }" "$verifier"
+    mount="${norm#list auth/}"; mount="${mount%/role}"
+    roles="$(cd "$state/k8s-auth-$mount" 2>/dev/null && for f in role-*.json; do [ -f "$f" ] && { f="${f#role-}"; echo "${f%.json}"; }; done)"
+    print_keys "${norm#list }" "$roles"
+    exit 0
+    ;;
   "read auth/approle/role/"*"/role-id")
     allow "reading auth/approle/role role-id" root
     # With identity.json the role must be one that it names, and its role_id is the fixture's.
@@ -1050,6 +1058,13 @@ PY
     name="${norm#read auth/kubernetes/role/}"
     [ -f "$k8s_auth_dir/role-$name.json" ] || { echo "No value found at auth/kubernetes/role/$name" >&2; exit 2; }
     python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$k8s_auth_dir/role-$name.json"
+    exit 0
+    ;;
+  "read auth/"*"/role/"*)
+    allow "reading ${norm#read }" "$verifier"
+    mount="${norm#read auth/}"; mount="${mount%%/*}"; name="${norm##*/}"
+    [ -f "$state/k8s-auth-$mount/role-$name.json" ] || { echo "No value found at ${norm#read }" >&2; exit 2; }
+    python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$state/k8s-auth-$mount/role-$name.json"
     exit 0
     ;;
   "read auth/token/roles/"*|"read identity/entity/id/"*|"read identity/group/id/"*)

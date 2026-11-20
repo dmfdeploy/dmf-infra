@@ -84,8 +84,8 @@ class AllowlistHasAnEnumerator(unittest.TestCase):
         # Catches an allowed auth type that the holder check never enumerates: its principals
         # could hold generate-root and nothing would look. Adding a type to the allowlist needs
         # a branch in "Work out which sources of principals to read" in the same change.
-        allowed = yaml.safe_load((ROOT / "playbooks/vars/identity-verifier.yml").read_text())[
-            "verify_identity_allowed_auth_types"]
+        allowed = set(yaml.safe_load((ROOT / "playbooks/vars/identity-verifier.yml").read_text())[
+            "verify_identity_allowed_auth_mounts"].values())
         holders = (ROOT / "playbooks/tasks/verify-identity-holders.yml").read_text()
         start = holders.index("- name: Work out which sources of principals to read")
         sources = holders[start:holders.index("- name:", start + 1)]
@@ -94,6 +94,22 @@ class AllowlistHasAnEnumerator(unittest.TestCase):
         for auth_type in allowed:
             with self.subTest(auth_type=auth_type):
                 self.assertIn(f"info.type == '{auth_type}'", sources)
+
+    def test_every_allowed_mount_is_one_that_the_role_enables(self):
+        # The allowlist names mounts, so a mount that the role enables at another path, or
+        # one that the role no longer enables, must not stay on it. The built-in token mount
+        # is not enabled by the role.
+        allowed = yaml.safe_load((ROOT / "playbooks/vars/identity-verifier.yml").read_text())[
+            "verify_identity_allowed_auth_mounts"]
+        role = (ROOT / "roles/stack/operator/openbao/tasks/main.yml").read_text()
+
+        self.assertEqual(allowed["token/"], "token")
+        for mount, auth_type in allowed.items():
+            if auth_type == "token":
+                continue
+            with self.subTest(mount=mount):
+                self.assertEqual(mount, f"{auth_type}/")
+                self.assertRegex(role, rf"bao auth enable [^\n]*\b{auth_type}'")
 
 
 if __name__ == "__main__":

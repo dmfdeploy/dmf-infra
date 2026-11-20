@@ -391,17 +391,19 @@ the change that retires the temporary-root procedure includes them in the playbo
 
 What it checks:
 
-- **Allowlist.** Every enabled auth method has a type in `verify_identity_allowed_auth_types`
-  (userpass, kubernetes, approle and token: the methods this role enables). A mount of
-  any other type fails the run, and the message names the mount.
+- **Allowlist.** Every enabled auth mount is in `verify_identity_allowed_auth_mounts`
+  (`token/`, `userpass/`, `kubernetes/` and `approle/`: the mounts this role enables, each
+  with its type). A mount outside it, or a listed mount of another type, fails the run, and
+  the message names the mount and its type. Add a mount to the list in the same change
+  that enables it in the role.
 - **Holders.** It reads every userpass user, AppRole role, token role, and Kubernetes role
-  under those methods, and every identity entity and group. A principal holds a policy when
+  under those mounts, and every identity entity and group. A principal holds a policy when
   it lists it. A token role holds what it may hand out (`allowed_policies`, and
   `allowed_policies_glob` by prefix). A group also passes its policies to its member groups, to any
   depth, and to its member entities. It fails when:
-  - any principal except the Kubernetes role `openbao_executor_k8s_role` holds
+  - any principal except the Kubernetes role `openbao_executor_k8s_role` on `kubernetes/` holds
     `generate-root`;
-  - any principal except the Kubernetes role `openbao_revoker_k8s_role` holds the
+  - any principal except the Kubernetes role `openbao_revoker_k8s_role` on `kubernetes/` holds the
     revoker's policy;
   - any principal holds a `catalogue-*` policy. Only the scoped tokens that the executor
     mints carry those.

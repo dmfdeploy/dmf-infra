@@ -3,10 +3,17 @@
 # (tasks/verify-policy-digests.yml) and the generate-root grants
 # (tasks/verify-generate-root-grants.yml). The test
 # (tests/test-openbao-identity-verifier.yml) loads this file, and so does the verifier's
-# playbook once it includes the checks, so the test cannot run against a stale copy. The
-# allowlist is the auth methods that the OpenBao role enables.
+# playbook once it includes the checks, so the test cannot run against a stale copy.
+# The allowlist is the auth mounts that the OpenBao role enables, each with its type.
 verify_role_path: "{{ playbook_dir }}/../roles/stack/operator/openbao"
-verify_identity_allowed_auth_types: [userpass, kubernetes, approle, token]
+# Add a mount here in the same change that enables it in the role.
+verify_identity_allowed_auth_mounts:
+  token/: token
+  userpass/: userpass
+  kubernetes/: kubernetes
+  approle/: approle
+# The one Kubernetes auth mount that holds the executor's and the revoker's roles.
+verify_k8s_auth_mount: kubernetes/
 verify_ops_admin_user: "{{ openbao_operator_username | default('ops-admin') }}"
 verify_executor_k8s_role: "{{ openbao_executor_k8s_role | default('approval-executor') }}"
 verify_revoker_k8s_role: "{{ openbao_revoker_k8s_role | default('token-revoker') }}"

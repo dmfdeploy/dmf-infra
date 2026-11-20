@@ -121,6 +121,12 @@ come from `$FAKE_STATE/identity.json`:
 | `list identity/entity/id`, `read identity/entity/id/ID` | `entities`, with `id` added |
 | `list identity/group/id`, `read identity/group/id/ID` | `groups`, with `id` added |
 
+A further Kubernetes mount (a mount in `auth_methods` that is not `kubernetes/`) keeps its roles
+as files, `$FAKE_STATE/k8s-auth-MOUNT/role-NAME.json`, where MOUNT has no trailing slash. `list
+auth/MOUNT/role` and `read auth/MOUNT/role/NAME` answer from them, for a root token or the
+verifier policy. The identity test uses this to put a role named like the executor's on a second
+mount. These calls are outside the table above because they don't read `identity.json`.
+
 A call takes `-format=json` or not. The answer is JSON, except for `list` without
 the flag, which prints the tool's table. An empty list exits 2, as the real
 tool does: `{}` with the flag, "No value found" without it.
