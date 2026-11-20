@@ -30,9 +30,11 @@ Rules of a scan:
   recorded. The scan revokes only executor tokens older than the grace period,
   whether an intent is open or not, and raises the alert.
 
-The age of a token is the server's `creation_time` against this pod's clock. An
-executor token whose `creation_time` is not a number counts as old, and the scan logs
-it.
+The age of a token is the server's `creation_time` against the server's own time. The
+script reads that time in the `Date` header of the answer to the listing, never on this
+pod's clock. A scan whose listing carries no usable `Date` header is incomplete and revokes
+nothing. An executor token whose `creation_time` is not a number counts as old, and the
+scan logs it.
 
 A scan is complete only when every step of it succeeded: the login, the listing, every
 lookup and every revoke, each with a well-formed answer. A failed or malformed step is
@@ -46,6 +48,7 @@ and keeps the OpenBao token in memory only.
 
 from __future__ import annotations
 
+import email.utils
 import hashlib
 import http.server
 import json
@@ -213,12 +216,21 @@ class BaoError(Exception):
         self.status = status
 
 
+def http_date(value: str | None) -> float | None:
+    """The time in a `Date` header as epoch seconds, or None when it is missing or unreadable."""
+    try:
+        return email.utils.parsedate_to_datetime(value).timestamp()
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
 class Bao:
     def __init__(self, address: str, ca_file: str | None, timeout: float = 10.0):
         self.address = address.rstrip("/")
         self.timeout = timeout
         self.context = ssl.create_default_context(cafile=ca_file) if self.address.startswith("https") else None
         self.token = ""
+        self.server_time = None
 
     def request(self, method: str, path: str, body: dict | None = None, token: bool = True) -> dict:
         data = json.dumps(body).encode() if body is not None else None
@@ -229,6 +241,7 @@ class Bao:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout, context=self.context) as response:
                 text = response.read().decode() or "{}"
+                self.server_time = http_date(response.headers.get("Date"))
         except urllib.error.HTTPError as error:
             error.close()
             raise BaoError(f"{method} {path}: HTTP {error.code}", error.code) from None
@@ -294,7 +307,7 @@ def catalogue_policies(path: Path) -> set:
     return set(names)
 
 
-def scan(bao: Bao, config: Config, policies: set, now: float) -> dict:
+def scan(bao: Bao, config: Config, policies: set) -> dict:
     """Run one scan with a logged-in client. Return counters for the metrics."""
     record = read_record(config.record_dir)
     result = {"readable": record.readable, "revoked": 0, "failed": 0}
@@ -304,6 +317,11 @@ def scan(bao: Bao, config: Config, policies: set, now: float) -> dict:
         accessors = bao.accessors()
     except BaoError as error:
         log(f"list accessors failed: {error}")
+        result["failed"] += 1
+        return result
+    now = bao.server_time
+    if now is None:
+        log("list accessors: the answer has no usable Date header, so the age of a token is unknown")
         result["failed"] += 1
         return result
     for accessor in accessors:
@@ -361,9 +379,8 @@ def scan(bao: Bao, config: Config, policies: set, now: float) -> dict:
     return result
 
 
-def run_once(config: Config, now: float | None = None) -> dict:
+def run_once(config: Config) -> dict:
     """Log in, scan, and report. The OpenBao token stays in this function's memory."""
-    now = time.time() if now is None else now
     bao = Bao(config.address, config.ca_file)
     try:
         policies = catalogue_policies(config.catalogue_file)
@@ -374,7 +391,7 @@ def run_once(config: Config, now: float | None = None) -> dict:
     except (OSError, ValueError) as error:
         log(f"scan skipped: {type(error).__name__}")
         return {"revoked": 0, "failed": 1, "ran": False}
-    result = scan(bao, config, policies, now)
+    result = scan(bao, config, policies)
     result["ran"] = result["failed"] == 0
     return result
 
@@ -450,7 +467,7 @@ def main() -> int:
     serve_metrics(metrics, config.metrics_port)
     while True:
         started = time.time()
-        metrics.update(run_once(config, started), started)
+        metrics.update(run_once(config), started)
         time.sleep(max(config.interval - (time.time() - started), 1))
 
 

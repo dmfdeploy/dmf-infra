@@ -12,6 +12,7 @@ Set REVOKER_SCRIPT to run the tests against another copy of the script, which is
 mutation runs in the work report work.
 """
 import contextlib
+import email.utils
 import hashlib
 import http.server
 import importlib.util
@@ -47,6 +48,10 @@ def load_script():
 
 
 revoker = load_script()
+
+
+def http_date(epoch):
+    return email.utils.formatdate(epoch, usegmt=True)
 
 
 def canonical(obj):
@@ -95,6 +100,7 @@ class Bridge(http.server.ThreadingHTTPServer):
         self.gone, self.data_list = set(), set()
         self.fail_list = False
         self.list_keys = None
+        self.date_header = http_date(NOW)  # the Date header of every answer; None sends none
         self.calls = []
 
     @property
@@ -111,6 +117,11 @@ class Bridge(http.server.ThreadingHTTPServer):
     class Handler(http.server.BaseHTTPRequestHandler):
         def log_message(self, *args):
             pass
+
+        def send_response(self, code, message=None):
+            self.send_response_only(code, message)
+            if self.server.date_header is not None:
+                self.send_header("Date", self.server.date_header)
 
         def reply(self, code, body=None):
             data = json.dumps(body if body is not None else {"errors": ["failed"]}).encode()
@@ -207,7 +218,7 @@ class RevokerCase(unittest.TestCase):
         original = revoker.log
         revoker.log = lines.append
         try:
-            self.result = revoker.run_once(self.config(), now=NOW)
+            self.result = revoker.run_once(self.config())
         finally:
             revoker.log = original
         self.log = "\n".join(lines)
@@ -468,6 +479,7 @@ class StubBao:
     def __init__(self, tokens):
         self.tokens = tokens  # accessor -> lookup data
         self.revoked = []
+        self.server_time = NOW
 
     def accessors(self):
         return list(self.tokens)
@@ -487,7 +499,7 @@ class UnreadableCreationTime(RevokerCase):
         original = revoker.log
         revoker.log = lines.append
         try:
-            revoker.scan(bao, self.config(), {CATALOGUE_POLICY}, NOW)
+            revoker.scan(bao, self.config(), {CATALOGUE_POLICY})
         finally:
             revoker.log = original
         self.log = "\n".join(lines)
@@ -619,6 +631,45 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.assertKept("e-root")
         self.assertIn("scan skipped", self.log)
         self.assertFalse(self.result["ran"])
+
+
+class ServerTime(RevokerCase):
+    def test_the_age_of_a_token_follows_the_server_clock_and_not_the_pod_clock(self):
+        # Catches an age taken from the pod: with the pod far ahead, a young token that an open
+        # request still needs would be revoked, and with the pod far behind an old one would stay.
+        write_chain(self.record, [intent("r1")])
+        self.token("k-young", ["root"], 10)
+        self.token("k-old", ["root"], 10 * GRACE)
+        original = revoker.time.time
+        for pod_clock in (NOW + 100 * GRACE, NOW - 100 * GRACE):
+            revoker.time.time = lambda pod_clock=pod_clock: pod_clock
+            try:
+                self.scan()
+            finally:
+                revoker.time.time = original
+            self.assertTrue(self.result["ran"])
+        self.assertKept("k-young")
+        self.assertRevoked("k-old")
+
+    def test_a_server_clock_that_runs_ahead_makes_a_token_old(self):
+        write_chain(self.record, [intent("r1")])
+        self.token("l-young", ["root"], 10)
+        self.bridge.date_header = http_date(NOW + 10 * GRACE)
+        self.scan()
+        self.assertRevoked("l-young")
+
+    def test_an_answer_without_a_usable_date_makes_the_scan_incomplete_and_revokes_nothing(self):
+        # With no server time the age is unknown. Not even a closed request's token is touched.
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.token("m-old", ["root"], 10 * GRACE)
+        for date in (None, "yesterday-ish"):
+            with self.subTest(date=date):
+                self.bridge.date_header = date
+                self.scan()
+                self.assertFalse(self.result["ran"])
+                self.assertEqual(self.result["failed"], 1)
+                self.assertIn("no usable Date header", self.log)
+                self.assertKept("m-old")
 
 
 class LogsAndLogin(RevokerCase):
