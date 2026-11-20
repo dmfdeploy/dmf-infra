@@ -89,11 +89,12 @@ jobs:
   ansible-openbao:
     # Each line of PLAYBOOKS is "<shard> <fakes|plain> <playbook>". Shard N runs its
     # lines in order; "fakes" puts the fake kubectl and the fake collections in front.
-    # A playbook is in one place, so it runs in exactly one shard. About 6, 3 and 3
-    # minutes of tests per shard, plus about 2 minutes of setup.
+    # A playbook is in one place, so it runs in exactly one shard. Shard 4 holds only the
+    # identity-verifier playbook, the longest at about 20 minutes; the others take less
+    # than 10 minutes, setup included.
     name: ansible-openbao (${{ matrix.shard }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
