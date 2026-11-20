@@ -81,7 +81,9 @@ A scan revokes, by accessor:
   executor token older than the grace period.
 
 The grace period is 5 minutes (`openbao_revoker_grace_seconds`), measured from the
-token's creation time on the server. The executor abandons a request after 2
+token's creation time on the server to the server's own time, which the script takes from
+the `Date` header of OpenBao's answer to the listing, never from the pod's clock. A
+listing without a usable `Date` header makes the scan incomplete, and it revokes nothing. The executor abandons a request after 2
 minutes, so a token older than the grace period has outlived its change.
 
 ### The audit record
