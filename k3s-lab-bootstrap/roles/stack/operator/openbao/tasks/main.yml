@@ -1537,6 +1537,7 @@
   no_log: true
   when: openbao_is_initialized | bool
 
+# This runs only on a fresh install, by design. Older environments are rebuilt (ADR-0051).
 - name: Upsert policy-reconciler userpass user
   ansible.builtin.shell:
     cmd: >-

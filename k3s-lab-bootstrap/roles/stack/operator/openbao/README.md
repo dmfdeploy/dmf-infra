@@ -431,9 +431,9 @@ no principal may hold its policy.
 
 The fresh install still attaches `generate-root` to `ops-admin`, and the verifier fails
 on that, with a message that says so. The change that stops the install from attaching
-it removes the failure. An installed environment needs a root token once, to give
-`policy-reconciler` the `identity-verifier` policy: until then the verifier cannot read the
-identity configuration and fails with a refused read.
+it removes the failure. Only a fresh install attaches `identity-verifier` to
+`policy-reconciler`. An environment installed before slice B is rebuilt (ADR-0051), not
+migrated.
 
 The tests in `tests/test-openbao-identity-verifier.yml` run the verifier against the
 fake bao with an identity fixture.
