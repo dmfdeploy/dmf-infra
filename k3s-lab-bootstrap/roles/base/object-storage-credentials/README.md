@@ -108,5 +108,5 @@ that re-keys lowercase → uppercase.
 
 Must run after `vertical-security/100-openbao.yml` (OpenBao must be
 initialized and unsealed, and the `approle-reconciler` identity must
-exist in the break-glass JSON) and after Phase 2's `seed-bao` (the
+exist in the break-glass JSON) and after the install has seeded OpenBao (the
 `secret/platform/object-storage/*` paths must exist with credentials).

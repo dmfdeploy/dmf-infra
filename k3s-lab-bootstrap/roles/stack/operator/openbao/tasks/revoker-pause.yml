@@ -1,0 +1,44 @@
+---
+# Stop the revoker, and wait until its pods are gone. Included from main.yml only on a
+# fresh init, before the init makes the first root-policy token. A revoker that scans
+# while the installer holds a root token revokes it: the record has no entry for that
+# token. A rerun makes no such token, so it leaves the revoker running.
+# A missing Deployment is not an error: a first install has none yet.
+# The flag comes first, so that a failure in this file still ends in a resume.
+
+- name: Note that this run stops the revoker
+  ansible.builtin.set_fact:
+    _openbao_revoker_paused: true
+
+- name: Look for an existing revoker Deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openbao_revoker_name }}"
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_revoker_existing
+
+- name: Scale the revoker to zero replicas
+  kubernetes.core.k8s_scale:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ openbao_revoker_name }}"
+    namespace: "{{ openbao_namespace }}"
+    replicas: 0
+    wait: false
+  when: _openbao_revoker_existing.resources | default([]) | length > 0
+
+- name: Wait until no revoker pod is left
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: v1
+    kind: Pod
+    namespace: "{{ openbao_namespace }}"
+    label_selectors:
+      - "app.kubernetes.io/name={{ openbao_revoker_name }}"
+  register: _openbao_revoker_pods
+  until: _openbao_revoker_pods.resources | default([]) | length == 0
+  retries: 60
+  delay: 2

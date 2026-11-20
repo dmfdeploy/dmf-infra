@@ -1,9 +1,11 @@
 """The install path of the openbao role: every step that needs root runs on the installer's
-own tokens, the installer revokes them, and no later path to a root token stays outside the
-approval executor.
+own tokens, the installer revokes them before the revoker starts, and no later path to a root
+token stays outside the approval executor.
 
 The runs use the fresh-install harness of test_openbao_fresh_init_token.py (a fake kubectl, a
-fake bao and a fake kubernetes.core) on 100-openbao.yml. The wiring tests read the task files as text and render one expression for real.
+fake bao and a fake kubernetes.core) on 100-openbao.yml. A stopped revoker Deployment is
+seeded into the fake cluster, because the fake keeps only the kinds that other tests read.
+The wiring tests read the task files as text and render one expression for real.
 """
 import json
 import subprocess
@@ -19,8 +21,14 @@ sys.path.insert(0, str(ROOT / "tests"))
 import test_openbao_fresh_init_token as fresh  # noqa: E402
 
 ROLE = ROOT / "roles/stack/operator/openbao"
+SCALE_UP = "k8s scale Deployment token-revoker replicas=1"
+SCALE_DOWN = "k8s scale Deployment token-revoker replicas=0"
 REVOKE_EVENT = "bao openbao-0 token revoke -self"
 MINT_EVENT = "bao openbao-0 token create -orphan -policy=root"
+
+
+def seed_stopped_revoker(state):
+    (state / "k8s/Deployment-token-revoker.json").write_text(json.dumps({"spec": {"replicas": 0}}))
 
 
 def events(run):
@@ -39,7 +47,7 @@ class FreshInstallPathTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.holder = unittest.TestCase()
-        cls.run_ = fresh.play(cls.holder, replicas=1)
+        cls.run_ = fresh.play(cls.holder, replicas=1, seed=seed_stopped_revoker)
         cls.events = events(cls.run_)
 
     @classmethod
@@ -57,7 +65,7 @@ class FreshInstallPathTest(unittest.TestCase):
 
         self.assertEqual(sorted(name for name, policies in roles.items() if "generate-root" in policies), ["approval-executor"])
 
-    def test_the_ops_admin_write_of_the_install_attaches_generate_root(self):
+    def test_the_ops_admin_write_of_the_install_attaches_no_generate_root(self):
         # Renders the real expression of the task, so a policy list built another way is
         # judged by its value and not by its text.
         tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
@@ -76,13 +84,60 @@ class FreshInstallPathTest(unittest.TestCase):
 
         body = json.loads((work / "stdin.txt").read_text().split("\n", 1)[1])
 
-        self.assertEqual(body["token_policies"], "app-admin-writer,app-runtime-writer,generate-root")
+        self.assertEqual(body["token_policies"], "app-admin-writer,app-runtime-writer")
 
-    def test_the_role_revokes_the_init_token_and_the_short_token_and_no_other(self):
+    def test_the_revoker_stops_before_the_first_mint_and_starts_only_after_both_tokens_are_revoked(self):
+        mint = first(self.events, MINT_EVENT)
+        scale_up = first(self.events, SCALE_UP)
+
+        self.assertLess(first(self.events, SCALE_DOWN), mint)
+        # The init token and the short token are the only tokens that the role revokes.
+        self.assertEqual(count_before(self.events, REVOKE_EVENT, scale_up), 2)
         self.assertEqual(count_before(self.events, REVOKE_EVENT, len(self.events)), 2)
 
     def test_the_tokens_of_the_install_follow_the_lifecycle(self):
         self.assertEqual(fresh.problems(self.run_, 1, "yes", "yes"), [])
+
+    def test_no_call_after_the_revoker_starts_uses_a_root_token(self):
+        scale_up = first(self.events, SCALE_UP)
+        after = [line for line in self.events[scale_up + 1:] if line.startswith("bao ")]
+
+        self.assertEqual(after, [])
+
+
+class RevokeFailureKeepsTheRevokerStoppedTest(unittest.TestCase):
+    def run_with(self, kinds):
+        holder = unittest.TestCase()
+        self.addCleanup(holder.doCleanups)
+        run = fresh.play(holder, replicas=1, seed=seed_stopped_revoker, env={"FAKE_REVOKE_FAILS": kinds})
+        return run, events(run)
+
+    def test_an_init_token_that_cannot_be_revoked_never_starts_the_revoker(self):
+        run, lines = self.run_with("root")
+
+        self.assertNotEqual(run.returncode, 0)
+        self.assertNotIn(SCALE_UP, lines)
+
+    def test_a_short_token_that_cannot_be_revoked_never_starts_the_revoker(self):
+        run, lines = self.run_with("short")
+
+        self.assertNotEqual(run.returncode, 0)
+        self.assertNotIn(SCALE_UP, lines)
+
+
+class RerunLeavesTheRevokerAloneTest(unittest.TestCase):
+    def test_a_rerun_of_an_initialised_openbao_never_scales_the_revoker(self):
+        # Catches a run that stops the revoker whenever it runs: a rerun makes no root token, so
+        # the revoker keeps working, and a rerun that dies midway cannot leave it stopped.
+        holder = unittest.TestCase()
+        self.addCleanup(holder.doCleanups)
+        first_run = fresh.play(holder, replicas=1, seed=seed_stopped_revoker)
+        before = len(events(first_run))
+        rerun = fresh.play(holder, replicas=1, state=first_run.state, keys=first_run.keys,
+                           env={"FAKE_POLICY_WRITER": "1"})
+
+        self.assertEqual(rerun.returncode, 0, rerun.output)
+        self.assertEqual([line for line in events(rerun)[before:] if line.startswith("k8s scale")], [])
 
 
 SEED_SCRIPT = """#!/bin/sh
@@ -107,7 +162,7 @@ class SeedStepTest(unittest.TestCase):
         holder = unittest.TestCase()
         self.addCleanup(holder.doCleanups)
         extra = {"openbao_install_seed_command": [str(script), str(out), status] if command else []}
-        run = fresh.play(holder, replicas=1, extra=extra)
+        run = fresh.play(holder, replicas=1, seed=seed_stopped_revoker, extra=extra)
         return run, out
 
     def test_the_seed_runs_with_the_live_short_token_after_the_init_token_is_gone(self):
@@ -119,7 +174,8 @@ class SeedStepTest(unittest.TestCase):
         self.assertEqual((out / "token").read_text().strip(), fresh.SHORT)
         # The init token is revoked before the seed, the short token after it.
         self.assertEqual(count_before(lines, REVOKE_EVENT, seed), 1)
-        self.assertEqual(count_before(lines, REVOKE_EVENT, len(lines)), 2)
+        self.assertLess(seed, first(lines, SCALE_UP))
+        self.assertEqual(count_before(lines, REVOKE_EVENT, first(lines, SCALE_UP)), 2)
 
     def test_the_token_reaches_the_seed_on_stdin_and_in_no_argument(self):
         run, out = self.install()
@@ -129,15 +185,18 @@ class SeedStepTest(unittest.TestCase):
         self.assertNotIn(fresh.SHORT, run.output)
         self.assertIn("seed says hello", run.output)
 
-    def test_a_failed_seed_ends_the_install_and_the_rescue_revokes_the_short_token(self):
+    def test_a_failed_seed_ends_the_install_and_the_rescue_starts_the_revoker_after_the_proof(self):
         run, _ = self.install(status="3")
+        lines = events(run)
 
         self.assertNotEqual(run.returncode, 0)
         self.assertIn("The seed step ended with status 3", run.output)
         self.assertIn("may be partial", " ".join(run.output.split()))
         self.assertIn("Rebuild the environment", " ".join(run.output.split()))
-        # The rescue of 100-openbao.yml revokes the short token and proves it refused.
+        # The rescue of 100-openbao.yml revokes the short token, proves it refused, and only
+        # then starts the revoker.
         self.assertEqual(fresh.problems(run, 1, "yes", "yes"), [])
+        self.assertEqual(count_before(lines, REVOKE_EVENT, first(lines, SCALE_UP)), 2)
 
     def test_a_fresh_install_without_a_seed_command_stops_before_init_makes_a_token(self):
         # Catches an install that ends green with nothing seeded: the role revokes its tokens at
@@ -162,7 +221,7 @@ class SeedStepTest(unittest.TestCase):
         holder = unittest.TestCase()
         self.addCleanup(holder.doCleanups)
         extra = {"openbao_install_seed_command": [str(script), str(out), "0"]}
-        first_run = fresh.play(holder, replicas=1, extra=extra)
+        first_run = fresh.play(holder, replicas=1, seed=seed_stopped_revoker, extra=extra)
         (out / "token").unlink()
         rerun = fresh.play(holder, replicas=1, extra=extra, env={"FAKE_POLICY_WRITER": "1"}, state=first_run.state, keys=first_run.keys)
 

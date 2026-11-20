@@ -35,6 +35,15 @@
 #      SecretID: a failed AppRole login counts toward the lockout of ESO's role,
 #      and a locked role stops every ExternalSecret.
 #
+#   6. Nothing else holds power in the identity configuration (the verifier reads it with the
+#      identity-verifier policy, which policy-reconciler carries): no auth method outside
+#      the allowlist is enabled; no principal under an enabled method, no identity
+#      entity and no group holds generate-root except the approval executor's Kubernetes
+#      role, holds the token revoker's policy except the revoker's Kubernetes role, or
+#      holds a catalogue policy; and every policy that the role writes from a file is
+#      in OpenBao with the file's text. See roles/stack/operator/openbao/README.md,
+#      "The identity verifier".
+#
 # Tokens never appear in argv or logs (ADR-0007). Capability probes pipe the
 # token via stdin into the OpenBao pod's shell; the probe output contains
 # only capability lists (read/write/deny etc.), no token material.
@@ -50,6 +59,9 @@
   tags:
     - vertical-security
     - verify-openbao-identity
+
+  vars_files:
+    - vars/identity-verifier.yml
 
   vars:
     verify_openbao_namespace: "{{ openbao_namespace | default('openbao') }}"
@@ -591,6 +603,28 @@
         - not (_verify_scheduler_ready | bool)
 
     # ────────────────────────────────────────────────────────────────
+    # Step 3c — who holds power in the identity configuration, and whether the live
+    # policies equal the files. policy-reconciler carries the identity-verifier policy
+    # and can read sys/policies/acl/*, so its token reads both.
+    # ────────────────────────────────────────────────────────────────
+    - name: Take the identity reader's token from the policy-reconciler session
+      ansible.builtin.set_fact:
+        _verify_token_identity_reader: "{{ _verify_token_policy_reconciler }}"
+      no_log: true
+
+    - name: Check the auth methods and who holds which policy
+      ansible.builtin.include_tasks: tasks/verify-identity-holders.yml
+
+    - name: Check that the live policies equal the policy files of the role
+      ansible.builtin.include_tasks: tasks/verify-policy-digests.yml
+
+    - name: Check that only the executor's policy grants the generate-root endpoints
+      ansible.builtin.include_tasks: tasks/verify-generate-root-grants.yml
+
+    - name: Check that the token revoker is running and has finished a scan
+      ansible.builtin.include_tasks: tasks/verify-revoker-running.yml
+
+    # ────────────────────────────────────────────────────────────────
     # Step 4 — ClusterSecretStore Ready (positive; only with object storage)
     # ────────────────────────────────────────────────────────────────
     # Environments without object storage never run
@@ -1035,6 +1069,13 @@
             {% else %}
             - object-storage ClusterSecretStores not checked (dmf_object_storage_enabled is false)
             {% endif %}
+            - auth mounts are within the allowlist ({{ verify_identity_allowed_auth_mounts.keys() | join(', ') }}); {{ _verify_principals | length }} principals read
+            - no principal holds a policy it must not hold:
+              * {{ _verify_identity_notes[0] }}
+              * {{ _verify_identity_notes[1] }}
+            - {{ _verify_policy_sources | length }} live policies equal the files that the role writes
+            - no policy other than {{ verify_generate_root_policy }} grants a path under sys/generate-root
+            - the token revoker is ready, so it finished a complete scan within the last three intervals
             - main store auth method: {{ verify_eso_auth_method }}
             {% if dmf_object_storage_enabled | default(true) | bool %}
             - {{ verify_expected_external_secrets | length }} ExternalSecrets Ready across

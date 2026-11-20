@@ -1,0 +1,26 @@
+---
+# The verifier's check that the token revoker works. The revoker pod reports ready only after
+# a complete scan (it logged in, listed the tokens and looked each one up) and stops reporting
+# ready when none finished within three scan intervals, so a Deployment with a ready replica is
+# a revoker whose last complete scan is recent. A missing Deployment, one at zero replicas and
+# one with no ready replica all fail.
+
+- name: Read the revoker Deployment
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: Deployment
+    name: "{{ verify_revoker_deployment }}"
+    namespace: "{{ verify_openbao_namespace }}"
+  register: _verify_revoker
+
+- name: Assert that the revoker has a ready replica
+  ansible.builtin.assert:
+    that:
+      - _verify_revoker.resources | length > 0
+      - (_verify_revoker.resources[0].status | default({})).readyReplicas | default(0) >= 1
+    fail_msg: >-
+      The token revoker {{ verify_revoker_deployment }} in {{ verify_openbao_namespace }} is not
+      running with a ready replica: it is missing, stopped, or has not finished a complete scan
+      within the last three scan intervals. Nothing would revoke a token that outlives its
+      change. Read the log of its pod: each failed step has a line.

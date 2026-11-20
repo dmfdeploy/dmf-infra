@@ -63,8 +63,11 @@ def read_calls(state):
     return [tuple(line.split(" ", 1)) for line in path.read_text(encoding="utf-8").splitlines()]
 
 
-def play(testcase, replicas=1, env=None, extra=None, state=None, keys=None):
-    """Run 100-openbao.yml once. With state and keys of an earlier run, the run is a rerun."""
+def play(testcase, replicas=1, env=None, extra=None, state=None, keys=None, seed=None):
+    """Run 100-openbao.yml once. With state and keys of an earlier run, the run is a rerun.
+
+    seed, when given, is called with the new state directory before the first run, to add
+    objects to the fake cluster."""
     fresh = state is None
     if fresh:
         state = Path(tempfile.mkdtemp(prefix="fresh-init-state-"))
@@ -73,6 +76,8 @@ def play(testcase, replicas=1, env=None, extra=None, state=None, keys=None):
         testcase.addCleanup(shutil.rmtree, keys, True)
         shutil.copytree(FIXTURES / "k8s-seed", state / "k8s")
         (state / "policies").mkdir()
+        if seed:
+            seed(state)
     skip = len(read_calls(state))
     playbook = shutil.which("ansible-playbook")
     testcase.assertIsNotNone(playbook, "ansible-playbook is not on PATH")
@@ -194,6 +199,46 @@ class FailureTest(unittest.TestCase):
         self.assertGreater(run.index((SHORT, "=revoked")), failed_write)
         self.assertEqual(run.by(INIT).count(REVOKE), 1)
         self.assertEqual(run.calls[-1], (SHORT, "=refused"))
+
+    def revoker_events(self, **kwargs):
+        # The fake keeps only the kinds of object that other tests read, so the stopped
+        # revoker Deployment is seeded.
+        def stopped(state):
+            (state / "k8s/Deployment-token-revoker.json").write_text(json.dumps({"spec": {"replicas": 0}}))
+
+        run = play(self, seed=stopped, **kwargs)
+        return run, (run.state / "events.log").read_text().splitlines()
+
+    def test_the_rescue_starts_the_revoker_after_it_proves_the_tokens_revoked(self):
+        # Catches a rescue that leaves the revoker stopped after a failed install: nothing
+        # would then clean up an executor token, and the only sign would be a quiet alert.
+        run, lines = self.revoker_events(env={"FAKE_POLICY_WRITE_FAILS": "1"})
+        self.assertNotEqual(run.returncode, 0, run.output)
+        self.assertEqual(problems(run, 1, "yes", "yes"), [])
+        up = lines.index("k8s scale Deployment token-revoker replicas=1")
+        self.assertGreater(up, max(i for i, line in enumerate(lines) if line.endswith("token revoke -self")))
+
+    def test_the_rescue_leaves_the_revoker_stopped_when_a_token_is_not_proven_revoked(self):
+        # Catches a rescue that resumes the revoker although the short token stays valid.
+        run, lines = self.revoker_events(env={"FAKE_POLICY_WRITE_FAILS": "1", "FAKE_REVOKE_FAILS": "short"})
+        self.assertNotEqual(run.returncode, 0, run.output)
+        self.assertNotIn("k8s scale Deployment token-revoker replicas=1", lines)
+
+    def test_the_rescue_leaves_the_revoker_stopped_when_the_answer_to_the_mint_was_lost(self):
+        # The play cannot name that token, so it cannot prove it revoked.
+        run, lines = self.revoker_events(env={"FAKE_TOKEN_CREATE_LOST": "1"})
+        self.assertNotEqual(run.returncode, 0, run.output)
+        self.assertNotIn("k8s scale Deployment token-revoker replicas=1", lines)
+
+    def test_a_revoker_that_never_reports_ready_fails_the_install_with_a_message(self):
+        # Catches a resume that scales up and trusts it: a revoker that cannot log in or list the
+        # tokens would pass for a working backstop. The fake keeps readyReplicas at 0.
+        run, lines = self.revoker_events(
+            env={"FAKE_K8S_NOT_READY": "1"},
+            extra={"openbao_revoker_ready_retries": 1, "openbao_revoker_ready_delay": 0})
+        self.assertNotEqual(run.returncode, 0, run.output)
+        self.assertIn("did not report ready", " ".join(run.output.split()))
+        self.assertIn("k8s scale Deployment token-revoker replicas=1", lines)
 
     def test_a_failed_revoke_of_the_init_token_stops_before_any_write(self):
         run = play(self, env={"FAKE_REVOKE_FAILS": "root"})

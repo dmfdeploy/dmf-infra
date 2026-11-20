@@ -1,7 +1,7 @@
 ---
-# Tests of the identity verifier's three checks (playbooks/tasks/verify-identity-holders.yml,
-# verify-policy-digests.yml and verify-generate-root-grants.yml) against the fake bao and its
-# identity fixture:
+# Tests of the identity verifier's four checks (playbooks/tasks/verify-identity-holders.yml,
+# verify-policy-digests.yml, verify-generate-root-grants.yml and verify-revoker-running.yml)
+# against the fake bao, the fake kubernetes.core and the identity fixture:
 #
 #   - the clean fixture passes, also when the approval executor and the revoker are not
 #     installed, and when a live policy has one trailing newline more than its file;
@@ -19,7 +19,7 @@
 #     allowlist widened to reach the holder check, the grant fails, and the role does not count
 #     as installed;
 #   - a catalogue policy on any principal fails, the executor's role included;
-#   - ops-admin holding generate-root fails, and the message says that the install still
+#   - ops-admin holding generate-root fails, and the message says that the install never
 #     attaches it;
 #   - a policy that differs from its file fails and names the policy, and so does a
 #     policy that is missing;
@@ -29,7 +29,8 @@
 #     with an escape that does not decode, a deny stanza, a quoted path in a comment, a capabilities
 #     list with an inline comment and a `]` in a comment fail too: the scan reads every quoted
 #     string and ignores capabilities. A policy for other sys paths, a comment that names
-#     generate-root without quotes, and a path with regex characters pass.
+#     generate-root without quotes, and a path with regex characters pass;
+#   - a revoker Deployment that is missing, at zero replicas or without a ready replica fails.
 #
 #   - a userpass user and an ACL policy whose name holds `'`, `;`, `$(...)` and a space are read
 #     under that exact name and judged like any other (the user holds generate-root, the policy
@@ -167,10 +168,13 @@
         - {name: catalogue-policy-not-in-the-catalogue-file, patch: {approle_roles: {rogue: {token_policies: [catalogue-made-up]}}}, expect: ["AppRole role approle/rogue holds the catalogue-* policies"]}
         - {name: executor-role-holds-catalogue-policy, k8s: {approval-executor: [generate-root, catalogue-ops-admin-password-rotation]}, expect: ["Kubernetes role kubernetes/approval-executor holds catalogue-ops-admin-password-rotation"]}
         - {name: group-catalogue-glob, patch: {groups: {G2: {name: admins, policies: ["catalogue-*"]}}}, expect: ["identity group admins (G2) holds the catalogue-* policies"]}
-        - {name: ops-admin-generate-root, patch: {userpass_users: {ops-admin: {token_policies: [app-admin-writer, app-runtime-writer, generate-root]}}}, expect: ["userpass user userpass/ops-admin holds generate-root", "ADR-0051", "fresh install still attaches it"]}
+        - {name: ops-admin-generate-root, patch: {userpass_users: {ops-admin: {token_policies: [app-admin-writer, app-runtime-writer, generate-root]}}}, expect: ["userpass user userpass/ops-admin holds generate-root", "ADR-0051", "the install never attaches it"]}
         - {name: policy-drift, drift: {generate-root: "path \"sys/*\" {\n  capabilities = [\"sudo\"]\n}\n"}, expect: ["generate-root differs from files/policies/generate-root.hcl"]}
         - {name: catalogue-policy-drift, drift: {catalogue-ops-admin-password-rotation: "# changed\n"}, expect: ["catalogue-ops-admin-password-rotation differs from files/policies/catalogue/ops-admin-password-rotation.hcl"]}
         - {name: policy-missing, drift: {token-revoker: null}, expect: ["token-revoker is missing from OpenBao"]}
+        - {name: revoker-without-a-ready-replica, revoker: {spec: {replicas: 1}, status: {readyReplicas: 0}}, expect: ["token revoker token-revoker in openbao is not running with a ready replica"]}
+        - {name: revoker-stopped, revoker: {spec: {replicas: 0}}, expect: ["is not running with a ready replica"]}
+        - {name: revoker-missing, revoker: null, expect: ["is not running with a ready replica"]}
         - {name: other-policy-grants-the-attempt-path, policies: {rogue: "path \"sys/generate-root-token/attempt\" {\n  capabilities = [\"update\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/attempt\")", "Only the approval executor's policy may name"]}
         - {name: other-policy-grants-the-update-path-by-prefix, policies: {rogue: "path \"sys/generate-root-token/*\" {\n  capabilities = [\"update\", \"read\"]\n}\n"}, expect: ["rogue (path \"sys/generate-root-token/*\")"]}
         - {name: other-policy-grants-all-of-sys, policies: {rogue: "path \"sys/*\" {\n  capabilities = [\"sudo\"]\n}\n"}, expect: ["rogue (path \"sys/*\")"]}

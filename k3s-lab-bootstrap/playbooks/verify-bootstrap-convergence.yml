@@ -117,9 +117,9 @@
         expected_username: zot-svc
         reason: >-
           The Zot zot-svc machine-write service credential (ADR-0033) is held in
-          OpenBao steady-state custody (C3); seed-bao writes it from the bundle,
-          and playbook 630 + zot-mirror authenticate as zot-svc rather than the
-          admin break-glass.
+          OpenBao steady-state custody (C3); the install's seed step writes it
+          from the bundle, and playbook 630 + zot-mirror authenticate as zot-svc
+          rather than the admin break-glass.
 
     verify_bootstrap_convergence_documentation_records:
       - id: awx_admin

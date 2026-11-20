@@ -153,7 +153,7 @@
     _verify_holder_rules: >-
       {%- set rules = [
             {'policy': verify_generate_root_policy, 'allowed_k8s_role': verify_executor_k8s_role,
-             'hint': ' (ADR-0051 removes this grant from ' ~ verify_ops_admin_user ~ '; the fresh install still attaches it until that change lands, so an environment that has it fails here until the grant is removed)'},
+             'hint': ' (ADR-0051: ' ~ verify_ops_admin_user ~ ' never holds this grant, and the install never attaches it, so an environment that has it was installed before that change and is rebuilt)'},
             {'policy': verify_revoker_policy, 'allowed_k8s_role': verify_revoker_k8s_role},
             {'policy': verify_catalogue_prefix, 'prefix': true, 'allowed_k8s_role': ''}
           ] -%}

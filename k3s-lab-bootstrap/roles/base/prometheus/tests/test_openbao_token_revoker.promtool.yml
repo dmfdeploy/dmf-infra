@@ -50,10 +50,11 @@ tests:
             exp_annotations:
               summary: The OpenBao token revoker has not completed a scan
               description: >-
-                No scan finished for more than 5 minutes, so tokens that outlive their change
-                stay valid. Read the log of the revoker pod.
+                No scan finished for more than 5 minutes, or no revoker pod reports, so tokens
+                that outlive their change stay valid. Read the log of the revoker pod, and
+                check that the Deployment has one replica.
               runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-token-revoker
-  # No revoker pod reports at all (the Deployment sits at zero replicas): it stays quiet.
+  # No revoker pod reports at all (the Deployment sits at zero replicas): it fires.
   - interval: 1m
     input_series:
       - series: 'up{job="prometheus"}'
@@ -61,7 +62,17 @@ tests:
     alert_rule_test:
       - eval_time: 15m
         alertname: OpenBaoRevokerNotScanning
-        exp_alerts: []
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: security
+            exp_annotations:
+              summary: The OpenBao token revoker has not completed a scan
+              description: >-
+                No scan finished for more than 5 minutes, or no revoker pod reports, so tokens
+                that outlive their change stay valid. Read the log of the revoker pod, and
+                check that the Deployment has one replica.
+              runbook_url: https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#openbao-token-revoker
   # A scan finished a minute ago: it stays quiet.
   - interval: 1m
     input_series:
