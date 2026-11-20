@@ -40,9 +40,10 @@ A scan is complete only when every step of it succeeded: the login, the listing,
 lookup and every revoke, each with a well-formed answer. A failed or malformed step is
 logged and the scan goes on to the next token, but the scan then counts as incomplete:
 it does not move the last-scan gauge, and the failures gauge shows how many steps failed.
-One answer is not a failure: HTTP 400 with the message OpenBao gives for an accessor that
-no token has. A token that expires between the listing and the lookup is gone in this way.
-OpenBao answers 400 to any invalid request, so every other 400 is a failure. A log line never
+One answer is not a failure: HTTP 400 whose error list is exactly one message, "invalid
+accessor" on a lookup or "token not found" on a revoke. A token that expires between the
+listing and the lookup is gone in this way. OpenBao answers 400 to any invalid request, so
+every other 400 is a failure. A log line never
 holds a token. The script logs in with the projected ServiceAccount token on every scan
 and keeps the OpenBao token in memory only.
 """
@@ -218,22 +219,21 @@ class BaoError(Exception):
         self.errors = errors
 
 
-# The messages OpenBao puts in a 400 answer when no token has the accessor: lookup-accessor
-# says "invalid accessor", revoke-accessor says "invalid accessor" or "token not found".
-GONE_MESSAGES = ("invalid accessor", "token not found")
+# The one message OpenBao puts in the 400 answer that means "no such token", per endpoint:
+# lookup-accessor says "invalid accessor" for an accessor that no token has, and
+# revoke-accessor says "token not found" when the accessor is known but its token is gone.
+GONE_LOOKUP = "invalid accessor"
+GONE_REVOKE = "token not found"
 
 
-def token_is_gone(error: BaoError) -> bool:
-    """True only for a 400 whose error list holds a documented "no such accessor" message.
+def token_is_gone(error: BaoError, message: str) -> bool:
+    """True only for a 400 whose error list is exactly the one message `message`.
 
     OpenBao uses 400 for any invalid request, so the status alone proves nothing. A 400 with
-    another message, or with a body that is not an OpenBao error list, is a failure.
+    another message, with more than one message, or with a body that is not an OpenBao error
+    list is a failure.
     """
-    return (
-        error.status == 400
-        and isinstance(error.errors, list)
-        and any(message in GONE_MESSAGES for message in error.errors)
-    )
+    return error.status == 400 and error.errors == [message]
 
 
 def http_date(value: str | None) -> float | None:
@@ -355,7 +355,7 @@ def scan(bao: Bao, config: Config, policies: set) -> dict:
         try:
             data = bao.lookup(accessor)
         except BaoError as error:
-            if token_is_gone(error):
+            if token_is_gone(error, GONE_LOOKUP):
                 log(f"lookup {accessor}: the token is gone")
             else:
                 log(f"lookup {accessor} failed: {error}")
@@ -395,7 +395,7 @@ def scan(bao: Bao, config: Config, policies: set) -> dict:
         try:
             bao.revoke(accessor)
         except BaoError as error:
-            if token_is_gone(error):
+            if token_is_gone(error, GONE_REVOKE):
                 log(f"revoke {accessor}: the token is gone")
             else:
                 log(f"revoke {accessor} failed: {error}")
