@@ -17,8 +17,7 @@ Rules of a scan:
 
 - A token is a root token when its policies include `root`. It is an executor
   token when its policies include `root` or any policy named in the catalogue
-  file. A token whose lookup fails, or whose answer has no `policies` list, is
-  logged and left alone.
+  file.
 - A recorded accessor (named by a `minted` entry) is revoked when its request has
   a `closed` entry. A recorded token that holds `root` is also revoked when it is
   older than the grace period: the executor revokes the generated root token before
@@ -33,8 +32,15 @@ Rules of a scan:
 
 The age of a token is the server's `creation_time` against this pod's clock. An
 executor token whose `creation_time` is not a number counts as old, and the scan logs
-it. A failed lookup or revoke is logged and the scan goes on. A log line never holds a
-token. The script logs in with the projected ServiceAccount token on every scan
+it.
+
+A scan is complete only when every step of it succeeded: the login, the listing, every
+lookup and every revoke, each with a well-formed answer. A failed or malformed step is
+logged and the scan goes on to the next token, but the scan then counts as incomplete:
+it does not move the last-scan gauge, and the failures gauge shows how many steps failed.
+One answer is not a failure: HTTP 400 on a lookup or a revoke means that the token is
+gone, as a token that expires between the listing and the lookup is. A log line never
+holds a token. The script logs in with the projected ServiceAccount token on every scan
 and keeps the OpenBao token in memory only.
 """
 
@@ -202,6 +208,10 @@ def _read_record(directory: Path) -> Record:
 class BaoError(Exception):
     """A request that OpenBao refused or that failed on the way. Never holds a token."""
 
+    def __init__(self, message: str, status: int | None = None):
+        super().__init__(message)
+        self.status = status
+
 
 class Bao:
     def __init__(self, address: str, ca_file: str | None, timeout: float = 10.0):
@@ -221,7 +231,7 @@ class Bao:
                 text = response.read().decode() or "{}"
         except urllib.error.HTTPError as error:
             error.close()
-            raise BaoError(f"{method} {path}: HTTP {error.code}") from None
+            raise BaoError(f"{method} {path}: HTTP {error.code}", error.code) from None
         except (urllib.error.URLError, OSError, ValueError) as error:
             raise BaoError(f"{method} {path}: {type(error).__name__}") from None
         try:
@@ -242,12 +252,15 @@ class Bao:
     def accessors(self) -> list[str]:
         answer = self.request("LIST", "auth/token/accessors")
         keys = (answer.get("data") or {}).get("keys")
-        if not isinstance(keys, list):
-            raise BaoError("list accessors: the answer has no keys")
-        return [key for key in keys if isinstance(key, str)]
+        if not isinstance(keys, list) or not all(isinstance(key, str) and key for key in keys):
+            raise BaoError("list accessors: the answer is not a list of accessors")
+        return keys
 
     def lookup(self, accessor: str) -> dict:
-        return (self.request("POST", "auth/token/lookup-accessor", {"accessor": accessor}).get("data") or {})
+        data = self.request("POST", "auth/token/lookup-accessor", {"accessor": accessor}).get("data")
+        if not isinstance(data, dict):
+            raise BaoError("lookup: the answer has no data")
+        return data
 
     def revoke(self, accessor: str) -> None:
         self.request("POST", "auth/token/revoke-accessor", {"accessor": accessor})
@@ -284,7 +297,7 @@ def catalogue_policies(path: Path) -> set:
 def scan(bao: Bao, config: Config, policies: set, now: float) -> dict:
     """Run one scan with a logged-in client. Return counters for the metrics."""
     record = read_record(config.record_dir)
-    result = {"readable": record.readable, "revoked": 0, "failed": 0, "skipped": 0}
+    result = {"readable": record.readable, "revoked": 0, "failed": 0}
     if not record.readable:
         log(f"ALERT revoker-record-unreadable: {record.reason}; no accessor counts as recorded")
     try:
@@ -297,14 +310,17 @@ def scan(bao: Bao, config: Config, policies: set, now: float) -> dict:
         try:
             data = bao.lookup(accessor)
         except BaoError as error:
-            log(f"lookup {accessor} failed, left alone: {error}")
-            result["skipped"] += 1
+            if error.status == 400:
+                log(f"lookup {accessor}: the token is gone")
+            else:
+                log(f"lookup {accessor} failed: {error}")
+                result["failed"] += 1
             continue
         held = data.get("policies")
         created = data.get("creation_time")
         if not isinstance(held, list) or not all(isinstance(p, str) for p in held):
-            log(f"lookup {accessor} has no policies list, left alone")
-            result["skipped"] += 1
+            log(f"lookup {accessor} has no policies list")
+            result["failed"] += 1
             continue
         executor = ROOT_POLICY in held or any(p in policies for p in held)
         recorded = record.readable and accessor in record.accessors
@@ -334,8 +350,11 @@ def scan(bao: Bao, config: Config, policies: set, now: float) -> dict:
         try:
             bao.revoke(accessor)
         except BaoError as error:
-            log(f"revoke {accessor} failed: {error}")
-            result["failed"] += 1
+            if error.status == 400:
+                log(f"revoke {accessor}: the token is gone")
+            else:
+                log(f"revoke {accessor} failed: {error}")
+                result["failed"] += 1
             continue
         log(f"revoked {accessor}: {reason}")
         result["revoked"] += 1
@@ -351,12 +370,12 @@ def run_once(config: Config, now: float | None = None) -> dict:
         bao.login(config.role, Path(config.jwt_file).read_text().strip())
     except BaoError as error:
         log(f"scan skipped: {error}")
-        return {"readable": False, "revoked": 0, "failed": 1, "skipped": 0, "ran": False}
+        return {"revoked": 0, "failed": 1, "ran": False}
     except (OSError, ValueError) as error:
         log(f"scan skipped: {type(error).__name__}")
-        return {"readable": False, "revoked": 0, "failed": 1, "skipped": 0, "ran": False}
+        return {"revoked": 0, "failed": 1, "ran": False}
     result = scan(bao, config, policies, now)
-    result["ran"] = True
+    result["ran"] = result["failed"] == 0
     return result
 
 
@@ -366,13 +385,20 @@ def run_once(config: Config, now: float | None = None) -> dict:
 class Metrics:
     def __init__(self):
         self.lock = threading.Lock()
-        self.last = None
+        self.complete_at = None
+        self.readable = None
+        self.failures = None
         self.revoked_total = 0
 
     def update(self, result: dict, now: float) -> None:
+        """The failures of the latest attempt show at once. Only a complete scan moves the
+        last-scan time, and only an attempt that reached the record sets its gauge."""
         with self.lock:
-            if result.get("ran"):
-                self.last = (result, now)
+            self.failures = result["failed"]
+            if "readable" in result:
+                self.readable = result["readable"]
+            if result["ran"]:
+                self.complete_at = now
             self.revoked_total += result["revoked"]
 
     def render(self) -> str:
@@ -381,15 +407,20 @@ class Metrics:
                 "# TYPE dmf_openbao_revoker_revoked_total counter",
                 f"dmf_openbao_revoker_revoked_total {self.revoked_total}",
             ]
-            if self.last:
-                result, when = self.last
+            if self.readable is not None:
                 lines += [
                     "# TYPE dmf_openbao_revoker_record_readable gauge",
-                    f"dmf_openbao_revoker_record_readable {1 if result['readable'] else 0}",
+                    f"dmf_openbao_revoker_record_readable {1 if self.readable else 0}",
+                ]
+            if self.complete_at is not None:
+                lines += [
                     "# TYPE dmf_openbao_revoker_last_scan_timestamp_seconds gauge",
-                    f"dmf_openbao_revoker_last_scan_timestamp_seconds {int(when)}",
+                    f"dmf_openbao_revoker_last_scan_timestamp_seconds {int(self.complete_at)}",
+                ]
+            if self.failures is not None:
+                lines += [
                     "# TYPE dmf_openbao_revoker_failures gauge",
-                    f"dmf_openbao_revoker_failures {result['failed']}",
+                    f"dmf_openbao_revoker_failures {self.failures}",
                 ]
             return "\n".join(lines) + "\n"
 

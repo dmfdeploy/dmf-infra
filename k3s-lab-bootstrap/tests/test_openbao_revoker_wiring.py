@@ -264,10 +264,12 @@ class Alert(unittest.TestCase):
         # Catches a rename on one side only.
         rules = (PROMETHEUS / "templates/rules/alerts.yaml.j2").read_text()
         script = (ROLE / "files/revoker/revoker.py").read_text()
-        for metric in ("dmf_openbao_revoker_record_readable", "dmf_openbao_revoker_last_scan_timestamp_seconds"):
+        for metric in ("dmf_openbao_revoker_record_readable", "dmf_openbao_revoker_last_scan_timestamp_seconds",
+                       "dmf_openbao_revoker_failures"):
             self.assertIn(metric, rules)
             self.assertIn(metric, script)
-        self.assertIn("alert: OpenBaoRevokerRecordUnreadable", rules)
+        for alert in ("OpenBaoRevokerRecordUnreadable", "OpenBaoRevokerNotScanning", "OpenBaoRevokerScanFailing"):
+            self.assertIn(f"alert: {alert}", rules)
 
 
 class Stopped(unittest.TestCase):

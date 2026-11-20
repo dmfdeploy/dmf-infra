@@ -92,7 +92,9 @@ class Bridge(http.server.ThreadingHTTPServer):
         super().__init__(("127.0.0.1", 0), self.Handler)
         self.state = state
         self.fail_lookup, self.fail_revoke, self.hide_policies = set(), set(), set()
+        self.gone, self.data_list = set(), set()
         self.fail_list = False
+        self.list_keys = None
         self.calls = []
 
     @property
@@ -134,11 +136,17 @@ class Bridge(http.server.ThreadingHTTPServer):
                 if result.returncode != 0:
                     return self.reply(403)
                 keys = json.loads(result.stdout)
+                if server.list_keys is not None:
+                    keys = server.list_keys(keys)
                 return self.reply(200, {"data": {"keys": keys}}) if keys else self.reply(404)
             accessor = body.get("accessor", "")
             if path == "auth/token/lookup-accessor":
                 if accessor in server.fail_lookup:
                     return self.reply(500)
+                if accessor in server.gone:
+                    return self.reply(400)
+                if accessor in server.data_list:
+                    return self.reply(200, {"data": []})
                 result = server.bao(["write", "-format=json", path, f"accessor={accessor}"], token)
                 if result.returncode != 0:
                     return self.reply(400)
@@ -358,14 +366,17 @@ class WhichTokensCount(RevokerCase):
         own = [a for a in self.live() if a.startswith("fake-k8s-")]
         self.assertEqual(len(own), 1, "the revoker's own login token stays live")
 
-    def test_a_lookup_without_policies_is_skipped_and_logged(self):
-        # Catches a revoker that treats a missing policies list as an empty one, or as root.
+    def test_a_lookup_without_policies_leaves_the_token_and_makes_the_scan_incomplete(self):
+        # Catches a revoker that treats a missing policies list as an empty one, as root, or as a
+        # harmless skip: a root token that cannot be read stays live, so the scan must not count.
         self.token("m-hidden", ["root"], 10 * GRACE)
         self.bridge.hide_policies.add("m-hidden")
         self.scan()
         self.assertKept("m-hidden")
         self.assertIn("m-hidden", self.log)
         self.assertIn("no policies list", self.log)
+        self.assertFalse(self.result["ran"])
+        self.assertEqual(self.result["failed"], 1)
 
 
 class UnreadableRecord(RevokerCase):
@@ -540,6 +551,8 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.assertKept("b-second")
         self.assertRevoked("b-first", "b-third")
         self.assertIn("lookup b-second failed", self.log)
+        self.assertFalse(self.result["ran"])
+        self.assertEqual(self.result["failed"], 1)
 
     def test_a_failed_revoke_is_logged_and_the_scan_goes_on(self):
         # Catches a scan that stops, or reports a revoke that did not happen.
@@ -552,6 +565,8 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.assertRevoked("c-second")
         self.assertIn("revoke c-first failed", self.log)
         self.assertNotIn("revoked c-first", self.log)
+        self.assertFalse(self.result["ran"])
+        self.assertEqual(self.result["failed"], 1)
 
     def test_a_failed_listing_ends_the_scan_without_a_crash(self):
         write_chain(self.record, [intent("r1"), closed("r1")])
@@ -560,6 +575,40 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.scan()
         self.assertKept("d-root")
         self.assertIn("list accessors failed", self.log)
+        self.assertFalse(self.result["ran"])
+
+    def test_a_listing_with_an_entry_that_is_not_an_accessor_is_rejected_whole(self):
+        # Catches a client that filters the bad entries and scans the rest: a malformed answer
+        # could hide the accessor of a root token.
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.token("g-root", ["root"], 10)
+        self.bridge.list_keys = lambda keys: [*keys, 7, None]
+        self.scan()
+        self.assertKept("g-root")
+        self.assertIn("not a list of accessors", self.log)
+        self.assertFalse(self.result["ran"])
+
+    def test_a_lookup_whose_data_is_not_an_object_makes_the_scan_incomplete(self):
+        # Catches a crash on the malformed answer, and a scan that counts as complete.
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.token("h-root", ["root"], 10)
+        self.token("h-other", ["root"], 10)
+        self.bridge.data_list.add("h-root")
+        self.scan()
+        self.assertKept("h-root")
+        self.assertRevoked("h-other")
+        self.assertFalse(self.result["ran"])
+        self.assertEqual(self.result["failed"], 1)
+
+    def test_a_token_that_expired_between_the_listing_and_the_lookup_is_not_a_failure(self):
+        # HTTP 400 on a lookup means that the token is gone. Short-lived tokens make that routine.
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.token("i-gone", ["root"], 10)
+        self.bridge.gone.add("i-gone")
+        self.scan()
+        self.assertIn("i-gone: the token is gone", self.log)
+        self.assertTrue(self.result["ran"])
+        self.assertEqual(self.result["failed"], 0)
 
     def test_a_failed_login_skips_the_scan(self):
         # The JWT binds another ServiceAccount, so the fake refuses the login.
@@ -592,6 +641,30 @@ class LogsAndLogin(RevokerCase):
         self.scan()
         logins = [c for c in self.bridge.calls if c[1] == "auth/kubernetes/login"]
         self.assertEqual(len(logins), 2)
+
+    def test_an_incomplete_scan_shows_its_failures_and_does_not_move_the_last_scan_time(self):
+        # Catches a heartbeat that advances while steps fail, which keeps the not-scanning alert quiet.
+        metrics = revoker.Metrics()
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.scan()
+        metrics.update(self.result, NOW)
+        self.token("j-root", ["root"], 10)
+        self.bridge.fail_lookup.add("j-root")
+        self.scan()
+        metrics.update(self.result, NOW + 60)
+        page = metrics.render()
+        self.assertIn(f"dmf_openbao_revoker_last_scan_timestamp_seconds {NOW}\n", page)
+        self.assertIn("dmf_openbao_revoker_failures 1\n", page)
+
+    def test_a_failed_login_shows_a_failure_and_leaves_the_record_gauge_alone(self):
+        metrics = revoker.Metrics()
+        (self.dir / "jwt").write_text("fake-sa:openbao:somebody-else")
+        self.scan()
+        metrics.update(self.result, NOW)
+        page = metrics.render()
+        self.assertIn("dmf_openbao_revoker_failures 1\n", page)
+        self.assertNotIn("record_readable", page)
+        self.assertNotIn("last_scan_timestamp", page)
 
     def test_the_metrics_follow_the_scan(self):
         # Catches a metrics page that does not show an unreadable record.

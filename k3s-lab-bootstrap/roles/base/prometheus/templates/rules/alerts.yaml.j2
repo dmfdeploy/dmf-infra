@@ -181,6 +181,22 @@ groups:
             No scan finished for more than 5 minutes, so tokens that outlive their change
             stay valid. Read the log of the revoker pod.
           runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-token-revoker"
+      # A scan that fails a step (the login, the listing, a lookup or a revoke) is incomplete:
+      # it leaves the last-scan time as it was and shows its failures here. A stopped revoker
+      # reports no gauge, so this rule stays quiet while it is stopped.
+      - alert: OpenBaoRevokerScanFailing
+        expr: dmf_openbao_revoker_failures > 0
+        for: 3m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: The OpenBao token revoker fails steps of its scans
+          description: >-
+            The latest scans of the revoker failed a login, a listing, a lookup or a revoke,
+            so a token that should be revoked may stay valid. Read the log of the revoker
+            pod: each failed step has a line that names it.
+          runbook_url: "{{ prometheus_alert_runbook_base }}#openbao-token-revoker"
   - name: dmf-watchdog
     rules:
       # Dead-man's switch: fires constantly. Two independent consumers, which
