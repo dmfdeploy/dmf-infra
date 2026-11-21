@@ -411,6 +411,27 @@
           - "'present ClusterRole' in (_workload_default.content | b64decode)"
           - "'present StatefulSet openbao' in (_workload_default.content | b64decode)"
 
+    - name: Default — read the ClusterRole and its binding
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/workload-default/k8s/{{ item }}-openbao-token-review.json"
+      register: _default_rbac
+      loop: [ClusterRole, ClusterRoleBinding]
+
+    - name: Default — assert the ClusterRole holds one TokenReview create rule and the binding names it
+      ansible.builtin.assert:
+        that:
+          # Exactly one rule, with exactly these fields: no second rule, no other verb,
+          # resource or API group, no resourceNames and no wildcard.
+          - >-
+            (_default_rbac.results[0].content | b64decode | from_json).rules ==
+            [{'apiGroups': ['authentication.k8s.io'], 'resources': ['tokenreviews'], 'verbs': ['create']}]
+          # The binding grants that role to OpenBao's own ServiceAccount, not system:auth-delegator.
+          - (_default_rbac.results[1].content | b64decode | from_json).roleRef.name == 'openbao-token-review'
+          - (_default_rbac.results[1].content | b64decode | from_json).roleRef.kind == 'ClusterRole'
+          - >-
+            (_default_rbac.results[1].content | b64decode | from_json).subjects ==
+            [{'kind': 'ServiceAccount', 'name': 'openbao', 'namespace': openbao_namespace}]
+
     - name: Variable off — assert no RBAC object and the StatefulSet applied
       ansible.builtin.assert:
         that:
