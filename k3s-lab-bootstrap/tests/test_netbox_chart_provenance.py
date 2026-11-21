@@ -21,10 +21,23 @@ def load(name):
     return yaml.safe_load((CHART_DIR / name).read_text(encoding="utf-8"))
 
 
+def approved_tarball(test, record):
+    """Return the tarball path that the record names, after checking it.
+
+    The record must name exactly charts/netbox-<version>.tgz, and the resolved
+    path must stay inside the chart directory. This way the digest check can't
+    hash a different file than the vendored one.
+    """
+    test.assertEqual(record["chart_file"], f"charts/netbox-{record['version']}.tgz")
+    path = (CHART_DIR / record["chart_file"]).resolve()
+    test.assertTrue(path.is_relative_to(CHART_DIR.resolve()), f"{path} is outside the chart directory")
+    return path
+
+
 class NetboxChartProvenance(unittest.TestCase):
     def test_tarball_matches_recorded_digest(self):
         record = load("PROVENANCE.yml")
-        data = (CHART_DIR / record["chart_file"]).read_bytes()
+        data = approved_tarball(self, record).read_bytes()
         self.assertEqual(hashlib.sha256(data).hexdigest(), record["sha256"])
 
     def test_record_names_the_pinned_dependency(self):
@@ -34,7 +47,7 @@ class NetboxChartProvenance(unittest.TestCase):
             self.assertEqual(dep["name"], "netbox", source)
             self.assertEqual(str(dep["version"]), record["version"], source)
             self.assertEqual(dep["repository"], record["repository"], source)
-        self.assertEqual(Path(record["chart_file"]).name, f"netbox-{record['version']}.tgz")
+        approved_tarball(self, record)
 
 
 if __name__ == "__main__":
