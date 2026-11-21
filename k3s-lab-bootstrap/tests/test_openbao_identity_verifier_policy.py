@@ -26,20 +26,22 @@ class IdentityVerifierPolicy(unittest.TestCase):
     text = (ROLE / "files/policies/identity-verifier.hcl").read_text()
 
     def test_the_policy_grants_only_reads_and_lists_of_names_and_policy_lists(self):
-        # Catches a write, a sudo, or a path outside the auth and identity configuration.
+        # Catches a write, a sudo, or a path outside the auth and identity configuration. A list
+        # stanza ends in a slash because a list request does; test_openbao_identity_verifier_paths
+        # checks the stanzas against the paths that the playbooks request.
         self.assertEqual(
             policy_grants(self.text),
             {
                 "sys/auth": ["read"],
-                "auth/+/users": ["list"],
+                "auth/+/users/": ["list"],
                 "auth/+/users/+": ["read"],
-                "auth/+/role": ["list"],
+                "auth/+/role/": ["list"],
                 "auth/+/role/+": ["read"],
-                "auth/token/roles": ["list"],
+                "auth/token/roles/": ["list"],
                 "auth/token/roles/+": ["read"],
-                "identity/entity/id": ["list"],
+                "identity/entity/id/": ["list"],
                 "identity/entity/id/+": ["read"],
-                "identity/group/id": ["list"],
+                "identity/group/id/": ["list"],
                 "identity/group/id/+": ["read"],
             },
         )

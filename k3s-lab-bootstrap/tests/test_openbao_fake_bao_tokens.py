@@ -323,6 +323,27 @@ class FakeBaoTokenTests(unittest.TestCase):
                 self.assertEqual(json.loads(self.call(["list", "-format=json", path], token=token).stdout), keys)
                 self.assertNotEqual(self.call(["list", path], token=outsider).returncode, 0)
 
+    def test_the_fake_grants_the_verifier_by_the_stanzas_of_its_policy_file_with_openbaos_matching(self) -> None:
+        # Catches a fake that trusts the policy name: a policy whose list stanzas lack the
+        # trailing slash grants no list on a real server, and must grant none here.
+        (self.state / "identity.json").write_text(json.dumps({"token_roles": {"r": {"allowed_policies": ["p2"]}}}))
+        token = self._verifier()
+        read, list_ = ["read", "-format=json", "auth/token/roles/r"], ["list", "-format=json", "auth/token/roles"]
+        self.assertEqual(self.call(read, token=token).returncode, 0)
+        self.assertEqual(json.loads(self.call(list_, token=token).stdout), ["r"])
+        slashless = self.state / "slashless.hcl"
+        slashless.write_text('path "auth/token/roles" {\n  capabilities = ["list"]\n}\n\n'
+                             'path "auth/token/roles/+" {\n  capabilities = ["read"]\n}\n')
+        env = {"FAKE_VERIFIER_POLICY_FILE": str(slashless)}
+        refused = self.call(list_, token=token, **env)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("permission denied", refused.stderr)
+        self.assertEqual(self.call(read, token=token, **env).returncode, 0)
+        readonly = self.state / "readonly.hcl"
+        readonly.write_text('path "auth/token/roles/" {\n  capabilities = ["list"]\n}\n')
+        self.assertNotEqual(self.call(read, token=token, FAKE_VERIFIER_POLICY_FILE=str(readonly)).returncode, 0)
+        self.assertEqual(self.call(list_, token=ROOT_TOKEN, **env).returncode, 0)
+
     def _verifier(self):
         self.role("verifier", "identity-verifier")
         return json.loads(self.login("verifier").stdout)["auth"]["client_token"]

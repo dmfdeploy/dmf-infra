@@ -91,6 +91,9 @@
 #                        (default token-revoker)
 #   FAKE_VERIFIER_POLICY the policy that lets a token read the identity configuration
 #                        (default identity-verifier)
+#   FAKE_VERIFIER_POLICY_FILE  the policy file that decides which reads and lists that policy
+#                        grants, matched with OpenBao's rules in acl_match.py (default the
+#                        role's files/policies/identity-verifier.hcl)
 # Kubernetes auth: the config and the roles are files under $state/k8s-auth. A root token
 # may read and write auth/kubernetes/*; every other token gets 403 on a write. A revoked
 # token (file revoked-<token>) is refused everywhere. A config
@@ -696,6 +699,18 @@ allow() { local what="$1"; shift; can "$@" || forbidden "$what"; }
 # the policy-reconciler identity holds a grant on sys/policies/acl/*.
 policy_ok() { if [ -n "${FAKE_POLICY_WRITER:-}" ]; then is_live; else can root; fi; }
 forbidden() { printf 'Error %s: Error making API request.\n\nCode: 403. Errors:\n\n* 1 error occurred:\n\t* permission denied\n' "$1" >&2; exit 2; }
+# allow_verifier WHAT OPERATION PATH [NEED...]: 403 unless the caller is live and root or holds
+# one of the extra needs, or holds the verifier policy and that policy file grants the
+# operation on the path. Unlike `allow`, it reads the policy file with OpenBao's matching rules
+# (acl_match.py), so a stanza that the real server would not match is refused here too.
+fake_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+verifier_policy_file="${FAKE_VERIFIER_POLICY_FILE:-$fake_dir/../../../roles/stack/operator/openbao/files/policies/identity-verifier.hcl}"
+allow_verifier() {
+  local what="$1" op="$2" path="$3"; shift 3
+  can root "$@" && return 0
+  can "$verifier" && python3 "$fake_dir/acl_match.py" "$verifier_policy_file" "$op" "$path" && return 0
+  forbidden "$what"
+}
 case "$*" in
   "secrets enable "*|"auth enable "*)
     # The mount is recorded as one line in $state/mounts.log. Enabling a path twice
@@ -987,13 +1002,13 @@ PY
     exit 0
     ;;
   "list auth/kubernetes/role")
-    allow "listing auth/kubernetes/role" "$verifier"
+    allow_verifier "listing auth/kubernetes/role" list auth/kubernetes/role
     roles="$(cd "$k8s_auth_dir" 2>/dev/null && for f in role-*.json; do [ -f "$f" ] && { f="${f#role-}"; echo "${f%.json}"; }; done)"
     print_keys auth/kubernetes/role "$roles"
     exit 0
     ;;
   "read sys/auth")
-    allow "reading sys/auth" "$verifier"
+    allow_verifier "reading sys/auth" read sys/auth
     python3 - "$state/identity.json" <<'PY'
 import json, os, sys
 fixture = json.load(open(sys.argv[1])) if os.path.exists(sys.argv[1]) else {}
@@ -1003,13 +1018,13 @@ PY
     exit 0
     ;;
   "list auth/userpass/users"|"list auth/approle/role"|"list auth/token/roles"|"list identity/entity/id"|"list identity/group/id")
-    allow "listing ${norm#list }" "$verifier"
+    allow_verifier "listing ${norm#list }" list "${norm#list }"
     print_keys "${norm#list }" "$(identity_fixture "${norm#list }")"
     exit 0
     ;;
   "list auth/"*"/role")
     # A second Kubernetes mount: its roles are the files under $state/k8s-auth-MOUNT.
-    allow "listing ${norm#list }" "$verifier"
+    allow_verifier "listing ${norm#list }" list "${norm#list }"
     mount="${norm#list auth/}"; mount="${mount%/role}"
     roles="$(cd "$state/k8s-auth-$mount" 2>/dev/null && for f in role-*.json; do [ -f "$f" ] && { f="${f#role-}"; echo "${f%.json}"; }; done)"
     print_keys "${norm#list }" "$roles"
@@ -1031,12 +1046,16 @@ PY
     # The legacy scheduler token also reads external-secrets. Without a fixture only it does,
     # and the answer is FAKE_ESO_ROLE_POLICIES.
     role="${norm##*/}"
-    grants="$verifier"
-    if [ "$role" = external-secrets ]; then
-      if fixture_present; then grants="$verifier legacy:scheduler"; else grants=legacy:scheduler; fi
+    # Without a fixture only the scheduler reads external-secrets; with one the verifier policy
+    # reads it too, by the policy file.
+    what="reading auth/approle/role/$role"
+    if [ "$role" = external-secrets ] && ! fixture_present; then
+      allow "$what" legacy:scheduler
+    elif [ "$role" = external-secrets ]; then
+      allow_verifier "$what" read "${norm#read }" legacy:scheduler
+    else
+      allow_verifier "$what" read "${norm#read }"
     fi
-    # shellcheck disable=SC2086
-    allow "reading auth/approle/role/$role" $grants
     if [ "$role" = external-secrets ] && ! fixture_present; then
       printf '{"data":{"token_policies":%s,"token_ttl":3600}}\n' "${FAKE_ESO_ROLE_POLICIES:-[\"eso-reader\"]}"
       exit 0
@@ -1045,7 +1064,7 @@ PY
     exit 0
     ;;
   "read auth/userpass/users/"*)
-    allow "reading auth/userpass/users" "$verifier"
+    allow_verifier "reading auth/userpass/users" read "${norm#read }"
     name="${norm##*/}"
     # With a fixture the users are the ones it names. Without one, the only user is ops-admin.
     if fixture_present; then identity_fixture auth/userpass/users "$name" && exit 0; exit 2; fi
@@ -1054,21 +1073,21 @@ PY
     exit 0
     ;;
   "read auth/kubernetes/role/"*)
-    allow "reading auth/kubernetes/role" "$verifier"
+    allow_verifier "reading auth/kubernetes/role" read "${norm#read }"
     name="${norm#read auth/kubernetes/role/}"
     [ -f "$k8s_auth_dir/role-$name.json" ] || { echo "No value found at auth/kubernetes/role/$name" >&2; exit 2; }
     python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$k8s_auth_dir/role-$name.json"
     exit 0
     ;;
   "read auth/"*"/role/"*)
-    allow "reading ${norm#read }" "$verifier"
+    allow_verifier "reading ${norm#read }" read "${norm#read }"
     mount="${norm#read auth/}"; mount="${mount%%/*}"; name="${norm##*/}"
     [ -f "$state/k8s-auth-$mount/role-$name.json" ] || { echo "No value found at ${norm#read }" >&2; exit 2; }
     python3 -c 'import json,sys; print(json.dumps({"data": json.load(open(sys.argv[1]))}))' "$state/k8s-auth-$mount/role-$name.json"
     exit 0
     ;;
   "read auth/token/roles/"*|"read identity/entity/id/"*|"read identity/group/id/"*)
-    allow "reading ${norm#read }" "$verifier"
+    allow_verifier "reading ${norm#read }" read "${norm#read }"
     path="${norm#read }"
     identity_fixture "${path%/*}" "${path##*/}" || exit 2
     exit 0

@@ -384,6 +384,9 @@ should not hold. It reads with the
 `sys/auth`, the users, roles, entities and groups, and nothing that returns a secret),
 which `policy-reconciler` carries on a fresh install. It logs in as `policy-reconciler`,
 which also reads `sys/policies/acl/*`.
+The list stanzas of the policy end in a slash, because OpenBao matches a list request with the
+slash on its path. `tests/test_openbao_identity_verifier_paths.py` reads every path that the
+verifier's tasks request and checks it against the policy.
 
 The playbook does not run these checks yet: `playbooks/tasks/verify-identity-holders.yml`
 and `verify-policy-digests.yml` run only in `tests/test-openbao-identity-verifier.yml`, until
