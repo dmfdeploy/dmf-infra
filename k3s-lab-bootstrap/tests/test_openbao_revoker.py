@@ -165,12 +165,12 @@ class Bridge(http.server.ThreadingHTTPServer):
                 if ("lookup", accessor) in server.bad_request:
                     return self.reply_raw(400, server.bad_request[("lookup", accessor)])
                 if accessor in server.gone:
-                    return self.reply(400, {"errors": ["invalid accessor"]})
+                    return self.reply(400, {"errors": ["1 error occurred:\n\t* invalid accessor\n\n"]})
                 if accessor in server.data_list:
                     return self.reply(200, {"data": []})
                 result = server.bao(["write", "-format=json", path, f"accessor={accessor}"], token)
                 if result.returncode != 0:
-                    return self.reply(400, {"errors": ["invalid accessor"]})
+                    return self.reply(400, {"errors": ["1 error occurred:\n\t* invalid accessor\n\n"]})
                 answer = json.loads(result.stdout)
                 if accessor in server.hide_policies:
                     answer["data"].pop("policies")
@@ -648,6 +648,82 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.assertIn("j-root: the token is gone", self.log)
         self.assertTrue(self.result["ran"])
         self.assertEqual(self.result["failed"], 0)
+
+    # OpenBao's own answer for an unknown accessor, byte for byte from a live server.
+    LIVE_INVALID_ACCESSOR = b'{"errors": ["1 error occurred:\\n\\t* invalid accessor\\n\\n"]}'
+
+    def wrapped(self, *messages):
+        count = len(messages)
+        noun = "error" if count == 1 else "errors"
+        body = f"{count} {noun} occurred:\n" + "".join(f"\t* {m}\n" for m in messages) + "\n"
+        return json.dumps({"errors": [body]}).encode()
+
+    def test_the_live_wrapped_answer_for_an_unknown_accessor_counts_as_a_gone_token(self):
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.token("n-live", ["root"], 10)
+        self.refuse("lookup", "n-live", self.LIVE_INVALID_ACCESSOR)
+        self.scan()
+        self.assertIn("n-live: the token is gone", self.log)
+        self.assertTrue(self.result["ran"])
+        self.assertEqual(self.result["failed"], 0)
+
+    def test_the_wrapped_answer_for_a_gone_token_counts_on_a_revoke_too(self):
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        self.token("o-wrapped", ["root"], 10)
+        self.refuse("revoke", "o-wrapped", self.wrapped("token not found"))
+        self.scan()
+        self.assertIn("revoke o-wrapped: the token is gone", self.log)
+        self.assertTrue(self.result["ran"])
+        self.assertEqual(self.result["failed"], 0)
+
+    def test_the_wrapper_is_read_into_its_messages(self):
+        gone = revoker.token_is_gone
+        def refused(errors):
+            return revoker.BaoError("x", 400, errors)
+        cases = {
+            "live body": (["1 error occurred:\n\t* invalid accessor\n\n"], True),
+            "plain form": (["invalid accessor"], True),
+            "two messages": (["2 errors occurred:\n\t* invalid accessor\n\t* permission denied\n\n"], False),
+            "plain next to a wrapper": (["invalid accessor", "1 error occurred:\n\t* invalid accessor\n\n"], False),
+            "other message in the wrapper": (["1 error occurred:\n\t* permission denied\n\n"], False),
+            "count too low": (["1 error occurred:\n\t* invalid accessor\n\t* permission denied\n\n"], False),
+            "count too high": (["2 errors occurred:\n\t* invalid accessor\n\n"], False),
+            "no message line": (["1 error occurred:\n\n"], False),
+            "no bullet": (["1 error occurred:\ninvalid accessor\n\n"], False),
+            "no closing blank line": (["1 error occurred:\n\t* invalid accessor"], False),
+            "trailing text": (["1 error occurred:\n\t* invalid accessor\n\nmore"], False),
+            "text before the wrapper": (["oops 1 error occurred:\n\t* invalid accessor\n\n"], False),
+            "not a string": ([{"error": "invalid accessor"}], False),
+            "empty list": ([], False),
+            "no list": (None, False),
+        }
+        for name, (errors, expected) in cases.items():
+            with self.subTest(body=name):
+                self.assertIs(gone(refused(errors), "invalid accessor"), expected)
+        self.assertFalse(gone(revoker.BaoError("x", 500, ["invalid accessor"]), "invalid accessor"))
+        self.assertFalse(gone(revoker.BaoError("x", None, ["invalid accessor"]), "invalid accessor"))
+
+    def test_a_wrapped_answer_that_is_not_exactly_one_gone_message_makes_the_scan_incomplete(self):
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        for step, message in (("lookup", "invalid accessor"), ("revoke", "token not found")):
+            bodies = {
+                "wrapped two messages": self.wrapped(message, "permission denied"),
+                "wrapped other message": self.wrapped("permission denied"),
+                "wrapped other endpoint's message": self.wrapped("token not found" if step == "lookup" else "invalid accessor"),
+                "wrapped malformed": json.dumps({"errors": [f"1 error occurred:\n{message}\n\n"]}).encode(),
+            }
+            for name, body in bodies.items():
+                with self.subTest(step=step, body=name):
+                    accessor = "q-" + step + "-" + name.replace(" ", "-")
+                    self.token(accessor, ["root"], 10)
+                    self.refuse(step, accessor, body)
+                    self.scan()
+                    self.assertKept(accessor)
+                    self.assertIn(f"{step} {accessor} failed", self.log)
+                    self.assertFalse(self.result["ran"])
+                    self.bridge.bad_request.clear()
+                    self.tokens.pop(accessor)
+                    (self.state / "tokens" / f"{accessor}-token.json").unlink()
 
     def test_a_revoke_that_says_token_not_found_counts_as_a_gone_token(self):
         write_chain(self.record, [intent("r1"), closed("r1")])
