@@ -26,11 +26,15 @@ power only when no record exists, through one small profile map in the model. A
 profile never makes a token live and never skips use counting: a revoked legacy token is
 refused like any other.
 
-The fake trusts a policy by name: a token that holds `token-revoker`,
-`identity-verifier` or `generate-root` passes the matching calls. The paths and
-capabilities of each real policy file are checked by that file's own static test, and a
-test of the fake checks that every name the fake trusts maps to a policy file with such
-a test.
+The fake trusts a policy by name: a token that holds `token-revoker` or `generate-root`
+passes the matching calls. The paths and capabilities of each real policy file are checked
+by that file's own static test, and a test of the fake checks that every name the fake trusts
+maps to a policy file with such a test.
+
+The identity verifier's policy is the exception: the fake reads the policy file and matches
+each request against its stanzas with OpenBao's rules (`acl_match.py`). A list request
+ends in a slash, so a list stanza without the slash grants nothing, as on a real server.
+`FAKE_VERIFIER_POLICY_FILE` names another policy file for a test.
 
 Flags of `token create`: `-policy`, `-orphan`, `-ttl`, `-explicit-max-ttl`,
 `-use-limit`, `-renewable`, `-no-default-policy` and `-format`. Only the caller
@@ -98,7 +102,8 @@ directory. All three need a root token, or any live token when `FAKE_POLICY_WRIT
 
 ## Identity reads
 
-These need a root token or the policy in `FAKE_VERIFIER_POLICY`. All answers
+These need a root token or a token that holds the policy in `FAKE_VERIFIER_POLICY`, and
+the policy file must grant the read or the list (`FAKE_VERIFIER_POLICY_FILE`). All answers
 come from `$FAKE_STATE/identity.json`:
 
 ```json
