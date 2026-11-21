@@ -40,8 +40,9 @@ A scan is complete only when every step of it succeeded: the login, the listing,
 lookup and every revoke, each with a well-formed answer. A failed or malformed step is
 logged and the scan goes on to the next token, but the scan then counts as incomplete:
 it does not move the last-scan gauge, and the failures gauge shows how many steps failed.
-One answer is not a failure: HTTP 400 whose error list is exactly one message, "invalid
-accessor" on a lookup or "token not found" on a revoke. A token that expires between the
+One answer is not a failure: HTTP 400 whose messages are exactly one, "invalid
+accessor" on a lookup or "token not found" on a revoke. OpenBao may wrap the messages as
+"N error(s) occurred:" with one "\t* <message>" line each; the script reads the wrapper first. A token that expires between the
 listing and the lookup is gone in this way. OpenBao answers 400 to any invalid request, so
 every other 400 is a failure. A log line never
 holds a token. The script logs in with the projected ServiceAccount token on every scan
@@ -226,14 +227,47 @@ GONE_LOOKUP = "invalid accessor"
 GONE_REVOKE = "token not found"
 
 
+# OpenBao joins several errors into one string: "N error(s) occurred:", a line break, one
+# "\t* <message>" line for each message, and a closing blank line. A single error gets the
+# same wrapper, so a live "invalid accessor" arrives as
+# "1 error occurred:\n\t* invalid accessor\n\n".
+WRAPPER = re.compile(r"(\d+) errors? occurred:\n((?:\t\* [^\n]*\n)+)\n")
+
+
+def messages_of(entry: object) -> list[str] | None:
+    """The messages one entry of an error list carries, or None when it is not a string.
+
+    A plain entry is one message. An entry that starts like the wrapper must parse as the
+    whole wrapper, with a count that matches its lines, or it counts as plain text, which
+    never equals a gone-token message.
+    """
+    if not isinstance(entry, str):
+        return None
+    match = WRAPPER.fullmatch(entry)
+    if match:
+        lines = match.group(2).splitlines()
+        if int(match.group(1)) == len(lines):
+            return [line[len("\t* "):] for line in lines]
+    return [entry]
+
+
 def token_is_gone(error: BaoError, message: str) -> bool:
-    """True only for a 400 whose error list is exactly the one message `message`.
+    """True only for a 400 whose messages are exactly the one message `message`.
 
     OpenBao uses 400 for any invalid request, so the status alone proves nothing. A 400 with
     another message, with more than one message, or with a body that is not an OpenBao error
-    list is a failure.
+    list is a failure. The wrapper that OpenBao puts around its messages is read first, so
+    the plain list and the wrapped list give the same answer.
     """
-    return error.status == 400 and error.errors == [message]
+    if error.status != 400 or not isinstance(error.errors, list):
+        return False
+    found: list[str] = []
+    for entry in error.errors:
+        messages = messages_of(entry)
+        if messages is None:
+            return False
+        found.extend(messages)
+    return found == [message]
 
 
 def http_date(value: str | None) -> float | None:
