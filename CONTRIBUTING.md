@@ -32,9 +32,11 @@ This section is the one place for development and test commands. The README and
   Zot index mirror test, runs it. CI installs it with `apt-get`. Without skopeo
   that playbook fails, and it doesn't skip. Install it with your package
   manager, for example `brew install skopeo` or `sudo apt-get install skopeo`.
+- **[promtool](https://prometheus.io/docs/prometheus/latest/command-line/promtool/).**
+  The alert rule tests run it. CI downloads a pinned release and verifies its
+  checksum.
 - **Optional tools.** [gitleaks](https://github.com/gitleaks/gitleaks) powers
-  the commit hook. [promtool](https://prometheus.io/docs/prometheus/latest/command-line/promtool/)
-  runs the alert rule tests that CI skips.
+  the commit hook.
 
 You don't need a cluster, a cloud account or secrets for any check in this
 section. The fixture playbooks run against a fake `kubectl` and fake collections
@@ -153,8 +155,9 @@ invocation. Without the `export` lines, a fixture playbook calls the real
 has a cluster's kubeconfig, such as `/etc/rancher/k3s/k3s.yaml`, unless you
 select the fakes the same way.
 
-Run the other fixture playbooks that CI runs. Neither one calls a cluster
-command. The second one needs skopeo:
+Run the other fixture playbooks that CI runs. None of them calls a cluster
+command. The `test-zot-seed-index-mirror.yml` playbook needs skopeo. The last
+three use only local facts and assertions, so they need no fakes:
 
 ```bash
 (
@@ -162,6 +165,40 @@ command. The second one needs skopeo:
   cd k3s-lab-bootstrap
   ansible-playbook tests/test-harden-fail2ban-ignoreip.yml
   ansible-playbook tests/test-zot-seed-index-mirror.yml
+  ansible-playbook tests/test-app-admin-facts-live-read.yml
+  ansible-playbook tests/test-authentik-oauth-credentials-parse.yml
+  ansible-playbook tests/test-k3s-nat-bind-ip.yml
+)
+```
+
+Run the AWX autoscale helper tests. They need `pytest`, which
+`k3s-lab-bootstrap/requirements.txt` declares, so the earlier install step
+covers it:
+
+```bash
+(
+  set -euo pipefail
+  cd k3s-lab-bootstrap/roles/stack/operator/awx-autoscale
+  python -m pytest tests -q
+)
+```
+
+Run the Prometheus alert rule tests. They need
+[promtool](https://prometheus.io/docs/prometheus/latest/command-line/promtool/).
+The block renders the alert template into a file that Git ignores, checks the
+rules, and runs each test file:
+
+```bash
+(
+  set -euo pipefail
+  cd k3s-lab-bootstrap/roles/base/prometheus
+  ansible localhost -m ansible.builtin.template \
+    -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
+    -e @defaults/main.yml
+  promtool check rules tests/rendered_alerts.yml
+  for f in tests/test_*.promtool.yml; do
+    promtool test rules "$f"
+  done
 )
 ```
 
@@ -246,27 +283,8 @@ CI doesn't run these. Run them when your change touches what they cover.
 
 | Check | What it covers | Needs |
 | --- | --- | --- |
-| `tests/test-app-admin-facts-live-read.yml`, `tests/test-authentik-oauth-credentials-parse.yml` and `tests/test-k3s-nat-bind-ip.yml` | Role logic for the administrator facts, the Authentik credential parse, and the NAT bind address | The set-up from this section. They use only local facts and assertions, so they need no fakes. Each finishes in seconds. |
-| `python -m pytest tests -q` in `roles/stack/operator/awx-autoscale/` | The AWX autoscale helper | `python -m pip install pytest`. It takes about 40 seconds. |
-| `promtool test rules` on the files in `roles/base/prometheus/tests/` | The Prometheus alert rules | `promtool`. The header of each test file lists the commands, which render the alerts first. Delete the rendered file afterward. |
 | `ee/scripts/build.sh` | The AWX execution environment image | Docker and `ansible-builder`. See [ee/README.md](k3s-lab-bootstrap/ee/README.md). |
 | Any playbook against real nodes | The playbooks and roles on a cluster | Nodes you can reach over SSH, OpenBao access and an environment from [dmf-env](https://github.com/dmfdeploy/dmf-env). Run the playbook through the `dmf-env` wrapper. |
-
-To run the three fixture playbooks and the autoscale tests, run this block from
-the repository root, with the virtual environment active:
-
-```bash
-(
-  set -euo pipefail
-  cd k3s-lab-bootstrap
-  ansible-playbook tests/test-app-admin-facts-live-read.yml
-  ansible-playbook tests/test-authentik-oauth-credentials-parse.yml
-  ansible-playbook tests/test-k3s-nat-bind-ip.yml
-  python -m pip install pytest
-  cd roles/stack/operator/awx-autoscale
-  python -m pytest tests -q
-)
-```
 
 A green run of the preceding checks doesn't prove a change works on a cluster. If
 your change needs a live check, say so in the pull request and ask a maintainer
@@ -312,7 +330,7 @@ Match the proof to the change.
 | Fix a defect in the OpenBao rotation logic and add a unit test | `k3s-lab-bootstrap/lib/`, `k3s-lab-bootstrap/tests/test_openbao_*.py` | Offline |
 | Change a role task and cover it with a fixture playbook | `k3s-lab-bootstrap/roles/`, `k3s-lab-bootstrap/tests/test-*.yml` | Offline |
 | Edit a Helm chart or a role template | `k3s-lab-bootstrap/charts/`, `k3s-lab-bootstrap/roles/` | Offline for lint and render. Live to confirm on a cluster. |
-| Change a Prometheus alert rule | `k3s-lab-bootstrap/roles/base/prometheus/` | Offline with `promtool`. CI doesn't run it. |
+| Change a Prometheus alert rule | `k3s-lab-bootstrap/roles/base/prometheus/` | Offline with `promtool`. CI runs the rule tests. |
 | Add or change a playbook that configures nodes | `k3s-lab-bootstrap/playbooks/` | Offline for lint and syntax. Live to run it. |
 | Rebuild the AWX execution environment image | `k3s-lab-bootstrap/ee/` | Live. It needs Docker and, to publish, a registry token. |
 

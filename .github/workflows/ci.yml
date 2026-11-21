@@ -83,6 +83,39 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq skopeo
           ansible-playbook tests/test-zot-seed-index-mirror.yml
+      - name: administrator facts, Authentik credential parse and NAT bind address
+        run: |
+          set -eu
+          for pb in tests/test-app-admin-facts-live-read.yml \
+                    tests/test-authentik-oauth-credentials-parse.yml \
+                    tests/test-k3s-nat-bind-ip.yml; do
+            echo "=== $pb ==="
+            ansible-playbook "$pb"
+          done
+      - name: AWX autoscale helper tests
+        working-directory: k3s-lab-bootstrap/roles/stack/operator/awx-autoscale
+        run: python3 -m pytest tests -q
+      - name: Install promtool (pinned release, sha256 checked)
+        env:
+          PROM_VERSION: "3.5.0"
+          PROM_SHA256: "e811827af26d822afb09a4f28314f61b618b12cff5369835a67f674d8b46f39a"
+        run: |
+          set -eu
+          curl -fsSLo /tmp/prom.tgz "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz"
+          echo "${PROM_SHA256}  /tmp/prom.tgz" | sha256sum -c -
+          tar -xzf /tmp/prom.tgz -C /tmp --strip-components=1 "prometheus-${PROM_VERSION}.linux-amd64/promtool"
+          echo "/tmp" >> "$GITHUB_PATH"
+      - name: Prometheus alert rule tests
+        working-directory: k3s-lab-bootstrap/roles/base/prometheus
+        run: |
+          set -eu
+          ansible localhost -m ansible.builtin.template \
+            -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
+            -e @defaults/main.yml
+          promtool check rules tests/rendered_alerts.yml
+          for f in tests/test_*.promtool.yml; do
+            promtool test rules "$f"
+          done
       - name: helm-lint charts/
         run: |
           set -eu
