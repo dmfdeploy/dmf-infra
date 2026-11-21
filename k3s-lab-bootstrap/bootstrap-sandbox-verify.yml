@@ -12,6 +12,13 @@
 - import_playbook: playbooks/301-k3s-verify.yml
   tags: [layer3, container-platform, k3s, verify]
 
+# ── Vertical: Security — OpenBao identity model ──────────────────────────────
+# Every sandbox install runs the same identity checks as a full install: the
+# logins, the separation probes, the verifier's read of the configuration and
+# the token revoker's running state.
+- import_playbook: playbooks/verify-openbao-identity-model.yml
+  tags: [vertical-security, verify-openbao-identity]
+
 # ── Vertical: Security — bootstrap authority convergence ─────────────────────
 - import_playbook: playbooks/verify-bootstrap-convergence.yml
   tags: [vertical-security, verify-bootstrap-convergence]
