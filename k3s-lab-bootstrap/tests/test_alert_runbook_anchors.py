@@ -19,6 +19,8 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
+import yaml
+
 ROLE = Path(__file__).resolve().parents[1] / "roles/base/prometheus"
 TEMPLATE = ROLE / "templates/rules/alerts.yaml.j2"
 DEFAULTS = ROLE / "defaults/main.yml"
@@ -26,8 +28,6 @@ PAGE_URL = "https://raw.githubusercontent.com/dmfdeploy/dmf-runbooks/main/docs/a
 PAGE_ENV = "DMF_RUNBOOKS_ALERTS_PAGE"
 
 ANCHOR = re.compile(r"prometheus_alert_runbook_base\s*}}#([A-Za-z0-9_-]+)")
-ALERT_LINE = re.compile(r"^\s*- alert:\s*(\S+)\s*$", re.M)
-RUNBOOK_LINE = re.compile(r"^\s*runbook_url:\s*\"([^\"]*)\"\s*$", re.M)
 BASE_EXPRESSION = "{{ prometheus_alert_runbook_base }}"
 
 # Alerts that do not link to a section of the dmf-runbooks page. The test pins
@@ -69,31 +69,58 @@ def template_anchors(text):
     return sorted(set(ANCHOR.findall(text)))
 
 
+def load_rules(text):
+    """Return the alert rules of the template, parsed as YAML, and the Jinja expressions.
+
+    The template is YAML with a little Jinja. Each `{{ ... }}` expression becomes
+    a numbered placeholder. The `if` and `endif` lines around the Alertmanager rules and
+    the `raw` tags are dropped, so the rules inside count. Any other `{% %}` tag
+    fails the test, because the placeholder approach would then be wrong.
+    """
+    text = re.sub(r"^[ \t]*\{%-?\s*(if|endif)\b.*%\}[ \t]*\n", "", text, flags=re.M)
+    text = re.sub(r"\{%-?\s*(raw|endraw)\s*\+?-?%\}", "", text)
+    leftover = re.findall(r"\{%.*?%\}", text)
+    if leftover:
+        raise AssertionError(f"Jinja blocks the test does not handle: {leftover}")
+    expressions = []
+
+    def placeholder(match):
+        expressions.append("{{ " + match.group(0)[2:-2].strip() + " }}")
+        return f"JINJA{len(expressions) - 1}END"
+
+    text = re.sub(r"\{\{.*?\}\}", placeholder, text)
+    document = yaml.safe_load(text)
+    rules = []
+    for group in document["groups"]:
+        for rule in group["rules"]:
+            if "alert" in rule:
+                rules.append(rule)
+    return rules, expressions
+
+
+def count_alert_declarations(text):
+    """Count lines that declare an `alert:` key, with a deliberately loose scan.
+
+    The scan does not share the parser's logic. A line counts when `alert:` is
+    its first token, with or without a leading `- `, so a rule that lists the key
+    after other keys counts too. A trailing comment does not matter.
+    """
+    return len(re.findall(r"^\s*(?:-\s+)?[\"']?alert[\"']?\s*:", text, flags=re.M))
+
+
 def alert_rules(text):
     """Return (name, runbook_url or None) for every alert rule, in file order.
 
-    A rule starts at its `- alert:` line and ends at the next rule, group or
-    `if` or `endif` line. The runbook URL is the `runbook_url` line that follows
-    the rule's `annotations:` line. Two rules may share a name, and both count.
+    The URL placeholders keep the `{{ name }}` form of the template, so a rule
+    compares equal to what the template says.
     """
-    lines = text.splitlines()
-    starts = [i for i, line in enumerate(lines) if ALERT_LINE.match(line)]
+    parsed, expressions = load_rules(text)
     rules = []
-    for n, start in enumerate(starts):
-        end = starts[n + 1] if n + 1 < len(starts) else len(lines)
-        block = []
-        for line in lines[start:end]:
-            if block and (line.lstrip().startswith(("{% if", "{% endif", "- name:"))):
-                break
-            block.append(line)
-        body = "\n".join(block)
-        name = ALERT_LINE.match(block[0]).group(1)
-        urls = RUNBOOK_LINE.findall(body)
-        if len(urls) > 1:
-            raise AssertionError(f"{name}: more than one runbook_url")
-        if urls and "annotations:" not in body.split("runbook_url:")[0]:
-            raise AssertionError(f"{name}: runbook_url is not under annotations")
-        rules.append((name, urls[0] if urls else None))
+    for rule in parsed:
+        url = (rule.get("annotations") or {}).get("runbook_url")
+        if url is not None:
+            url = re.sub(r"JINJA(\d+)END", lambda m: expressions[int(m.group(1))], url)
+        rules.append((rule["alert"], url))
     return rules
 
 
@@ -153,7 +180,7 @@ class AlertRunbookAnchorsTest(unittest.TestCase):
         text = TEMPLATE.read_text()
         rules = alert_rules(text)
         self.assertGreater(len(rules), 0, "no alert rules found")
-        self.assertEqual(len(rules), len(ALERT_LINE.findall(text)))
+        self.assertEqual(len(rules), count_alert_declarations(text))
 
     def test_every_alert_rule_links_to_a_section(self):
         headings = set(heading_anchors(load_page()))
@@ -184,9 +211,11 @@ class AlertRunbookAnchorsTest(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertEqual(match.group(1), AWX_RUNBOOK_URL)
 
-    def test_rule_parser_reads_alerts_and_skips_jinja_lines(self):
+    def parse(self, rules_yaml):
+        return alert_rules("groups:\n  - name: g\n    rules:\n" + rules_yaml)
+
+    def test_rule_parser_reads_alerts_and_keeps_both_alertmanager_branches(self):
         text = (
-            "groups:\n  - name: g\n    rules:\n"
             "      - alert: A\n        annotations:\n"
             '          runbook_url: "{{ prometheus_alert_runbook_base }}#a"\n'
             "{% if x %}\n"
@@ -194,9 +223,31 @@ class AlertRunbookAnchorsTest(unittest.TestCase):
             "{% endif %}\n"
         )
         self.assertEqual(
-            alert_rules(text), [("A", "{{ prometheus_alert_runbook_base }}#a"), ("B", None)]
+            self.parse(text), [("A", "{{ prometheus_alert_runbook_base }}#a"), ("B", None)]
         )
 
+    def test_rule_with_trailing_comment_is_found(self):
+        text = "      - alert: NewAlert # explanation\n        annotations:\n          summary: s\n"
+        self.assertEqual(self.parse(text), [("NewAlert", None)])
+        self.assertEqual(count_alert_declarations(text), 1)
+
+    def test_rule_with_quoted_name_is_found(self):
+        text = '      - alert: "Quoted"\n        annotations:\n          summary: s\n'
+        self.assertEqual(self.parse(text), [("Quoted", None)])
+
+    def test_rule_with_alert_key_not_first_is_found(self):
+        text = "      - expr: vector(1)\n        alert: Late\n        annotations:\n          summary: s\n"
+        self.assertEqual(self.parse(text), [("Late", None)])
+        self.assertEqual(count_alert_declarations(text), 1)
+
+    def test_unhandled_jinja_block_fails(self):
+        with self.assertRaises(AssertionError):
+            self.parse("{% for x in y %}\n      - alert: A\n{% endfor %}\n")
+
+    def test_loose_count_disagrees_when_the_parser_misses_a_rule(self):
+        text = "      - alert: A\n        annotations: {}\n"
+        self.assertEqual(count_alert_declarations(text), len(self.parse(text)))
+        self.assertNotEqual(count_alert_declarations(text + "      - alert: B\n"), 1)
 
 if __name__ == "__main__":
     unittest.main()
