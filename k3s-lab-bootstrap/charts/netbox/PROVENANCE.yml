@@ -1,0 +1,16 @@
+# Where the vendored upstream chart came from. The tarball in charts/ is
+# committed to git so installs work without network access to the upstream
+# repository. A test fails when the tracked file and the digest differ.
+#
+# chart_file  Path of the tarball, relative to the directory of this file.
+# repository  Upstream Helm repository. It matches the dependency in Chart.yaml.
+# version     Upstream chart version. It matches Chart.yaml and Chart.lock.
+# source      Address the tarball was downloaded from.
+# sha256      SHA-256 digest over the exact bytes of the tarball. It is the
+#             digest that the upstream repository index lists for this version.
+schema_version: 1
+chart_file: charts/netbox-7.3.0.tgz
+repository: https://netbox-community.github.io/netbox-chart
+version: 7.3.0
+source: https://github.com/netbox-community/netbox-chart/releases/download/netbox-7.3.0/netbox-7.3.0.tgz
+sha256: ac694f8d4eda0454c656f8a002d0cec8e797dc3c1efe9e6c06e8bad7a1630132

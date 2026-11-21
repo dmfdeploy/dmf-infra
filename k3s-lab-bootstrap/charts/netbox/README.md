@@ -1,4 +1,4 @@
-# charts/netbox — reference wrapper chart
+# Reference wrapper chart for NetBox
 
 Wraps the upstream `netbox-community/netbox` chart (pinned in `Chart.yaml`) so installs are reproducible and flypack-deployable without network access to `netbox-community.github.io`.
 
@@ -27,7 +27,9 @@ helm dependency update
 git add Chart.lock charts/netbox-*.tgz
 ```
 
-## Why a wrapper instead of `chart_ref: netbox-community/netbox`?
+Then update `PROVENANCE.yml` with the new version, download address, and SHA-256 digest. Take the digest from the `digest` field of that version in the upstream `index.yaml`, and confirm it matches `shasum -a 256 charts/netbox-<version>.tgz`. The test `tests/test_netbox_chart_provenance.py` fails when the tarball and the record differ.
+
+## Why a wrapper chart
 
 - Pins the version in code reviewable in git diffs.
 - Enables `helm lint` and `helm template` in CI without needing the upstream repo reachable.
