@@ -46,6 +46,12 @@ OPERATOR_TOKEN = "operator-token-value"
 # A token from any other variable would render as one of these.
 OTHER_TOKENS = {"_awx_openbao_client_token": "approle-token-value"}
 
+# The secret path that each read sends after the token, and the variable that holds it.
+SECRET_PATHS = {
+    NETBOX_READ: ("awx_integration_netbox_runtime_secret_path", "secret/apps/netbox/runtime"),
+    FORGEJO_READ: ("awx_integration_forgejo_runtime_secret_path", "secret/apps/forgejo/runtime"),
+}
+
 ENV = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True)
 ENV.filters["bool"] = FilterModule().filters()["bool"]
 
@@ -107,6 +113,7 @@ def run_play(file, netbox, forgejo, catalog, purge):
         ran[name] = not ran["assert_fails"] and holds(task(name).get("when"), after_login)
         stdin = module_args(task(name))["stdin"]
         values = dict(after_login, **OTHER_TOKENS)
+        values.update(dict(SECRET_PATHS.values()))
         try:
             ran[name + " stdin"] = ENV.from_string(stdin).render(**values)
         except jinja2.UndefinedError:
@@ -154,13 +161,24 @@ class SourceTokenFlowTest(unittest.TestCase):
                     for before in (BREAKGLASS_LOAD, OPERATOR_CREDENTIALS, POD_FACT, OPERATOR_LOGIN):
                         self.assertTrue(ran[before], f"{before} did not run before {name}")
 
-    def test_a_read_that_runs_sends_the_operator_token_on_stdin(self):
+    def test_a_read_that_runs_sends_the_operator_token_first_on_stdin(self):
         for label, _, ran in self.combinations():
             for name in (NETBOX_READ, FORGEJO_READ):
                 if not ran[name]:
                     continue
                 with self.subTest(label, read=name):
-                    self.assertEqual(ran[name + " stdin"], OPERATOR_TOKEN + "\n")
+                    secret_path = SECRET_PATHS[name][1]
+                    self.assertEqual(ran[name + " stdin"], OPERATOR_TOKEN + "\n" + secret_path + "\n")
+
+    def test_a_read_takes_the_token_and_then_the_path_from_stdin_and_nothing_from_its_arguments(self):
+        for name in (NETBOX_READ, FORGEJO_READ):
+            with self.subTest(read=name):
+                argv = module_args(task(name))["argv"]
+                program = argv[argv.index("-c") + 1]
+                self.assertLess(program.index("read -r BAO_TOKEN"), program.index("read -r SECRET_PATH"))
+                self.assertEqual(argv[-1], program, "no value may follow the program in argv")
+                self.assertNotIn("{{", program)
+                self.assertFalse([a for a in argv if "token" in a.lower() and "{{" in a])
 
     def test_supplied_tokens_skip_the_reads_and_are_kept(self):
         for label, (file, netbox, forgejo, catalog, purge), ran in self.combinations():
