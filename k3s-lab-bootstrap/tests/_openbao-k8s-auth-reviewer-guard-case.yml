@@ -1,0 +1,51 @@
+---
+# One case of test-openbao-k8s-auth.yml, part 8: reviewer-install-guard.yml against the
+# fake cluster. case.account is the serviceAccountName of the installed StatefulSet's
+# pod template ("" leaves the field out, and "none" means no StatefulSet at all).
+# case.env sets the fake bao's scenario, for example FAKE_INITIALIZED.
+- name: "{{ case.name }} — prepare the fake cluster"
+  ansible.builtin.file:
+    path: "{{ _state.path }}/{{ case.dir }}/k8s"
+    state: directory
+    mode: "0755"
+  changed_when: false
+
+- name: "{{ case.name }} — seed the installed StatefulSet"
+  ansible.builtin.copy:
+    dest: "{{ _state.path }}/{{ case.dir }}/k8s/StatefulSet-openbao.json"
+    content: >-
+      {{
+        {'metadata': {'name': 'openbao'},
+         'spec': {'template': {'spec': ({'serviceAccountName': case.account} if case.account else {})}}} | to_json
+      }}
+    mode: "0644"
+  when: case.account != 'none'
+
+- name: "{{ case.name }} — run the guard"
+  block:
+    - name: Run reviewer-install-guard.yml
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/reviewer-install-guard.yml
+    - name: Record a pass
+      ansible.builtin.set_fact:
+        _outcome: pass
+        _message: ""
+  rescue:
+    - name: Record the failure
+      ansible.builtin.set_fact:
+        _outcome: fail
+        _message: "{{ ansible_failed_result.msg | default('') }}"
+  environment: "{{ case.env | default({}) | combine({'FAKE_STATE': _state.path ~ '/' ~ case.dir}) }}"
+
+- name: "{{ case.name }} — read the calls to the cluster"
+  ansible.builtin.stat:
+    path: "{{ _state.path }}/{{ case.dir }}/k8s-mutations.log"
+  register: _guard_mutations
+
+- name: "{{ case.name }} — assert"
+  ansible.builtin.assert:
+    that:
+      - _outcome == case.outcome
+      - not _guard_mutations.stat.exists
+      - case.outcome == 'pass' or ('stored-token reviewer' in _message and 'Rebuild' in _message and 'ADR-0051' in _message) == (case.message == 'rebuild')
+      - case.outcome == 'pass' or case.message != 'status' or 'cannot read the init status' in _message
+    fail_msg: "{{ case.name }}: outcome {{ _outcome }}, message: {{ _message }}"

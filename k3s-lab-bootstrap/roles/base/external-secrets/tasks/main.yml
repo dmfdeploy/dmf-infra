@@ -5,10 +5,10 @@
   ansible.builtin.assert:
     that:
       - eso_openbao_auth_method in ['approle', 'kubernetes']
-      - eso_openbao_auth_method != 'kubernetes' or openbao_kubernetes_reviewer_enabled | default(false) | bool
+      - eso_openbao_auth_method != 'kubernetes' or openbao_kubernetes_reviewer_enabled | default(true) | bool
     msg: >-
       eso_openbao_auth_method must be approle or kubernetes, and kubernetes needs
-      openbao_kubernetes_reviewer_enabled set to true in the site inventory: the
+      openbao_kubernetes_reviewer_enabled to stay true (its default): the
       login needs the OpenBao ServiceAccount and the local-file reviewer config.
 
 - name: Validate required vars

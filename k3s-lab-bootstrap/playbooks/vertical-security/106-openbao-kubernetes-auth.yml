@@ -29,7 +29,7 @@
 # setup issuer, the rotation scheduler or the approval executor and fails with the
 # names. Run playbooks/vertical-security/100-openbao.yml first, then this play
 # again. It needs
-# openbao_kubernetes_reviewer_enabled set to true in the inventory.
+# openbao_kubernetes_reviewer_enabled to be true, which is the default.
 #
 # The generate-root token has no lifetime, so the play trades it at once. After it
 # checks that the token holds the root policy, it mints an orphan token with the
