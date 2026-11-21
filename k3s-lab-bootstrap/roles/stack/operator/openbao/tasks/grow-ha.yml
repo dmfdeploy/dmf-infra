@@ -122,6 +122,9 @@
 - name: Refuse an image change to 2.6 or later before ops-admin holds the generate-root policy
   ansible.builtin.include_tasks: image-policy-preflight.yml
 
+- name: Refuse a grow on an install that uses the old Kubernetes auth reviewer
+  ansible.builtin.include_tasks: reviewer-install-guard.yml
+
 - name: Check the guard token can read the Raft paths
   ansible.builtin.include_tasks: capabilities-check.yml
 

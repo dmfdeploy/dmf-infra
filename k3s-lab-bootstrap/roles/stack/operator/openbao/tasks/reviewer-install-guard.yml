@@ -1,0 +1,81 @@
+---
+# Stop before the workload changes on an initialized OpenBao that was installed with
+# the old Kubernetes auth reviewer. That install stored the token of the pod's
+# `default` ServiceAccount as the mount's reviewer credential. The account has no
+# TokenReview grant, so every Kubernetes-auth login returns 403. Applying the
+# workload would move the pod to OpenBao's own ServiceAccount but leave that stored
+# token in the mount config, and no standing identity may write the config after the
+# install. A rerun cannot repair it, so the play stops before it changes anything.
+#
+# The StatefulSet decides. Without one, this is a new install and the check passes.
+# A StatefulSet whose pod template runs as OpenBao's own ServiceAccount was installed
+# with the reviewer, and it passes too. Only a template without a ServiceAccount or
+# with `default` is the old install. The check then reads the init status, the same
+# way the install tells a rerun from a fresh init, and stops only when the server is
+# initialized: an old StatefulSet that never got initialized has no stored token.
+- name: Read the StatefulSet that the workload would change
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    api_version: apps/v1
+    kind: StatefulSet
+    name: openbao
+    namespace: "{{ openbao_namespace }}"
+  register: _openbao_reviewer_guard_sts
+
+- name: Work out the ServiceAccount of the installed pod template
+  ansible.builtin.set_fact:
+    _openbao_reviewer_guard_installed: "{{ (_openbao_reviewer_guard_sts.resources | default([])) | length > 0 }}"
+    _openbao_reviewer_guard_account: >-
+      {{
+        ((((_openbao_reviewer_guard_sts.resources | default([{}]) | first | default({})).spec | default({})).template | default({})).spec | default({}))
+        .serviceAccountName | default('default', true)
+      }}
+
+- name: Check the init status of an install that runs as another ServiceAccount
+  when:
+    - _openbao_reviewer_guard_installed | bool
+    - _openbao_reviewer_guard_account != openbao_service_account
+  block:
+    - name: Read the init status of openbao-0
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ openbao_namespace }}"
+          - exec
+          - openbao-0
+          - --
+          - bao
+          - status
+          - -format=json
+      register: _openbao_reviewer_guard_status
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Stop when the init status cannot be read
+      ansible.builtin.fail:
+        msg: >-
+          The OpenBao StatefulSet runs as the {{ _openbao_reviewer_guard_account }}
+          ServiceAccount, not {{ openbao_service_account }}, and the play cannot read
+          the init status of openbao-0 to tell whether that install holds a stored
+          reviewer token. Nothing has changed. Check that the pod runs, then run the
+          play again.
+      when: >-
+        _openbao_reviewer_guard_status.stdout | default('') is not match('(?s)\s*\{')
+        or 'initialized' not in (_openbao_reviewer_guard_status.stdout | from_json)
+
+    - name: Stop on an initialized install that uses the stored-token reviewer
+      ansible.builtin.fail:
+        msg: >-
+          This OpenBao was installed with the stored-token reviewer: its StatefulSet
+          runs as the {{ _openbao_reviewer_guard_account }} ServiceAccount, not
+          {{ openbao_service_account }}, so the Kubernetes auth mount holds a token
+          that cannot call TokenReview. Its Kubernetes auth logins return 403 and
+          cannot work. A rerun does not repair the mount config, because no standing
+          identity may write auth/kubernetes/config after the install. Rebuild the
+          environment (ADR-0051, docs/decisions/0051-eso-main-store-kubernetes-auth.md
+          in the umbrella repository). Nothing has changed.
+      when: (_openbao_reviewer_guard_status.stdout | from_json).initialized | bool

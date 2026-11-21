@@ -105,6 +105,7 @@
           "runAsGroup": 1000,
           "runAsUser": 1000
         },
+        "serviceAccountName": "openbao",
         "volumes": [
           {
             "configMap": {

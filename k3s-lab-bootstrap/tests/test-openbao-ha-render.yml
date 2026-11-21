@@ -2,7 +2,8 @@
 # Render test for the OpenBao workload.
 #
 # One replica: the StatefulSet and the ConfigMap equal the single-replica render
-# that the templates must still produce
+# from before the Raft change, plus the one thing Kubernetes auth reviewer mode
+# adds: OpenBao's own ServiceAccount on the pod
 # (tests/fixtures/openbao-*-single-replica.*).
 # Three replicas: the Raft shape. Imports the SAME templates that workload.yml
 # renders, so a change to a template breaks this test.
@@ -28,12 +29,14 @@
         _sts1: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
         _cfg1: "{{ lookup('ansible.builtin.template', _tpl ~ '/config.hcl.j2') }}"
 
-    - name: One replica — assert the render equals the render from before the Raft change
+    - name: One replica — assert the render equals the pre-Raft render plus the reviewer ServiceAccount
       ansible.builtin.assert:
         that:
           - _sts1 == (lookup('ansible.builtin.file', 'fixtures/openbao-statefulset-single-replica.json') | from_json)
           - _cfg1 == lookup('ansible.builtin.file', 'fixtures/openbao-config-single-replica.hcl', rstrip=false)
-        fail_msg: The single-replica render differs from the render from before the Raft change.
+        fail_msg: >-
+          The single-replica render differs from the pre-Raft render plus the
+          reviewer-mode ServiceAccount.
 
     - name: One replica — assert the certificate names are unchanged
       ansible.builtin.assert:

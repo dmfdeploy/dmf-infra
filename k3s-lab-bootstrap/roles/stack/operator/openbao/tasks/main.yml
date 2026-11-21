@@ -37,13 +37,19 @@
 - name: Refuse an unsupported replica count
   ansible.builtin.include_tasks: assert-replicas.yml
 
-- name: Refuse Kubernetes auth for ESO without the reviewer identity
+# The install always sets up the setup issuer, the rotation scheduler, the approval
+# executor and the token revoker, and each logs in through Kubernetes auth. The
+# stored-token reviewer cannot validate any of those logins, so no supported
+# install runs with the variable off.
+- name: Refuse a Kubernetes auth setup without the reviewer identity
   ansible.builtin.assert:
-    that: openbao_eso_auth_method != 'kubernetes' or openbao_kubernetes_reviewer_enabled | bool
+    that: openbao_kubernetes_reviewer_enabled | bool
     fail_msg: >-
-      eso_openbao_auth_method is kubernetes, so openbao_kubernetes_reviewer_enabled
-      must be true: the ESO login needs the OpenBao ServiceAccount and the
-      local-file reviewer config.
+      openbao_kubernetes_reviewer_enabled is false, but the setup issuer, the
+      rotation scheduler, the approval executor and the token revoker log in
+      through Kubernetes auth. Without the OpenBao ServiceAccount and the
+      local-file reviewer config, every one of those logins returns 403. Remove
+      the override, or set openbao_kubernetes_reviewer_enabled to true.
 
 - name: Load the finite-TTL AppRole lifecycle registry
   ansible.builtin.include_vars:
@@ -93,6 +99,11 @@
       kind: Namespace
       metadata:
         name: "{{ openbao_namespace }}"
+
+# A rerun cannot repair an install that stored the old reviewer token, so stop before
+# the workload moves the pod to the new ServiceAccount.
+- name: Refuse a rerun on an install that uses the old Kubernetes auth reviewer
+  ansible.builtin.include_tasks: reviewer-install-guard.yml
 
 - name: Apply the OpenBao workload
   ansible.builtin.include_tasks: workload.yml
@@ -767,33 +778,9 @@
 
 # ---------------------------------------------------------------------------
 # Configure kubernetes auth backend
-# With openbao_kubernetes_reviewer_enabled, the config is written in local-file
-# reviewer mode with the write token of a fresh install, together with ESO's
-# role when ESO uses Kubernetes auth. Otherwise the config stores the pod's own
-# token.
+# The config is written in local-file reviewer mode with the write token of a
+# fresh install, together with ESO's role when ESO uses Kubernetes auth.
 # ---------------------------------------------------------------------------
-
-- name: Configure kubernetes auth backend
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao write auth/kubernetes/config
-      kubernetes_host=https://kubernetes.default.svc.cluster.local
-      kubernetes_ca_cert=@/var/run/secrets/kubernetes.io/serviceaccount/ca.crt
-      token_reviewer_jwt=@/var/run/secrets/kubernetes.io/serviceaccount/token'
-    stdin: "{{ _openbao_write_token }}\n"
-  no_log: true
-  register: _config_k8s
-  failed_when: false
-  when:
-    - not (openbao_kubernetes_reviewer_enabled | bool)
-    - openbao_init_raw is defined
-    - openbao_init_raw.changed | default(false)
 
 - name: Configure kubernetes auth backend in local-file reviewer mode
   ansible.builtin.include_tasks: kubernetes-auth-config.yml
@@ -801,7 +788,6 @@
     openbao_k8s_auth_token: "{{ _openbao_write_token }}"
   no_log: true
   when:
-    - openbao_kubernetes_reviewer_enabled | bool
     - openbao_init_raw is defined
     - openbao_init_raw.changed | default(false)
 
