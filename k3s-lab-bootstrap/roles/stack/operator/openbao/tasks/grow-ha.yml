@@ -125,6 +125,9 @@
 - name: Refuse a grow on an install that uses the old Kubernetes auth reviewer
   ansible.builtin.include_tasks: reviewer-install-guard.yml
 
+- name: Refuse a grow when the Kubernetes auth mount cannot validate a login
+  ansible.builtin.include_tasks: reviewer-login-probe.yml
+
 - name: Check the guard token can read the Raft paths
   ansible.builtin.include_tasks: capabilities-check.yml
 

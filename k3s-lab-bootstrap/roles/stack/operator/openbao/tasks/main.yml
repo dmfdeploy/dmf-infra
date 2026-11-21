@@ -546,6 +546,16 @@
     - openbao_init_raw is defined
     - openbao_init_raw.changed | default(false)
 
+# A rerun on an install that already runs as OpenBao's own ServiceAccount can still hold
+# the old stored reviewer token, if an earlier run stopped after the workload change and
+# before the config write. A login proves the mount works. It needs an unsealed server,
+# so it runs here, after the unseal above. Nothing before this point logs in through
+# Kubernetes auth, and no later step sets up or relies on a Kubernetes-auth client. A
+# fresh init writes the config itself below, so it has nothing to prove.
+- name: Prove that the Kubernetes auth mount validates a login on a rerun
+  ansible.builtin.include_tasks: reviewer-login-probe.yml
+  when: not (openbao_init_raw is defined and openbao_init_raw.changed | default(false))
+
 # ---------------------------------------------------------------------------
 # Trade the init token for a short token (fresh install only, and only while
 # openbao_dispose_root_token is true). The header of this file says why. The

@@ -366,7 +366,7 @@ class StandingRolesTest(unittest.TestCase):
 
 
 class ReviewerGuardProbeStaticTest(unittest.TestCase):
-    """The guard's login probe keeps the JWT and the client token off every command line."""
+    """The login probe keeps the JWT and the client token off every command line."""
 
     @classmethod
     def setUpClass(cls):
@@ -380,7 +380,7 @@ class ReviewerGuardProbeStaticTest(unittest.TestCase):
                 for key in ("block", "rescue", "always"):
                     walk(item.get(key, []))
 
-        walk(yaml.safe_load(text(OPENBAO / "tasks/reviewer-install-guard.yml")))
+        walk(yaml.safe_load(text(OPENBAO / "tasks/reviewer-login-probe.yml")))
 
     def commands(self):
         return [t for t in self.tasks if "ansible.builtin.command" in t]
