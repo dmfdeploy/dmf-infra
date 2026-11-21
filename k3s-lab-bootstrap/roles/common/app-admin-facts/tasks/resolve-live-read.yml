@@ -1,0 +1,78 @@
+---
+# Live-read resolution. Needs _app_admin_existing_data, the app_admin_fallback_*
+# inputs and app_admin_mode == 'live-read'. Reads no cluster or OpenBao.
+
+- name: Resolve fallback candidate (live-read mode)
+  ansible.builtin.set_fact:
+    _app_admin_fallback_resolved: >-
+      {{
+        (app_admin_fallback_candidates
+         | rejectattr('username', 'undefined')
+         | rejectattr('password', 'undefined')
+         | rejectattr('username', 'equalto', '')
+         | rejectattr('password', 'equalto', '')
+         | list
+         | first
+        ) | default({})
+      }}
+  when:
+    - app_admin_mode == 'live-read'
+    - app_admin_fallback_candidates | default([]) | length > 0
+  no_log: true
+
+# ---------------------------------------------------------------------------
+# Live-read mode: never generates, never writes, never emits email.
+# Resolution is strictly source-atomic — each layer must supply BOTH
+# username and password or the whole layer is rejected. Order:
+#   1. OpenBao secret if both fields non-empty
+#   2. First fallback_candidates entry with both fields non-empty
+#      (already filtered by the previous task)
+#   3. Scalar app_admin_fallback_username + app_admin_fallback_password if
+#      both non-empty
+#   4. Empty result (source: no-fallback)
+# Never mix username from layer A with password from layer B.
+# ---------------------------------------------------------------------------
+- name: Resolve live-read source layer
+  ansible.builtin.set_fact:
+    _app_admin_resolved_source: >-
+      {{
+        'openbao'
+        if (_app_admin_existing_data.username | default('') | length > 0
+            and _app_admin_existing_data.password | default('') | length > 0)
+        else (
+          'fallback-candidates'
+          if (_app_admin_fallback_resolved.username | default('') | length > 0
+              and _app_admin_fallback_resolved.password | default('') | length > 0)
+          else (
+            'fallback-scalar'
+            if (app_admin_fallback_username | length > 0
+                and app_admin_fallback_password | length > 0)
+            else 'no-fallback'
+          )
+        )
+      }}
+  when: app_admin_mode == 'live-read'
+  no_log: true
+
+- name: Set effective app-admin facts (live-read mode)
+  ansible.builtin.set_fact:
+    _app_admin_effective_username: >-
+      {{
+        {
+          'openbao': _app_admin_existing_data.username | default(''),
+          'fallback-candidates': _app_admin_fallback_resolved.username | default(''),
+          'fallback-scalar': app_admin_fallback_username,
+          'no-fallback': '',
+        }[_app_admin_resolved_source]
+      }}
+    _app_admin_effective_password: >-
+      {{
+        {
+          'openbao': _app_admin_existing_data.password | default(''),
+          'fallback-candidates': _app_admin_fallback_resolved.password | default(''),
+          'fallback-scalar': app_admin_fallback_password,
+          'no-fallback': '',
+        }[_app_admin_resolved_source]
+      }}
+  when: app_admin_mode == 'live-read'
+  no_log: true
