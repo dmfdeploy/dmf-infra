@@ -55,6 +55,9 @@
 #   FAKE_K8S_IGNORES_REVIEWER_FIELDS  set: an old mount, whose config read has no
 #                        token_reviewer_jwt_set field
 #   FAKE_K8S_WRITE_FAILS set: a write to auth/kubernetes/role/* fails
+#   FAKE_K8S_LOGIN_ANSWER  truncated | unexpected: a Kubernetes login that works (it makes the token and
+#                        exits 0) but prints a JSON answer cut off after the client token, or a JSON
+#                        object without auth.client_token.
 #   FAKE_K8S_LOGIN_FAILS 403: a Kubernetes login fails with 403 permission denied, as when the
 #                        mount's reviewer cannot call TokenReview. Any other text: the login
 #                        fails with that text as a transport error.
@@ -1008,7 +1011,17 @@ PY
         exit 2 ;;
       *) echo "Error writing data to auth/kubernetes/login: Put \"https://127.0.0.1:8200/v1/auth/kubernetes/login\": $FAKE_K8S_LOGIN_FAILS" >&2; exit 2 ;;
     esac
-    token_model login "$(field role "$@")" "$jwt" || exit 2
+    case "${FAKE_K8S_LOGIN_ANSWER:-}" in
+      "") token_model login "$(field role "$@")" "$jwt" || exit 2 ;;
+      truncated)
+        # The server made the token, then the answer was cut off inside the JSON.
+        answer="$(token_model login "$(field role "$@")" "$jwt")" || exit 2
+        printf '%s' "${answer%%\"accessor\"*}" ;;
+      unexpected)
+        # The server made the token, and the answer is a JSON object without auth.client_token.
+        token_model login "$(field role "$@")" "$jwt" > /dev/null || exit 2
+        printf '{"request_id":"fake","data":{}}\n' ;;
+    esac
     exit 0
     ;;
   "list auth/kubernetes/role")
