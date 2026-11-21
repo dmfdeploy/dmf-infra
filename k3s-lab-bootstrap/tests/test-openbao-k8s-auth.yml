@@ -71,6 +71,12 @@
     - name: Variable off — render the StatefulSet
       ansible.builtin.set_fact:
         _sts_off: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+      vars:
+        openbao_kubernetes_reviewer_enabled: false
+
+    - name: Default — render the StatefulSet
+      ansible.builtin.set_fact:
+        _sts_default: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
 
     - name: Variable on — render the StatefulSet
       ansible.builtin.set_fact:
@@ -90,6 +96,7 @@
         _sts_switch_only: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
       vars:
         openbao_eso_auth_method: kubernetes
+        openbao_kubernetes_reviewer_enabled: false
 
     - name: Assert off equals the old render and on only adds the ServiceAccount
       ansible.builtin.assert:
@@ -103,6 +110,8 @@
           # and flipping the ESO switch back keeps the ServiceAccount.
           - _sts_switch_only == _sts_off
           - _sts_rollback == _sts_on
+          # With no override, an install runs OpenBao as its own ServiceAccount.
+          - _sts_default == _sts_on
 
     # ── 2. ClusterSecretStore ───────────────────────────────────────────────
     - name: Apply the store in each order and keep what the cluster holds
@@ -370,6 +379,37 @@
       ansible.builtin.slurp:
         src: "{{ _state.path }}/workload-off/k8s-mutations.log"
       register: _workload_off
+
+    - name: Default — prepare the fake cluster
+      ansible.builtin.copy:
+        src: fixtures/k8s-seed/
+        dest: "{{ _state.path }}/workload-default/k8s/"
+        mode: preserve
+      changed_when: false
+
+    - name: Default — apply the workload with no override of the reviewer variable
+      environment:
+        FAKE_STATE: "{{ _state.path }}/workload-default"
+      block:
+        - name: Run workload.yml
+          ansible.builtin.include_role:
+            name: stack/operator/openbao
+            tasks_from: workload.yml
+          vars:
+            openbao_tls_secret_wait_retries: 2
+            openbao_tls_secret_wait_delay: 0
+
+    - name: Default — read the calls to the cluster
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/workload-default/k8s-mutations.log"
+      register: _workload_default
+
+    - name: Default — assert the ServiceAccount, the ClusterRole and the StatefulSet apply
+      ansible.builtin.assert:
+        that:
+          - "'present ServiceAccount openbao' in (_workload_default.content | b64decode)"
+          - "'present ClusterRole' in (_workload_default.content | b64decode)"
+          - "'present StatefulSet openbao' in (_workload_default.content | b64decode)"
 
     - name: Variable off — assert no RBAC object and the StatefulSet applied
       ansible.builtin.assert:

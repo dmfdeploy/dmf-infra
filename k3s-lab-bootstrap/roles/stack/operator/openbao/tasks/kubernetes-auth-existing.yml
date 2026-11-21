@@ -93,8 +93,8 @@
       ansible.builtin.assert:
         that: openbao_kubernetes_reviewer_enabled | bool
         fail_msg: >-
-          Set openbao_kubernetes_reviewer_enabled to true in the site inventory
-          first. The workload and the config must agree on it.
+          openbao_kubernetes_reviewer_enabled is false. Remove the override (the
+          default is true) first. The workload and the config must agree on it.
 
     - name: Apply the ServiceAccount, the ClusterRole and the workload
       ansible.builtin.include_tasks: workload.yml

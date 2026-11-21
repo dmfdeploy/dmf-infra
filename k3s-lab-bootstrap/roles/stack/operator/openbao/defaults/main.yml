@@ -133,11 +133,18 @@ openbao_eso_auth_method: "{{ eso_openbao_auth_method | default('approle') }}"
 
 # The Kubernetes auth mount's reviewer identity, separate from the ESO login
 # switch above. With true, OpenBao runs as its own ServiceAccount, a ClusterRole
-# grants it TokenReview, and a new install writes the mount config in local-file
-# reviewer mode. With false (and approle), the render equals the one from before
-# Kubernetes auth existed. Every Kubernetes-auth client of the mount shares this
-# reviewer, so a rollback of the ESO switch leaves it on.
-openbao_kubernetes_reviewer_enabled: false
+# grants it `create` on `tokenreviews` and nothing else, and the mount config
+# uses the pod's local token file in reviewer mode. Every Kubernetes-auth client
+# of the mount shares this reviewer (the setup issuer, the rotation scheduler,
+# the approval executor, the token revoker and, when selected, ESO), and the
+# install sets up the first four on every run. A rollback of the ESO switch
+# leaves it on.
+# With false, the mount would store the default ServiceAccount token of the
+# OpenBao pod as the reviewer. That account has no TokenReview grant, so every
+# Kubernetes-auth login returns 403. The role refuses a false value for that
+# reason. The variable stays only so that a deliberate override fails with a
+# message that names it.
+openbao_kubernetes_reviewer_enabled: true
 
 # Kubernetes auth role for ESO. It binds to ESO's controller ServiceAccount and
 # keeps the AppRole's `eso-reader` policy. ESO requests the audience for the

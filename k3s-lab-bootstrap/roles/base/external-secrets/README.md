@@ -13,8 +13,8 @@ external endpoint:
   (in-cluster default) or any external HTTPS endpoint
 - `eso_openbao_auth_method` — `approle` (default) or `kubernetes`. The openbao
   role reads the same variable, so set it once in the site inventory.
-  `kubernetes` also needs `openbao_kubernetes_reviewer_enabled: true`, which
-  stays on when you roll back.
+  `kubernetes` also needs `openbao_kubernetes_reviewer_enabled`, which is `true`
+  by default and stays on when you roll back.
 - `eso_openbao_role_id` / `eso_openbao_secret_id` — injected by the caller for
   `approle`; never persisted to disk on cluster nodes. With `kubernetes` they
   are not needed, and they stay available for a rollback.
@@ -42,7 +42,8 @@ ESO's own ServiceAccount (`eso_service_account_name`, default
 and the audience come from the openbao role's variables
 (`openbao_eso_kubernetes_role_name`, `openbao_eso_kubernetes_audience`).
 
-Two variables control the move. `openbao_kubernetes_reviewer_enabled` gives
+Two variables control the move. `openbao_kubernetes_reviewer_enabled` (on by
+default) gives
 OpenBao its own ServiceAccount and the local-file reviewer config; every
 Kubernetes-auth client of the mount shares it. `eso_openbao_auth_method`
 switches the main store's login. To roll back, set only
