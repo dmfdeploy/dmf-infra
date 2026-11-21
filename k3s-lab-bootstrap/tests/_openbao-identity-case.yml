@@ -17,7 +17,7 @@
   environment:
     FAKE_STATE: "{{ _state.path }}/{{ _case.name }}"
     FAKE_POLICY_WRITER: "1"
-    FAKE_BAO_PATH_AS_ARGUMENT: "1"
+    FAKE_BAO_PATH_ON_STDIN: "1"
   block:
     - name: "Identity verifier — {{ _case.name }}: make the state directory"
       ansible.builtin.file:

@@ -32,17 +32,28 @@
     _app_admin_fallback_resolved: {}
   no_log: true
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(app_admin_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "app_admin_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+
 - name: Read existing app-admin secret from OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ app_admin_openbao_namespace }}
-      exec -i {{ _openbao_session_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json {{ app_admin_secret_path | quote }}'
-    stdin: "{{ _openbao_session_client_token }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ app_admin_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _openbao_session_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
+    stdin: "{{ _openbao_session_client_token }}\n{{ app_admin_secret_path }}\n"
   register: _app_admin_existing_secret_raw
   changed_when: false
   failed_when: false
@@ -137,20 +148,36 @@
   when: app_admin_expected_username | length > 0
   no_log: true
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(app_admin_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "app_admin_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when:
+    - app_admin_mode == 'materialize'
+    - _app_admin_existing_data.username | default('') != _app_admin_effective_username
+      or _app_admin_existing_data.password | default('') != _app_admin_effective_password
+      or _app_admin_existing_data.email | default('') != _app_admin_effective_email
+
 # ---------------------------------------------------------------------------
 # Persist (materialize-only).
 # ---------------------------------------------------------------------------
 - name: Persist app-admin secret to OpenBao when missing or changed (materialize only)
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ app_admin_openbao_namespace }}
-      exec -i {{ _openbao_session_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv put {{ app_admin_secret_path | quote }} -'
-    stdin: "{{ _openbao_session_client_token }}\n{{ {'username': _app_admin_effective_username, 'password': _app_admin_effective_password, 'email': _app_admin_effective_email} | to_json }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ app_admin_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _openbao_session_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv put "$SECRET_PATH" -'
+    stdin: "{{ _openbao_session_client_token }}\n{{ app_admin_secret_path }}\n{{ {'username': _app_admin_effective_username, 'password': _app_admin_effective_password, 'email': _app_admin_effective_email} | to_json }}\n"
   register: _app_admin_kv_put
   when:
     - app_admin_mode == 'materialize'

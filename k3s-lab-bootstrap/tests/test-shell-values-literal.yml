@@ -1,0 +1,129 @@
+---
+# Test that template values reach the shell programs of two production tasks unchanged.
+#
+# A task sends each value to its fixed `sh -c` program on stdin, one per line, and the
+# program reads it with `IFS= read -r NAME`. Stdin reaches the program unchanged on every
+# ansible-core version. A value passed as an argument is not: the command module expands
+# `$NAME` in every argument on ansible-core 2.16 and later.
+#
+# The play runs two real task files with a value that holds both `$` and `'`:
+#
+#   - playbooks/tasks/verify-eso-no-pki.yml sends a token and then a path;
+#   - the openbao-session role sends a user name and then a JSON body.
+#
+# The fake kubectl runs the received program here, and tests/fixtures/capture-bao records
+# the arguments, the standard input and the token that the program gave `bao`. The play
+# checks that the value arrived byte for byte, in the position the program passes it, and
+# that the newline test of the tasks flags each kind of line break.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   export PATH="$PWD/tests/fixtures/fake-kubectl:$PATH"
+#   export ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections"
+#   ansible-playbook tests/test-shell-values-literal.yml
+- name: Test - shell values arrive unchanged
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    literal_value: "$HOME/it's"
+    literal_token: "tok$HOME'1"
+    literal_password: "pa$HOME'ss"
+    line_break: "\n"
+
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: shell-values-literal-
+      register: _state
+      changed_when: false
+
+    - name: Make the fake cluster and capture directories
+      ansible.builtin.file:
+        path: "{{ _state.path }}/{{ item }}"
+        state: directory
+        mode: "0700"
+      loop: [k8s, capture-probe, capture-login]
+      changed_when: false
+
+    - name: Give the fake cluster one OpenBao pod
+      ansible.builtin.copy:
+        content: '[{"metadata": {"name": "openbao-0"}}]'
+        dest: "{{ _state.path }}/k8s/Pod-all.json"
+        mode: "0600"
+      changed_when: false
+
+    - name: Write the break-glass file with a user name that holds `$` and `'`
+      ansible.builtin.copy:
+        content: "{{ {'ops_admin_username': literal_value, 'ops_admin_password': literal_password} | to_json }}"
+        dest: "{{ _state.path }}/breakglass.json"
+        mode: "0600"
+      no_log: true
+      changed_when: false
+
+    - name: Run the probe task, which sends a token and then a path
+      ansible.builtin.include_tasks: ../playbooks/tasks/verify-eso-no-pki.yml
+      vars:
+        verify_openbao_namespace: openbao
+        _verify_openbao_pod: openbao-0
+        _verify_eso_auth:
+          client_token: "{{ literal_token }}"
+        verify_eso_pki_probe_path: "{{ literal_value }}"
+      args:
+        apply:
+          environment:
+            FAKE_STATE: "{{ _state.path }}"
+            FAKE_EXEC_STUB_DIR: "{{ playbook_dir }}/fixtures/capture-bao"
+            STUB_CAPTURE: "{{ _state.path }}/capture-probe"
+
+    - name: Run the login task, which sends a user name and then a JSON body
+      block:
+        - name: Include the openbao-session role
+          ansible.builtin.include_role:
+            name: "{{ playbook_dir }}/../roles/common/openbao-session"
+          vars:
+            openbao_session_mode: operator
+            openbao_session_breakglass_file: "{{ _state.path }}/breakglass.json"
+      environment:
+        FAKE_STATE: "{{ _state.path }}"
+        FAKE_EXEC_STUB_DIR: "{{ playbook_dir }}/fixtures/capture-bao"
+        STUB_CAPTURE: "{{ _state.path }}/capture-login"
+
+    - name: Read what the programs gave bao
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/{{ item }}"
+      loop:
+        - capture-probe/argv-1
+        - capture-probe/stdin-1
+        - capture-probe/token-1
+        - capture-login/argv-1
+        - capture-login/stdin-1
+      register: _capture
+      no_log: true
+
+    - name: Assert the values arrived byte for byte, in the position the programs pass them
+      vars:
+        _captured: "{{ dict(_capture.results | map(attribute='item') | zip(_capture.results | map(attribute='content') | map('b64decode'))) }}"
+      ansible.builtin.assert:
+        that:
+          - _captured['capture-probe/argv-1'] == ['token', 'capabilities', '-format=json', literal_value] | join(line_break) ~ line_break
+          - _captured['capture-probe/token-1'] == literal_token
+          - _captured['capture-probe/stdin-1'] | trim == ''
+          - _captured['capture-login/argv-1'] == ['write', '-format=json', 'auth/userpass/login/' ~ literal_value, '-'] | join(line_break) ~ line_break
+          - (_captured['capture-login/stdin-1'] | from_json).password == literal_password
+          - _openbao_session_client_token == 'stub-client-token'
+        fail_msg: >-
+          The programs gave bao {{ _captured | to_json }}.
+
+    - name: Assert the newline test flags each kind of line break
+      ansible.builtin.assert:
+        that: item is search('[\r\n]')
+      loop:
+        - "one\ntwo"
+        - "one\n"
+        - "one\rtwo"
+
+    - name: Assert the newline test passes a plain value
+      ansible.builtin.assert:
+        that: literal_value is not search('[\r\n]')

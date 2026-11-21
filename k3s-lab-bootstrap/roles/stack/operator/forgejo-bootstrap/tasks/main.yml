@@ -711,15 +711,30 @@
   run_once: true
   when: forgejo_persist_to_openbao | bool
 
+- name: Check that the login user holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(_forgejo_openbao_username) is not search('[\\r\\n]')"
+    fail_msg: "_forgejo_openbao_username must not contain a newline: the program reads it from stdin, one value per line."
+  when: forgejo_persist_to_openbao | bool
+  run_once: true
+
 - name: Log into OpenBao with operator userpass for Forgejo persistence
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ forgejo_openbao_namespace }}
-      exec -i {{ _forgejo_openbao_pod }}
-      -- sh -c '
-      bao write -format=json auth/userpass/login/{{ _forgejo_openbao_username | quote }} -'
-    stdin: "{{ {'password': _forgejo_openbao_password} | to_json }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ forgejo_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _forgejo_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r LOGIN_USER; bao write -format=json "auth/userpass/login/$LOGIN_USER" -'
+    stdin: "{{ _forgejo_openbao_username }}\n{{ {'password': _forgejo_openbao_password} | to_json }}\n"
   register: _forgejo_openbao_login_raw
   changed_when: false
   run_once: true
@@ -733,17 +748,30 @@
   no_log: true
   when: forgejo_persist_to_openbao | bool
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(forgejo_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "forgejo_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when: forgejo_persist_to_openbao | bool
+  run_once: true
+
 - name: Persist Forgejo integration secrets to in-cluster OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ forgejo_openbao_namespace }}
-      exec -i {{ _forgejo_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv put {{ forgejo_runtime_secret_path | quote }} -'
-    stdin: "{{ _forgejo_openbao_client_token }}\n{{ {'forgejo_admin_token': forgejo_admin_token_effective, 'forgejo_svc_password': forgejo_svc_password_effective, 'forgejo_svc_token': forgejo_svc_token_effective} | to_json }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ forgejo_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _forgejo_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv put "$SECRET_PATH" -'
+    stdin: "{{ _forgejo_openbao_client_token }}\n{{ forgejo_runtime_secret_path }}\n{{ {'forgejo_admin_token': forgejo_admin_token_effective, 'forgejo_svc_password': forgejo_svc_password_effective, 'forgejo_svc_token': forgejo_svc_token_effective} | to_json }}\n"
   run_once: true
   no_log: true
   when: forgejo_persist_to_openbao | bool

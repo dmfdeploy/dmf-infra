@@ -1,0 +1,19 @@
+#!/bin/sh
+# A stub bao that records what a program passed it. For each call it writes, under
+# $STUB_CAPTURE, three files named with the call number N: argv-N (every argument, one per
+# line, so a probe value must hold no line break), stdin-N (the standard input that the
+# program left for bao) and token-N (the value of BAO_TOKEN). It answers a login with a client token, a capabilities probe with
+# `deny`, and any other call with `{}`. The fake kubectl puts this directory first on PATH
+# when FAKE_EXEC_STUB_DIR names it.
+set -eu
+dir="${STUB_CAPTURE:?STUB_CAPTURE must name a directory}"
+n=1
+while [ -e "$dir/argv-$n" ]; do n=$((n + 1)); done
+printf '%s\n' "$@" > "$dir/argv-$n"
+cat > "$dir/stdin-$n"
+printf '%s' "${BAO_TOKEN:-}" > "$dir/token-$n"
+case " $* " in
+  *" write "*"/login"*) printf '{"auth": {"client_token": "stub-client-token"}}' ;;
+  *" token capabilities "*) printf '["deny"]' ;;
+  *) printf '{}' ;;
+esac

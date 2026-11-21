@@ -36,10 +36,8 @@
       - --
       - sh
       - -c
-      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao read -format=json "$1"'
-      - sh
-      - "sys/auth"
-    stdin: "{{ _verify_token_identity_reader }}\n"
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r READ_PATH; export BAO_TOKEN; exec bao read -format=json "$READ_PATH"'
+    stdin: "{{ _verify_token_identity_reader }}\nsys/auth\n"
   register: _verify_auth_read
   changed_when: false
   no_log: true

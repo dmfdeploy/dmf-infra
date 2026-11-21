@@ -67,6 +67,13 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_secret_jobs_no_trace_mode.py' -v
       - name: tasks that once passed a secret as an argument keep it off the command line
         run: python3 -m unittest discover -s tests -p 'test_secrets_not_in_argv_render.py' -v
+      - name: shell programs take their values on stdin
+        run: python3 -m unittest discover -s tests -p 'test_shell_values_as_arguments.py' -v
+      - name: shell values reach their program unchanged
+        run: |
+          PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
+          ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
+          ansible-playbook tests/test-shell-values-literal.yml
       - name: console values pass the certificate authority facts through
         run: python3 -m unittest discover -s tests -p 'test_cms_values_trust_info.py' -v
       - name: ansible syntax-check

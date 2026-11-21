@@ -67,7 +67,8 @@ class ConfigStepTest(unittest.TestCase):
     config = text(OPENBAO / "tasks/kubernetes-auth-config.yml")
 
     def test_config_has_the_portable_host_and_pins_no_ca_or_token(self):
-        self.assertIn("kubernetes_host={{ openbao_kubernetes_auth_host | quote }}", self.config)
+        self.assertIn('"kubernetes_host=$K8S_HOST"', self.config)
+        self.assertIn("{{ openbao_kubernetes_auth_host }}", self.config)
         self.assertIn('kubernetes_ca_cert=""', self.config)
         self.assertIn('token_reviewer_jwt=""', self.config)
         self.assertIn("disable_local_ca_jwt=false", self.config)

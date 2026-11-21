@@ -311,16 +311,28 @@
       changed_when: false
       no_log: true
 
+    - name: Check that the k8s role holds no newline
+      ansible.builtin.assert:
+        that:
+          - "(verify_setup_issuer_k8s_role) is not search('[\\r\\n]')"
+        fail_msg: "verify_setup_issuer_k8s_role must not contain a newline: the program reads it from stdin, one value per line."
+
     - name: Log in as the setup issuer
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ verify_openbao_namespace }}
-          exec -i {{ _verify_openbao_pod }}
-          -- sh -c '
-          exec bao write -format=json auth/kubernetes/login
-          role={{ verify_setup_issuer_k8s_role | quote }} jwt=-'
-        stdin: "{{ _verify_issuer_jwt.stdout | trim }}"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ verify_openbao_namespace }}"
+          - exec
+          - -i
+          - "{{ _verify_openbao_pod }}"
+          - --
+          - sh
+          - -c
+          - 'IFS= read -r K8S_ROLE; exec bao write -format=json auth/kubernetes/login "role=$K8S_ROLE" jwt=-'
+        stdin: "{{ verify_setup_issuer_k8s_role }}\n{{ _verify_issuer_jwt.stdout | trim }}"
         stdin_add_newline: false
       register: _verify_issuer_login
       changed_when: false
@@ -363,16 +375,29 @@
       failed_when: false
       no_log: true
 
+    - name: Check that the k8s role holds no newline
+      ansible.builtin.assert:
+        that:
+          - "(verify_rotation_scheduler_k8s_role) is not search('[\\r\\n]')"
+        fail_msg: "verify_rotation_scheduler_k8s_role must not contain a newline: the program reads it from stdin, one value per line."
+      when: _verify_scheduler_jwt.rc == 0
+
     - name: Log in as the rotation scheduler
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ verify_openbao_namespace }}
-          exec -i {{ _verify_openbao_pod }}
-          -- sh -c '
-          exec bao write -format=json auth/kubernetes/login
-          role={{ verify_rotation_scheduler_k8s_role | quote }} jwt=-'
-        stdin: "{{ _verify_scheduler_jwt.stdout | trim }}"
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ verify_openbao_namespace }}"
+          - exec
+          - -i
+          - "{{ _verify_openbao_pod }}"
+          - --
+          - sh
+          - -c
+          - 'IFS= read -r K8S_ROLE; exec bao write -format=json auth/kubernetes/login "role=$K8S_ROLE" jwt=-'
+        stdin: "{{ verify_rotation_scheduler_k8s_role }}\n{{ _verify_scheduler_jwt.stdout | trim }}"
         stdin_add_newline: false
       register: _verify_scheduler_login
       changed_when: false
@@ -461,17 +486,31 @@
     # ────────────────────────────────────────────────────────────────
     # Step 3 — AC-5 negative probes (Implementation Brief §7.5)
     # ────────────────────────────────────────────────────────────────
+    - name: Check that the caps path holds no newline
+      ansible.builtin.assert:
+        that:
+          - "(item.path) is not search('[\\r\\n]')"
+        fail_msg: "item.path must not contain a newline: the program reads it from stdin, one value per line."
+      loop: "{{ _verify_active_probes }}"
+      loop_control:
+        label: "{{ item.identity }} → {{ item.path }}"
+
     - name: Probe capability matrix
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ verify_openbao_namespace }}
-          exec -i {{ _verify_openbao_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao token capabilities -format=json {{ item.path | quote }}'
-        stdin: >-
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - --kubeconfig
+          - /etc/rancher/k3s/k3s.yaml
+          - -n
+          - "{{ verify_openbao_namespace }}"
+          - exec
+          - -i
+          - "{{ _verify_openbao_pod }}"
+          - --
+          - sh
+          - -c
+          - 'IFS= read -r BAO_TOKEN; IFS= read -r CAPS_PATH; export BAO_TOKEN; bao token capabilities -format=json "$CAPS_PATH"'
+        stdin: |-
           {{
             {
               'ops-admin': _verify_token_ops_admin,
@@ -481,6 +520,7 @@
               'rotation-scheduler': _verify_token_rotation_scheduler
             }[item.identity]
           }}
+          {{ item.path }}
       register: _verify_probe_results
       changed_when: false
       no_log: true
@@ -685,16 +725,28 @@
           changed_when: false
           no_log: true
 
+        - name: Check that the k8s role holds no newline
+          ansible.builtin.assert:
+            that:
+              - "(verify_eso_k8s_role) is not search('[\\r\\n]')"
+            fail_msg: "verify_eso_k8s_role must not contain a newline: the program reads it from stdin, one value per line."
+
         - name: Log in as ESO with the fresh token
-          ansible.builtin.shell:
-            cmd: >-
-              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-              -n {{ verify_openbao_namespace }}
-              exec -i {{ _verify_openbao_pod }}
-              -- sh -c '
-              exec bao write -format=json auth/kubernetes/login
-              role={{ verify_eso_k8s_role | quote }} jwt=-'
-            stdin: "{{ _verify_eso_jwt.stdout | trim }}"
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ verify_openbao_namespace }}"
+              - exec
+              - -i
+              - "{{ _verify_openbao_pod }}"
+              - --
+              - sh
+              - -c
+              - 'IFS= read -r K8S_ROLE; exec bao write -format=json auth/kubernetes/login "role=$K8S_ROLE" jwt=-'
+            stdin: "{{ verify_eso_k8s_role }}\n{{ _verify_eso_jwt.stdout | trim }}"
             stdin_add_newline: false
           register: _verify_eso_login
           changed_when: false
@@ -828,16 +880,34 @@
           changed_when: false
           no_log: true
 
+        - name: Check that the k8s role holds no newline
+          ansible.builtin.assert:
+            that:
+              - "(verify_eso_k8s_role) is not search('[\\r\\n]')"
+            fail_msg: "verify_eso_k8s_role must not contain a newline: the program reads it from stdin, one value per line."
+          loop:
+            - { case: wrong ServiceAccount, jwt: "{{ _verify_wrong_sa_jwt.stdout | trim }}" }
+            - { case: wrong namespace, jwt: "{{ _verify_wrong_ns_jwt.stdout | trim }}" }
+            - { case: wrong audience, jwt: "{{ _verify_wrong_aud_jwt.stdout | trim }}" }
+          loop_control:
+            label: "{{ item.case }}"
+
         - name: Try to log in with each wrong token
-          ansible.builtin.shell:
-            cmd: >-
-              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-              -n {{ verify_openbao_namespace }}
-              exec -i {{ _verify_openbao_pod }}
-              -- sh -c '
-              exec bao write -format=json auth/kubernetes/login
-              role={{ verify_eso_k8s_role | quote }} jwt=-'
-            stdin: "{{ item.jwt }}"
+          ansible.builtin.command:
+            argv:
+              - kubectl
+              - --kubeconfig
+              - /etc/rancher/k3s/k3s.yaml
+              - -n
+              - "{{ verify_openbao_namespace }}"
+              - exec
+              - -i
+              - "{{ _verify_openbao_pod }}"
+              - --
+              - sh
+              - -c
+              - 'IFS= read -r K8S_ROLE; exec bao write -format=json auth/kubernetes/login "role=$K8S_ROLE" jwt=-'
+            stdin: "{{ verify_eso_k8s_role }}\n{{ item.jwt }}"
             stdin_add_newline: false
           register: _verify_wrong_logins
           changed_when: false
