@@ -5,17 +5,15 @@
 # atomic username/password extraction) against six hand-built scenarios
 # WITHOUT contacting any cluster or OpenBao instance.
 #
-# The role itself needs an established OpenBao session + a real kubectl
-# exec to read the secret, so we can't include the role end-to-end here.
-# Instead, this playbook duplicates the resolution Jinja from
-# roles/common/app-admin-facts/tasks/main.yml verbatim (the "Resolve
-# live-read source layer" and "Set effective app-admin facts (live-read
-# mode)" tasks). If those expressions ever change, this file must change
-# in lockstep — that lockstep is the test.
+# The role itself needs an established OpenBao session and a real kubectl
+# exec to read the secret, so this playbook can't run the whole role. It
+# includes the role's tasks/resolve-live-read.yml, which holds the source-layer
+# selection and the username and password extraction, so a change to the
+# role's logic changes what this test checks.
 #
 # Each scenario sets _app_admin_existing_data + the fallback inputs to
-# represent one source-precedence case, runs the same dict-lookup logic
-# the role uses, and asserts the resolved source + the username/password
+# represent one source-precedence case, runs the role's resolution
+# task file, and asserts the resolved source + the username/password
 # pair came from the same source layer (no cross-layer mixing).
 #
 # Run locally:
@@ -26,6 +24,7 @@
   connection: local
 
   vars:
+    app_admin_mode: live-read
     # Six scenarios cover:
     #   1. OpenBao has both fields              -> source=openbao
     #   2. OpenBao has username but no password -> source must NOT be openbao

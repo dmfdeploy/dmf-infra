@@ -40,7 +40,7 @@ jobs:
               exit 0
             fi
             echo "Collection install failed (attempt $attempt of 3)"
-            sleep 10
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
           done
           exit 1
       - name: yamllint
@@ -186,7 +186,7 @@ jobs:
               exit 0
             fi
             echo "Collection install failed (attempt $attempt of 3)"
-            sleep 10
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
           done
           exit 1
       - name: Every OpenBao test playbook is in the list, once
@@ -251,7 +251,7 @@ jobs:
               exit 0
             fi
             echo "Collection install failed (attempt $attempt of 3)"
-            sleep 10
+            if [ "$attempt" -lt 3 ]; then sleep 10; fi
           done
           exit 1
       - name: OpenBao AppRole lifecycle registry and setup issuer tests (dmfdeploy/dmfdeploy#11, #396)
