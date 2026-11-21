@@ -1,28 +1,18 @@
 ---
-# Stop before the workload changes on an initialized OpenBao whose Kubernetes auth
-# mount cannot validate a login. The old install stored the token of the pod's
-# `default` ServiceAccount as the mount's reviewer credential. That account has no
-# TokenReview grant, so every Kubernetes-auth login returns 403. No standing identity
-# may write the mount config after the install, so a rerun cannot repair it, and the
-# play stops before it changes anything (ADR-0051).
+# Stop before the workload changes on an initialized OpenBao that was installed with
+# the old Kubernetes auth reviewer. That install stored the token of the pod's
+# `default` ServiceAccount as the mount's reviewer credential. The account has no
+# TokenReview grant, so every Kubernetes-auth login returns 403. Applying the
+# workload would move the pod to OpenBao's own ServiceAccount but leave that stored
+# token in the mount config, and no standing identity may write the config after the
+# install. A rerun cannot repair it, so the play stops before it changes anything.
 #
-# The StatefulSet decides where to look. Without one, this is a new install and the
-# check passes. With one, the check reads the init status, the same way the install
-# tells a rerun from a fresh init. A server that is not initialized has no stored
-# token, so the check passes. On an initialized server:
-#   - A StatefulSet without a ServiceAccount, or with `default`, is the old install.
-#     The check stops.
-#   - A StatefulSet that runs as OpenBao's own ServiceAccount may still hold the old
-#     token: the workload moves before the config is written, so an interrupted run
-#     leaves that state. The ServiceAccount cannot tell, so the check proves a login.
-#     It mints a short-lived token for the token revoker's ServiceAccount, which the
-#     role always installs with a Kubernetes-auth role, logs in with it inside the
-#     pod and revokes the client token the login returned. A login that the mount
-#     refuses stops the check. A login that fails for another reason stops it too,
-#     because the check cannot tell the state.
-#   - A sealed server cannot log anyone in. The play unseals later than this check,
-#     so it stops and asks for an unseal first.
-# The JWT and the client token travel on stdin, never in an argument or a log.
+# The StatefulSet decides. Without one, this is a new install and the check passes.
+# A StatefulSet whose pod template runs as OpenBao's own ServiceAccount passes this check
+# (see the end of this comment). Only a template without a ServiceAccount or
+# with `default` is the old install. The check then reads the init status, the same
+# way the install tells a rerun from a fresh init, and stops only when the server is
+# initialized: an old StatefulSet that never got initialized has no stored token.
 - name: Read the StatefulSet that the workload would change
   kubernetes.core.k8s_info:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
@@ -41,8 +31,10 @@
         .serviceAccountName | default('default', true)
       }}
 
-- name: Check an installed OpenBao before the workload changes
-  when: _openbao_reviewer_guard_installed | bool
+- name: Check the init status of an install that runs as another ServiceAccount
+  when:
+    - _openbao_reviewer_guard_installed | bool
+    - _openbao_reviewer_guard_account != openbao_service_account
   block:
     - name: Read the init status of openbao-0
       ansible.builtin.command:
@@ -66,18 +58,14 @@
     - name: Stop when the init status cannot be read
       ansible.builtin.fail:
         msg: >-
-          The OpenBao StatefulSet exists and the play cannot read the init status of
-          openbao-0 to tell whether this install holds a stored reviewer token.
-          Nothing has changed. Check that the pod runs and that `kubectl exec` works,
-          then run the play again.
+          The OpenBao StatefulSet runs as the {{ _openbao_reviewer_guard_account }}
+          ServiceAccount, not {{ openbao_service_account }}, and the play cannot read
+          the init status of openbao-0 to tell whether that install holds a stored
+          reviewer token. Nothing has changed. Check that the pod runs, then run the
+          play again.
       when: >-
         _openbao_reviewer_guard_status.stdout | default('') is not match('(?s)\s*\{')
         or 'initialized' not in (_openbao_reviewer_guard_status.stdout | from_json)
-
-    - name: Record the init status
-      ansible.builtin.set_fact:
-        _openbao_reviewer_guard_initialized: "{{ (_openbao_reviewer_guard_status.stdout | from_json).initialized | bool }}"
-        _openbao_reviewer_guard_sealed: "{{ (_openbao_reviewer_guard_status.stdout | from_json).sealed | default(false) | bool }}"
 
     - name: Stop on an initialized install that uses the stored-token reviewer
       ansible.builtin.fail:
@@ -90,153 +78,8 @@
           identity may write auth/kubernetes/config after the install. Rebuild the
           environment (ADR-0051, docs/decisions/0051-eso-main-store-kubernetes-auth.md
           in the umbrella repository). Nothing has changed.
-      when:
-        - _openbao_reviewer_guard_initialized | bool
-        - _openbao_reviewer_guard_account != openbao_service_account
-
-    - name: Stop on a sealed server, where no login can be proved
-      ansible.builtin.fail:
-        msg: >-
-          openbao-0 is sealed, and a sealed server cannot log anyone in, so the play
-          cannot check that the Kubernetes auth mount validates logins before it changes
-          OpenBao. Unseal OpenBao (bin/unseal-openbao.sh), then run the play again.
-          Nothing has changed.
-      when:
-        - _openbao_reviewer_guard_initialized | bool
-        - _openbao_reviewer_guard_sealed | bool
-
-    - name: Prove a Kubernetes auth login on an initialized server
-      when: _openbao_reviewer_guard_initialized | bool
-      block:
-        - name: Mint a short-lived token for the probe identity
-          ansible.builtin.command:
-            argv:
-              - kubectl
-              - --kubeconfig
-              - /etc/rancher/k3s/k3s.yaml
-              - -n
-              - "{{ openbao_namespace }}"
-              - create
-              - token
-              - "{{ openbao_revoker_service_account }}"
-              - --audience
-              - "{{ openbao_revoker_audience }}"
-              - --duration
-              - 10m
-          register: _openbao_reviewer_guard_jwt
-          changed_when: false
-          failed_when: false
-          check_mode: false
-          no_log: true
-
-        - name: Stop when the probe token cannot be minted
-          ansible.builtin.fail:
-            msg: >-
-              The play cannot mint a token for the {{ openbao_revoker_service_account }}
-              ServiceAccount in {{ openbao_namespace }}, which it needs to prove that the
-              Kubernetes auth mount validates logins:
-              {{ (_openbao_reviewer_guard_jwt.stderr | default('') | trim)[:300] or 'no error text' }}.
-              Nothing has changed. Check that the ServiceAccount exists (the OpenBao
-              role creates it) and that the kubeconfig can create tokens, then run the
-              play again.
-          when: >-
-            _openbao_reviewer_guard_jwt.rc | default(1) != 0
-            or _openbao_reviewer_guard_jwt.stdout | default('') | trim | length == 0
-
-        # The role name and the JWT are the two stdin lines of a fixed program. The
-        # JWT is the last line, so `jwt=-` reads it as the whole of what remains.
-        - name: Log in to the Kubernetes auth mount inside openbao-0
-          ansible.builtin.command:
-            argv:
-              - kubectl
-              - --kubeconfig
-              - /etc/rancher/k3s/k3s.yaml
-              - -n
-              - "{{ openbao_namespace }}"
-              - exec
-              - -i
-              - openbao-0
-              - --
-              - sh
-              - -c
-              - 'IFS= read -r PROBE_ROLE; bao write -format=json auth/kubernetes/login role="$PROBE_ROLE" jwt=-'
-            stdin: "{{ openbao_revoker_k8s_role }}\n{{ _openbao_reviewer_guard_jwt.stdout | trim }}"
-            stdin_add_newline: false
-          register: _openbao_reviewer_guard_login
-          changed_when: false
-          failed_when: false
-          check_mode: false
-          no_log: true
-
-        - name: Stop when the mount's reviewer cannot validate a login
-          ansible.builtin.fail:
-            msg: >-
-              The Kubernetes auth mount's reviewer cannot validate logins: a login of the
-              {{ openbao_revoker_k8s_role }} role returned 403 permission denied. This
-              OpenBao holds a reviewer token that cannot call TokenReview, for example
-              after a run that moved the workload to the {{ openbao_service_account }}
-              ServiceAccount and stopped before it wrote the mount config. A rerun does
-              not repair the mount config, because no standing identity may write
-              auth/kubernetes/config after the install. Rebuild the environment
-              (ADR-0051, docs/decisions/0051-eso-main-store-kubernetes-auth.md in the
-              umbrella repository). Nothing has changed.
-          when: >-
-            _openbao_reviewer_guard_login.rc | default(1) != 0
-            and (_openbao_reviewer_guard_login.stderr | default('')
-            is search('(?i)(\b403\b|permission denied|service account unauthorized)'))
-
-        - name: Read the client token of the login
-          ansible.builtin.set_fact:
-            _openbao_reviewer_guard_client_token: >-
-              {{
-                ((_openbao_reviewer_guard_login.stdout | from_json).auth | default({})).client_token | default('', true)
-                if (_openbao_reviewer_guard_login.rc | default(1) == 0
-                    and _openbao_reviewer_guard_login.stdout | default('') is match('(?s)\s*\{'))
-                else ''
-              }}
-          no_log: true
-
-        - name: Stop when the login gave no usable answer
-          ansible.builtin.fail:
-            msg: >-
-              The play could not prove a Kubernetes auth login with the
-              {{ openbao_revoker_k8s_role }} role in openbao-0
-              (exit code {{ _openbao_reviewer_guard_login.rc | default('unknown') }}):
-              {{ (_openbao_reviewer_guard_login.stderr | default('') | trim)[:300] or 'no error text' }}.
-              The play does not guess that the mount works. Nothing has changed. Check
-              that the pod runs, that `kubectl exec` works and that the
-              {{ openbao_revoker_k8s_role }} role exists in the auth mount, then run the
-              play again.
-          when: _openbao_reviewer_guard_client_token | length == 0
-
-        - name: Revoke the client token of the login
-          ansible.builtin.command:
-            argv:
-              - kubectl
-              - --kubeconfig
-              - /etc/rancher/k3s/k3s.yaml
-              - -n
-              - "{{ openbao_namespace }}"
-              - exec
-              - -i
-              - openbao-0
-              - --
-              - sh
-              - -c
-              - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; bao token revoke -self'
-            stdin: "{{ _openbao_reviewer_guard_client_token }}\n"
-          register: _openbao_reviewer_guard_revoke
-          changed_when: false
-          failed_when: false
-          check_mode: false
-          no_log: true
-
-        - name: Stop when the client token of the login stays live
-          ansible.builtin.fail:
-            msg: >-
-              The login worked, but the play could not revoke the short-lived client token
-              that it returned
-              ({{ (_openbao_reviewer_guard_revoke.stderr | default('') | trim)[:300] or 'no error text' }}).
-              The token expires on its own within the role's token lifetime. Nothing else
-              has changed. Check that the pod runs, then run the play again.
-          when: _openbao_reviewer_guard_revoke.rc | default(1) != 0
+      when: (_openbao_reviewer_guard_status.stdout | from_json).initialized | bool
+#
+# A StatefulSet that already runs as OpenBao's own ServiceAccount can still hold the old
+# token, after a run that stopped before it wrote the mount config. reviewer-login-probe.yml
+# catches that with a login, after the server is unsealed.

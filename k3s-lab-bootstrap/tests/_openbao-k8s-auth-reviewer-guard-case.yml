@@ -1,11 +1,13 @@
 ---
-# One case of test-openbao-k8s-auth.yml, part 8: reviewer-install-guard.yml against the
-# fake cluster. case.account is the serviceAccountName of the installed StatefulSet's
+# One case of test-openbao-k8s-auth.yml, part 8: reviewer-install-guard.yml and
+# reviewer-login-probe.yml against the fake cluster. case.account is the serviceAccountName of the installed StatefulSet's
 # pod template ("" leaves the field out, and "none" means no StatefulSet at all).
 # case.env sets the fake bao's and kubectl's scenario, for example FAKE_INITIALIZED.
 # case.role "absent" leaves the probe identity's Kubernetes-auth role out of the mount.
 # case.expect is text that the failure message holds, and case.rebuild says whether that
-# message tells the operator to rebuild. case.probe says whether the guard mints a probe
+# message tells the operator to rebuild. case.stage is the step that stops the play: guard
+# (before the workload) or probe (after the unseal). case.unseal runs the role's unseal
+# between them. case.probe says whether the guard mints a probe
 # token, and case.revoked whether the client token of the login ends up revoked.
 - name: "{{ case.name }} — prepare the fake cluster"
   ansible.builtin.file:
@@ -44,10 +46,30 @@
     mode: "0644"
   when: case.role | default('present') != 'absent'
 
-- name: "{{ case.name }} — run the guard"
+# The order of a rerun in main.yml: the guard before the workload, then the unseal of the
+# role (the real unseal-pods.yml, when case.unseal is set), then the login probe. A fresh
+# install (case.account "none") has no StatefulSet, and main.yml skips the probe after a
+# fresh init, so the probe runs only when an installed StatefulSet exists.
+# _stage records the last step that started: guard or probe.
+- name: "{{ case.name }} — run the guard, the unseal and the probe"
   block:
     - name: Run reviewer-install-guard.yml
-      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/reviewer-install-guard.yml
+      ansible.builtin.set_fact:
+        _stage: guard
+    - ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/reviewer-install-guard.yml
+    - name: Unseal as the role does
+      ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/unseal-pods.yml
+      vars:
+        openbao_replicas: 1
+        openbao_unseal_pods: [openbao-0]
+        openbao_unseal_keys_hex: [aa11, bb22, cc33]
+      when: case.unseal | default(false)
+    - name: Run reviewer-login-probe.yml
+      ansible.builtin.set_fact:
+        _stage: probe
+      when: case.account != 'none'
+    - ansible.builtin.include_tasks: ../roles/stack/operator/openbao/tasks/reviewer-login-probe.yml
+      when: case.account != 'none'
     - name: Record a pass
       ansible.builtin.set_fact:
         _outcome: pass
@@ -81,6 +103,7 @@
       - _outcome == case.outcome
       - not _guard_mutations.stat.exists
       - case.outcome == 'pass' or case.expect in _message
+      - case.outcome == 'pass' or _stage == case.stage
       - case.outcome == 'pass' or ('Rebuild' in _message) == (case.rebuild | default(false))
       - ('create token' in _guard_events) == (case.probe | default(false))
       # The login's client token is revoked, by a call made under that token.
