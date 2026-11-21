@@ -58,6 +58,16 @@
     - (_openbao_reviewer_guard_status.stdout | from_json).initialized | bool
     - (_openbao_reviewer_guard_status.stdout | from_json).sealed | default(false) | bool
 
+# The login may create a client token whatever the answer looks like, so the cleanup
+# below is in `always` and takes the token from the raw output. The facts start empty so
+# that an earlier probe in the same play cannot leave a token behind for this one.
+- name: Start the login probe with no login and no token
+  ansible.builtin.set_fact:
+    _openbao_reviewer_guard_login: {}
+    _openbao_reviewer_guard_answer_ok: false
+    _openbao_reviewer_guard_client_token: ""
+  no_log: true
+
 - name: Prove a Kubernetes auth login on an initialized server
   when: (_openbao_reviewer_guard_status.stdout | from_json).initialized | bool
   block:
@@ -138,15 +148,16 @@
         and (_openbao_reviewer_guard_login.stderr | default('')
         is search('(?i)(\b403\b|permission denied|service account unauthorized)'))
 
-    - name: Read the client token of the login
+    # The answer is usable only when it is a JSON object with auth.client_token. A task
+    # that fails to parse a truncated answer is ignored: the answer then stays unusable.
+    - name: Check the answer of the login
       ansible.builtin.set_fact:
-        _openbao_reviewer_guard_client_token: >-
+        _openbao_reviewer_guard_answer_ok: >-
           {{
-            ((_openbao_reviewer_guard_login.stdout | from_json).auth | default({})).client_token | default('', true)
-            if (_openbao_reviewer_guard_login.rc | default(1) == 0
-                and _openbao_reviewer_guard_login.stdout | default('') is match('(?s)\s*\{'))
-            else ''
+            _openbao_reviewer_guard_login.rc | default(1) == 0
+            and (((_openbao_reviewer_guard_login.stdout | from_json).auth | default({})).client_token | default('', true) | length > 0)
           }}
+      ignore_errors: true
       no_log: true
 
     - name: Stop when the login gave no usable answer
@@ -155,12 +166,22 @@
           The play could not prove a Kubernetes auth login with the
           {{ openbao_revoker_k8s_role }} role in openbao-0
           (exit code {{ _openbao_reviewer_guard_login.rc | default('unknown') }}):
-          {{ (_openbao_reviewer_guard_login.stderr | default('') | trim)[:300] or 'no error text' }}.
+          {{ (_openbao_reviewer_guard_login.stderr | default('') | trim)[:300] or 'no usable answer' }}.
           The play does not guess that the mount works. Nothing has changed. Check
           that the pod runs, that `kubectl exec` works and that the
           {{ openbao_revoker_k8s_role }} role exists in the auth mount, then run the
           play again.
-      when: _openbao_reviewer_guard_client_token | length == 0
+      when: not (_openbao_reviewer_guard_answer_ok | bool)
+
+  always:
+    # Whatever stopped the block, a login that returned a client token gets that token
+    # revoked. The token is read from the raw output, so a truncated answer is covered too.
+    - name: Read any client token from the login output
+      ansible.builtin.set_fact:
+        _openbao_reviewer_guard_client_token: >-
+          {{ _openbao_reviewer_guard_login.stdout | default('')
+             | regex_findall('"client_token"\s*:\s*"([^"]+)"') | first | default('') }}
+      no_log: true
 
     - name: Revoke the client token of the login
       ansible.builtin.command:
@@ -183,13 +204,16 @@
       failed_when: false
       check_mode: false
       no_log: true
+      when: _openbao_reviewer_guard_client_token | length > 0
 
     - name: Stop when the client token of the login stays live
       ansible.builtin.fail:
         msg: >-
-          The login worked, but the play could not revoke the short-lived client token
-          that it returned
+          The play could not revoke the short-lived client token
+          that a login returned
           ({{ (_openbao_reviewer_guard_revoke.stderr | default('') | trim)[:300] or 'no error text' }}).
           The token expires on its own within the role's token lifetime. Nothing else
           has changed. Check that the pod runs, then run the play again.
-      when: _openbao_reviewer_guard_revoke.rc | default(1) != 0
+      when:
+        - _openbao_reviewer_guard_client_token | length > 0
+        - _openbao_reviewer_guard_revoke.rc | default(1) != 0

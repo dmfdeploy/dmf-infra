@@ -49,7 +49,9 @@
 #      revokes the client token of the login when the login works, stops with the rebuild
 #      message on a 403 (the half-repaired state), and fails closed on any other failure (a
 #      transport error, a missing role or ServiceAccount, a client token that stays live,
-#      a server that is still sealed, a status that cannot be read). It passes on a new
+#      an answer that is cut off or has no client token, a server that is still sealed, a
+#      status that cannot be read). A client token that a login returned is revoked also when
+#      the answer is unusable. It passes on a new
 #      install and on a StatefulSet that was never initialized. No token reaches an
 #      argument. main.yml runs the guard before the workload and the probe after the unseal
 #      and before the first write of a Kubernetes-auth client.
@@ -538,6 +540,8 @@
         - {name: "own ServiceAccount, sealed at the guard, unsealed by the role, working login", dir: guard-own-sealed-unsealed, account: openbao, unseal: true, outcome: pass, probe: true, revoked: true, env: {FAKE_SEALED: openbao-0}}
         - {name: "own ServiceAccount, login 403 (the workload moved, the config did not)", dir: guard-own-403, account: openbao, outcome: fail, stage: probe, expect: cannot validate logins, rebuild: true, probe: true, env: {FAKE_K8S_LOGIN_FAILS: "403"}}
         - {name: "own ServiceAccount, sealed and unsealed by the role, login 403", dir: guard-own-sealed-403, account: openbao, unseal: true, outcome: fail, stage: probe, expect: cannot validate logins, rebuild: true, probe: true, env: {FAKE_SEALED: openbao-0, FAKE_K8S_LOGIN_FAILS: "403"}}
+        - {name: "own ServiceAccount, the login works but the answer is cut off", dir: guard-own-truncated, account: openbao, outcome: fail, stage: probe, expect: does not guess, probe: true, revoked: true, env: {FAKE_K8S_LOGIN_ANSWER: truncated}}
+        - {name: "own ServiceAccount, the login works but the answer has no client token", dir: guard-own-unexpected, account: openbao, outcome: fail, stage: probe, expect: does not guess, probe: true, env: {FAKE_K8S_LOGIN_ANSWER: unexpected}}
         - {name: "own ServiceAccount, login fails with a transport error", dir: guard-own-transport, account: openbao, outcome: fail, stage: probe, expect: Nothing has changed, probe: true, env: {FAKE_K8S_LOGIN_FAILS: connection refused}}
         - {name: "own ServiceAccount, the probe role is missing from the mount", dir: guard-own-norole, account: openbao, role: absent, outcome: fail, stage: probe, expect: does not guess, probe: true}
         - {name: "own ServiceAccount, the probe ServiceAccount is missing", dir: guard-own-nosa, account: openbao, outcome: fail, stage: probe, expect: cannot mint a token, probe: true, env: {FAKE_SA_MISSING: token-revoker}}
