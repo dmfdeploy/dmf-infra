@@ -27,6 +27,8 @@ run of the grow-HA play reads back.
   the fields take strings only, so a template that renders a boolean or a number
   fails here too.
 - Applying a ConfigMap writes k8s/ConfigMap-<name>.json with its data.
+- Applying a ClusterRole or a ClusterRoleBinding writes k8s/<kind>-<name>.json with the
+  rules, or the role reference and the subjects, that the play sent.
 - When FAKE_K8S_UNREACHABLE is KIND or KIND/NAME and the call is for that object, the
   call is logged and its result says the host is unreachable, as a lost connection
   does. Nothing is applied.
@@ -69,6 +71,9 @@ def main():
         check_string_fields(module, kind, p["definition"])
     if p["state"] == "present" and kind == "ConfigMap":
         write_object(objects, "ConfigMap-" + name, {"data": (p["definition"] or {}).get("data") or {}})
+    if p["state"] == "present" and kind in ("ClusterRole", "ClusterRoleBinding"):
+        keys = ("rules",) if kind == "ClusterRole" else ("roleRef", "subjects")
+        write_object(objects, "%s-%s" % (kind, name), {key: (p["definition"] or {}).get(key) for key in keys})
     if p["force"]:
         with open(os.path.join(state, "k8s-force.log"), "a") as handle:
             handle.write("%s %s\n" % (kind, name))

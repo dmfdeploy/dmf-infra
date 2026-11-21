@@ -1,9 +1,10 @@
 ---
 # Tests of ESO's main store on Kubernetes auth.
 #
-#   1. The StatefulSet with the variable off equals the render from before
-#      Kubernetes auth (tests/fixtures/openbao-statefulset-single-replica.json). With
-#      it on, only serviceAccountName is added.
+#   1. The fixture (tests/fixtures/openbao-statefulset-single-replica.json) is the
+#      render from before the Raft change plus serviceAccountName. The StatefulSet
+#      with the variable off equals the fixture without serviceAccountName. With it
+#      on, the StatefulSet equals the fixture.
 #   2. The ClusterSecretStore with approle equals the object that the role applied
 #      before Kubernetes auth (tests/fixtures/eso-store-approle-before-kubernetes-auth.json,
 #      without its resourceVersion), and a switch in either direction leaves exactly one
@@ -71,6 +72,12 @@
     - name: Variable off — render the StatefulSet
       ansible.builtin.set_fact:
         _sts_off: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
+      vars:
+        openbao_kubernetes_reviewer_enabled: false
+
+    - name: Default — render the StatefulSet
+      ansible.builtin.set_fact:
+        _sts_default: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
 
     - name: Variable on — render the StatefulSet
       ansible.builtin.set_fact:
@@ -90,11 +97,31 @@
         _sts_switch_only: "{{ lookup('ansible.builtin.template', _tpl ~ '/statefulset.yml.j2') | from_yaml }}"
       vars:
         openbao_eso_auth_method: kubernetes
+        openbao_kubernetes_reviewer_enabled: false
+
+    - name: Read the fixture
+      ansible.builtin.set_fact:
+        _fixture_on: "{{ lookup('ansible.builtin.file', 'fixtures/openbao-statefulset-single-replica.json') | from_json }}"
+
+    - name: Build the pod spec of the fixture without the ServiceAccount
+      ansible.builtin.set_fact:
+        _fixture_off_pod_spec: >-
+          {{ _fixture_on.spec.template.spec | dict2items
+          | rejectattr('key', 'equalto', 'serviceAccountName') | items2dict }}
+
+    - name: Build the fixture as it was before the reviewer ServiceAccount
+      ansible.builtin.set_fact:
+        _fixture_off: >-
+          {{ _fixture_on | combine({'spec': _fixture_on.spec | combine({'template':
+          _fixture_on.spec.template | combine({'spec': _fixture_off_pod_spec})})}) }}
 
     - name: Assert off equals the old render and on only adds the ServiceAccount
       ansible.builtin.assert:
         that:
-          - _sts_off == (lookup('ansible.builtin.file', 'fixtures/openbao-statefulset-single-replica.json') | from_json)
+          - _fixture_on.spec.template.spec.serviceAccountName == 'openbao'
+          - _fixture_off.spec.template.spec.serviceAccountName is not defined
+          - _sts_off == _fixture_off
+          - _sts_on == _fixture_on
           - _sts_off.spec.template.spec.serviceAccountName is not defined
           - _sts_on.spec.template.spec.serviceAccountName == 'openbao'
           - _sts_on.spec.template.spec | dict2items | rejectattr('key', 'equalto', 'serviceAccountName') | items2dict == _sts_off.spec.template.spec
@@ -103,6 +130,8 @@
           # and flipping the ESO switch back keeps the ServiceAccount.
           - _sts_switch_only == _sts_off
           - _sts_rollback == _sts_on
+          # With no override, an install runs OpenBao as its own ServiceAccount.
+          - _sts_default == _sts_on
 
     # ── 2. ClusterSecretStore ───────────────────────────────────────────────
     - name: Apply the store in each order and keep what the cluster holds
@@ -370,6 +399,58 @@
       ansible.builtin.slurp:
         src: "{{ _state.path }}/workload-off/k8s-mutations.log"
       register: _workload_off
+
+    - name: Default — prepare the fake cluster
+      ansible.builtin.copy:
+        src: fixtures/k8s-seed/
+        dest: "{{ _state.path }}/workload-default/k8s/"
+        mode: preserve
+      changed_when: false
+
+    - name: Default — apply the workload with no override of the reviewer variable
+      environment:
+        FAKE_STATE: "{{ _state.path }}/workload-default"
+      block:
+        - name: Run workload.yml
+          ansible.builtin.include_role:
+            name: stack/operator/openbao
+            tasks_from: workload.yml
+          vars:
+            openbao_tls_secret_wait_retries: 2
+            openbao_tls_secret_wait_delay: 0
+
+    - name: Default — read the calls to the cluster
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/workload-default/k8s-mutations.log"
+      register: _workload_default
+
+    - name: Default — assert the ServiceAccount, the ClusterRole and the StatefulSet apply
+      ansible.builtin.assert:
+        that:
+          - "'present ServiceAccount openbao' in (_workload_default.content | b64decode)"
+          - "'present ClusterRole' in (_workload_default.content | b64decode)"
+          - "'present StatefulSet openbao' in (_workload_default.content | b64decode)"
+
+    - name: Default — read the ClusterRole and its binding
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/workload-default/k8s/{{ item }}-openbao-token-review.json"
+      register: _default_rbac
+      loop: [ClusterRole, ClusterRoleBinding]
+
+    - name: Default — assert the ClusterRole holds one TokenReview create rule and the binding names it
+      ansible.builtin.assert:
+        that:
+          # Exactly one rule, with exactly these fields: no second rule, no other verb,
+          # resource or API group, no resourceNames and no wildcard.
+          - >-
+            (_default_rbac.results[0].content | b64decode | from_json).rules ==
+            [{'apiGroups': ['authentication.k8s.io'], 'resources': ['tokenreviews'], 'verbs': ['create']}]
+          # The binding grants that role to OpenBao's own ServiceAccount, not system:auth-delegator.
+          - (_default_rbac.results[1].content | b64decode | from_json).roleRef.name == 'openbao-token-review'
+          - (_default_rbac.results[1].content | b64decode | from_json).roleRef.kind == 'ClusterRole'
+          - >-
+            (_default_rbac.results[1].content | b64decode | from_json).subjects ==
+            [{'kind': 'ServiceAccount', 'name': 'openbao', 'namespace': openbao_namespace}]
 
     - name: Variable off — assert no RBAC object and the StatefulSet applied
       ansible.builtin.assert:

@@ -25,10 +25,28 @@ class OneVariableTest(unittest.TestCase):
         )
         self.assertRegex(text(ESO / "defaults/main.yml"), r"(?m)^eso_openbao_auth_method: approle$")
 
-    def test_the_reviewer_identity_has_its_own_variable_that_is_off_by_default(self):
+    def test_the_reviewer_identity_has_its_own_variable_that_is_on_by_default(self):
+        # With false, the mount stores the pod's default ServiceAccount token, which
+        # has no TokenReview grant: every Kubernetes-auth login returns 403.
         self.assertRegex(
-            text(OPENBAO / "defaults/main.yml"), r"(?m)^openbao_kubernetes_reviewer_enabled: false$"
+            text(OPENBAO / "defaults/main.yml"), r"(?m)^openbao_kubernetes_reviewer_enabled: true$"
         )
+
+    def test_no_install_path_writes_the_stored_token_config(self):
+        main = text(OPENBAO / "tasks/main.yml")
+        self.assertNotIn("token_reviewer_jwt=", main)
+        self.assertNotRegex(main, r"(?s)bao write auth/kubernetes/config[^\n]*\n[^\n]*failed_when")
+        self.assertIn("kubernetes-auth-config.yml", main)
+        self.assertIn("openbao_kubernetes_reviewer_enabled is false", main)
+        # The refusal is unconditional: the install always sets up Kubernetes-auth clients.
+        assert_block = re.search(
+            r"- name: Refuse a Kubernetes auth setup without the reviewer identity\n(.*?)\n\n", main, re.S
+        ).group(1)
+        self.assertIn("that: openbao_kubernetes_reviewer_enabled | bool", assert_block)
+        self.assertNotIn("when:", assert_block)
+
+    def test_the_external_secrets_role_defaults_the_reviewer_variable_to_on(self):
+        self.assertIn("openbao_kubernetes_reviewer_enabled | default(true) | bool", text(ESO / "tasks/main.yml"))
 
     def test_the_reviewer_files_read_only_the_reviewer_variable(self):
         # The ServiceAccount, the ClusterRole and the StatefulSet follow the reviewer
@@ -39,12 +57,9 @@ class OneVariableTest(unittest.TestCase):
                 self.assertIn("openbao_kubernetes_reviewer_enabled", text(path))
 
     def test_the_eso_switch_needs_the_reviewer_variable_in_both_roles(self):
+        self.assertIn("that: openbao_kubernetes_reviewer_enabled | bool", text(OPENBAO / "tasks/main.yml"))
         self.assertIn(
-            "openbao_eso_auth_method != 'kubernetes' or openbao_kubernetes_reviewer_enabled | bool",
-            text(OPENBAO / "tasks/main.yml"),
-        )
-        self.assertIn(
-            "eso_openbao_auth_method != 'kubernetes' or openbao_kubernetes_reviewer_enabled | default(false) | bool",
+            "eso_openbao_auth_method != 'kubernetes' or openbao_kubernetes_reviewer_enabled | default(true) | bool",
             text(ESO / "tasks/main.yml"),
         )
 

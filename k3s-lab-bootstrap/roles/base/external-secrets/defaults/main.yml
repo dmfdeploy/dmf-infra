@@ -33,7 +33,7 @@ eso_openbao_external_trust: false
 # openbao role reads the same variable, so set it once in the site inventory.
 # With `kubernetes`, the store logs in with ESO's own ServiceAccount token and
 # needs no role id or secret id, and the openbao role must run with
-# openbao_kubernetes_reviewer_enabled. The AppRole inputs below stay available for a
+# openbao_kubernetes_reviewer_enabled (true by default). The AppRole inputs below stay available for a
 # rollback: flip only this variable back. See docs/decisions/0051-eso-main-store-kubernetes-auth.md in the
 # umbrella repo.
 eso_openbao_auth_method: approle

@@ -104,9 +104,9 @@ Three components together form this root of trust:
 - Auth methods enabled at commissioning: `kubernetes` (for ESO's main store
   and in-cluster workload identities), `approle` (for automation, the
   object-storage stores, and the ESO AppRole that stays for a rollback),
-  `userpass` (break-glass admin login). With `eso_openbao_auth_method:
-  kubernetes`, the Kubernetes auth config uses the pod's own token and CA
-  files, so a restore onto a new cluster needs no config write.
+  `userpass` (break-glass admin login). The Kubernetes auth config uses the
+  pod's own token and CA files (reviewer mode, the default), so a restore onto
+  a new cluster needs no config write.
 - Does **not** enable any auth method requiring external network reach
   (no OIDC-auth-from-Authentik, because Authentik itself boots after OpenBao
   is unsealed).
