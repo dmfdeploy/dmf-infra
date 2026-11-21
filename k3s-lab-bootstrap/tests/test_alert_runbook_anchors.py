@@ -124,6 +124,35 @@ def alert_rules(text):
     return rules
 
 
+def rule_problems(rules, headings):
+    """Return a message for each rule that breaks the runbook_url policy.
+
+    An exception applies to a name that occurs exactly once. The template allows
+    the same name twice, for a warning and a critical variant, so a second rule
+    with an excepted name does not inherit the exception: it fails.
+    """
+    counts = Counter(name for name, _ in rules)
+    problems = []
+    for name, url in rules:
+        if name in NO_RUNBOOK or name in OTHER_RUNBOOK:
+            if counts[name] != 1:
+                problems.append(f"{name}: exception needs exactly one rule, found {counts[name]}")
+            elif name in NO_RUNBOOK:
+                if url is not None:
+                    problems.append(f"{name}: expected no runbook_url, found {url}")
+            elif url != OTHER_RUNBOOK[name]:
+                problems.append(f"{name}: expected {OTHER_RUNBOOK[name]}, found {url}")
+        elif url is None:
+            problems.append(f"{name}: no runbook_url")
+        elif not url.startswith(BASE_EXPRESSION + "#"):
+            problems.append(f"{name}: runbook_url is not the alerts page plus an anchor: {url}")
+        else:
+            anchor = url[len(BASE_EXPRESSION) + 1 :]
+            if anchor not in headings:
+                problems.append(f"{name}: no heading for anchor {anchor}")
+    return problems
+
+
 def load_page():
     path = os.environ.get(PAGE_ENV)
     if path:
@@ -183,23 +212,7 @@ class AlertRunbookAnchorsTest(unittest.TestCase):
         self.assertEqual(len(rules), count_alert_declarations(text))
 
     def test_every_alert_rule_links_to_a_section(self):
-        headings = set(heading_anchors(load_page()))
-        problems = []
-        for name, url in alert_rules(TEMPLATE.read_text()):
-            if name in NO_RUNBOOK:
-                if url is not None:
-                    problems.append(f"{name}: expected no runbook_url, found {url}")
-            elif name in OTHER_RUNBOOK:
-                if url != OTHER_RUNBOOK[name]:
-                    problems.append(f"{name}: expected {OTHER_RUNBOOK[name]}, found {url}")
-            elif url is None:
-                problems.append(f"{name}: no runbook_url")
-            elif not url.startswith(BASE_EXPRESSION + "#"):
-                problems.append(f"{name}: runbook_url is not the alerts page plus an anchor: {url}")
-            else:
-                anchor = url[len(BASE_EXPRESSION) + 1 :]
-                if anchor not in headings:
-                    problems.append(f"{name}: no heading for anchor {anchor}")
+        problems = rule_problems(alert_rules(TEMPLATE.read_text()), set(heading_anchors(load_page())))
         self.assertEqual(problems, [])
 
     def test_awx_exception_url_is_the_umbrella_runbook(self):
@@ -239,6 +252,27 @@ class AlertRunbookAnchorsTest(unittest.TestCase):
         text = "      - expr: vector(1)\n        alert: Late\n        annotations:\n          summary: s\n"
         self.assertEqual(self.parse(text), [("Late", None)])
         self.assertEqual(count_alert_declarations(text), 1)
+
+    def test_second_watchdog_without_runbook_fails(self):
+        rules = [("Watchdog", None), ("Watchdog", None)]
+        problems = rule_problems(rules, set())
+        self.assertEqual(len(problems), 2)
+        self.assertIn("exactly one rule, found 2", problems[0])
+
+    def test_second_awx_rule_with_the_umbrella_url_fails(self):
+        rules = [("AWXReplicaDivergence", AWX_RUNBOOK_EXPRESSION)] * 2
+        problems = rule_problems(rules, set())
+        self.assertEqual(len(problems), 2)
+        self.assertIn("exactly one rule, found 2", problems[0])
+
+    def test_duplicate_name_without_exception_is_checked_per_rule(self):
+        url = BASE_EXPRESSION + "#x"
+        rules = [("Pair", url), ("Pair", None)]
+        self.assertEqual(rule_problems(rules, {"x"}), ["Pair: no runbook_url"])
+
+    def test_single_exceptions_pass(self):
+        rules = [("Watchdog", None), ("AWXReplicaDivergence", AWX_RUNBOOK_EXPRESSION)]
+        self.assertEqual(rule_problems(rules, set()), [])
 
     def test_unhandled_jinja_block_fails(self):
         with self.assertRaises(AssertionError):
