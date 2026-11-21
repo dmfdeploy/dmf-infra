@@ -55,6 +55,7 @@ import email.utils
 import hashlib
 import http.server
 import json
+import math
 import os
 import re
 import ssl
@@ -150,7 +151,7 @@ def read_record(directory: Path) -> Record:
     """Read the record read-only, once. Any failure makes it unreadable."""
     try:
         return _read_record(directory)
-    except (OSError, ValueError, TypeError) as error:
+    except (OSError, ValueError, TypeError, RecursionError) as error:
         return Record(None, f"the record cannot be read: {type(error).__name__}")
 
 
@@ -231,22 +232,26 @@ GONE_REVOKE = "token not found"
 # "\t* <message>" line for each message, and a closing blank line. A single error gets the
 # same wrapper, so a live "invalid accessor" arrives as
 # "1 error occurred:\n\t* invalid accessor\n\n".
-WRAPPER = re.compile(r"(\d+) errors? occurred:\n((?:\t\* [^\n]*\n)+)\n")
+WRAPPER = re.compile(r"([0-9]{1,4}) errors? occurred:\n((?:\t\* [^\n]*\n)+)\n")
 
 
 def messages_of(entry: object) -> list[str] | None:
     """The messages one entry of an error list carries, or None when it is not a string.
 
     A plain entry is one message. An entry that starts like the wrapper must parse as the
-    whole wrapper, with a count that matches its lines, or it counts as plain text, which
-    never equals a gone-token message.
+    whole wrapper, with a count of at most four digits that matches its lines, or it counts as
+    plain text, which never equals a gone-token message. No input makes this raise.
     """
     if not isinstance(entry, str):
         return None
     match = WRAPPER.fullmatch(entry)
     if match:
         lines = match.group(2).splitlines()
-        if int(match.group(1)) == len(lines):
+        try:
+            count = int(match.group(1))
+        except ValueError:
+            return [entry]
+        if count == len(lines):
             return [line[len("\t* "):] for line in lines]
     return [entry]
 
@@ -270,11 +275,26 @@ def token_is_gone(error: BaoError, message: str) -> bool:
     return found == [message]
 
 
+def creation_seconds(value: object) -> float | None:
+    """A token's creation time as a finite number of seconds, or None when it is not one.
+
+    JSON allows integers too large for a float and numbers that read as infinity, and the
+    server's answer is not trusted to avoid them.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        seconds = float(value)
+    except OverflowError:
+        return None
+    return seconds if math.isfinite(seconds) else None
+
+
 def http_date(value: str | None) -> float | None:
     """The time in a `Date` header as epoch seconds, or None when it is missing or unreadable."""
     try:
         return email.utils.parsedate_to_datetime(value).timestamp()
-    except (TypeError, ValueError, IndexError):
+    except (TypeError, ValueError, IndexError, OverflowError, OSError):
         return None
 
 
@@ -302,7 +322,7 @@ class Bao:
                 body = json.loads(error.read().decode())
                 if isinstance(body, dict) and isinstance(body.get("errors"), list):
                     errors = body["errors"]
-            except (OSError, ValueError):
+            except (OSError, ValueError, RecursionError):
                 pass
             error.close()
             raise BaoError(f"{method} {path}: HTTP {error.code}", error.code, errors) from None
@@ -310,7 +330,7 @@ class Bao:
             raise BaoError(f"{method} {path}: {type(error).__name__}") from None
         try:
             parsed = json.loads(text)
-        except ValueError:
+        except (ValueError, RecursionError):
             raise BaoError(f"{method} {path}: the answer is not JSON") from None
         if not isinstance(parsed, dict):
             raise BaoError(f"{method} {path}: the answer is not an object")
@@ -318,14 +338,16 @@ class Bao:
 
     def login(self, role: str, jwt: str) -> None:
         answer = self.request("POST", "auth/kubernetes/login", {"role": role, "jwt": jwt}, token=False)
-        token = (answer.get("auth") or {}).get("client_token")
+        auth = answer.get("auth")
+        token = auth.get("client_token") if isinstance(auth, dict) else None
         if not isinstance(token, str) or not token:
             raise BaoError("login: the answer has no token")
         self.token = token
 
     def accessors(self) -> list[str]:
         answer = self.request("LIST", "auth/token/accessors")
-        keys = (answer.get("data") or {}).get("keys")
+        data = answer.get("data")
+        keys = data.get("keys") if isinstance(data, dict) else None
         if not isinstance(keys, list) or not all(isinstance(key, str) and key for key in keys):
             raise BaoError("list accessors: the answer is not a list of accessors")
         return keys
@@ -408,7 +430,8 @@ def scan(bao: Bao, config: Config, policies: set) -> dict:
         elif not executor:
             continue
         else:
-            number = isinstance(created, (int, float)) and not isinstance(created, bool)
+            created = creation_seconds(created)
+            number = created is not None
             if not number:
                 log(f"lookup {accessor} has no readable creation_time, counts as old")
             old = not number or now - created > config.grace
@@ -522,13 +545,26 @@ def serve_metrics(metrics: Metrics, port: int) -> http.server.HTTPServer:
     return server
 
 
+def attempt(config: Config) -> dict:
+    """One scan attempt that never raises: an error nobody foresaw is a failed attempt.
+
+    The loop in `main` must outlive any answer, so it counts what escapes the steps above as
+    a failure and logs only the kind of error, never its text, which could hold a token.
+    """
+    try:
+        return run_once(config)
+    except Exception as error:  # noqa: BLE001
+        log(f"scan failed: {type(error).__name__}")
+        return {"revoked": 0, "failed": 1, "ran": False}
+
+
 def main() -> int:
     config = Config()
     metrics = Metrics()
     serve_metrics(metrics, config.metrics_port)
     while True:
         started = time.time()
-        metrics.update(run_once(config), started)
+        metrics.update(attempt(config), started)
         time.sleep(max(config.interval - (time.time() - started), 1))
 
 
