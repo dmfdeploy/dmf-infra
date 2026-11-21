@@ -40,6 +40,10 @@
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
 #   ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
 #   ansible-playbook tests/test-openbao-identity-verifier.yml
+#
+# CI runs the cases in slices. Add `-e case_shards=2 -e case_shard=1` (then `case_shard=2`) to
+# run the cases at every second position, starting at the first (then the second). With neither
+# variable, every case runs.
 
 - name: Identity verifier
   hosts: localhost
@@ -50,6 +54,8 @@
     - ../playbooks/vars/identity-verifier.yml
   vars:
     verify_openbao_namespace: openbao
+    case_shards: 1
+    case_shard: 1
     _verify_openbao_pod: openbao-0
     _verify_token_identity_reader: fake-reader
     # What a fresh install holds once the executor and the revoker are installed and
@@ -91,8 +97,10 @@
 
     - name: Run each case
       ansible.builtin.include_tasks: _openbao-identity-case.yml
+      when: (_case_index % (case_shards | int)) == (case_shard | int) - 1
       loop_control:
         loop_var: _case
+        index_var: _case_index
         label: "{{ _case.name }}"
       loop:
         - {name: clean}

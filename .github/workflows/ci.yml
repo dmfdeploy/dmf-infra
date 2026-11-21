@@ -131,18 +131,20 @@ jobs:
           done
 
   ansible-openbao:
-    # Each line of PLAYBOOKS is "<shard> <fakes|plain> <playbook>". Shard N runs its
-    # lines in order; "fakes" puts the fake kubectl and the fake collections in front.
-    # A playbook is in one place, so it runs in exactly one shard. Shard 4 holds only the
-    # identity-verifier playbook, the longest at about 20 minutes; the others take less
-    # than 10 minutes, setup included.
+    # Each line of PLAYBOOKS is "<shard> <fakes|plain> <playbook> [<slice>/<slices>]".
+    # Shard N runs its lines in order; "fakes" puts the fake kubectl and the fake
+    # collections in front. A playbook is in one place, so it runs in exactly one shard,
+    # unless it takes a slice: then it has one line for each of its slices, and the playbook
+    # runs the cases at that slice's positions (-e case_shard and -e case_shards). The
+    # identity-verifier playbook is the longest, so it is in two slices of about 10 minutes
+    # each; the other shards take less than 10 minutes, setup included.
     name: ansible-openbao (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     env:
       PLAYBOOKS: |
         1 fakes tests/test-openbao-k8s-auth.yml
@@ -161,7 +163,8 @@ jobs:
         3 fakes tests/test-openbao-init-status.yml
         3 fakes tests/test-openbao-tls-secret-wait.yml
         3 fakes tests/test-born-inventory-breakglass-login.yml
-        4 fakes tests/test-openbao-identity-verifier.yml
+        4 fakes tests/test-openbao-identity-verifier.yml 1/2
+        5 fakes tests/test-openbao-identity-verifier.yml 2/2
     defaults:
       run:
         working-directory: k3s-lab-bootstrap
@@ -192,9 +195,23 @@ jobs:
       - name: Every OpenBao test playbook is in the list, once
         run: |
           set -eu
-          listed=$(echo "$PLAYBOOKS" | awk 'NF {print $3}' | sort)
-          dups=$(echo "$listed" | uniq -d)
-          [ -z "$dups" ] || { echo "Listed twice: $dups"; exit 1; }
+          listed=$(echo "$PLAYBOOKS" | awk 'NF {print $3}' | sort -u)
+          # A playbook has one line without a slice, or one line for each slice 1/n to n/n.
+          bad=$(echo "$PLAYBOOKS" | awk 'NF {
+              if ($4 == "") { whole[$3]++; next }
+              split($4, f, "/")
+              if (f[2] < 2 || f[1] < 1 || f[1] > f[2]) { print $3 " has the slice " $4; next }
+              if (total[$3] && total[$3] != f[2]) { print $3 " mixes slice counts"; next }
+              total[$3] = f[2]; seen[$3, f[1]]++; lines[$3]++
+            }
+            END {
+              for (p in whole) if (whole[p] > 1 || p in total) print p " is listed twice"
+              for (p in total) {
+                if (lines[p] != total[p]) print p " lacks a slice of " total[p]
+                for (i = 1; i <= total[p]; i++) if (seen[p, i] != 1) print p " slice " i "/" total[p] " is not listed once"
+              }
+            }' | sort -u)
+          [ -z "$bad" ] || { echo "$bad"; exit 1; }
           present=$(printf '%s\n' tests/test-openbao-*.yml | sort)
           missing=$(comm -23 <(echo "$present") <(echo "$listed"))
           [ -z "$missing" ] || { echo "Not in a shard: $missing"; exit 1; }
@@ -203,15 +220,19 @@ jobs:
       - name: OpenBao Raft render, guard, unseal and migration tests
         run: |
           set -eu
-          echo "$PLAYBOOKS" | awk -v shard="$SHARD" 'NF && $1 == shard {print $2, $3}' |
-          while read -r mode playbook; do
-            echo "=== $playbook ($mode) ==="
+          echo "$PLAYBOOKS" | awk -v shard="$SHARD" 'NF && $1 == shard {print $2, $3, $4}' |
+          while read -r mode playbook slice; do
+            echo "=== $playbook ($mode) ${slice:-} ==="
+            args=()
+            if [ -n "${slice:-}" ]; then
+              args=(-e "case_shard=${slice%/*}" -e "case_shards=${slice#*/}")
+            fi
             if [ "$mode" = fakes ]; then
               PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
               ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
-                ansible-playbook "$playbook" </dev/null
+                ansible-playbook "$playbook" "${args[@]}" </dev/null
             else
-              ansible-playbook "$playbook" </dev/null
+              ansible-playbook "$playbook" "${args[@]}" </dev/null
             fi
           done
         env:
