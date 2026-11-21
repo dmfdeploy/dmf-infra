@@ -9,3 +9,6 @@
 
 # The json_query filter in community.general needs jmespath.
 jmespath>=1.0.1,<2
+
+# The AWX autoscale helper tests in roles/stack/operator/awx-autoscale/tests.
+pytest>=8,<10
