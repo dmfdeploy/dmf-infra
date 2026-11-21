@@ -79,6 +79,15 @@ class ExistingVerifierStaysWired(unittest.TestCase):
 
         self.assertIn("playbooks/verify-openbao-identity-model.yml", imports)
 
+    def test_the_sandbox_verify_play_imports_the_identity_model_verifier(self):
+        # Catches a sandbox verify that skips the identity checks. The checks fail on an
+        # install that still holds the generate-root grant, and a sandbox install is the
+        # one that would otherwise never be asked.
+        steps = yaml.safe_load((ROOT / "bootstrap-sandbox-verify.yml").read_text())
+        imports = [step["import_playbook"] for step in steps if "import_playbook" in step]
+
+        self.assertIn("playbooks/verify-openbao-identity-model.yml", imports)
+
 
 
 class AllowlistHasAnEnumerator(unittest.TestCase):

@@ -267,7 +267,7 @@ The list stanzas of the policy end in a slash, because OpenBao matches a list re
 slash on its path. `tests/test_openbao_identity_verifier_paths.py` reads every path that the
 verifier's tasks request and checks it against the policy.
 
-`bootstrap-verify.yml` runs the playbook.
+`bootstrap-verify.yml` and `bootstrap-sandbox-verify.yml` run the playbook.
 
 What it checks:
 
