@@ -74,6 +74,8 @@ jobs:
           PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
           ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
           ansible-playbook tests/test-shell-values-literal.yml
+      - name: vendored NetBox chart matches its provenance record
+        run: python3 -m unittest discover -s tests -p 'test_netbox_chart_provenance.py' -v
       - name: console values pass the certificate authority facts through
         run: python3 -m unittest discover -s tests -p 'test_cms_values_trust_info.py' -v
       - name: ansible syntax-check
