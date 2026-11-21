@@ -2,7 +2,11 @@
 # One case of test-openbao-k8s-auth.yml, part 8: reviewer-install-guard.yml against the
 # fake cluster. case.account is the serviceAccountName of the installed StatefulSet's
 # pod template ("" leaves the field out, and "none" means no StatefulSet at all).
-# case.env sets the fake bao's scenario, for example FAKE_INITIALIZED.
+# case.env sets the fake bao's and kubectl's scenario, for example FAKE_INITIALIZED.
+# case.role "absent" leaves the probe identity's Kubernetes-auth role out of the mount.
+# case.expect is text that the failure message holds, and case.rebuild says whether that
+# message tells the operator to rebuild. case.probe says whether the guard mints a probe
+# token, and case.revoked whether the client token of the login ends up revoked.
 - name: "{{ case.name }} — prepare the fake cluster"
   ansible.builtin.file:
     path: "{{ _state.path }}/{{ case.dir }}/k8s"
@@ -20,6 +24,25 @@
       }}
     mode: "0644"
   when: case.account != 'none'
+
+- name: "{{ case.name }} — prepare the mount's directory"
+  ansible.builtin.file:
+    path: "{{ _state.path }}/{{ case.dir }}/k8s-auth"
+    state: directory
+    mode: "0755"
+  changed_when: false
+
+- name: "{{ case.name }} — seed the probe identity's role in the mount"
+  ansible.builtin.copy:
+    dest: "{{ _state.path }}/{{ case.dir }}/k8s-auth/role-{{ openbao_revoker_k8s_role }}.json"
+    content: >-
+      {{
+        {'bound_service_account_names': [openbao_revoker_service_account],
+         'bound_service_account_namespaces': [openbao_namespace],
+         'token_policies': [openbao_revoker_policy_name], 'token_ttl': 120} | to_json
+      }}
+    mode: "0644"
+  when: case.role | default('present') != 'absent'
 
 - name: "{{ case.name }} — run the guard"
   block:
@@ -41,11 +64,28 @@
     path: "{{ _state.path }}/{{ case.dir }}/k8s-mutations.log"
   register: _guard_mutations
 
+- name: "{{ case.name }} — read the logs of the fake kubectl and bao"
+  ansible.builtin.slurp:
+    src: "{{ _state.path }}/{{ case.dir }}/{{ item }}"
+  register: _guard_logs
+  failed_when: false
+  loop: [events.log, bao-calls.log, bao-argv.log, kubectl-argv.log]
+
 - name: "{{ case.name }} — assert"
+  vars:
+    _guard_events: "{{ _guard_logs.results[0].content | default('') | b64decode }}"
+    _guard_calls: "{{ _guard_logs.results[1].content | default('') | b64decode }}"
+    _guard_argv: "{{ (_guard_logs.results[2].content | default('') | b64decode) ~ (_guard_logs.results[3].content | default('') | b64decode) }}"
   ansible.builtin.assert:
     that:
       - _outcome == case.outcome
       - not _guard_mutations.stat.exists
-      - case.outcome == 'pass' or ('stored-token reviewer' in _message and 'Rebuild' in _message and 'ADR-0051' in _message) == (case.message == 'rebuild')
-      - case.outcome == 'pass' or case.message != 'status' or 'cannot read the init status' in _message
+      - case.outcome == 'pass' or case.expect in _message
+      - case.outcome == 'pass' or ('Rebuild' in _message) == (case.rebuild | default(false))
+      - ('create token' in _guard_events) == (case.probe | default(false))
+      # The login's client token is revoked, by a call made under that token.
+      - ('fake-k8s-1 token revoke -self' in _guard_calls and 'fake-k8s-1 =revoked' in _guard_calls) == (case.revoked | default(false))
+      # Neither the minted JWT nor a client token reaches an argument of kubectl or bao.
+      - "'fake-sa:' not in _guard_argv"
+      - "'fake-k8s-' not in _guard_argv"
     fail_msg: "{{ case.name }}: outcome {{ _outcome }}, message: {{ _message }}"

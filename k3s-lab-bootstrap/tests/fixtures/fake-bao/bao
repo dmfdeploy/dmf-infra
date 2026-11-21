@@ -55,6 +55,9 @@
 #   FAKE_K8S_IGNORES_REVIEWER_FIELDS  set: an old mount, whose config read has no
 #                        token_reviewer_jwt_set field
 #   FAKE_K8S_WRITE_FAILS set: a write to auth/kubernetes/role/* fails
+#   FAKE_K8S_LOGIN_FAILS 403: a Kubernetes login fails with 403 permission denied, as when the
+#                        mount's reviewer cannot call TokenReview. Any other text: the login
+#                        fails with that text as a transport error.
 #   FAKE_POLICY_WRITER   set: a live token that is not root may read and write
 #                        sys/policies/acl/* (the policy-reconciler grant)
 #   FAKE_POLICY_WRITE_FAILS  set: `bao policy write NAME -` fails
@@ -983,6 +986,13 @@ PY
     # JWT is `jwt=-` (standard input) or a value.
     jwt="$(field jwt "$@")"
     [ "$jwt" != - ] || jwt="$(cat)"
+    case "${FAKE_K8S_LOGIN_FAILS:-}" in
+      "") ;;
+      403)
+        printf 'Error writing data to auth/kubernetes/login: Error making API request.\n\nURL: PUT https://127.0.0.1:8200/v1/auth/kubernetes/login\nCode: 403. Errors:\n\n* permission denied\n' >&2
+        exit 2 ;;
+      *) echo "Error writing data to auth/kubernetes/login: Put \"https://127.0.0.1:8200/v1/auth/kubernetes/login\": $FAKE_K8S_LOGIN_FAILS" >&2; exit 2 ;;
+    esac
     token_model login "$(field role "$@")" "$jwt" || exit 2
     exit 0
     ;;

@@ -38,6 +38,11 @@
 #   With FAKE_EXEC_STUB_DIR set to a directory, that directory comes first on PATH for the
 #   program that `exec` runs; tests/fixtures/capture-bao holds a `bao` that records its
 #   arguments and standard input.
+#   kubectl [flags] -n NAMESPACE create token SERVICE_ACCOUNT --audience A --duration D
+#     It prints the token `fake-sa:NAMESPACE:SERVICE_ACCOUNT` and a newline, which the fake
+#     bao accepts for a role bound to that ServiceAccount. It refuses a call without an
+#     audience and a duration, and, for a ServiceAccount that FAKE_SA_MISSING lists, fails
+#     as kubectl does. It records the call in events.log without the token.
 # Every call is logged to $FAKE_STATE/events.log. Any other call fails, so a test
 # notices a new kind of call.
 set -u
@@ -89,6 +94,28 @@ elif mode == "scheme":
 with open(path, "w") as handle:
     json.dump(data, handle)
 PY
+    exit 0
+    ;;
+  *" create token "*)
+    ns=""; sa=""; aud=""; dur=""; prev=""
+    for a in "$@"; do
+      case "$prev" in
+        -n|--namespace) ns="$a" ;;
+        --audience) aud="$a" ;;
+        --duration) dur="$a" ;;
+        token) [ -n "$sa" ] || sa="$a" ;;
+      esac
+      prev="$a"
+    done
+    log_event "kubectl create token $sa -n $ns --audience $aud --duration $dur"
+    if [ -z "$ns" ] || [ -z "$sa" ] || [ -z "$aud" ] || [ -z "$dur" ]; then
+      echo "fake kubectl: create token needs -n, a ServiceAccount, --audience and --duration" >&2
+      exit 1
+    fi
+    case " ${FAKE_SA_MISSING:-} " in
+      *" $sa "*) echo "error: failed to create token: serviceaccounts \"$sa\" not found" >&2; exit 1 ;;
+    esac
+    printf 'fake-sa:%s:%s\n' "$ns" "$sa"
     exit 0
     ;;
   *" get secret "*)
