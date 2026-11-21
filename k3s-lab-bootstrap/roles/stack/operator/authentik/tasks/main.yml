@@ -37,17 +37,28 @@
 - name: Establish OpenBao operator session for Authentik bootstrap writes
   ansible.builtin.include_tasks: openbao_session.yml
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(authentik_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "authentik_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+
 - name: Read current Authentik runtime secret from OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ authentik_openbao_namespace }}
-      exec -i {{ _authentik_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json {{ authentik_runtime_secret_path | quote }}'
-    stdin: "{{ _authentik_openbao_client_token }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ authentik_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _authentik_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
+    stdin: "{{ _authentik_openbao_client_token }}\n{{ authentik_runtime_secret_path }}\n"
   register: _authentik_runtime_secret_raw
   changed_when: false
   failed_when: false
@@ -133,17 +144,32 @@
       }}
   no_log: true
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(authentik_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "authentik_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when:
+    - _authentik_runtime_secret_data.secret_key | default('') != authentik_secret_key_effective
+      or _authentik_runtime_secret_data.bootstrap_token | default('') != authentik_bootstrap_token_effective
+      or _authentik_runtime_secret_data.postgres_password | default('') != authentik_postgresql_password_effective
+
 - name: Persist Authentik runtime secret to OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ authentik_openbao_namespace }}
-      exec -i {{ _authentik_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv put {{ authentik_runtime_secret_path | quote }} -'
-    stdin: "{{ _authentik_openbao_client_token }}\n{{ {'secret_key': authentik_secret_key_effective, 'bootstrap_token': authentik_bootstrap_token_effective, 'postgres_password': authentik_postgresql_password_effective} | to_json }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ authentik_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _authentik_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv put "$SECRET_PATH" -'
+    stdin: "{{ _authentik_openbao_client_token }}\n{{ authentik_runtime_secret_path }}\n{{ {'secret_key': authentik_secret_key_effective, 'bootstrap_token': authentik_bootstrap_token_effective, 'postgres_password': authentik_postgresql_password_effective} | to_json }}\n"
   when:
     - _authentik_runtime_secret_data.secret_key | default('') != authentik_secret_key_effective
       or _authentik_runtime_secret_data.bootstrap_token | default('') != authentik_bootstrap_token_effective
@@ -516,9 +542,23 @@
 - name: Ensure Authentik bootstrap passkey invitation is fresh
   ansible.builtin.include_tasks: ensure_invitation.yml
 
+- name: Check that the break-glass user values hold no newline
+  ansible.builtin.assert:
+    that:
+      - "(authentik_breakglass_username) is not search('[\\r\\n]')"
+      - "(authentik_breakglass_email) is not search('[\\r\\n]')"
+      - "(authentik_breakglass_display_name) is not search('[\\r\\n]')"
+      - "(authentik_breakglass_user_path) is not search('[\\r\\n]')"
+      - "(authentik_breakglass_user_type) is not search('[\\r\\n]')"
+      - "(authentik_breakglass_group_name) is not search('[\\r\\n]')"
+      - "(authentik_breakglass_admin_group_name) is not search('[\\r\\n]')"
+      - authentik_breakglass_password is not search('[\\r\\n]')
+    fail_msg: "The break-glass user values and password must not contain a newline: the program reads them from stdin, one value per line."
+
 - name: Create or update Authentik break-glass local user
-  # The password goes in on stdin. The pod's shell reads it into an environment variable of
-  # the `ak` process, so it is in no argument list.
+  # The password and the other values go in on stdin, one per line. The pod's shell reads
+  # each into an environment variable of the `ak` process, so none is in an argument list
+  # and none is expanded by Ansible.
   ansible.builtin.command:
     argv:
       - kubectl
@@ -532,17 +572,8 @@
       - --
       - sh
       - -c
-      - IFS= read -r AUTHENTIK_BREAKGLASS_PASSWORD; export AUTHENTIK_BREAKGLASS_PASSWORD; exec "$@"
+      - 'IFS= read -r AUTHENTIK_BREAKGLASS_PASSWORD; IFS= read -r AUTHENTIK_BREAKGLASS_USERNAME; IFS= read -r AUTHENTIK_BREAKGLASS_EMAIL; IFS= read -r AUTHENTIK_BREAKGLASS_NAME; IFS= read -r AUTHENTIK_BREAKGLASS_PATH; IFS= read -r AUTHENTIK_BREAKGLASS_TYPE; IFS= read -r AUTHENTIK_BREAKGLASS_GROUP; IFS= read -r AUTHENTIK_BREAKGLASS_ADMIN_GROUP; IFS= read -r AUTHENTIK_BREAKGLASS_ACTIVE; export AUTHENTIK_BREAKGLASS_PASSWORD AUTHENTIK_BREAKGLASS_USERNAME AUTHENTIK_BREAKGLASS_EMAIL AUTHENTIK_BREAKGLASS_NAME AUTHENTIK_BREAKGLASS_PATH AUTHENTIK_BREAKGLASS_TYPE AUTHENTIK_BREAKGLASS_GROUP AUTHENTIK_BREAKGLASS_ADMIN_GROUP AUTHENTIK_BREAKGLASS_ACTIVE; exec "$@"'
       - sh
-      - env
-      - AUTHENTIK_BREAKGLASS_USERNAME={{ authentik_breakglass_username }}
-      - AUTHENTIK_BREAKGLASS_EMAIL={{ authentik_breakglass_email }}
-      - AUTHENTIK_BREAKGLASS_NAME={{ authentik_breakglass_display_name }}
-      - AUTHENTIK_BREAKGLASS_PATH={{ authentik_breakglass_user_path }}
-      - AUTHENTIK_BREAKGLASS_TYPE={{ authentik_breakglass_user_type }}
-      - AUTHENTIK_BREAKGLASS_GROUP={{ authentik_breakglass_group_name }}
-      - AUTHENTIK_BREAKGLASS_ADMIN_GROUP={{ authentik_breakglass_admin_group_name }}
-      - AUTHENTIK_BREAKGLASS_ACTIVE={{ 'true' if authentik_breakglass_is_active else 'false' }}
       - ak
       - shell
       - -c
@@ -577,7 +608,7 @@
         admin_group_missing and not user.groups.add(admin_group);
         changed = changed or admin_group_missing;
         print("AUTHENTIK_BREAKGLASS_RESULT=" + json.dumps({"changed": changed, "username": user.username, "email": user.email, "type": user.type, "path": user.path, "is_active": user.is_active, "groups": sorted(user.groups.values_list("name", flat=True))}))
-    stdin: "{{ authentik_breakglass_password }}\n"
+    stdin: "{{ authentik_breakglass_password }}\n{{ authentik_breakglass_username }}\n{{ authentik_breakglass_email }}\n{{ authentik_breakglass_display_name }}\n{{ authentik_breakglass_user_path }}\n{{ authentik_breakglass_user_type }}\n{{ authentik_breakglass_group_name }}\n{{ authentik_breakglass_admin_group_name }}\n{{ 'true' if authentik_breakglass_is_active else 'false' }}\n"
   register: _authentik_breakglass_sync
   changed_when: >-
     _authentik_breakglass_sync.stdout is search('AUTHENTIK_BREAKGLASS_RESULT=.*"changed": true')

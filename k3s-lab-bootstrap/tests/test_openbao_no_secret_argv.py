@@ -215,6 +215,11 @@ def first_command_word(statement):
     return ""
 
 
+# A shell variable that the program reads from stdin and that holds a name, a path or a verb
+# (`SECRET_PATH`, `LOGIN_USER`) may sit in the arguments of another program: it is no secret.
+SHELL_NAME_VALUE = re.compile(r"(?:_name|_path|_user|_role|_verb|_host)$", re.I)
+
+
 def secret_in_child_arguments(text):
     """Return "task: statement" for a secret in another program's arguments.
 
@@ -228,6 +233,7 @@ def secret_in_child_arguments(text):
             continue
         command = command_text(task)
         variables = set(re.findall(r"\bread\s+-r\s+(\w+)", command)) | set(re.findall(r"\b(\w+)=\$\(", command))
+        variables = {name for name in variables if not SHELL_NAME_VALUE.search(name)}
         for statement in re.split(r"[;\n|&]+", command):
             statement = statement.strip()
             if not statement:

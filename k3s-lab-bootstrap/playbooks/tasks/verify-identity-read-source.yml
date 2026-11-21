@@ -14,7 +14,14 @@
 #
 # Names come from OpenBao, which the verifier does not trust, so no name goes into a shell
 # program. Each call runs `command` with an argument list, and the path reaches the program
-# in the pod as its first argument (`"$1"`).
+# in the pod on stdin, after the token. The program reads it into a variable with
+# `IFS= read -r`, and a check before the call rejects a path that holds a line break.
+
+- name: Check that the list path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(_verify_src.list_path) is not search('[\\r\\n]')"
+    fail_msg: "_verify_src.list_path must not contain a newline: the program reads it from stdin, one value per line."
 
 - name: "Identity check: list {{ _verify_src.list_path }}"
   ansible.builtin.command:
@@ -30,16 +37,23 @@
       - --
       - sh
       - -c
-      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao list -format=json "$1"'
-      - sh
-      - "{{ _verify_src.list_path }}"
-    stdin: "{{ _verify_token_identity_reader }}\n"
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r LIST_PATH; export BAO_TOKEN; exec bao list -format=json "$LIST_PATH"'
+    stdin: "{{ _verify_token_identity_reader }}\n{{ _verify_src.list_path }}\n"
   register: _verify_src_list
   changed_when: false
   failed_when:
     - _verify_src_list.rc != 0
     - not (_verify_src_list.rc == 2 and (_verify_src_list.stdout | trim == '{}' or 'No value found' in _verify_src_list.stderr))
   no_log: true
+
+- name: Check that the read path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(_verify_src.list_path ~ '/' ~ item) is not search('[\\r\\n]')"
+    fail_msg: "_verify_src.list_path ~ '/' ~ item must not contain a newline: the program reads it from stdin, one value per line."
+  loop: "{{ (_verify_src_list.stdout | from_json) if _verify_src_list.rc == 0 else [] }}"
+  loop_control:
+    label: "{{ item }}"
 
 - name: "Identity check: read each name under {{ _verify_src.list_path }}"
   ansible.builtin.command:
@@ -55,10 +69,8 @@
       - --
       - sh
       - -c
-      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao read -format=json "$1"'
-      - sh
-      - "{{ _verify_src.list_path ~ '/' ~ item }}"
-    stdin: "{{ _verify_token_identity_reader }}\n"
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r READ_PATH; export BAO_TOKEN; exec bao read -format=json "$READ_PATH"'
+    stdin: "{{ _verify_token_identity_reader }}\n{{ _verify_src.list_path ~ '/' ~ item }}\n"
   register: _verify_src_reads
   changed_when: false
   no_log: true

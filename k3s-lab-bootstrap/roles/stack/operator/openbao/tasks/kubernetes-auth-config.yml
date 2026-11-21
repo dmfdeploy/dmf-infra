@@ -64,21 +64,29 @@
   ansible.builtin.set_fact:
     _openbao_k8s_changed: "{{ not (_openbao_k8s_config_in_sync | bool and _openbao_k8s_role_in_sync | bool) }}"
 
+- name: Check that the k8s host holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(openbao_kubernetes_auth_host) is not search('[\\r\\n]')"
+    fail_msg: "openbao_kubernetes_auth_host must not contain a newline: the program reads it from stdin, one value per line."
+  when: not (_openbao_k8s_config_in_sync | bool)
+
 - name: Write the Kubernetes auth config in local-file reviewer mode
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao write auth/kubernetes/config
-      kubernetes_host={{ openbao_kubernetes_auth_host | quote }}
-      kubernetes_ca_cert=""
-      token_reviewer_jwt=""
-      disable_local_ca_jwt=false'
-    stdin: "{{ openbao_k8s_auth_token }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r K8S_HOST; export BAO_TOKEN; bao write auth/kubernetes/config "kubernetes_host=$K8S_HOST" kubernetes_ca_cert="" token_reviewer_jwt="" disable_local_ca_jwt=false'
+    stdin: "{{ openbao_k8s_auth_token }}\n{{ openbao_kubernetes_auth_host }}\n"
   no_log: true
   changed_when: true
   when: not (_openbao_k8s_config_in_sync | bool)

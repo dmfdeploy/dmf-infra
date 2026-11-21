@@ -22,6 +22,15 @@
     label: "{{ item.name }}"
   no_log: true
 
+- name: Check that the read path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "('sys/policies/acl/' ~ (item.name)) is not search('[\\r\\n]')"
+    fail_msg: "sys/policies/acl/item.name must not contain a newline: the program reads it from stdin, one value per line."
+  loop: "{{ _verify_policy_sources }}"
+  loop_control:
+    label: "{{ item.name }}"
+
 - name: Read the live policies that the role writes
   ansible.builtin.command:
     argv:
@@ -36,10 +45,8 @@
       - --
       - sh
       - -c
-      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao read -format=json "$1"'
-      - sh
-      - "sys/policies/acl/{{ item.name }}"
-    stdin: "{{ _verify_token_identity_reader }}\n"
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r READ_PATH; export BAO_TOKEN; exec bao read -format=json "$READ_PATH"'
+    stdin: "{{ _verify_token_identity_reader }}\nsys/policies/acl/{{ item.name }}\n"
   register: _verify_policy_reads
   changed_when: false
   failed_when:

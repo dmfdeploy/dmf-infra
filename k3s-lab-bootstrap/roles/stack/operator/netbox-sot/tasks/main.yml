@@ -297,20 +297,33 @@
   no_log: true
   when: netbox_sot_persist_to_openbao | bool
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(netbox_sot_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "netbox_sot_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when:
+    - netbox_sot_persist_to_openbao | bool
+
 # ── Read persisted NetBox service tokens once (admin/awx/librenms reuse) ─────
 # Single read of the runtime secret; the admin/awx/librenms reuse gates each
 # consume the matching key. The catalog gate further down keeps its own read.
 - name: Read existing NetBox service tokens from OpenBao (reuse gate)
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ netbox_sot_openbao_namespace }}
-      exec -i {{ _netbox_sot_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json {{ netbox_sot_runtime_secret_path | quote }}'
-    stdin: "{{ _netbox_sot_openbao_client_token }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ netbox_sot_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _netbox_sot_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
+    stdin: "{{ _netbox_sot_openbao_client_token }}\n{{ netbox_sot_runtime_secret_path }}\n"
   register: _netbox_sot_reuse_openbao_raw
   changed_when: false
   failed_when: false
@@ -1911,6 +1924,17 @@
         - netbox_sot_librenms_token_effective | length == 0
       no_log: true
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(netbox_sot_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "netbox_sot_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when:
+    - netbox_sot_catalog_writer_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_catalog_token_effective | length == 0
+
 # ── Catalog writer token idempotency gate (ADR-0032 follow-up) ──────────────
 # Mint-if-absent, mirroring 698-cms-netbox-forgejo-tokens.yml. A standalone
 # 691 re-run must NOT rotate a valid catalog token: the old mint command
@@ -1934,16 +1958,21 @@
 # on re-runs too, so it no longer drops sibling keys like netbox_catalog_token
 # or cms_api_token.)
 - name: Read existing catalog writer token from OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ netbox_sot_openbao_namespace }}
-      exec -i {{ _netbox_sot_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json {{ netbox_sot_runtime_secret_path | quote }}'
-    stdin: "{{ _netbox_sot_openbao_client_token }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ netbox_sot_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _netbox_sot_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
+    stdin: "{{ _netbox_sot_openbao_client_token }}\n{{ netbox_sot_runtime_secret_path }}\n"
   register: _netbox_sot_catalog_openbao_raw
   changed_when: false
   failed_when: false
@@ -2048,22 +2077,38 @@
         - netbox_sot_catalog_token_effective | length == 0
       no_log: true
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(netbox_sot_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "netbox_sot_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when:
+    - netbox_sot_catalog_purge_enabled | bool
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_manage_tokens | bool
+    - netbox_sot_purge_token_effective | length == 0
+
 # ── Catalog PURGE token idempotency gate (ADR-0032 Amendment 3) ────────────
 # Byte-same shape as the catalog writer token gate above, mirrored for the
 # delete-only identity — reuse from OpenBao's persisted netbox_purge_token
 # iff NetBox still has a "DMF catalog purge (delete-only)" token for the
 # purge user; otherwise mint + persist.
 - name: Read existing catalog purge token from OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ netbox_sot_openbao_namespace }}
-      exec -i {{ _netbox_sot_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json {{ netbox_sot_runtime_secret_path | quote }}'
-    stdin: "{{ _netbox_sot_openbao_client_token }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ netbox_sot_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _netbox_sot_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
+    stdin: "{{ _netbox_sot_openbao_client_token }}\n{{ netbox_sot_runtime_secret_path }}\n"
   register: _netbox_sot_purge_openbao_raw
   changed_when: false
   failed_when: false
@@ -2397,17 +2442,29 @@
   become: false
   when: not netbox_sot_persist_to_openbao | bool
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(netbox_sot_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "netbox_sot_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when: netbox_sot_persist_to_openbao | bool
+
 - name: Read current NetBox integration secret from OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ netbox_sot_openbao_namespace }}
-      exec -i {{ _netbox_sot_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json {{ netbox_sot_runtime_secret_path | quote }}'
-    stdin: "{{ _netbox_sot_openbao_client_token }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ netbox_sot_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _netbox_sot_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
+    stdin: "{{ _netbox_sot_openbao_client_token }}\n{{ netbox_sot_runtime_secret_path }}\n"
   register: _netbox_sot_runtime_secret_raw
   changed_when: false
   failed_when: false
@@ -2446,18 +2503,33 @@
          and (_netbox_sot_runtime_secret_raw.stdout | default('') | length) > 0 }}
   when: netbox_sot_persist_to_openbao | bool
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(netbox_sot_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "netbox_sot_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  run_once: true
+  when: netbox_sot_persist_to_openbao | bool
+
 - name: Persist NetBox integration secrets to in-cluster OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ netbox_sot_openbao_namespace }}
-      exec -i {{ _netbox_sot_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv {{ 'patch' if _netbox_sot_runtime_secret_exists | bool else 'put' }} {{ netbox_sot_runtime_secret_path | quote }} -'
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ netbox_sot_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _netbox_sot_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r KV_VERB; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv "$KV_VERB" "$SECRET_PATH" -'
     stdin: |
       {{ _netbox_sot_openbao_client_token }}
+      {{ 'patch' if _netbox_sot_runtime_secret_exists | bool else 'put' }}
+      {{ netbox_sot_runtime_secret_path }}
       {{
         {
           'netbox_admin_token': netbox_sot_admin_token_effective,
@@ -2474,20 +2546,35 @@
   no_log: true
   when: netbox_sot_persist_to_openbao | bool
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(netbox_sot_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "netbox_sot_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_catalog_writer_enabled | bool
+  run_once: true
+
 # Merge the scoped catalog writer token into the same runtime secret (ADR-0032).
 # kv patch (not put) so the admin/awx/librenms fields written above survive —
 # mirrors how 698 patches cms_api_token into secret/apps/netbox/runtime.
 - name: Persist NetBox catalog writer token to in-cluster OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ netbox_sot_openbao_namespace }}
-      exec -i {{ _netbox_sot_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv patch {{ netbox_sot_runtime_secret_path | quote }} -'
-    stdin: "{{ _netbox_sot_openbao_client_token }}\n{{ {'netbox_catalog_token': netbox_sot_catalog_token_effective} | to_json }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ netbox_sot_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _netbox_sot_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv patch "$SECRET_PATH" -'
+    stdin: "{{ _netbox_sot_openbao_client_token }}\n{{ netbox_sot_runtime_secret_path }}\n{{ {'netbox_catalog_token': netbox_sot_catalog_token_effective} | to_json }}\n"
   run_once: true
   changed_when: false
   no_log: true
@@ -2495,21 +2582,36 @@
     - netbox_sot_persist_to_openbao | bool
     - netbox_sot_catalog_writer_enabled | bool
 
+- name: Check that the secret path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "(netbox_sot_runtime_secret_path) is not search('[\\r\\n]')"
+    fail_msg: "netbox_sot_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
+  when:
+    - netbox_sot_persist_to_openbao | bool
+    - netbox_sot_catalog_purge_enabled | bool
+  run_once: true
+
 # Merge the delete-only purge token into the same runtime secret (ADR-0032
 # Amendment 3) — same kv patch shape as the catalog writer token above,
 # under its own key so awx-integration can wire it into media-finalise-
 # purge's JT specifically, without touching the other catalog launcher JTs.
 - name: Persist NetBox catalog purge token to in-cluster OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ netbox_sot_openbao_namespace }}
-      exec -i {{ _netbox_sot_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv patch {{ netbox_sot_runtime_secret_path | quote }} -'
-    stdin: "{{ _netbox_sot_openbao_client_token }}\n{{ {'netbox_purge_token': netbox_sot_purge_token_effective} | to_json }}\n"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ netbox_sot_openbao_namespace }}"
+      - exec
+      - -i
+      - "{{ _netbox_sot_openbao_pod }}"
+      - --
+      - sh
+      - -c
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv patch "$SECRET_PATH" -'
+    stdin: "{{ _netbox_sot_openbao_client_token }}\n{{ netbox_sot_runtime_secret_path }}\n{{ {'netbox_purge_token': netbox_sot_purge_token_effective} | to_json }}\n"
   run_once: true
   changed_when: false
   no_log: true

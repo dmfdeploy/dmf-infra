@@ -31,13 +31,20 @@
       - --
       - sh
       - -c
-      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao list -format=json "$1"'
-      - sh
-      - "sys/policies/acl"
-    stdin: "{{ _verify_token_identity_reader }}\n"
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r LIST_PATH; export BAO_TOKEN; exec bao list -format=json "$LIST_PATH"'
+    stdin: "{{ _verify_token_identity_reader }}\nsys/policies/acl\n"
   register: _verify_acl_list
   changed_when: false
   no_log: true
+
+- name: Check that the read path holds no newline
+  ansible.builtin.assert:
+    that:
+      - "('sys/policies/acl/' ~ (item)) is not search('[\\r\\n]')"
+    fail_msg: "sys/policies/acl/item must not contain a newline: the program reads it from stdin, one value per line."
+  loop: "{{ _verify_acl_list.stdout | from_json | difference(['root', verify_generate_root_policy]) }}"
+  loop_control:
+    label: "{{ item }}"
 
 - name: Read every live ACL policy except root and the executor's
   ansible.builtin.command:
@@ -53,10 +60,8 @@
       - --
       - sh
       - -c
-      - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; exec bao read -format=json "$1"'
-      - sh
-      - "sys/policies/acl/{{ item }}"
-    stdin: "{{ _verify_token_identity_reader }}\n"
+      - 'IFS= read -r BAO_TOKEN; IFS= read -r READ_PATH; export BAO_TOKEN; exec bao read -format=json "$READ_PATH"'
+    stdin: "{{ _verify_token_identity_reader }}\nsys/policies/acl/{{ item }}\n"
   register: _verify_acl_reads
   changed_when: false
   no_log: true
