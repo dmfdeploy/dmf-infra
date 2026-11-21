@@ -504,7 +504,9 @@ class StubBao:
 
 
 class UnreadableCreationTime(RevokerCase):
-    BAD = [{}, {"creation_time": None}, {"creation_time": "soon"}, {"creation_time": True}]
+    BAD = [{}, {"creation_time": None}, {"creation_time": "soon"}, {"creation_time": True},
+           # JSON numbers that cannot be a time: too large for a float, and infinity
+           {"creation_time": 10 ** 4000}, {"creation_time": float("inf")}, {"creation_time": float("nan")}]
 
     def scan_stub(self, tokens):
         bao, lines = StubBao(tokens), []
@@ -773,6 +775,133 @@ class FailuresDoNotStopTheScan(RevokerCase):
         self.assertKept("e-root")
         self.assertIn("scan skipped", self.log)
         self.assertFalse(self.result["ran"])
+
+
+class RawServer(http.server.ThreadingHTTPServer):
+    """Answers every request with one fixed status and body, for answers the fake never gives."""
+
+    daemon_threads = True
+
+    def __init__(self, status, body):
+        super().__init__(("127.0.0.1", 0), self.Handler)
+        self.status, self.body = status, body
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.server_address[1]}"
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def handle_any(self):
+            self.rfile.read(int(self.headers.get("Content-Length") or 0))
+            self.send_response(self.server.status)
+            self.send_header("Content-Length", str(len(self.server.body)))
+            self.end_headers()
+            self.wfile.write(self.server.body)
+
+        do_GET = do_POST = do_PUT = do_LIST = handle_any
+
+
+def serving(status, body):
+    server = RawServer(status, body)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+DEEP = b"[" * 200000   # more nesting than the JSON parser accepts
+
+
+class UnparsableAnswersFailTheStep(RevokerCase):
+    """No answer from the server may end the process: each one is a failed step."""
+
+    def client(self, status, body):
+        server = serving(status, body)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return revoker.Bao(server.url, None)
+
+    def test_a_wrapper_count_of_4301_digits_is_a_failed_step_and_raises_nothing(self):
+        # The deployed Python refuses to turn more than 4300 digits into an int.
+        huge = "1" * 4301
+        body = f"{huge} errors occurred:\n\t* invalid accessor\n\n"
+        self.assertFalse(revoker.token_is_gone(revoker.BaoError("x", 400, [body]), "invalid accessor"))
+        write_chain(self.record, [intent("r1"), closed("r1")])
+        for step, message in (("lookup", "invalid accessor"), ("revoke", "token not found")):
+            with self.subTest(step=step):
+                accessor = f"big-{step}"
+                self.token(accessor, ["root"], 10)
+                self.bridge.bad_request[(step, accessor)] = json.dumps(
+                    {"errors": [f"{huge} errors occurred:\n\t* {message}\n\n"]}).encode()
+                self.scan()
+                self.assertKept(accessor)
+                self.assertIn(f"{step} {accessor} failed", self.log)
+                self.assertFalse(self.result["ran"])
+                self.bridge.bad_request.clear()
+
+    def test_a_wrapper_count_is_at_most_four_digits_and_must_match_its_lines(self):
+        for count, expected in (("1", True), ("0001", True), ("00001", False), ("1" * 5, False), ("1" * 4300, False)):
+            with self.subTest(count=count[:8]):
+                noun = "error" if count == "1" else "errors"
+                body = f"{count} {noun} occurred:\n\t* invalid accessor\n\n"
+                self.assertIs(revoker.token_is_gone(revoker.BaoError("x", 400, [body]), "invalid accessor"), expected)
+
+    def test_json_nested_past_the_parser_limit_is_a_failed_request(self):
+        for status in (200, 400):
+            with self.subTest(status=status):
+                with self.assertRaises(revoker.BaoError):
+                    self.client(status, DEEP).request("POST", "auth/token/lookup-accessor", {"accessor": "a"})
+
+    def test_an_answer_of_the_wrong_shape_is_a_failed_step_for_the_login_and_the_listing(self):
+        for body in (b'{"auth": []}', b'{"auth": "x"}', b'{"auth": null}'):
+            with self.subTest(login=body):
+                with self.assertRaises(revoker.BaoError):
+                    self.client(200, body).login(ROLE, "jwt")
+        for body in (b'{"data": []}', b'{"data": "x"}', b'{"data": {"keys": 3}}', b'{"data": null}'):
+            with self.subTest(listing=body):
+                with self.assertRaises(revoker.BaoError):
+                    self.client(200, body).accessors()
+
+    def test_a_scan_against_an_answer_that_breaks_every_step_returns_instead_of_raising(self):
+        for body in (DEEP, b'{"auth": []}', b'[]', b'', b"\xff\xfe"):
+            with self.subTest(body=body[:12]):
+                server = serving(200, body)
+                self.addCleanup(server.server_close)
+                self.addCleanup(server.shutdown)
+                lines, original = [], revoker.log
+                revoker.log = lines.append
+                try:
+                    result = revoker.run_once(self.config(REVOKER_BAO_ADDR=server.url))
+                finally:
+                    revoker.log = original
+                self.assertFalse(result["ran"])
+                self.assertGreaterEqual(result["failed"], 1)
+
+    def test_a_date_header_that_cannot_be_a_time_is_no_time(self):
+        for value in (None, "", "soon", "Thu, 01 Jan 99999 00:00:00 GMT", "Thu, 99 Jan 2026 00:00:00 GMT",
+                      "Thu, 01 Jan 1 00:00:00 GMT", "0", "Thu, 01 Jan 2026 25:00:00 GMT"):
+            with self.subTest(value=value):
+                result = revoker.http_date(value)
+                self.assertTrue(result is None or isinstance(result, float))
+
+    def test_a_record_line_nested_past_the_parser_limit_makes_the_record_unreadable(self):
+        self.record.mkdir()
+        (self.record / "segment-00000001.jsonl").write_bytes(DEEP + b"\n")
+        record = revoker.read_record(self.record)
+        self.assertFalse(record.readable)
+
+    def test_an_error_nobody_foresaw_is_a_failed_attempt_that_logs_only_its_kind(self):
+        def explode(config):
+            raise RuntimeError("s.secret-token-text")
+        lines, log_original, run_original = [], revoker.log, revoker.run_once
+        revoker.log, revoker.run_once = lines.append, explode
+        try:
+            result = revoker.attempt(self.config())
+        finally:
+            revoker.log, revoker.run_once = log_original, run_original
+        self.assertEqual(result, {"revoked": 0, "failed": 1, "ran": False})
+        self.assertEqual(lines, ["scan failed: RuntimeError"])
 
 
 class ServerTime(RevokerCase):
