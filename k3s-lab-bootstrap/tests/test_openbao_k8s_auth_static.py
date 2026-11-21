@@ -363,3 +363,69 @@ class StandingRolesTest(unittest.TestCase):
         self.assertIn("playbooks/vertical-security/100-openbao.yml", self.standing)
         for forbidden in ["kubernetes.core.k8s:", "bao policy write", "state: present"]:
             self.assertNotIn(forbidden, self.standing + self.inspect)
+
+
+class ReviewerGuardProbeStaticTest(unittest.TestCase):
+    """The guard's login probe keeps the JWT and the client token off every command line."""
+
+    @classmethod
+    def setUpClass(cls):
+        import yaml
+
+        cls.tasks = []
+
+        def walk(items):
+            for item in items:
+                cls.tasks.append(item)
+                for key in ("block", "rescue", "always"):
+                    walk(item.get(key, []))
+
+        walk(yaml.safe_load(text(OPENBAO / "tasks/reviewer-install-guard.yml")))
+
+    def commands(self):
+        return [t for t in self.tasks if "ansible.builtin.command" in t]
+
+    def test_no_argument_holds_a_token_or_the_jwt(self):
+        for task in self.commands():
+            argv = task["ansible.builtin.command"]["argv"]
+            with self.subTest(task=task["name"]):
+                for word in argv:
+                    self.assertNotRegex(word, r"_openbao_reviewer_guard_(jwt|login|client_token|revoke)", "a probe result in an argument")
+                    self.assertNotRegex(word, r"\{\{.*stdout", "a command output in an argument")
+
+    def test_the_login_and_the_revoke_read_their_secret_from_stdin(self):
+        by_name = {t["name"]: t for t in self.commands()}
+        login = by_name["Log in to the Kubernetes auth mount inside openbao-0"]
+        revoke = by_name["Revoke the client token of the login"]
+        for task, secret in [(login, "_openbao_reviewer_guard_jwt"), (revoke, "_openbao_reviewer_guard_client_token")]:
+            argv = task["ansible.builtin.command"]["argv"]
+            with self.subTest(task=task["name"]):
+                self.assertIn("-i", argv)
+                self.assertIn(secret, task["ansible.builtin.command"]["stdin"])
+                self.assertRegex(argv[-1], r"^IFS= read -r \w+;")
+                self.assertEqual(argv[-2], "-c")
+
+    def test_the_jwt_is_never_a_command_line_value(self):
+        # The one command that holds the JWT in its output is the mint. `kubectl exec`
+        # carries it on stdin only: the login's `jwt=-` reads it there.
+        login = next(t for t in self.commands() if t["name"].startswith("Log in to"))
+        self.assertIn("jwt=-", login["ansible.builtin.command"]["argv"][-1])
+
+    def test_every_task_that_holds_a_token_logs_nothing(self):
+        for task in self.tasks:
+            body = repr(task)
+            if any(name in body for name in ("_guard_jwt.stdout", "_guard_client_token", "_guard_login.stdout")) \
+                    and "ansible.builtin.fail" not in task and "block" not in task:
+                with self.subTest(task=task["name"]):
+                    self.assertIs(task.get("no_log"), True)
+        for task in self.commands():
+            if task["name"].split()[0] in ("Mint", "Log", "Revoke"):
+                with self.subTest(task=task["name"]):
+                    self.assertIs(task.get("no_log"), True)
+
+    def test_no_failure_message_prints_a_token(self):
+        for task in self.tasks:
+            if "ansible.builtin.fail" in task:
+                msg = task["ansible.builtin.fail"]["msg"]
+                with self.subTest(task=task["name"]):
+                    self.assertNotRegex(msg, r"_guard_jwt\.stdout|_guard_client_token|_guard_login\.stdout")

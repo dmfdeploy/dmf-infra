@@ -152,7 +152,11 @@ class FreshInstallTest(unittest.TestCase):
         self.assertEqual(self.rerun.returncode, 0, self.rerun.output)
         self.assertTrue(self.rerun.writes())
         self.assertFalse([call for call in self.rerun.calls if call[0].startswith("fake-root")])
-        self.assertFalse([call for call in self.rerun.calls if call[1].startswith(("token create", "token revoke"))])
+        # The reviewer guard proves a Kubernetes auth login and revokes the client token that
+        # the login returned. That token is the only one the rerun creates or revokes.
+        trades = [call for call in self.rerun.calls if call[1].startswith(("token create", "token revoke"))]
+        self.assertEqual([call for call in trades if not call[0].startswith("fake-k8s-")], [])
+        self.assertEqual(trades, [("fake-k8s-1", "token revoke -self")])
         self.assertEqual({token for token, _ in self.rerun.writes()}, {RECONCILER})
 
 

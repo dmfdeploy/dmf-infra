@@ -42,9 +42,13 @@
 #      check sends a token as an argument or calls the AppRole login or a SecretID path.
 #   8. The guard before the workload changes. On an initialized server whose StatefulSet runs as
 #      the default ServiceAccount (or names none), it fails with the rebuild message and writes
-#      nothing to the cluster. It passes when the StatefulSet runs as OpenBao's own ServiceAccount,
-#      on a new install and on an old StatefulSet that was never initialized, and it stops when
-#      the status of an old StatefulSet cannot be read.
+#      nothing to the cluster. On an initialized server whose StatefulSet runs as OpenBao's own
+#      ServiceAccount, it proves a Kubernetes auth login of the token revoker's role: it passes
+#      and revokes the client token of the login when the login works, stops with the rebuild
+#      message on a 403, and fails closed on any other failure (a transport error, a missing
+#      role or ServiceAccount, a client token that stays live) and on a sealed server. It passes on
+#      a new install and on a StatefulSet that was never initialized, and it stops when the
+#      status cannot be read. No token reaches an argument.
 #
 # The fake kubectl, bao and kubernetes.core modules stand in for the cluster. They
 # are in tests/fixtures. Run locally, from k3s-lab-bootstrap:
@@ -523,12 +527,21 @@
     - name: Run the reviewer guard cases
       ansible.builtin.include_tasks: _openbao-k8s-auth-reviewer-guard-case.yml
       loop:
-        - {name: initialized, default ServiceAccount, dir: guard-default, account: default, outcome: fail, message: rebuild}
-        - {name: initialized, no ServiceAccount in the template, dir: guard-absent, account: "", outcome: fail, message: rebuild}
-        - {name: initialized, OpenBao's own ServiceAccount, dir: guard-own, account: openbao, outcome: pass, message: none}
-        - {name: fresh install, no StatefulSet, dir: guard-fresh, account: none, outcome: pass, message: none}
-        - {name: old StatefulSet that was never initialized, dir: guard-uninit, account: default, outcome: pass, message: none, env: {FAKE_INITIALIZED: "false"}}
-        - {name: old StatefulSet and an unreadable status, dir: guard-unread, account: default, outcome: fail, message: status, env: {FAKE_STATUS_FAILS: "connection refused"}}
+        - {name: "initialized, default ServiceAccount", dir: guard-default, account: default, outcome: fail, expect: stored-token reviewer, rebuild: true}
+        - {name: "initialized, no ServiceAccount in the template", dir: guard-absent, account: "", outcome: fail, expect: stored-token reviewer, rebuild: true}
+        - {name: "initialized, default ServiceAccount, sealed", dir: guard-default-sealed, account: default, outcome: fail, expect: stored-token reviewer, rebuild: true, env: {FAKE_SEALED: openbao-0}}
+        - {name: "initialized, OpenBao's own ServiceAccount, working login", dir: guard-own, account: openbao, outcome: pass, probe: true, revoked: true}
+        - {name: "own ServiceAccount, login 403 (the workload moved, the config did not)", dir: guard-own-403, account: openbao, outcome: fail, expect: cannot validate logins, rebuild: true, probe: true, env: {FAKE_K8S_LOGIN_FAILS: "403"}}
+        - {name: "own ServiceAccount, login fails with a transport error", dir: guard-own-transport, account: openbao, outcome: fail, expect: Nothing has changed, probe: true, env: {FAKE_K8S_LOGIN_FAILS: connection refused}}
+        - {name: "own ServiceAccount, the probe role is missing from the mount", dir: guard-own-norole, account: openbao, role: absent, outcome: fail, expect: does not guess, probe: true}
+        - {name: "own ServiceAccount, the probe ServiceAccount is missing", dir: guard-own-nosa, account: openbao, outcome: fail, expect: cannot mint a token, probe: true, env: {FAKE_SA_MISSING: token-revoker}}
+        - {name: "own ServiceAccount, the client token cannot be revoked", dir: guard-own-norevoke, account: openbao, outcome: fail, expect: could not revoke, probe: true, env: {FAKE_REVOKE_FAILS: login}}
+        - {name: "own ServiceAccount, sealed", dir: guard-own-sealed, account: openbao, outcome: fail, expect: Unseal OpenBao, env: {FAKE_SEALED: openbao-0}}
+        - {name: "own ServiceAccount and an unreadable status", dir: guard-own-unread, account: openbao, outcome: fail, expect: cannot read the init status, env: {FAKE_STATUS_FAILS: connection refused}}
+        - {name: "fresh install, no StatefulSet", dir: guard-fresh, account: none, outcome: pass}
+        - {name: "old StatefulSet that was never initialized", dir: guard-uninit, account: default, outcome: pass, env: {FAKE_INITIALIZED: "false"}}
+        - {name: "own StatefulSet that was never initialized", dir: guard-own-uninit, account: openbao, outcome: pass, env: {FAKE_INITIALIZED: "false"}}
+        - {name: "old StatefulSet and an unreadable status", dir: guard-unread, account: default, outcome: fail, expect: cannot read the init status, env: {FAKE_STATUS_FAILS: connection refused}}
       loop_control:
         loop_var: case
         label: "{{ case.name }}"
