@@ -1,9 +1,10 @@
 ---
 # Tests of ESO's main store on Kubernetes auth.
 #
-#   1. The StatefulSet with the variable off equals the render from before
-#      Kubernetes auth (tests/fixtures/openbao-statefulset-single-replica.json). With
-#      it on, only serviceAccountName is added.
+#   1. The fixture (tests/fixtures/openbao-statefulset-single-replica.json) is the
+#      render from before the Raft change plus serviceAccountName. The StatefulSet
+#      with the variable off equals the fixture without serviceAccountName. With it
+#      on, the StatefulSet equals the fixture.
 #   2. The ClusterSecretStore with approle equals the object that the role applied
 #      before Kubernetes auth (tests/fixtures/eso-store-approle-before-kubernetes-auth.json,
 #      without its resourceVersion), and a switch in either direction leaves exactly one
@@ -98,10 +99,29 @@
         openbao_eso_auth_method: kubernetes
         openbao_kubernetes_reviewer_enabled: false
 
+    - name: Read the fixture
+      ansible.builtin.set_fact:
+        _fixture_on: "{{ lookup('ansible.builtin.file', 'fixtures/openbao-statefulset-single-replica.json') | from_json }}"
+
+    - name: Build the pod spec of the fixture without the ServiceAccount
+      ansible.builtin.set_fact:
+        _fixture_off_pod_spec: >-
+          {{ _fixture_on.spec.template.spec | dict2items
+          | rejectattr('key', 'equalto', 'serviceAccountName') | items2dict }}
+
+    - name: Build the fixture as it was before the reviewer ServiceAccount
+      ansible.builtin.set_fact:
+        _fixture_off: >-
+          {{ _fixture_on | combine({'spec': _fixture_on.spec | combine({'template':
+          _fixture_on.spec.template | combine({'spec': _fixture_off_pod_spec})})}) }}
+
     - name: Assert off equals the old render and on only adds the ServiceAccount
       ansible.builtin.assert:
         that:
-          - _sts_off == (lookup('ansible.builtin.file', 'fixtures/openbao-statefulset-single-replica.json') | from_json)
+          - _fixture_on.spec.template.spec.serviceAccountName == 'openbao'
+          - _fixture_off.spec.template.spec.serviceAccountName is not defined
+          - _sts_off == _fixture_off
+          - _sts_on == _fixture_on
           - _sts_off.spec.template.spec.serviceAccountName is not defined
           - _sts_on.spec.template.spec.serviceAccountName == 'openbao'
           - _sts_on.spec.template.spec | dict2items | rejectattr('key', 'equalto', 'serviceAccountName') | items2dict == _sts_off.spec.template.spec
