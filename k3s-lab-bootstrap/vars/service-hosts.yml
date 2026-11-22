@@ -13,3 +13,8 @@ dmf_external_base_url_effective: "{{ external_base_url | default('http://' ~ (me
 # True when that URL is https with an IP address as host. A verified call
 # cannot validate an IP, so plays that use path mode refuse it.
 dmf_external_base_url_is_https_ip: "{{ dmf_external_base_url_effective is match('^https://([0-9]{1,3}([.][0-9]{1,3}){3}|[[][0-9a-fA-F:]+[]])([:/]|$)') }}"
+
+# Issuer for the Zot ingress certificate. The local-ca lane has no ACME issuer;
+# its certificates come from the local CA issuer that cert-manager creates.
+# The lane test is the one 321 uses.
+dmf_registry_cert_issuer_effective: "{{ (cert_manager_local_ca_issuer | default('dmf-local-ca')) if (dmf_tls_mode | default('') == 'local-ca') else (cert_manager_cluster_issuer | default('letsencrypt-http')) }}"
