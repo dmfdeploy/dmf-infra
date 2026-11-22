@@ -1,15 +1,17 @@
 ---
-# DMF lifecycle: Operate + Monitor & Update stages (EBU white paper p.4).
-# Runtime checks against a deployed facility — full-stack verify, Phase 2
-# Layer-6 integration tests, OIDC login probes, DR drills, day-0 inventory
-# snapshots. Read-only; never mutates.
-- import_playbook: playbooks/lifecycle/operate-stack-verify.yml
-  tags: [lifecycle-operate, verify, stack]
+# DMF lifecycle: Operate stage (EBU white paper p.4).
+# Operate is the steady state of a deployed facility. Nothing gets installed
+# here, so these plays only read: they change nothing on the cluster.
+# The deploy plays for the console, born-inventory and Zot run in the install
+# path (bootstrap-*-provision-post-seed.yml and bootstrap-*-configure.yml).
+# tests/test_lifecycle_operate_read_only.py fails if an inclusion reaches a
+# playbook named 6xx-* or vertical-security/1xx-*, any role, or a task file
+# outside playbooks/lifecycle/tasks. It does not detect a deploy playbook with
+# another name or an inline mutating task. Review covers both.
 
-# Phase 2 validation gate: exercises the Layer-6 playbooks in order and checks
-# the CMS, born-inventory, and Zot endpoints after each deployment step.
-- import_playbook: playbooks/lifecycle/test-layer6.yml
-  tags: [lifecycle-operate, verify, stack, layer6, phase2]
+# Endpoint probes: console /healthz, NetBox /api/, Zot /v2/.
+- import_playbook: playbooks/lifecycle/operate-health-probes.yml
+  tags: [lifecycle-operate, verify, health]
 
 # Catalog drift detector: verifies NetBox lifecycle tags agree with Helm
 # release presence for all dmf-media/catalog/*.yaml entries.

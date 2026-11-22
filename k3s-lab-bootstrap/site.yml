@@ -14,7 +14,9 @@
 #   dmf-env/bin/run-playbook.sh <env> bootstrap-configure.yml
 #   dmf-env/bin/run-playbook.sh <env> bootstrap-verify.yml
 #
-# Operate (verify, drills) and Finalise (teardown) are invoked explicitly:
+# Operate (read-only probes and drift check) and Finalise (teardown) are
+# invoked explicitly. Configure of a catalog entry runs through the AWX job
+# templates in dmf-runbooks:
 #
 #   ansible-playbook -i <inv> lifecycle-operate.yml
 #   ansible-playbook -i <inv> lifecycle-finalise.yml
