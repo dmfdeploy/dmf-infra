@@ -152,6 +152,7 @@
             tasks_from: revoker-resume.yml
           vars:
             openbao_revoker_installer_token_revoked: "{{ not (_openbao_failed_mint_unread | default(false) | bool) }}"
+            openbao_revoker_may_be_missing: true
           when: _openbao_revoker_paused | default(false) | bool
 
         - name: Re-fail after fresh-root cleanup preserves bootstrap evidence

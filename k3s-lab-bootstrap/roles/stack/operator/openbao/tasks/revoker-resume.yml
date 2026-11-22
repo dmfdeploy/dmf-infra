@@ -25,6 +25,21 @@
   register: _openbao_revoker_to_start
   when: openbao_revoker_installer_token_revoked | bool
 
+# A run that finishes has created the Deployment in setup-revoker.yml, so a missing one was
+# removed since, and starting nothing would let the install finish without a revoker. Only the
+# rescue of a failed run sets openbao_revoker_may_be_missing: it can run before the setup
+# did, and it ends by failing the run anyway.
+- name: Stop when the revoker Deployment is missing
+  ansible.builtin.fail:
+    msg: >-
+      The revoker Deployment {{ openbao_revoker_name }} is missing in {{ openbao_namespace }}.
+      Rerun the openbao role, which creates it in setup-revoker.yml, then start the
+      revoker again.
+  when:
+    - openbao_revoker_installer_token_revoked | bool
+    - _openbao_revoker_to_start.resources | length == 0
+    - not (openbao_revoker_may_be_missing | default(false) | bool)
+
 - name: Scale the revoker to one replica
   kubernetes.core.k8s_scale:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
@@ -36,7 +51,7 @@
     wait: false
   when:
     - openbao_revoker_installer_token_revoked | bool
-    - _openbao_revoker_to_start.resources | default([]) | length > 0
+    - _openbao_revoker_to_start.resources | length > 0
 
 - name: Wait until the revoker has finished a scan
   kubernetes.core.k8s_info:
@@ -54,7 +69,7 @@
   failed_when: false
   when:
     - openbao_revoker_installer_token_revoked | bool
-    - _openbao_revoker_to_start.resources | default([]) | length > 0
+    - _openbao_revoker_to_start.resources | length > 0
 
 - name: Stop when the revoker has not finished a scan
   ansible.builtin.fail:
@@ -66,6 +81,6 @@
       of the pod {{ openbao_revoker_name }} in {{ openbao_namespace }}: each failed step has a line.
   when:
     - openbao_revoker_installer_token_revoked | bool
-    - _openbao_revoker_to_start.resources | default([]) | length > 0
+    - _openbao_revoker_to_start.resources | length > 0
     - (_openbao_revoker_ready.resources | default([]) | length == 0)
       or ((_openbao_revoker_ready.resources[0].status | default({})).readyReplicas | default(0)) < 1
