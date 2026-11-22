@@ -2,7 +2,7 @@
 
 These forms fail:
 
-* `get_url` without a checksum of the form `<algorithm>:<value>`. An empty value, or one
+* `get_url` without a checksum of the form `<algorithm>:<value>` where the algorithm is sha256, sha384 or sha512. An empty value, or one
   with no algorithm, keeps whatever the server sent.
 * `uri` with `dest`, and `unarchive` with a URL as `src`. Neither verifies what it
   writes, so the file must come through a `get_url` that has a checksum.
@@ -22,7 +22,8 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 SKIP_DIRS = {"charts", "node_modules", "fixtures", "tests"}
 MODULE = re.compile(r"^(?:ansible\.(?:builtin|legacy)\.)?(get_url|unarchive|uri)$")
-CHECKSUM = re.compile(r"^(?:sha1|sha224|sha256|sha384|sha512|md5):.+$")
+# Only SHA-2 hashes of 256 bits or more. md5, sha1 and sha224 are too weak to trust a download.
+CHECKSUM = re.compile(r"^(?:sha256|sha384|sha512):.+$", re.I)
 # A download tool inside a command, with the ways it can leave bytes on disk or run them.
 TOOL = r"(?<![\w./-])(?:curl|wget)\b"
 UNVERIFIED_TOOL_USE = [
@@ -107,6 +108,10 @@ class DownloadsAreVerified(unittest.TestCase):
             "get_url with an empty checksum": task("ansible.builtin.get_url", "    url: https://e.test/a\n    dest: /tmp/a\n    checksum: ''\n"),
             "get_url with no algorithm": task("ansible.builtin.get_url", "    url: https://e.test/a\n    dest: /tmp/a\n    checksum: 00ab\n"),
             "get_url with only an algorithm": task("ansible.builtin.get_url", "    url: https://e.test/a\n    dest: /tmp/a\n    checksum: 'sha256:'\n"),
+            "get_url with md5": task("ansible.builtin.get_url", "    url: https://e.test/a\n    dest: /tmp/a\n    checksum: 'md5:00ab'\n"),
+            "get_url with sha1": task("ansible.builtin.get_url", "    url: https://e.test/a\n    dest: /tmp/a\n    checksum: 'sha1:00ab'\n"),
+            "get_url with sha224": task("ansible.builtin.get_url", "    url: https://e.test/a\n    dest: /tmp/a\n    checksum: 'sha224:00ab'\n"),
+            "get_url with an unknown algorithm": task("ansible.builtin.get_url", "    url: https://e.test/a\n    dest: /tmp/a\n    checksum: 'crc32:00ab'\n"),
             "uri with dest": task("ansible.builtin.uri", "    url: https://e.test/a\n    dest: /tmp/a\n"),
             "unarchive from a URL": task("ansible.builtin.unarchive", "    src: https://e.test/a.tgz\n    dest: /tmp\n    remote_src: true\n"),
             "curl piped into sh": task("ansible.builtin.shell", "    cmd: curl -fsSL https://e.test/i.sh | sh\n"),
