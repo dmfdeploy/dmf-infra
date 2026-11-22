@@ -129,9 +129,14 @@
         label: "{{ item.name }}"
       no_log: true
 
+    # Authentik normally lists only the applications whose policies the token's
+    # user passes, and caches that list under a key that ignores the slug filter.
+    # superuser_full_list=true skips both, but only for a superuser token. The
+    # bootstrap token's user is a superuser. Any other token silently gets the
+    # filtered, cached list, and the exact-slug assert then fails on a wrong row.
     - name: Look up applications per app
       ansible.builtin.uri:
-        url: "{{ verify_authentik_api_base }}/core/applications/?slug={{ item.slug | urlencode }}"
+        url: "{{ verify_authentik_api_base }}/core/applications/?slug={{ item.slug | urlencode }}&superuser_full_list=true"
         method: GET
         headers:
           Authorization: "Bearer {{ _verify_authentik_token }}"
@@ -146,9 +151,11 @@
     - name: Assert every application is provisioned
       ansible.builtin.assert:
         that:
-          - item.json.results | length > 0
+          - item.json.results | selectattr('slug', 'equalto', item.item.slug) | list | length > 0
         fail_msg: >-
-          Application with slug '{{ item.item.slug }}' is missing in Authentik.
+          Application with slug '{{ item.item.slug }}' is missing in Authentik
+          (the lookup returned {{ item.json.results | map(attribute='slug') | list }}).
+          If the lookup returned other applications, it did not find this one.
           Confirm the 20-app-providers blueprint applied successfully.
       loop: "{{ _verify_applications.results }}"
       loop_control:
