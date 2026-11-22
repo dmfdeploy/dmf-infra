@@ -1,10 +1,27 @@
 ---
 # Ansible collections required for the dmfdeploy platform.
 # Install with: ansible-galaxy collection install -r requirements.yml
+#
+# This list must match ee/requirements.yml, which the AWX execution environment
+# builds from and CI installs; a test checks it. Edit both together. Dependabot
+# does not update Galaxy collections; bump the versions by hand.
 collections:
   # Kubernetes modules — used extensively across playbooks (k8s, k8s_info, helm, helm_repository)
   - name: kubernetes.core
+    version: 5.4.3
   # POSIX modules — authorized_key, firewalld, iptables, etc.
   - name: ansible.posix
+    version: 1.6.2
   # General modules — json_query filter (requires jmespath; see requirements.txt), among others
   - name: community.general
+    version: 10.7.9
+  # docker_image and docker_login, used by the zot-seed playbook.
+  - name: community.docker
+    version: 4.8.9
+  # NetBox dynamic inventory (nb_inventory).
+  - name: netbox.netbox
+    version: 3.23.1
+  # A dependency of community.docker and netbox.netbox. Pinned so the install
+  # cannot pick a release that needs a newer ansible-core.
+  - name: community.library_inventory_filtering_v1
+    version: 1.1.5

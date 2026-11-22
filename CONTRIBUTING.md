@@ -56,7 +56,7 @@ failing command and returns a failure status.
   .venv/bin/python -m pip install ansible ansible-lint yamllint
   .venv/bin/python -m pip install -r k3s-lab-bootstrap/requirements.txt
   cd k3s-lab-bootstrap
-  ../.venv/bin/ansible-galaxy collection install -r requirements.yml -r ee/requirements.yml
+  ../.venv/bin/ansible-galaxy collection install -r ee/requirements.yml
 )
 ```
 
