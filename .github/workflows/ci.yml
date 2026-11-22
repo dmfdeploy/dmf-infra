@@ -43,6 +43,103 @@ jobs:
             if [ "$attempt" -lt 3 ]; then sleep 10; fi
           done
           exit 1
+      - name: Every test file is collected by the runner CI uses
+        # A test file nobody runs gives false confidence. Each test file must match
+        # exactly one rule below. The rule names the runner and, for files a job
+        # lists one by one, the command that lists it; a name in a comment or step
+        # name does not count. Each Python file must also give its runner at least
+        # one case, so an empty or unimportable file fails, and so does a pytest-style
+        # file under a unittest rule. Pytest-style files belong in awx-autoscale. This
+        # guards against forgetting to wire a file in, not against a job that is
+        # skipped or a command that only echoes a name.
+        run: |
+          python3 - <<'PY'
+          import ast, fnmatch, importlib.util, pathlib, re, subprocess, sys, unittest
+          # (directory, name pattern, excluded pattern, runner, command that lists the file)
+          RULES = [
+              # The ansible-unit shards take every file by glob.
+              ("tests", "test_openbao_*.py", None, "unittest", None),
+              ("tests", "test_*.py", "test_openbao_*.py", "unittest", "-p '{b}'"),
+              # Run as a script, so it must call unittest.main() itself.
+              ("tests", "test-*.py", None, "script", "tests/{b}"),
+              # The "Every OpenBao test playbook is in the list, once" step checks these.
+              ("tests", "test-openbao-*.yml", None, "none", None),
+              ("tests", "test-*.yml", "test-openbao-*.yml", "none", "tests/{b}"),
+              ("roles/stack/operator/awx-integration/tests", "test_*.py", None, "unittest", None),
+              ("roles/stack/operator/awx-autoscale/tests", "test_*.py", None, "pytest", None),
+              ("roles/base/prometheus/tests", "test_*.promtool.yml", None, "none", None),
+          ]
+          FIXTURES = ["tests/fixtures"]
+          root = pathlib.Path.cwd()
+          wf = pathlib.Path("../.github/workflows/ci.yml").read_text().splitlines()
+          active = "\n".join(re.sub(r"\s#.*$", "", l) for l in wf
+                             if not re.match(r"\s*(#|-?\s*name:)", l))
+          names = ["test_*.py", "test-*.py", "test-*.yml", "test_*.promtool.yml"]
+          files = sorted({p for n in names for p in root.rglob(n)
+                          if (p.suffix == ".py" or "tests" in p.relative_to(root).parts)
+                          and not any(str(p.relative_to(root)).startswith(f + "/") for f in FIXTURES)})
+          problems, unit, pyt = [], [], set()
+          for p in files:
+              rel = p.relative_to(root)
+              hits = [r for r in RULES if str(rel.parent) == r[0] and fnmatch.fnmatch(p.name, r[1])
+                      and not (r[2] and fnmatch.fnmatch(p.name, r[2]))]
+              if len(hits) != 1:
+                  problems.append(f"{rel}: {'no rule collects it' if not hits else 'matches several rules'}")
+                  continue
+              runner, cmd = hits[0][3], hits[0][4]
+              if cmd and not re.search(r"(^|[\s'\"])" + re.escape(cmd.format(b=p.name)) + r"([\s'\";\\]|$)", active, re.M):
+                  problems.append(f"{rel}: no job command lists it")
+              if runner == "script" and not any(
+                      isinstance(n, ast.If) and "__name__" in ast.unparse(n.test) and "__main__" in ast.unparse(n.test)
+                      and any("unittest.main(" in ast.unparse(c) for c in n.body)
+                      for n in ast.parse(p.read_text()).body):
+                  problems.append(f"{rel}: run as a script, but no unittest.main() under __main__")
+              if p.suffix == ".py" and runner in ("unittest", "script"):
+                  unit.append(p)
+              elif runner == "pytest":
+                  pyt.add(rel.parent)
+          def count(s, mod):
+              return sum(count(t, mod) if isinstance(t, unittest.TestSuite) else type(t).__module__ == mod for t in s)
+          total = 0
+          for p in unit:
+              rel = p.relative_to(root)
+              mod = "t_" + re.sub(r"\W", "_", str(rel))
+              sys.path.insert(0, str(p.parent))
+              try:
+                  spec = importlib.util.spec_from_file_location(mod, p)
+                  m = importlib.util.module_from_spec(spec)
+                  sys.modules[mod] = m
+                  spec.loader.exec_module(m)
+                  n = count(unittest.defaultTestLoader.loadTestsFromModule(m), mod)
+              except BaseException as e:
+                  problems.append(f"{rel}: import failed: {e!r}")
+                  continue
+              finally:
+                  sys.path.pop(0)
+              total += n
+              if not n:
+                  problems.append(f"{rel}: no unittest case")
+          print("unittest files:", len(unit), "cases:", total)
+          for d in sorted(pyt):
+              cwd = root / d.parent
+              r = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", d.name],
+                                 cwd=cwd, capture_output=True, text=True)
+              got = {}
+              for l in r.stdout.splitlines():
+                  if "::" in l:
+                      f = (cwd / l.split("::")[0]).resolve()
+                      got[f] = got.get(f, 0) + 1
+              if r.returncode:
+                  problems.append(f"{d}: pytest collection failed:\n{r.stdout[-800:]}{r.stderr[-400:]}")
+              print("pytest", d, "cases:", sum(got.values()))
+              problems += [f"{f.relative_to(root)}: no pytest case" for f in files
+                           if f.parent == root / d and f.suffix == ".py" and not got.get(f.resolve())]
+          print("test files checked:", len(files))
+          if not files:
+              problems.append("No test files found")
+          if problems:
+              sys.exit("Test files with no runner or no case:\n" + "\n".join(problems))
+          PY
       - name: yamllint
         run: yamllint .
       - name: ansible-lint
@@ -87,7 +184,9 @@ jobs:
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
-          for pb in playbooks/*.yml; do
+          playbooks=(playbooks/*.yml)
+          [ ${#playbooks[@]} -gt 0 ] || { echo "No playbooks found"; exit 1; }
+          for pb in "${playbooks[@]}"; do
             echo "=== syntax-check: $pb ==="
             ansible-playbook "$pb" --syntax-check
           done
@@ -128,7 +227,10 @@ jobs:
             -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
             -e @defaults/main.yml
           promtool check rules tests/rendered_alerts.yml
-          for f in tests/test_*.promtool.yml; do
+          shopt -s nullglob
+          files=(tests/test_*.promtool.yml)
+          [ ${#files[@]} -gt 0 ] || { echo "No promtool tests found"; exit 1; }
+          for f in "${files[@]}"; do
             promtool test rules "$f"
           done
       - name: helm-lint charts/
@@ -137,8 +239,8 @@ jobs:
           shopt -s nullglob
           charts=(charts/*/)
           if [ ${#charts[@]} -eq 0 ]; then
-            echo "SKIP: no charts found"
-            exit 0
+            echo "No charts found"
+            exit 1
           fi
           for chart_dir in "${charts[@]}"; do
             echo "=== helm-lint: $chart_dir ==="
@@ -208,6 +310,8 @@ jobs:
           done
           exit 1
       - name: Every OpenBao test playbook is in the list, once
+        env:
+          SHARDS: ${{ strategy.job-total }}
         run: |
           set -eu
           listed=$(echo "$PLAYBOOKS" | awk 'NF {print $3}' | sort -u)
@@ -227,6 +331,12 @@ jobs:
               }
             }' | sort -u)
           [ -z "$bad" ] || { echo "$bad"; exit 1; }
+          # Every row needs a shard that exists in the matrix and a known mode.
+          bad=$(echo "$PLAYBOOKS" | awk -v n="$SHARDS" 'NF {
+              if ($1 !~ /^[0-9]+$/ || $1 < 1 || $1 > n) print $3 " is in shard " $1 ", not 1 to " n
+              if ($2 != "fakes" && $2 != "plain") print $3 " has the mode " $2
+            }')
+          [ -z "$bad" ] || { echo "$bad"; exit 1; }
           present=$(printf '%s\n' tests/test-openbao-*.yml | sort)
           missing=$(comm -23 <(echo "$present") <(echo "$listed"))
           [ -z "$missing" ] || { echo "Not in a shard: $missing"; exit 1; }
@@ -235,6 +345,8 @@ jobs:
       - name: OpenBao Raft render, guard, unseal and migration tests
         run: |
           set -eu
+          echo "$PLAYBOOKS" | awk -v shard="$SHARD" 'NF && $1 == shard' | grep -q . ||
+            { echo "Shard $SHARD has no playbooks"; exit 1; }
           echo "$PLAYBOOKS" | awk -v shard="$SHARD" 'NF && $1 == shard {print $2, $3, $4}' |
           while read -r mode playbook slice; do
             echo "=== $playbook ($mode) ${slice:-} ==="
@@ -293,13 +405,18 @@ jobs:
       - name: OpenBao AppRole lifecycle registry and setup issuer tests (dmfdeploy/dmfdeploy#11, #396)
         run: |
           set -eu
-          modules=$(printf '%s\n' tests/test_openbao_*.py | sort |
-            awk -v shard="$SHARD" -v total=3 '(NR - 1) % total == shard - 1 {print $0}' |
+          shopt -s nullglob
+          files=(tests/test_openbao_*.py)
+          [ ${#files[@]} -gt 0 ] || { echo "No OpenBao unit tests found"; exit 1; }
+          modules=$(printf '%s\n' "${files[@]}" | sort |
+            awk -v shard="$SHARD" -v total="$TOTAL" '(NR - 1) % total == shard - 1 {print $0}' |
             sed 's|^tests/||; s|\.py$||')
           echo "$modules"
+          [ -n "$modules" ] || { echo "Shard $SHARD has no test files"; exit 1; }
           echo "$modules" | PYTHONPATH=tests xargs python3 -m unittest -v
         env:
           SHARD: ${{ matrix.shard }}
+          TOTAL: ${{ strategy.job-total }}
 
   ansible:
     # The required check. It passes only when every job it waits for passed.
