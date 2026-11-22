@@ -114,15 +114,17 @@
   hosts: k3s_control[0]
   gather_facts: false
   become: true
+  vars_files:
+    - "{{ playbook_dir }}/../vars/service-hosts.yml"
   vars:
     # Canonical public source (ghcr.io/dmfdeploy/*). Override
     # `ghcr_namespace` in inventory for pre-publish testing against a
     # fork (e.g., ghcr.io/<your-handle>/...).
     ghcr_namespace: dmfdeploy
 
-    # Cluster-internal Zot ingress host. Derived from the cluster's
-    # cert-manager domain.
-    zot_registry_host: "registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
+    # Cluster-internal Zot ingress host. Same name the Zot role serves and
+    # 321 maps on the node.
+    zot_registry_host: "{{ dmf_registry_host_effective }}"
 
     # skopeo dest TLS verification. Always on: on the local-ca lane the node
     # trust store holds the DMF Local CA (321-local-ca-trust.yml), and the

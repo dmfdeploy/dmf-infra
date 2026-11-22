@@ -13,10 +13,13 @@
   become: true
   gather_facts: false
 
+  vars_files:
+    - "{{ playbook_dir }}/../vars/service-hosts.yml"
+
   vars:
     cms_smoke_base_url: >-
       {{
-        'https://' ~ (cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))))
+        'https://' ~ dmf_console_host_effective
         if (cms_exposure | default('host')) == 'host'
         else (external_base_url | default('http://' ~ metallb_vip))
       }}

@@ -33,6 +33,8 @@
   hosts: k3s_control[0]
   become: true
   gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/service-hosts.yml"
   vars:
     _local_ca: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
     _base_domain: "{{ cert_manager_cluster_domain | default(dmf_sandbox_base_domain | default('')) }}"
@@ -46,9 +48,11 @@
           forgejo_host | default(''),
           grafana_host | default(''),
           dmf_cms_host | default(''),
+          dmf_console_host_effective,
           netbox_host | default(''),
           awx_host | default(''),
           registry_host | default(''),
+          dmf_registry_host_effective,
           _base_domain]
          | reject('equalto', '') | unique | list }}
   tasks:
@@ -145,16 +149,27 @@
       when: _local_ca | bool
       no_log: true
 
+    # Later plays verify certificates against this trust store. A missing CA
+    # here would surface as a certificate error far from its cause.
+    - name: Assert the local CA Secret holds ca.crt
+      ansible.builtin.assert:
+        that:
+          - _local_ca_secret.resources | default([]) | length > 0
+          - _local_ca_secret.resources[0].data['ca.crt'] | default('') | length > 0
+        fail_msg: >-
+          The Secret {{ _ca_namespace }}/{{ _ca_secret }} is missing or has no
+          ca.crt, so the node cannot trust the local CA. Run 320-cert-manager
+          first, or set cert_manager_local_ca_secret to the Secret that holds
+          the CA.
+      when: _local_ca | bool
+
     - name: Install local CA into the node trust store
       ansible.builtin.copy:
         content: "{{ _local_ca_secret.resources[0].data['ca.crt'] | b64decode }}"
         dest: /usr/local/share/ca-certificates/dmf-local-ca.crt
         mode: "0644"
       register: _node_ca_installed
-      when:
-        - _local_ca | bool
-        - _local_ca_secret.resources | default([]) | length > 0
-        - _local_ca_secret.resources[0].data['ca.crt'] | default('') | length > 0
+      when: _local_ca | bool
 
     - name: Update node CA trust store
       ansible.builtin.command:

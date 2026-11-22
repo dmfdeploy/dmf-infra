@@ -130,6 +130,9 @@ def _with_tasks(play, tasks):
     play = dict(play)
     play["become"] = False
     play["tasks"] = tasks
+    # The playbook loads shared names from vars/; the copy runs elsewhere, so
+    # point at the real file.
+    play["vars_files"] = [str((ROOT / "vars" / "service-hosts.yml").resolve())]
     return play
 
 

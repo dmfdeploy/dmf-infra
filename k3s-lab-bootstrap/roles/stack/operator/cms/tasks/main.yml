@@ -157,7 +157,7 @@
       # nor servname' fails on the unresolvable .test host.) Same rationale as
       # the 630 on-node fix (ADR-0033 bundle).
       ansible.builtin.uri:
-        url: "https://{{ cms_image_registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/v2/dmf-cms/manifests/{{ cms_image_tag }}"
+        url: "https://{{ cms_image_registry_host | default(dmf_registry_host_effective) }}/v2/dmf-cms/manifests/{{ cms_image_tag }}"
         method: HEAD
         status_code: 200
         validate_certs: true

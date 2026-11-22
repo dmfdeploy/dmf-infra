@@ -79,6 +79,9 @@ cms_authentik_invitation_ttl_hours: 24
 
 # AWX API — in-cluster DNS. Token stored in runtime secret.
 cms_runtime_secret_awx_token_key: awxApiToken
+# Takes effect only if the URL is https. The in-cluster URL is plain HTTP
+# today, so this does not protect that connection; an https URL would need a
+# CA bundle mounted in the pod.
 cms_awx_ssl_verify: true
 
 # AWX on-demand scale-to-zero wake (#97). When dmf_awx_autoscale_enabled is set
@@ -95,6 +98,9 @@ cms_runtime_secret_awx_autoscale_bearer_key: awxAutoscaleBearerToken
 
 # NetBox API — in-cluster DNS. Token stored in runtime secret.
 cms_runtime_secret_netbox_token_key: netboxApiToken
+# Takes effect only if the URL is https. The in-cluster URL is plain HTTP
+# today, so this does not protect that connection; an https URL would need a
+# CA bundle mounted in the pod.
 cms_netbox_ssl_verify: true
 
 # Forgejo API — in-cluster DNS. Token stored in runtime secret.
