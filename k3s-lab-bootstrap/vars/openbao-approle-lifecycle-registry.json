@@ -146,8 +146,7 @@
       "entrypoints": [
         "playbooks/694-born-inventory.yml",
         "bootstrap-configure.yml",
-        "bootstrap-sandbox-configure.yml",
-        "playbooks/lifecycle/test-layer6.yml"
+        "bootstrap-sandbox-configure.yml"
       ],
       "fresh_on_rerun_required": true,
       "issuance_verification": {

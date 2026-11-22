@@ -250,8 +250,7 @@ k3s-lab-bootstrap/
 ├── requirements.yml                 # Galaxy collection/role requirements
 ├── site.yml                         # Top-level entry: calls lifecycle-provision
 ├── lifecycle-provision.yml          # EBU Provision (full build)
-├── lifecycle-configure.yml          # EBU Configure stage
-├── lifecycle-operate.yml            # EBU Operate stage (verify, drills)
+├── lifecycle-operate.yml            # EBU Operate stage (read-only probes, drift)
 ├── lifecycle-finalise.yml           # EBU Finalise & Review (teardown)
 ├── bootstrap-*.yml                  # From-scratch bootstrap chain (pre-/post-seed,
 │                                    #   configure, verify) — driven by dmf-env / dmf-init
@@ -265,7 +264,7 @@ k3s-lab-bootstrap/
 │   ├── vertical-monitoring/         # Prometheus, Loki, Grafana, Promtail, LibreNMS
 │   ├── vertical-orchestration/      # ESO (External Secrets Operator)
 │   ├── vertical-resilience/         # Resilience drills / recovery runbooks
-│   └── lifecycle/                   # Stack verify + teardown bodies
+│   └── lifecycle/                   # Operate probes, drift check, teardown bodies
 ├── roles/
 │   ├── base/                        # Layers 2/3 + verticals (k3s, harden, ingress, longhorn, prometheus base, …)
 │   ├── stack/operator/              # Layer 6 + verticals (NetBox, Forgejo, AWX, OpenBao, Authentik, …)

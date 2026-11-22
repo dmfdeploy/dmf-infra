@@ -181,6 +181,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_awx_wake_before_consumers.py' -v
       - name: the install lists the capabilities dmf-init requires
         run: python3 -m unittest discover -s tests -p 'test_install_capabilities.py' -v
+      - name: lifecycle-operate.yml imports no deploy play
+        run: python3 -m unittest discover -s tests -p 'test_lifecycle_operate_read_only.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
