@@ -37,6 +37,11 @@
     - "{{ playbook_dir }}/../vars/service-hosts.yml"
   vars:
     _local_ca: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
+    # Names the platform certificate covers: the apex and one label under it.
+    _platform_cert_apex: "{{ cert_manager_cluster_domain | default('dmf.test') }}"
+    _platform_cert_names: >-
+      {{ cert_manager_local_ca_dns_names
+         | default([_platform_cert_apex, '*.' ~ _platform_cert_apex]) }}
     _base_domain: "{{ cert_manager_cluster_domain | default(dmf_sandbox_base_domain | default('')) }}"
     _node_ip: "{{ k3s_node_ip | default(k3s_advertise_address | default(ansible_host)) }}"
     _ca_namespace: "{{ cert_manager_namespace | default('cert-manager') }}"
@@ -56,6 +61,26 @@
           _base_domain]
          | reject('equalto', '') | unique | list }}
   tasks:
+    # The console ingress has no certificate of its own, and the later plays
+    # verify the names below. A name the platform certificate does not cover
+    # fails there with a certificate error, so refuse it here.
+    - name: Assert the registry and console names are covered by the platform certificate
+      ansible.builtin.assert:
+        that:
+          - >-
+            item in _platform_cert_names
+            or ('*.' ~ (item.split('.')[1:] | join('.'))) in _platform_cert_names
+        fail_msg: >-
+          {{ item }} is not covered by the platform certificate
+          ({{ _platform_cert_names | join(', ') }}). A wildcard covers one
+          label, so a nested or foreign name is not covered. Use a name under
+          {{ _platform_cert_apex }}, or add the name to
+          cert_manager_local_ca_dns_names.
+      loop:
+        - "{{ dmf_console_host_effective }}"
+        - "{{ dmf_registry_host_effective }}"
+      when: _local_ca | bool
+
     # The resolver reads the node's local addresses and default route, and this
     # play does not gather facts.
     - name: Gather network facts to find the node's internal address

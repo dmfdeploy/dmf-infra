@@ -55,6 +55,7 @@ BASE_VARIABLES = {
     "_cms_runtime_secret_data_merged": {"secretKey": "x"},
     "_cms_catalog_entries": [],
     "dmf_cms_oidc_provider_credentials_parsed": {"client_id": "dmf-cms"},
+    "dmf_registry_host_effective": "registry.example.invalid",
 }
 
 TRUST_VARIABLES = {
