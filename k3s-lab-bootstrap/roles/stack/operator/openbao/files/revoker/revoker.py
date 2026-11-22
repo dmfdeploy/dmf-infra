@@ -571,13 +571,23 @@ def attempt(config: Config) -> dict:
         return {"revoked": 0, "failed": 1, "ran": False}
 
 
+def run_cycle(config: Config, metrics: Metrics, clock=time.time) -> None:
+    """Run one attempt and record it with the time it finished, not the time it began.
+
+    Readiness measures the age of the last complete scan. A scan that outlasts the readiness
+    window would otherwise be stale the moment it ended.
+    """
+    result = attempt(config)
+    metrics.update(result, clock())
+
+
 def main() -> int:
     config = Config()
     metrics = Metrics()
     serve_metrics(metrics, config.metrics_port, 3 * config.interval)
     while True:
         started = time.time()
-        metrics.update(attempt(config), started)
+        run_cycle(config, metrics)
         time.sleep(max(config.interval - (time.time() - started), 1))
 
 

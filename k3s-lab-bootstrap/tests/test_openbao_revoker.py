@@ -23,6 +23,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 
 import yaml
@@ -1044,6 +1045,20 @@ class ReadyEndpoint(RevokerCase):
         self.metrics.update({"revoked": 0, "failed": 0, "ran": True, "readable": True}, 1000)
         self.assertTrue(self.metrics.ready(1000 + self.WINDOW, self.WINDOW))
         self.assertFalse(self.metrics.ready(1000 + self.WINDOW + 1, self.WINDOW))
+
+    def test_a_scan_longer_than_the_window_is_ready_when_it_ends(self):
+        # Catches a last-scan time taken when the scan began: a scan that outlasts the window
+        # would be stale the moment it finished, and would never become ready.
+        clock = {"now": 1000.0}
+
+        def slow_attempt(_config):
+            clock["now"] += self.WINDOW + 60
+            return {"revoked": 0, "failed": 0, "ran": True, "readable": True}
+
+        with mock.patch.object(revoker, "attempt", slow_attempt):
+            revoker.run_cycle(None, self.metrics, lambda: clock["now"])
+        self.assertTrue(self.metrics.ready(clock["now"], self.WINDOW))
+        self.assertIn(f"last_scan_timestamp_seconds {int(clock['now'])}\n", self.metrics.render())
 
 
 class RecordsFromTheWriter(unittest.TestCase):
