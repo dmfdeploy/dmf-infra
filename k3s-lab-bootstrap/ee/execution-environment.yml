@@ -23,7 +23,7 @@ dependencies:
   # ansible-core + ansible-runner are NOT re-pinned here. The base image
   # quay.io/ansible/awx-ee:24.6.1 ships with Python 3.9 and ansible-core
   # 2.15.x, which is compatible with all collections we use (kubernetes.core
-  # 5.x, community.general 9.x, ansible.posix 1.x, community.docker 3.x).
+  # 5.4.x, community.general 10.7.x, ansible.posix 1.6.x, community.docker 4.8.x).
   # Pinning ansible-core to >=2.16 fails because 2.16+ requires Python 3.10+
   # and the base image is on 3.9. To upgrade ansible-core, bump the awx-ee
   # base tag first (e.g., to a build that ships with Python 3.11+).

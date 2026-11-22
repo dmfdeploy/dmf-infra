@@ -8,7 +8,7 @@
 # which also declares jmespath for jobs that run inside the image.
 
 # The json_query filter in community.general needs jmespath.
-jmespath>=1.0.1,<2
+jmespath==1.1.0
 
 # The AWX autoscale helper tests in roles/stack/operator/awx-autoscale/tests.
-pytest>=8,<10
+pytest==9.2.0
