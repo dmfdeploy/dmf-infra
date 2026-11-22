@@ -79,7 +79,7 @@ cms_authentik_invitation_ttl_hours: 24
 
 # AWX API — in-cluster DNS. Token stored in runtime secret.
 cms_runtime_secret_awx_token_key: awxApiToken
-cms_awx_ssl_verify: false
+cms_awx_ssl_verify: true
 
 # AWX on-demand scale-to-zero wake (#97). When dmf_awx_autoscale_enabled is set
 # (sandbox lane), the Console wakes AWX via the awx-autoscale helper before
@@ -95,7 +95,7 @@ cms_runtime_secret_awx_autoscale_bearer_key: awxAutoscaleBearerToken
 
 # NetBox API — in-cluster DNS. Token stored in runtime secret.
 cms_runtime_secret_netbox_token_key: netboxApiToken
-cms_netbox_ssl_verify: false
+cms_netbox_ssl_verify: true
 
 # Forgejo API — in-cluster DNS. Token stored in runtime secret.
 cms_runtime_secret_forgejo_token_key: forgejoApiToken

@@ -181,9 +181,10 @@ awx_control_node_ssh_privkey_path: "/mnt/secure/awx-control-node.privkey"
 awx_integration_update_on_launch: true
 awx_integration_overwrite: true
 awx_integration_overwrite_vars: true
-# AWX is served with the lab CA; callers may override per environment if
-# they need to trust a different certificate chain.
-awx_integration_validate_certs: false
+# The configure play runs on the control-plane node, which trusts the local
+# root CA (playbook 321) or a public ACME chain. The in-cluster NetBox URL is
+# plain HTTP, so this flag has no effect on that connection.
+awx_integration_validate_certs: true
 
 awx_integration_sync_project: false
 awx_integration_sync_inventory: false

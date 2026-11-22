@@ -185,6 +185,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_install_capabilities.py' -v
       - name: lifecycle-operate.yml imports no deploy play
         run: python3 -m unittest discover -s tests -p 'test_lifecycle_operate_read_only.py' -v
+      - name: calls that send a secret verify the server certificate
+        run: python3 -m unittest discover -s tests -p 'test_verified_certs_on_secret_calls.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob

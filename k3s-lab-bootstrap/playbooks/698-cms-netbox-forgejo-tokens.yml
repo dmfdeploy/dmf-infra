@@ -225,7 +225,7 @@
         url: "{{ cms_netbox_api_url | default('https://' ~ (netbox_host | default('netbox.dmf.example.com'))) }}/api/"
         method: GET
         status_code: [200]
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       register: _cms_netbox_api_test
       changed_when: false
       when: _cms_netbox_svc_token is defined
@@ -400,7 +400,7 @@
         url_password: "{{ _cms_forgejo_admin_password }}"
         force_basic_auth: true
         status_code: [200, 404]
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       register: _cms_forgejo_user_check
       when:
         - not _cms_forgejo_token_exists | bool
@@ -423,7 +423,7 @@
           must_change_password: false
           active: true
         status_code: [201, 400]
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       register: _cms_forgejo_user_create
       when:
         - not _cms_forgejo_token_exists | bool
@@ -443,7 +443,7 @@
           password: "{{ _cms_forgejo_svc_password }}"
           must_change_password: false
         status_code: 200
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       when:
         - not _cms_forgejo_token_exists | bool
         - not _cms_forgejo_token_recovered | default(false) | bool
@@ -458,7 +458,7 @@
         url_password: "{{ _cms_forgejo_svc_password }}"
         force_basic_auth: true
         status_code: 200
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       register: _cms_forgejo_existing_tokens
       when:
         - not _cms_forgejo_token_exists | bool
@@ -473,7 +473,7 @@
         url_password: "{{ _cms_forgejo_svc_password }}"
         force_basic_auth: true
         status_code: [204, 404]
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       loop: "{{ _cms_forgejo_existing_tokens.json | default([]) | selectattr('name', 'equalto', cms_forgejo_svc_token_name) | list }}"
       when:
         - not _cms_forgejo_token_exists | bool
@@ -497,7 +497,7 @@
             - read:issue
             - read:organization
         status_code: 201
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       register: _cms_forgejo_token_result
       when:
         - not _cms_forgejo_token_exists | bool
@@ -529,7 +529,7 @@
         headers:
           Authorization: "token {{ _cms_forgejo_svc_token }}"
         status_code: [200, 401, 403]
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       register: _cms_forgejo_token_test
       changed_when: false
       failed_when: false

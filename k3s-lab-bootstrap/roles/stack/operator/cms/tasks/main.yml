@@ -160,7 +160,7 @@
         url: "https://{{ cms_image_registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/v2/dmf-cms/manifests/{{ cms_image_tag }}"
         method: HEAD
         status_code: 200
-        validate_certs: false
+        validate_certs: true
       changed_when: false
       register: _cms_image_check
       failed_when: _cms_image_check.status != 200

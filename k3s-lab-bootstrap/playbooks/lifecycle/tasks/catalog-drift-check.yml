@@ -15,7 +15,7 @@
     method: GET
     headers:
       Authorization: "Token {{ netbox_admin_token }}"
-    validate_certs: false
+    validate_certs: true
     return_content: true
     timeout: 30
   no_log: true

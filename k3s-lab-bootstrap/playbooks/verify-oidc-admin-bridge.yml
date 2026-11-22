@@ -83,7 +83,7 @@
         headers:
           Authorization: "Bearer {{ _verify_authentik_token }}"
         status_code: 200
-        validate_certs: false  # lab-only: self-signed cert, no CA bundle deployed
+        validate_certs: true
       register: _verify_user_lookup
       no_log: true
 
@@ -108,7 +108,7 @@
         headers:
           Authorization: "Bearer {{ _verify_authentik_token }}"
         status_code: 200
-        validate_certs: false  # lab-only
+        validate_certs: true
       register: _verify_oauth_providers
       loop: "{{ verify_apps | selectattr('kind', 'equalto', 'oauth2') | list }}"
       loop_control:
@@ -122,7 +122,7 @@
         headers:
           Authorization: "Bearer {{ _verify_authentik_token }}"
         status_code: 200
-        validate_certs: false  # lab-only
+        validate_certs: true
       register: _verify_saml_providers
       loop: "{{ verify_apps | selectattr('kind', 'equalto', 'saml') | list }}"
       loop_control:
@@ -141,7 +141,7 @@
         headers:
           Authorization: "Bearer {{ _verify_authentik_token }}"
         status_code: 200
-        validate_certs: false  # lab-only
+        validate_certs: true
       register: _verify_applications
       loop: "{{ verify_apps }}"
       loop_control:
@@ -191,7 +191,7 @@
         headers:
           Authorization: "Bearer {{ _verify_authentik_token }}"
         status_code: 200
-        validate_certs: false  # lab-only
+        validate_certs: true
       register: _verify_dmf_groups_scope
       no_log: true
 
