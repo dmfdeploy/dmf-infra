@@ -1,0 +1,11 @@
+# Capabilities this checkout's install provides.
+#
+# dmf-init reads this file before it bootstraps or retries an install. It
+# refuses a checkout that lacks a capability it needs. Remove a line here only
+# together with the matching dmf-init check.
+#
+# One capability per line, lowercase letters, digits and hyphens.
+#
+# openbao-seed-in-install: the install seeds OpenBao with its own initial
+# token. No separate seed step runs after the install.
+openbao-seed-in-install
