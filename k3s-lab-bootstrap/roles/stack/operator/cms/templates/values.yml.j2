@@ -1,6 +1,6 @@
 ---
 image:
-  repository: {{ cms_image_repository | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com')) ~ '/dmf-cms') | to_json }}
+  repository: {{ cms_image_repository | default(dmf_registry_host_effective ~ '/dmf-cms') | to_json }}
   tag: {{ cms_image_tag | default('0.1.0') | to_json }}
   pullPolicy: {{ cms_image_pull_policy | default('IfNotPresent') | to_json }}
 

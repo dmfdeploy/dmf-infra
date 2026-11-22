@@ -157,7 +157,9 @@
       # nor servname' fails on the unresolvable .test host.) Same rationale as
       # the 630 on-node fix (ADR-0033 bundle).
       ansible.builtin.uri:
-        url: "https://{{ cms_image_registry_host | default(dmf_registry_host_effective) }}/v2/dmf-cms/manifests/{{ cms_image_tag }}"
+        # Checks the repository the pod pulls, so an explicit cms_image_repository
+        # is checked at its own host and path.
+        url: "https://{{ cms_image_repository.split('/')[0] }}/v2/{{ cms_image_repository.split('/', 1)[1] }}/manifests/{{ cms_image_tag }}"
         method: HEAD
         status_code: 200
         validate_certs: true

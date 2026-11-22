@@ -35,6 +35,16 @@
     - base/cluster-ready
 
   tasks:
+    - name: Assert path-mode exposure does not use an https IP address
+      ansible.builtin.assert:
+        that: not (dmf_external_base_url_is_https_ip | bool)
+        fail_msg: >-
+          {{ dmf_external_base_url_effective }} is the base URL for path-mode exposure, and it is https with an
+          IP address as host. A verified call cannot validate an IP. Set
+          external_base_url to an https URL with a host name that the
+          certificate covers, or to an http URL.
+      when: (cms_exposure | default('host')) == 'path' or (awx_exposure | default('host')) == 'path'
+
     - name: Wait for DMF Console pod to be ready
       kubernetes.core.k8s_info:
         kubeconfig: /etc/rancher/k3s/k3s.yaml

@@ -17,8 +17,11 @@ It also fails for a command, script or template that passes `--tls-verify=false`
 `--dest-tls-verify=false`, `curl -k` or `--insecure`, `verify=False` or `insecure_skip_verify: true` (templates included).
 
 A site that cannot verify goes on ALLOWED with a one-line reason. The key is the
-file and the enclosing task name (or the variable name for a default). Each
-entry must match a real site and carry a reason, so a stale entry fails.
+file and the exact YAML path to the switch, such as
+`[Check NetBox API root].ansible.builtin.uri.validate_certs`. A list item that
+has a `name` appears as `[name]`; any other list item as `[index]`. A second
+off switch next to an allowed one has another path, so it fails. Each entry
+must match a real site and carry a reason, so a stale entry fails.
 
 Coverage is bounded. The check reads only the files and patterns above. It does
 not resolve a switch set in a group or host variable file outside the example
@@ -53,13 +56,17 @@ CLI_FORMS = {
 # node trusts, and say why. Do not widen trust to make a call pass.
 ALLOWED = {
     ("roles/shared/gate-ingress-ready/tasks/main.yml",
-     "Gate: assert Traefik ingress route is live"):
+     "[Gate: assert Traefik ingress route is live].ansible.builtin.uri.validate_certs"):
         "Route probe sends no secret and accepts any HTTP status; callers pass IP or VIP URLs.",
-    ("playbooks/lifecycle/operate-health-probes.yml", "Check NetBox API root"):
-        "Runs on the operator workstation, which has no local CA, and sends no secret.",
+    ("playbooks/lifecycle/operate-health-probes.yml",
+     "[Probe NetBox API endpoint].tasks.[Check NetBox API root].ansible.builtin.uri.validate_certs"):
+        "Runs on the operator workstation, which has no local CA, and sends no secret; "
+        "a caller can still set the variable to true.",
     ("roles/base/zot-mirror/defaults/main.yml", "zot_mirror_source_tls_verify"):
-        "The in-cluster Zot source is plain HTTP, so there is no certificate; the value selects HTTP.",
-    ("roles/base/blackbox-exporter/defaults/main.yml", "insecure_skip_verify"):
+        "The in-cluster Zot source is plain HTTP, so no certificate exists to verify. "
+        "This is not protected transport; the value only selects HTTP.",
+    ("roles/base/blackbox-exporter/defaults/main.yml",
+     "blackbox_modules.http_2xx_insecure.http.tls_config.insecure_skip_verify"):
         "Probe module for endpoints without a trusted certificate; it sends no credentials.",
 }
 
@@ -84,21 +91,23 @@ def _yaml_files(root):
             yield path
 
 
-def _walk(node, name, out, rel, module_defaults=False):
+def _walk(node, path, out, rel):
+    """Collect every off switch with its exact YAML path."""
     if isinstance(node, list):
-        for item in node:
-            _walk(item, name, out, rel)
+        for index, item in enumerate(node):
+            label = item.get("name") if isinstance(item, dict) else None
+            step = f"[{label}]" if isinstance(label, str) else f"[{index}]"
+            _walk(item, path + [step], out, rel)
     elif isinstance(node, dict):
-        task = node.get("name") if isinstance(node.get("name"), str) else name
         for key, value in node.items():
+            here = path + [str(key)]
             if _is_off(str(key), value):
-                out.append((rel, task if task else str(key), str(key), value))
-            _walk(value, task, out, rel)
-        # Switches held in a variable: a task that reads a role variable whose
-        # default is false is caught after the defaults are collected.
-        for key, value in node.items():
-            if VERIFY_SWITCH.search(str(key)) and not SKIP_SWITCH.search(str(key)) and isinstance(value, str):
-                out.append((rel, task if task else str(key), "ref", value))
+                out.append((rel, ".".join(here), f"{key}: {value}", "key"))
+            elif (VERIFY_SWITCH.search(str(key)) and not SKIP_SWITCH.search(str(key))
+                  and isinstance(value, str)):
+                # A switch read from a variable: judged once the off defaults are known.
+                out.append((rel, ".".join(here), value, "ref"))
+            _walk(value, here, out, rel)
 
 
 def _scan(root):
@@ -112,16 +121,16 @@ def _scan(root):
             errors.append(f"{rel}: not parseable, so not checked ({str(exc).splitlines()[0]})")
             continue
         for doc in docs:
-            _walk(doc, None, sites, rel)
-    off_vars = {key for rel, _t, key, v in sites if key != "ref"
+            _walk(doc, [], sites, rel)
+    # Variables that hold an off value, by their bare name (the last path step).
+    off_vars = {p.split(".")[-1] for rel, p, _w, kind in sites if kind == "key"
                 and ("/defaults/" in rel or "group_vars" in rel or rel.startswith("vars/"))}
     found = []
-    for rel, task, key, value in sites:
-        if key == "ref":
-            if any(re.search(r"\b" + re.escape(v) + r"\b", value) for v in off_vars):
-                found.append((rel, task, f"{value}"))
-        else:
-            found.append((rel, task, f"{key}: {value}"))
+    for rel, ypath, what, kind in sites:
+        if kind == "key":
+            found.append((rel, ypath, what))
+        elif any(re.search(r"\b" + re.escape(v) + r"\b", what) for v in off_vars):
+            found.append((rel, ypath, what))
     for scanned in ("roles", "playbooks"):
         for path in sorted((root / scanned).rglob("*")):
             rel = str(path.relative_to(root))
@@ -141,9 +150,9 @@ def find_violations(root=ROOT):
     """Return a sorted list of problems, empty when every off site is allowed."""
     found, errors = _scan(root)
     problems = list(errors)
-    for rel, task, what in found:
-        if (rel, task) not in ALLOWED:
-            problems.append(f"{rel}: {task} ({what})")
+    for rel, where, what in found:
+        if (rel, where) not in ALLOWED:
+            problems.append(f"{rel}: {where} ({what})")
     return sorted(set(problems))
 
 
@@ -158,7 +167,7 @@ class NoVerificationOff(unittest.TestCase):
 
     def test_allowlist_entries_are_real_and_explained(self):
         found, _ = _scan(ROOT)
-        real = {(rel, task) for rel, task, _ in found}
+        real = {(rel, where) for rel, where, _ in found}
         for key, reason in ALLOWED.items():
             self.assertIn(key, real, f"{key} is on ALLOWED but no such site exists")
             self.assertTrue(reason.strip(), f"{key} has no reason")
@@ -183,7 +192,7 @@ class PlantedCases(unittest.TestCase):
             "- hosts: all\n  tasks:\n    - name: call\n      uri:\n        url: https://x\n"
             "        headers: '{{ request_headers }}'\n        validate_certs: false\n"})
         self.assertEqual(len(out), 1)
-        self.assertTrue(out[0].startswith("playbooks/p.yml: call"))
+        self.assertTrue(out[0].startswith("playbooks/p.yml: [0].tasks.[call].uri.validate_certs"), out[0])
 
     def test_default_false(self):
         out = self._run({"playbooks/p.yml":
@@ -222,6 +231,24 @@ class PlantedCases(unittest.TestCase):
         out = self._run({"playbooks/p.yml": "- name: [unclosed\n"})
         self.assertEqual(len(out), 1)
         self.assertIn("not parseable", out[0])
+
+    def test_second_switch_next_to_an_allowed_one_fails(self):
+        # The allowed blackbox module stays allowed; a second module does not.
+        out = self._run({"roles/base/blackbox-exporter/defaults/main.yml":
+            "blackbox_modules:\n  http_2xx_insecure:\n    http:\n      tls_config:\n"
+            "        insecure_skip_verify: true\n  http_2xx_other:\n    http:\n      tls_config:\n"
+            "        insecure_skip_verify: true\n"})
+        self.assertEqual(len(out), 1)
+        self.assertIn("http_2xx_other", out[0])
+
+    def test_extra_off_key_inside_an_allowed_task_fails(self):
+        out = self._run({"roles/shared/gate-ingress-ready/tasks/main.yml":
+            "- name: \"Gate: assert Traefik ingress route is live\"\n"
+            "  ansible.builtin.uri:\n    url: https://x\n"
+            "    validate_certs: \"{{ gate_ingress_validate_certs | default(false) | bool }}\"\n"
+            "    ca_verify:\n      tls_verify: false\n"})
+        self.assertEqual(len(out), 1)
+        self.assertIn("tls_verify", out[0])
 
     def test_verified_call_passes(self):
         out = self._run({"playbooks/p.yml":

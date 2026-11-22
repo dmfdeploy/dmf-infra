@@ -6,3 +6,10 @@
 # ingress host (`cms_host` in the cms role).
 dmf_registry_host_effective: "{{ registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) }}"
 dmf_console_host_effective: "{{ cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) }}"
+
+# Base URL that path-mode exposure uses for the console, AWX and NetBox: the
+# configured external base URL, else the load-balancer address over HTTP.
+dmf_external_base_url_effective: "{{ external_base_url | default('http://' ~ (metallb_vip | default('')), true) }}"
+# True when that URL is https with an IP address as host. A verified call
+# cannot validate an IP, so plays that use path mode refuse it.
+dmf_external_base_url_is_https_ip: "{{ dmf_external_base_url_effective is match('^https://([0-9]{1,3}([.][0-9]{1,3}){3}|[[][0-9a-fA-F:]+[]])([:/]|$)') }}"

@@ -58,7 +58,8 @@ cms_secret_key: "{{ vault_cms_secret_key | default('') }}"
 # Image source. Uses the external registry URL so all nodes can pull via the
 # load-balanced ingress (internal cluster DNS resolution for image pulls is
 # unreliable on multi-node clusters). Build/push to this repository first.
-cms_image_repository: "registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}/dmf-cms"
+# The registry name is the one 630 seeds and Zot serves (vars/service-hosts.yml).
+cms_image_repository: "{{ dmf_registry_host_effective }}/dmf-cms"
 # Image tag: read from the dmf-cms checkout's VERSION at `origin/main`, NOT the
 # operator's working tree (#119). The deployed console image is published to
 # GHCR only for released versions on main; reading the local working file meant

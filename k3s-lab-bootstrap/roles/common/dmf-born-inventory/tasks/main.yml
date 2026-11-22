@@ -10,6 +10,16 @@
       admin token, because the token would skip the receipt. Unset
       dmf_born_inventory_netbox_admin_token, or switch the receipt path off.
 
+- name: Assert path-mode exposure does not use an https IP address
+  ansible.builtin.assert:
+    that: not (dmf_external_base_url_is_https_ip | bool)
+    fail_msg: >-
+      {{ dmf_external_base_url_effective }} is the base URL for path-mode exposure, and it is https with an
+      IP address as host. A verified call cannot validate an IP. Set
+      external_base_url to an https URL with a host name that the
+      certificate covers, or to an http URL.
+  when: (netbox_exposure | default('host')) == 'path'
+
 - name: Validate born-inventory inputs
   ansible.builtin.assert:
     that:
