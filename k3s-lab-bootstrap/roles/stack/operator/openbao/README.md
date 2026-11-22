@@ -301,7 +301,8 @@ run. `token-revoker is missing from OpenBao` means that the role has not written
 run also says whether the executor and the revoker roles are installed. Where one is not,
 no principal may hold its policy.
 
-A fresh install passes the verifier: `ops-admin` holds no `generate-root` policy.
+A fresh install does not pass the verifier yet: `ops-admin` still holds `generate-root`,
+and the verifier flags it. A later change retires that grant.
 Only a fresh install attaches `identity-verifier` to `policy-reconciler`. An environment
 installed before slice B is rebuilt (ADR-0051), not migrated.
 
