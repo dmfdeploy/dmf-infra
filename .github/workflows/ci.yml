@@ -166,6 +166,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_secrets_not_in_argv_render.py' -v
       - name: shell programs take their values on stdin
         run: python3 -m unittest discover -s tests -p 'test_shell_values_as_arguments.py' -v
+      - name: downloads are verified before they run
+        run: python3 -m unittest discover -s tests -p 'test_downloads_verified.py' -v
       - name: shell values reach their program unchanged
         run: |
           PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
