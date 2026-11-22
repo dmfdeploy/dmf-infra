@@ -62,9 +62,10 @@
          | reject('equalto', '') | unique | list }}
   tasks:
     # The console ingress has no certificate of its own, and the later plays
-    # verify the names below. A name the platform certificate does not cover
-    # fails there with a certificate error, so refuse it here.
-    - name: Assert the registry and console names are covered by the platform certificate
+    # verify its name. A name the platform certificate does not cover fails
+    # there with a certificate error, so refuse it here. The registry name is
+    # not checked: Zot requests its own certificate for it.
+    - name: Assert the console name is covered by the platform certificate
       ansible.builtin.assert:
         that:
           - >-
@@ -78,7 +79,6 @@
           cert_manager_local_ca_dns_names.
       loop:
         - "{{ dmf_console_host_effective }}"
-        - "{{ dmf_registry_host_effective }}"
       when: _local_ca | bool
 
     # The resolver reads the node's local addresses and default route, and this

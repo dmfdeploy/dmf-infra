@@ -12,8 +12,9 @@ The names come from one file, `vars/service-hosts.yml`. This test checks that:
   variable instead of writing its own expression, and
 * on the local-ca lane 321 fails, with a message that names the Secret, when
   the CA Secret or its `ca.crt` is missing,
-* 321 refuses a console or registry name that the platform certificate (the
-  apex and one label under it) does not cover,
+* 321 refuses a console name that the platform certificate (the apex and one
+  label under it) does not cover; the registry name is not checked, because
+  Zot requests its own certificate,
 * the console image the pod pulls, the name 630 seeds and the name the image
   check calls are the same registry name, and
 * path-mode exposure refuses an https base URL whose host is an IP address.
@@ -143,7 +144,7 @@ class PlatformCertificateCoverage(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.task = _task(LOCAL_CA, "Assert the registry and console names are covered by the platform certificate")
+        cls.task = _task(LOCAL_CA, "Assert the console name is covered by the platform certificate")
 
     def _run(self, console, registry, names=None, local_ca=True):
         apex = "lab.test"
@@ -178,10 +179,11 @@ class PlatformCertificateCoverage(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("ui.other.test is not covered", r.stdout + r.stderr)
 
-    def test_foreign_registry_name_fails(self):
-        r = self._run("console.lab.test", "reg.other.test")
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("reg.other.test is not covered", r.stdout + r.stderr)
+    def test_registry_name_outside_the_certificate_passes(self):
+        # Zot requests its own certificate for the registry name.
+        for registry in ("reg.other.test", "a.b.lab.test"):
+            r = self._run("console.lab.test", registry)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
 
     def test_a_name_added_to_the_certificate_passes(self):
         r = self._run("ui.other.test", "registry.lab.test",
