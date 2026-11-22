@@ -69,7 +69,7 @@ awx:
   apiToken:
     existingSecretName: {{ cms_runtime_secret_name | to_json }}
     key: {{ cms_runtime_secret_awx_token_key | to_json }}
-  sslVerify: {{ cms_awx_ssl_verify | default(false) | to_json }}
+  sslVerify: {{ cms_awx_ssl_verify | default(true) | to_json }}
 
 awxAutoscale:
   # On-demand scale-to-zero wake (#97). Enabled on the sandbox lane only;
@@ -86,7 +86,7 @@ netbox:
   apiToken:
     existingSecretName: {{ cms_runtime_secret_name | to_json }}
     key: {{ cms_runtime_secret_netbox_token_key | to_json }}
-  sslVerify: {{ cms_netbox_ssl_verify | default(false) | to_json }}
+  sslVerify: {{ cms_netbox_ssl_verify | default(true) | to_json }}
 
 {% if cms_media_tenancy | trim %}
 media:

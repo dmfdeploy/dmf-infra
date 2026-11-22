@@ -98,9 +98,10 @@ dmf_born_inventory_netbox_api_base: >-
     if (netbox_exposure | default('host')) == 'host'
     else (external_base_url | default('http://' ~ metallb_vip))
   }}{{ dmf_born_inventory_netbox_path }}/api
-# NetBox is served with the lab CA; callers may override per environment if
-# they need to trust a different certificate chain.
-dmf_born_inventory_netbox_validate_certs: false
+# The role runs on the control-plane node, which trusts the NetBox certificate:
+# public ACME on the cloud lane, the local root CA (playbook 321) on the
+# local-ca lane. Every NetBox call sends the admin token, so keep this true.
+dmf_born_inventory_netbox_validate_certs: true
 
 dmf_born_inventory_report_path: /tmp/dmf-born-inventory-report.json
 dmf_born_inventory_default_status: active

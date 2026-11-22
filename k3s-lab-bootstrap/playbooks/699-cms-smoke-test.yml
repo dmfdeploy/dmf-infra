@@ -52,9 +52,9 @@
         url: "{{ cms_smoke_base_url }}{{ cms_smoke_base_path }}/healthz"
         method: GET
         status_code: 200
-        # The console endpoint uses the lab CA, so validation remains off
-        # until the CA bundle is threaded through the smoke-test path.
-        validate_certs: false
+        # The node trust store holds the local root CA on the local-ca lane
+        # (321-local-ca-trust.yml); the cloud lane uses a public ACME cert.
+        validate_certs: true
       register: cms_healthz
 
     - name: Report healthz result

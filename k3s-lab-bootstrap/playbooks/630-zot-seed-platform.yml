@@ -124,12 +124,10 @@
     # cert-manager domain.
     zot_registry_host: "registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
 
-    # skopeo dest TLS verification. On the local-CA lane (sandbox) the Zot
-    # ingress presents the DMF Local CA cert, which the node does not
-    # trust; skip dest verification (consistent with the validate_certs:false
-    # reachability/HEAD checks in this play). Source (GHCR) verification is
-    # unaffected. Cloud/lab keep verification on.
-    zot_dest_tls_verify: "{{ 'false' if (dmf_tls_mode | default('') == 'local-ca') else 'true' }}"
+    # skopeo dest TLS verification. Always on: on the local-ca lane the node
+    # trust store holds the DMF Local CA (321-local-ca-trust.yml), and the
+    # cloud lane serves a public ACME cert.
+    zot_dest_tls_verify: 'true'
 
     # Bypass the tag-presence gate and re-copy every listed artifact.
     # Needed when a digest pin moves under an unchanged tag — see the
@@ -431,7 +429,7 @@
         url: "https://{{ zot_registry_host }}/v2/"
         method: GET
         status_code: [200, 401, 403, 404, 405]
-        validate_certs: false
+        validate_certs: true
       register: _zot_ping
       changed_when: false
       failed_when: false
@@ -493,7 +491,7 @@
             url_password: "{{ _zot_pass }}"
             force_basic_auth: true
             status_code: [200, 404]
-            validate_certs: false
+            validate_certs: true
           loop: "{{ zot_seed_images_single }}"
           loop_control:
             label: "{{ item.name }}:{{ item.tag }}"
@@ -599,7 +597,7 @@
             url_password: "{{ _zot_pass }}"
             force_basic_auth: true
             status_code: [200, 404]
-            validate_certs: false
+            validate_certs: true
           loop: "{{ zot_seed_charts }}"
           loop_control:
             label: "{{ item.name }}:{{ item.version }}"

@@ -15,7 +15,7 @@
 #       gate_app_ready_url: "{{ my_app_api_base }}/"
 #       gate_app_ready_headers:
 #         Authorization: "token {{ my_token }}"
-#       gate_app_ready_validate_certs: false
+#       gate_app_ready_validate_certs: true
 #
 # IMPORTANT: this gate is a point-in-time check.  Traefik can flap
 # AFTER the gate passes.  Individual uri calls MUST also add
@@ -77,7 +77,7 @@
     url_password: "{{ gate_app_ready_url_password | default(omit) }}"
     force_basic_auth: "{{ gate_app_ready_force_basic_auth | default(omit) }}"
     status_code: "{{ _gate_app_accept_codes }}"
-    validate_certs: "{{ gate_app_ready_validate_certs | default(false) | bool }}"
+    validate_certs: "{{ gate_app_ready_validate_certs | default(true) | bool }}"
     timeout: 10
   register: _gate_app_ready
   failed_when: false
