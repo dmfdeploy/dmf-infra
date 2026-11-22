@@ -24,8 +24,9 @@ zot_resources:
 # Networking — subdomain for the registry.
 # Docker/podman/containerd clients expect a real host; path-based registries
 # are brittle. cert-manager issues a TLS cert for this hostname via HTTP-01,
-# so the FQDN must resolve to the cluster LB.
-zot_ingress_host: "{{ registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
+# so the FQDN must resolve to the cluster LB. The name comes from
+# vars/service-hosts.yml, which each playbook that runs this role loads.
+zot_ingress_host: "{{ dmf_registry_host_effective }}"
 zot_ingress_entrypoint: websecure
 zot_ingress_cert_issuer: "{{ cert_manager_cluster_issuer | default('letsencrypt-http') }}"
 
@@ -63,7 +64,7 @@ zot_service_password: "{{ vault_zot_service_password | mandatory }}"
 
 zot_anonymous_read: true
 zot_oidc_enabled: false
-zot_oidc_external_url: "https://{{ zot_ingress_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}"
+zot_oidc_external_url: "https://{{ zot_ingress_host }}"
 zot_oidc_authentik_application_slug: zot
 zot_oidc_issuer_url: >-
   https://{{ authentik_host | default('auth.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/application/o/{{ zot_oidc_authentik_application_slug }}/

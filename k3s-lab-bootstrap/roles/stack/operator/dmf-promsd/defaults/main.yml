@@ -17,6 +17,8 @@ dmf_promsd_image_pull_policy: IfNotPresent
 # NetBox API — in-cluster svc DNS (ADR-0023, plain HTTP).
 # netbox_namespace is defined by the netbox role; fall back to 'netbox'.
 dmf_promsd_netbox_url: "http://netbox.{{ netbox_namespace | default('netbox') }}.svc.cluster.local"
+# Takes effect only if the URL is https. The URL above is plain HTTP, so this
+# does not protect that connection.
 dmf_promsd_netbox_validate_certs: true
 
 # Cache TTL — decoupled poll cadence per ADR-0038 (Prometheus refresh

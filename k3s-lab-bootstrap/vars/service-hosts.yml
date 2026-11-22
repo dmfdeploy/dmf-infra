@@ -1,0 +1,8 @@
+---
+# Host names that more than one play uses. Playbooks that map, serve or call
+# these names load this file, so they cannot drift apart.
+#
+# The registry name is the Zot ingress host. The console name is the console
+# ingress host (`cms_host` in the cms role).
+dmf_registry_host_effective: "{{ registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) }}"
+dmf_console_host_effective: "{{ cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) }}"

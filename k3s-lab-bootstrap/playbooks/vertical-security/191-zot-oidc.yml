@@ -21,6 +21,9 @@
   become: true
   gather_facts: false
 
+  vars_files:
+    - "{{ playbook_dir }}/../../vars/service-hosts.yml"
+
   vars:
     zot_oidc_enabled: true
 

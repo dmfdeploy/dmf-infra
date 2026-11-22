@@ -190,8 +190,10 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_install_capabilities.py' -v
       - name: lifecycle-operate.yml imports no deploy play
         run: python3 -m unittest discover -s tests -p 'test_lifecycle_operate_read_only.py' -v
-      - name: calls that send a secret verify the server certificate
-        run: python3 -m unittest discover -s tests -p 'test_verified_certs_on_secret_calls.py' -v
+      - name: no call or default turns certificate verification off
+        run: python3 -m unittest discover -s tests -p 'test_certificate_verification_stays_on.py' -v
+      - name: registry and console names agree, and 321 refuses a missing local CA
+        run: python3 -m unittest discover -s tests -p 'test_service_hosts_and_local_ca.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
