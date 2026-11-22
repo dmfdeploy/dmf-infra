@@ -65,20 +65,33 @@
 - import_playbook: playbooks/698-cms-netbox-forgejo-tokens.yml
   tags: [layer6, application-ui, dmf-console, netbox, forgejo, api]
 
-# ── Phase C: wake AWX (opt-in) ──────────────────────────────────────────────
+# ── Phase C: wake AWX before each consumer (opt-in) ─────────────────────────
 # Restore AWX replicas and wait for web + task readyReplicas + API 200.
-# Consumers below (693, 697, 699) need a live AWX API.
+# Consumers below (693, 697, 699) need a live AWX API. The idle reaper counts only
+# AWX changes as activity, so a consumer that runs long without changing AWX lets
+# it fall asleep before the next consumer starts. Each consumer therefore gets its
+# own wake, directly before it. A wake on an awake AWX is safe to repeat: it
+# patches the AWX resource and scales the deployments to the counts they already
+# have, then waits for readiness.
 # No-op when dmf_awx_autoscale_enabled is false (default).
 - import_playbook: playbooks/awx-wake.yml
   vars:
     awx_presence_state: awake
-  tags: [awx, autoscale]
+  tags: [layer6, application-ui, awx, integration, autoscale]
 
 # ── AWX consumers (awake window) ────────────────────────────────────────────
 - import_playbook: playbooks/693-awx-integration.yml
   tags: [layer6, application-ui, awx, integration]
+- import_playbook: playbooks/awx-wake.yml
+  vars:
+    awx_presence_state: awake
+  tags: [layer6, application-ui, dmf-console, identity, awx, api, autoscale]
 - import_playbook: playbooks/697-cms-awx-token.yml
   tags: [layer6, application-ui, dmf-console, identity, awx, api]
+- import_playbook: playbooks/awx-wake.yml
+  vars:
+    awx_presence_state: awake
+  tags: [layer6, application-ui, dmf-console, verify, smoke-test, awx, autoscale]
 - import_playbook: playbooks/699-cms-smoke-test.yml
   tags: [layer6, application-ui, dmf-console, verify, smoke-test]
 
