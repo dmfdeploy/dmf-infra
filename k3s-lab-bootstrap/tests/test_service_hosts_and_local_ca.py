@@ -50,6 +50,7 @@ CONSUMERS = {
 # Role files that read the variable.
 ROLE_USES = {
     "roles/stack/operator/zot/defaults/main.yml": "dmf_registry_host_effective",
+    "roles/stack/operator/zot/defaults/main.yml#issuer": "dmf_registry_cert_issuer_effective",
     "roles/stack/operator/cms/defaults/main.yml": "dmf_registry_host_effective",
 }
 
@@ -90,6 +91,7 @@ class ServiceHostNames(unittest.TestCase):
 
     def test_role_files_use_the_variable(self):
         for rel, name in ROLE_USES.items():
+            rel = rel.split("#")[0]
             self.assertIn(name, (ROOT / rel).read_text(), f"{rel} does not use {name}")
 
     def test_no_play_writes_its_own_registry_or_console_expression(self):
@@ -100,7 +102,7 @@ class ServiceHostNames(unittest.TestCase):
         # Operate probes and the role defaults for cms_host itself.
         skip = ("roles/stack/operator/authentik/", "roles/stack/operator/landing-page/",
                 "playbooks/lifecycle/", "roles/stack/operator/cms/defaults/")
-        for rel in list(CONSUMERS) + list(ROLE_USES):
+        for rel in list(CONSUMERS) + [r.split("#")[0] for r in ROLE_USES]:
             if rel in allowed_files or rel.startswith(skip):
                 continue
             self.assertIsNone(own.search((ROOT / rel).read_text()),
@@ -135,6 +137,48 @@ def _task(path, name):
         elif isinstance(node, list):
             stack.extend(node)
     raise AssertionError(f"no task {name!r} in {path}")
+
+
+class RegistryCertificateIssuer(unittest.TestCase):
+    """Zot's certificate comes from the issuer that exists on the lane."""
+
+    def _issuer(self, variables):
+        return _render(variables)["dmf_registry_cert_issuer_effective"]
+
+    def test_local_ca_lane_uses_the_local_ca_issuer(self):
+        self.assertEqual(self._issuer({"dmf_tls_mode": "local-ca"}), "dmf-local-ca")
+
+    def test_local_ca_lane_follows_a_renamed_local_issuer(self):
+        out = self._issuer({"dmf_tls_mode": "local-ca", "cert_manager_local_ca_issuer": "site-ca",
+                            "cert_manager_cluster_issuer": "letsencrypt-http"})
+        self.assertEqual(out, "site-ca")
+
+    def test_registry_name_outside_the_wildcard_still_gets_the_local_issuer(self):
+        out = self._issuer({"dmf_tls_mode": "local-ca", "cert_manager_cluster_domain": "lab.test",
+                            "registry_host": "reg.other.test"})
+        self.assertEqual(out, "dmf-local-ca")
+        self.assertEqual(_render({"registry_host": "reg.other.test"})["dmf_registry_host_effective"],
+                         "reg.other.test")
+
+    def test_other_lanes_keep_the_cluster_issuer(self):
+        self.assertEqual(self._issuer({"cert_manager_cluster_issuer": "letsencrypt-dns"}), "letsencrypt-dns")
+        self.assertEqual(self._issuer({}), "letsencrypt-http")
+        self.assertEqual(self._issuer({"dmf_tls_mode": "acme", "cert_manager_local_ca_issuer": "x"}),
+                         "letsencrypt-http")
+
+    def test_local_ca_issuer_name_matches_cert_manager(self):
+        defaults = yaml.safe_load((ROOT / "roles/base/cert-manager/defaults/main.yml").read_text())
+        self.assertEqual(defaults["cert_manager_local_ca_issuer"], "dmf-local-ca")
+
+    def test_the_lane_test_is_the_one_321_uses(self):
+        self.assertIn("dmf_tls_mode | default('') == 'local-ca'", HOSTS_FILE.read_text())
+        self.assertIn("dmf_tls_mode | default('') == 'local-ca'", LOCAL_CA.read_text())
+
+    def test_zot_certificate_and_ingress_use_the_issuer_variable(self):
+        defaults = yaml.safe_load((ROOT / "roles/stack/operator/zot/defaults/main.yml").read_text())
+        self.assertEqual(defaults["zot_ingress_cert_issuer"], "{{ dmf_registry_cert_issuer_effective }}")
+        tasks = (ROOT / "roles/stack/operator/zot/tasks/main.yml").read_text()
+        self.assertIn('name: "{{ zot_ingress_cert_issuer }}"', tasks)
 
 
 class PlatformCertificateCoverage(unittest.TestCase):
