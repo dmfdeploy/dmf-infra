@@ -30,6 +30,8 @@ run of the grow-HA play reads back.
 - Applying a ConfigMap writes k8s/ConfigMap-<name>.json with its data.
 - Applying a ClusterRole or a ClusterRoleBinding writes k8s/<kind>-<name>.json with the
   rules, or the role reference and the subjects, that the play sent.
+- Applying a Deployment that is not stored yet writes k8s/Deployment-<name>.json with the
+  replica count that the play sent, as a create does. Applying one that exists keeps it.
 - When FAKE_K8S_UNREACHABLE is KIND or KIND/NAME and the call is for that object, the
   call is logged and its result says the host is unreachable, as a lost connection
   does. Nothing is applied.
@@ -87,6 +89,9 @@ def main():
             stored["spec"] = {"template": {"spec": {"serviceAccountName": account}}}
         write_object(objects, "StatefulSet-" + name, stored)
         write_object(objects, "Pod-all", [running_pod("openbao-%d" % i, "uid-%d-0" % i, account) for i in range(replicas)])
+    if p["state"] == "present" and kind == "Deployment" and not os.path.exists(os.path.join(objects, "Deployment-%s.json" % name)):
+        replicas = ((p["definition"] or {}).get("spec") or {}).get("replicas", 1)
+        write_object(objects, "Deployment-" + name, {"spec": {"replicas": replicas}, "status": {"readyReplicas": 0}})
     if p["state"] == "present" and kind == "ClusterSecretStore":
         stem = "ClusterSecretStore-" + name
         stored = os.path.join(objects, stem + ".json")

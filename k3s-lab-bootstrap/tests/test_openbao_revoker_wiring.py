@@ -359,6 +359,39 @@ class Order(unittest.TestCase):
         self.assertIn("ansible.builtin.fail", stop)
         self.assertIn("readyReplicas", " ".join(stop["when"]))
 
+    def test_the_resume_fails_when_the_deployment_is_missing_unless_the_rescue_allows_it(self):
+        # Catches a resume that skips the scale and the wait for a Deployment that is gone and
+        # returns success: the install would then finish without a running revoker. The rescue
+        # of a failed run can run before the setup created the Deployment, and fails anyway.
+        resume = {t["name"]: t for t in tasks("revoker-resume.yml")}
+        missing = resume["Stop when the revoker Deployment is missing"]
+        order = list(resume)
+        self.assertLess(order.index(missing["name"]), order.index("Scale the revoker to one replica"))
+        msg = missing["ansible.builtin.fail"]["msg"]
+        self.assertIn("is missing", msg)
+        self.assertIn("setup-revoker.yml", msg)
+        cases = (
+            # revoked, Deployments found, rescue allows a missing one, the task fails
+            (True, [], False, True),
+            (True, [{}], False, False),
+            (True, [], True, False),
+            (False, [], False, False),
+        )
+        for revoked, found, may_be_missing, fails in cases:
+            with self.subTest(revoked=revoked, found=len(found), may_be_missing=may_be_missing):
+                variables = {
+                    "openbao_revoker_installer_token_revoked": revoked,
+                    "openbao_revoker_may_be_missing": may_be_missing,
+                    "_openbao_revoker_to_start": {"resources": found},
+                }
+                fires = all(expression("{{ " + c + " }}", **variables) for c in missing["when"])
+                self.assertEqual(fires, fails)
+        playbook = PLAYBOOK.read_text()
+        resume_call = playbook.index("tasks_from: revoker-resume.yml")
+        self.assertIn("openbao_revoker_may_be_missing: true", playbook[resume_call:resume_call + 600])
+        main_call = next(t for t in self.main if "revoker-resume.yml" in yaml.safe_dump(t))
+        self.assertNotIn("openbao_revoker_may_be_missing", yaml.safe_dump(main_call))
+
     def test_an_apply_of_an_existing_deployment_keeps_the_replica_count(self):
         # Catches a setup that resets the revoker to zero on every run.
         new = render_template("revoker-deployment.yml.j2")["spec"]
