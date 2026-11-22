@@ -8,6 +8,12 @@ tailscale_accept_routes: true
 tailscale_ephemeral: true
 tailscale_update_apt_cache: true
 
+# The install script is the file tailscale.com/install.sh serves, taken from the
+# tagged source so the bytes stay fixed. Tailscale publishes no checksum for it,
+# so the value is computed from that file. When you change the tag, recompute it.
+tailscale_install_script_tag: "v1.104.7"
+tailscale_install_script_sha256: "4207f322e10ad26b3054abe7c99dfb54da09843c8d0a50d0a82f8eff4972a0d1"
+
 # Optional host DNS override for providers whose DHCP resolvers become
 # unreliable after the Tailscale route table is active.
 tailscale_manage_system_dns: false

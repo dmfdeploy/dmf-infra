@@ -119,9 +119,16 @@
   failed_when: false
   register: _tailscale_check
 
+- name: Download Tailscale install script
+  ansible.builtin.get_url:
+    url: "https://raw.githubusercontent.com/tailscale/tailscale/{{ tailscale_install_script_tag }}/scripts/installer.sh"
+    dest: /tmp/tailscale-install.sh
+    checksum: "sha256:{{ tailscale_install_script_sha256 }}"
+    mode: "0700"
+  when: _tailscale_check.rc != 0
+
 - name: Install Tailscale from upstream script
-  ansible.builtin.shell: |
-    curl -fsSL https://tailscale.com/install.sh | sh
+  ansible.builtin.command: sh /tmp/tailscale-install.sh
   args:
     creates: /usr/bin/tailscale
   when: _tailscale_check.rc != 0
