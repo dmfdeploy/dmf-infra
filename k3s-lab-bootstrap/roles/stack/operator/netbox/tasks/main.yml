@@ -291,7 +291,7 @@
     - name: Extract NetBox password from OpenBao JSON
       ansible.builtin.set_fact:
         _netbox_openbao_verify:
-          stdout: "{{ (_netbox_openbao_raw.stdout | from_json).data.data.db_password | default('') }}"
+          stdout: "{{ (_netbox_openbao_raw.stdout | from_json).data.data.db_password | default('') | string }}"
       no_log: true
 
     - name: Assert NetBox DB password persisted correctly

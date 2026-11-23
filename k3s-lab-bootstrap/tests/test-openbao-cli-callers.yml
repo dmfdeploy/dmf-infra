@@ -9,6 +9,11 @@
 #   two mappings into the JSON body.
 # - A caller shaped like the policy writes sends an HCL text as the body.
 #
+# - The real read-back of the AWX token (playbooks/tasks/cms-awx-token-readback.yml, which
+#   697-cms-awx-token.yml includes) reads the token back and compares it with the one that was
+#   written: a matching value passes, a different value and a failed read each stop the play at
+#   their own assert. The extract step must keep `rc` a number, as `rc == 0` compares it.
+#
 # Each body must reach `bao` as the text that the caller built, on ansible-core 2.15 (the AWX
 # image) and on the current version.
 #
@@ -25,6 +30,11 @@
       path "secret/data/apps/*" {
         capabilities = ["read"]
       }
+    awx_token: "awx$HOME'tok{x}1"
+    readback_env:
+      FAKE_STATE: "{{ _state.path | default('') }}"
+      FAKE_EXEC_STUB_DIR: "{{ playbook_dir }}/fixtures/kv-bao"
+      STUB_KV_FILE: "{{ _state.path | default('') }}/kv-answer.json"
     env_capture:
       FAKE_STATE: "{{ _state.path | default('') }}"
       FAKE_EXEC_STUB_DIR: "{{ playbook_dir }}/fixtures/capture-bao"
@@ -115,3 +125,74 @@
           - "_patched.rc | type_debug == 'int'"
           - _patched.changed
           - _policy.changed
+
+    # The AWX token read-back of 697-cms-awx-token.yml, the real tasks.
+    - name: Write the answer that the read-back will see
+      ansible.builtin.copy:
+        content: "{{ {'data': {'data': {'cms_api_token': awx_token}}} | to_json }}"
+        dest: "{{ _state.path }}/kv-answer.json"
+        mode: "0600"
+      changed_when: false
+      no_log: true
+
+    - name: Read back a token that matches what was written
+      ansible.builtin.include_tasks: ../playbooks/tasks/cms-awx-token-readback.yml
+      args:
+        apply:
+          environment: "{{ readback_env }}"
+      vars:
+        _openbao_session_pod: openbao-0
+        _openbao_session_client_token: "tok$HOME'1"
+        _cms_awx_svc_token: "{{ awx_token }}"
+        _cms_awx_token_recovered_from_openbao: false
+
+    - name: Check what the extract step built
+      ansible.builtin.assert:
+        that:
+          - _cms_awx_openbao_verify.rc == 0
+          - "_cms_awx_openbao_verify.rc | type_debug == 'int'"
+          - _cms_awx_openbao_verify.stdout == awx_token
+          - _cms_awx_openbao_verify.stdout is string
+
+    - name: Stop when the stored value is not the token that was written
+      block:
+        - name: Read back with another value in OpenBao
+          ansible.builtin.include_tasks: ../playbooks/tasks/cms-awx-token-readback.yml
+          args:
+            apply:
+              environment: "{{ readback_env }}"
+          vars:
+            _openbao_session_pod: openbao-0
+            _openbao_session_client_token: "tok$HOME'1"
+            _cms_awx_svc_token: "a different token"
+            _cms_awx_token_recovered_from_openbao: false
+        - name: Fail the test when the value check passed
+          ansible.builtin.fail:
+            msg: The read-back accepted a value that differs from the written token.
+      rescue:
+        - name: Check that the value assert stopped the play
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_task.name == 'Assert AWX token was persisted correctly to OpenBao'
+
+    - name: Stop when the read fails, and name the exit code
+      block:
+        - name: Read back when the read fails
+          ansible.builtin.include_tasks: ../playbooks/tasks/cms-awx-token-readback.yml
+          args:
+            apply:
+              environment: "{{ readback_env | combine({'STUB_FAIL': '1'}) }}"
+          vars:
+            _openbao_session_pod: openbao-0
+            _openbao_session_client_token: "tok$HOME'1"
+            _cms_awx_svc_token: "{{ awx_token }}"
+            _cms_awx_token_recovered_from_openbao: false
+        - name: Fail the test when the failed read passed
+          ansible.builtin.fail:
+            msg: The read-back accepted a failed read.
+      rescue:
+        - name: Check that the read assert stopped the play and names the exit code
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_task.name == 'Assert AWX token read succeeded from OpenBao'
+              - "ansible_failed_result.msg is search('Return code: 1')"

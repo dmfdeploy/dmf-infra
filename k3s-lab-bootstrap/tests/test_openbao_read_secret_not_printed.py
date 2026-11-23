@@ -28,6 +28,7 @@ ROOT = Path(__file__).resolve().parents[1]
 PLAYBOOKS = [
     "playbooks/696-cms-authentik-api.yml",
     "playbooks/697-cms-awx-token.yml",
+    "playbooks/tasks/cms-awx-token-readback.yml",
     "playbooks/698-cms-netbox-forgejo-tokens.yml",
     "playbooks/awx-autoscale-secrets.yml",
 ]
@@ -109,15 +110,25 @@ def printed_secret_names(message):
     return found
 
 
+def file_tasks(path):
+    """Every task of a playbook, or of a tasks file."""
+    document = yaml.safe_load(path.read_text())
+    out = []
+    for item in document:
+        if isinstance(item, dict) and "hosts" in item:
+            out += list(tasks(item.get("tasks", []) + item.get("pre_tasks", []) + item.get("post_tasks", [])))
+        else:
+            out += list(tasks([item]))
+    return out
+
+
 def violations(root):
     found = []
     for rel in PLAYBOOKS:
-        plays = yaml.safe_load((root / rel).read_text())
-        for play in plays:
-            for task in tasks(play.get("tasks", []) + play.get("pre_tasks", []) + play.get("post_tasks", [])):
-                for message in messages(task):
-                    for name in printed_secret_names(message):
-                        found.append((rel, task.get("name"), name))
+        for task in file_tasks(root / rel):
+            for message in messages(task):
+                for name in printed_secret_names(message):
+                    found.append((rel, task.get("name"), name))
     return found
 
 
@@ -128,13 +139,7 @@ class ReadSecretNotPrintedTest(unittest.TestCase):
     def test_the_scan_reads_the_messages_of_every_playbook(self):
         counts = {}
         for rel in PLAYBOOKS:
-            plays = yaml.safe_load((ROOT / rel).read_text())
-            counts[rel] = sum(
-                1
-                for play in plays
-                for task in tasks(play.get("tasks", []) + play.get("pre_tasks", []))
-                for _ in messages(task)
-            )
+            counts[rel] = sum(1 for task in file_tasks(ROOT / rel) for _ in messages(task))
         self.assertTrue(all(counts.values()), counts)
 
     def test_the_scan_flags_the_old_awx_debug_in_a_temporary_copy(self):
@@ -143,17 +148,17 @@ class ReadSecretNotPrintedTest(unittest.TestCase):
             for rel in PLAYBOOKS:
                 (tree / rel).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy(ROOT / rel, tree / rel)
-            target = tree / "playbooks/697-cms-awx-token.yml"
+            target = tree / "playbooks/tasks/cms-awx-token-readback.yml"
             text = target.read_text()
-            safe = "              stdout empty: {{ _cms_awx_openbao_verify.stdout | length == 0 }}\n"
+            safe = "      stdout empty: {{ _cms_awx_openbao_verify.stdout | length == 0 }}\n"
             self.assertIn(safe, text)
-            planted = text.replace(safe, "              stdout: '{{ _cms_awx_openbao_verify.stdout }}'\n")
+            planted = text.replace(safe, "      stdout: '{{ _cms_awx_openbao_verify.stdout }}'\n")
             target.write_text(planted)
             self.assertEqual([n for _, _, n in violations(tree)], ["_cms_awx_openbao_verify"])
             # The old stderr line is flagged too.
-            safe_err = "              stderr length: {{ _cms_awx_openbao_verify.stderr | length }}\n"
+            safe_err = "      stderr length: {{ _cms_awx_openbao_verify.stderr | length }}\n"
             self.assertIn(safe_err, text)
-            target.write_text(text.replace(safe_err, "              stderr: '{{ _cms_awx_openbao_verify.stderr }}'\n"))
+            target.write_text(text.replace(safe_err, "      stderr: '{{ _cms_awx_openbao_verify.stderr }}'\n"))
             self.assertEqual([n for _, _, n in violations(tree)], ["_cms_awx_openbao_verify"])
 
     def test_the_scan_flags_a_planted_token_in_each_kind_of_message(self):
