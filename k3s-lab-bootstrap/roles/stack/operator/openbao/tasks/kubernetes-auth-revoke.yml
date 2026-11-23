@@ -23,6 +23,8 @@
     openbao_cli_changed: true
     openbao_cli_retries: 3
     openbao_cli_delay: 2
+    # Retrying only gives the call more chances; the caller decides from the flag that the next tasks set.
+    openbao_cli_allow_exhausted_retries: true
     openbao_cli_until: "{{ openbao_cli_run.rc == 0 }}"
 
 - name: Prove the server refuses the revoked token

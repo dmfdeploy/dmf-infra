@@ -100,6 +100,8 @@
         openbao_cli_allow_failure: true
         openbao_cli_retries: "{{ cert_manager_openbao_reload_retries }}"
         openbao_cli_delay: "{{ cert_manager_openbao_reload_delay }}"
+        # Retrying only gives the call more chances; an assert after this task checks the last answer.
+        openbao_cli_allow_exhausted_retries: true
         openbao_cli_until: >-
           {{ openbao_cli_run.stdout | default('') is match('(?s)\s*\{') and openbao_cli_run.stdout | default('') | from_json is mapping }}
 
@@ -128,6 +130,8 @@
         openbao_cli_allow_failure: true
         openbao_cli_retries: "{{ cert_manager_openbao_reload_retries }}"
         openbao_cli_delay: "{{ cert_manager_openbao_reload_delay }}"
+        # Retrying only gives the call more chances; an assert after this task checks the last answer.
+        openbao_cli_allow_exhausted_retries: true
         openbao_cli_until: >-
           {{ openbao_cli_run.stdout | default('') is match('(?s)\s*\{') and openbao_cli_run.stdout | default('') | from_json is mapping }}
 

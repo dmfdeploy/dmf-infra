@@ -1,0 +1,16 @@
+#!/bin/sh
+# A stub bao for tests/test-openbao-cli.yml. It appends its arguments, one call per line, to
+# $STUB_CAPTURE/calls and reads its standard input. A call with the word `fail` exits 1 with
+# the text "boom"; a call with the word `absent` exits 2 with "No value found at x"; any other call prints
+# `{}`.
+set -eu
+dir="${STUB_CAPTURE:?STUB_CAPTURE must name a directory}"
+cat > /dev/null
+printf '%s\n' "$*" >> "$dir/calls"
+for word in "$@"; do
+  case "$word" in
+    fail) echo boom >&2; exit 1 ;;
+    absent) echo "No value found at x" >&2; exit 2 ;;
+  esac
+done
+printf '{}'

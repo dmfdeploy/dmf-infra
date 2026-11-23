@@ -1,10 +1,15 @@
 """The playbooks that read a token from OpenBao never print its value.
 
 A `debug` message, a `fail_msg` or a `success_msg` in these playbooks must not
-template a variable that holds a read secret. The message may show whether the value
-is empty, its length, the exit code, the stderr text and the HTTP status. `no_log` on a
-task hides its output, but a message that holds the value would still reach a log
-where `no_log` is off or `ANSIBLE_DEBUG` is on, so the value must stay out of it.
+template a variable that holds a read secret, or the text of an error that may echo
+one. The message may show whether the value is empty, its length, the exit code, the
+HTTP status and whether a flag is set. `no_log` on a task hides its output, but a
+message that holds the value would still reach a log where `no_log` is off or
+`ANSIBLE_DEBUG` is on, so the value must stay out of it.
+
+The test parses each message with Jinja. A `length` filter or an `is defined` test
+makes only the expression it applies to safe, so `{{ secret ~ (other | length) }}`
+still shows `secret`.
 
 Run from k3s-lab-bootstrap:
     python3 -m unittest discover -s tests -p 'test_openbao_read_secret_not_printed.py' -v
@@ -15,6 +20,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import jinja2
+import jinja2.nodes as nodes
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,17 +32,24 @@ PLAYBOOKS = [
     "playbooks/awx-autoscale-secrets.yml",
 ]
 MESSAGE_KEYS = ("msg", "fail_msg", "success_msg")
-SECRET_NAME = re.compile(r"token|password|passwd|secret|bearer|jwt|openbao_verify|openbao_check|openbao_raw|openbao_write", re.I)
-# Names that look like a secret but hold a state, a name or a place.
-BENIGN_NAME = re.compile(
-    r"_(valid|exists|provisioned|recovered|recovered_from_openbao|user|name|path|ttl|url|label|id|key_name|source|test)\b"
-    r"|token_user|token_exists|bearer_key|secret_name|secret_path|remote_path|remote_property",
+# A name that may hold a secret, or the output of a call that handled one.
+SECRET_NAME = re.compile(
+    r"token|password|passwd|secret|bearer|jwt|openbao_verify|openbao_check|openbao_raw|openbao_write",
     re.I,
 )
-STRING_LITERAL = re.compile(r"'[^']*'|\"[^\"]*\"")
-EXPRESSION = re.compile(r"\{\{(.*?)\}\}", re.S)
-IDENTIFIER = re.compile(r"(?<![\w.'\"])([A-Za-z_][A-Za-z0-9_]*)((?:\.[A-Za-z_][A-Za-z0-9_]*)*)")
-SAFE_ATTRIBUTES = {"rc", "stderr", "status", "changed", "skipped", "failed", "msg"}
+# A name that holds a state, a name or a place. `secret_id` is not one of them, and neither
+# is any name that ends in `_id` alone.
+BENIGN_NAME = re.compile(
+    r"_(valid|exists|provisioned|recovered|recovered_from_openbao|user|name|path|ttl|url|label|key_name|source|test)$"
+    r"|token_user|bearer_key|secret_name|secret_path|remote_path|remote_property",
+    re.I,
+)
+# Attributes and filters that show no part of the value. `stderr` and `stdout` are not here:
+# an error can echo a credential.
+SAFE_ATTRIBUTES = {"rc", "status", "changed", "skipped", "failed"}
+SAFE_FILTERS = {"length", "count"}
+SAFE_TESTS = {"defined", "undefined", "none"}
+ENVIRONMENT = jinja2.Environment()
 
 
 def tasks(items):
@@ -48,31 +62,50 @@ def tasks(items):
 
 
 def messages(task):
-    for module in ("ansible.builtin.debug", "ansible.builtin.fail"):
+    for module in ("ansible.builtin.debug", "ansible.builtin.fail", "ansible.builtin.assert"):
         for key in MESSAGE_KEYS:
             value = (task.get(module) or {}).get(key)
             if isinstance(value, str):
                 yield value
-    assertion = task.get("ansible.builtin.assert") or {}
-    for key in MESSAGE_KEYS:
-        if isinstance(assertion.get(key), str):
-            yield assertion[key]
 
 
 def printed_secret_names(message):
     """Names of secret-holding variables that a message templates by value."""
+    try:
+        tree = ENVIRONMENT.parse(message)
+    except jinja2.TemplateSyntaxError as error:
+        return ["(the message does not parse: %s)" % error.message]
     found = []
-    for expression in EXPRESSION.findall(message):
-        expression = STRING_LITERAL.sub("''", expression)
-        if re.search(r"\|\s*length\b|\bis\s+(not\s+)?defined\b", expression):
-            continue
-        for name, attributes in IDENTIFIER.findall(expression):
-            if not SECRET_NAME.search(name) or BENIGN_NAME.search(name):
-                continue
-            first = attributes.lstrip(".").split(".")[0] if attributes else ""
-            if first in SAFE_ATTRIBUTES:
-                continue
-            found.append(name + attributes)
+
+    def visit(node, safe):
+        if isinstance(node, nodes.Name):
+            if not safe and SECRET_NAME.search(node.name) and not BENIGN_NAME.search(node.name):
+                found.append(node.name)
+            return
+        if (
+            isinstance(node, nodes.Getattr)
+            and not safe
+            and node.attr not in SAFE_ATTRIBUTES
+            and SECRET_NAME.search(node.attr)
+            and not BENIGN_NAME.search(node.attr)
+        ):
+            found.append(node.attr)
+        if isinstance(node, nodes.Filter) and node.name in SAFE_FILTERS:
+            safe = True
+        elif isinstance(node, nodes.Test) and node.name in SAFE_TESTS:
+            safe = True
+        elif isinstance(node, nodes.Getattr) and node.attr in SAFE_ATTRIBUTES:
+            safe = True
+        elif (
+            isinstance(node, nodes.Getitem)
+            and isinstance(node.arg, nodes.Const)
+            and node.arg.value in SAFE_ATTRIBUTES
+        ):
+            safe = True
+        for child in node.iter_child_nodes():
+            visit(child, safe)
+
+    visit(tree, False)
     return found
 
 
@@ -114,12 +147,14 @@ class ReadSecretNotPrintedTest(unittest.TestCase):
             text = target.read_text()
             safe = "              stdout empty: {{ _cms_awx_openbao_verify.stdout | length == 0 }}\n"
             self.assertIn(safe, text)
-            target.write_text(
-                text.replace(safe, "              stdout: '{{ _cms_awx_openbao_verify.stdout }}'\n")
-            )
-            self.assertEqual(
-                [name for _, _, name in violations(tree)], ["_cms_awx_openbao_verify.stdout"]
-            )
+            planted = text.replace(safe, "              stdout: '{{ _cms_awx_openbao_verify.stdout }}'\n")
+            target.write_text(planted)
+            self.assertEqual([n for _, _, n in violations(tree)], ["_cms_awx_openbao_verify"])
+            # The old stderr line is flagged too.
+            safe_err = "              stderr length: {{ _cms_awx_openbao_verify.stderr | length }}\n"
+            self.assertIn(safe_err, text)
+            target.write_text(text.replace(safe_err, "              stderr: '{{ _cms_awx_openbao_verify.stderr }}'\n"))
+            self.assertEqual([n for _, _, n in violations(tree)], ["_cms_awx_openbao_verify"])
 
     def test_the_scan_flags_a_planted_token_in_each_kind_of_message(self):
         for kind, task in {
@@ -130,13 +165,37 @@ class ReadSecretNotPrintedTest(unittest.TestCase):
             names = [n for m in messages(task) for n in printed_secret_names(m)]
             self.assertEqual(len(names), 1, kind)
 
-    def test_the_scan_allows_length_status_and_exit_code(self):
+    def test_a_length_filter_makes_only_its_own_expression_safe(self):
+        for message, expected in (
+            ("{{ secret_token ~ (other | length) }}", ["secret_token"]),
+            ("{{ (secret_token | length) ~ secret_token }}", ["secret_token"]),
+            ("{{ a_password if (b_token | length) > 0 else c_password }}", ["a_password", "c_password"]),
+            ("{% if x_token | length > 0 %}{{ x_token }}{% endif %}", ["x_token"]),
+            ("{{ secret_token | trim | length }}", []),
+            ("{{ _cms_awx_openbao_token | length > 0 }}", []),
+            ("{{ x_token is defined }}", []),
+        ):
+            self.assertEqual(printed_secret_names(message), expected, message)
+
+    def test_secret_id_and_a_secret_attribute_are_not_exempt(self):
+        for message, expected in (
+            ("id {{ secret_id }}", ["secret_id"]),
+            ("id {{ _aab_secret_id }}", ["_aab_secret_id"]),
+            ("id {{ item.secret_id }}", ["secret_id"]),
+            ("id {{ (item.stdout | from_json).auth.client_token }}", ["client_token"]),
+            ("err {{ _cms_awx_openbao_verify.stderr }}", ["_cms_awx_openbao_verify"]),
+            ("err {{ _cms_awx_openbao_verify['stderr'] }}", ["_cms_awx_openbao_verify"]),
+            ("{{ item.secret_id | length }}", []),
+        ):
+            self.assertEqual(printed_secret_names(message), expected, message)
+
+    def test_the_scan_allows_the_safe_forms(self):
         for message in (
             "empty {{ _cms_awx_openbao_verify.stdout | length == 0 }}",
-            "rc {{ _cms_awx_openbao_verify.rc }} {{ _cms_awx_openbao_verify.stderr }}",
+            "rc {{ _cms_awx_openbao_verify.rc }} {{ _cms_awx_openbao_verify['rc'] }}",
             "status {{ _cms_awx_existing_token_test.status }}",
-            "has {{ _cms_awx_openbao_token | length > 0 }}",
             "valid {{ _cms_awx_token_valid }} user {{ _cms_awx_recovered_token_user }}",
+            "id {{ _cms_awx_inventory_id }} {{ _cms_awx_svc_user_id }}",
         ):
             self.assertEqual(printed_secret_names(message), [], message)
 

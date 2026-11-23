@@ -10,7 +10,14 @@
 #   - a non-zero exit code fails the caller with a message that names the operation and
 #     holds no secret, unless the caller allows it or tolerates the stderr text;
 #   - an empty required output fails the caller;
-#   - a token or a word that holds a line break is refused before kubectl runs.
+#   - a token or a word that holds a line break is refused before kubectl runs, with a
+#     message that names the operation and the reason;
+#   - a list of calls stops at the first call that fails, and the calls after it do not run;
+#   - with `openbao_cli_allow_failure`, every call runs and the caller reads each exit code;
+#   - a tolerated stderr text is not a failure, and the call is not `changed`;
+#   - a retry that runs out fails the caller even with `openbao_cli_allow_failure`, unless the
+#     caller sets `openbao_cli_allow_exhausted_retries` to judge the last attempt itself;
+#   - `changed` is true for a successful call that changes OpenBao, and false for a failed one.
 #
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-cli.yml
@@ -23,6 +30,9 @@
     literal_token: "tok$HOME'1"
     literal_word: "key=$HOME/it's"
     literal_body: "{\"password\": \"pa$HOME'ss\"}\n"
+    step_env:
+      FAKE_STATE: "{{ _state.path | default('') }}"
+      FAKE_EXEC_STUB_DIR: "{{ playbook_dir }}/fixtures/step-bao"
     env_stub:
       FAKE_STATE: "{{ _state.path | default('') }}"
       FAKE_EXEC_STUB_DIR: "{{ playbook_dir }}/fixtures/capture-bao"
@@ -193,4 +203,196 @@
         - name: Check that the input check stopped it
           ansible.builtin.assert:
             that:
-              - ansible_failed_result.msg is search('must not hold a newline')
+              - ansible_failed_result.msg is search('bad word')
+              - ansible_failed_result.msg is search('line break')
+
+    # The stub in tests/fixtures/step-bao records each call in $STUB_CAPTURE/calls.
+    - name: Make one capture directory for each scenario
+      ansible.builtin.file:
+        path: "{{ _state.path }}/{{ item }}"
+        state: directory
+        mode: "0700"
+      loop: [stop, all, absent, ranout, changed, failedchanged]
+      changed_when: false
+
+    - name: Stop at the first failing call
+      block:
+        - name: Run three calls where the second fails
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+            apply:
+              environment: "{{ step_env | combine({'STUB_CAPTURE': _state.path ~ '/stop'}) }}"
+          vars:
+            openbao_cli_operation: write three values
+            openbao_cli_pod: openbao-0
+            openbao_cli_register: _stop
+            openbao_cli_changed: true
+            openbao_cli_calls:
+              - {args: [write, one]}
+              - {args: [write, fail]}
+              - {args: [write, three]}
+        - name: Fail the test when the list did not stop
+          ansible.builtin.fail:
+            msg: The shared task did not stop at the failing call.
+      rescue:
+        - name: Read the calls that ran
+          ansible.builtin.slurp:
+            src: "{{ _state.path }}/stop/calls"
+          register: _stop_calls
+        - name: Check that the third call did not run
+          ansible.builtin.assert:
+            that:
+              - (_stop_calls.content | b64decode) == 'write one\nwrite fail\n'
+              - ansible_failed_result.msg is search('write three values')
+              - ansible_failed_result.msg is search('exit code 1')
+              - ansible_failed_result.msg is not search('boom')
+
+    - name: Run every call when the caller reads the exit codes
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ step_env | combine({'STUB_CAPTURE': _state.path ~ '/all'}) }}"
+      vars:
+        openbao_cli_operation: read three values
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _all
+        openbao_cli_allow_failure: true
+        openbao_cli_calls:
+          - {args: [read, one], item: a}
+          - {args: [read, fail], item: b}
+          - {args: [read, three], item: c}
+
+    - name: Check that all three ran and the results keep their order and items
+      ansible.builtin.assert:
+        that:
+          - _all.results | map(attribute='item') | list == ['a', 'b', 'c']
+          - _all.results | map(attribute='rc') | list == [0, 1, 0]
+          - _all.results[1].stderr == 'boom'
+          - _all.results | map(attribute='changed') | list == [false, false, false]
+
+    - name: Tolerate a stderr text
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ step_env | combine({'STUB_CAPTURE': _state.path ~ '/absent'}) }}"
+      vars:
+        openbao_cli_operation: read an absent path
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _absent
+        openbao_cli_changed: true
+        openbao_cli_tolerate_stderr: ["No value found"]
+        openbao_cli_calls:
+          - {args: [read, absent]}
+
+    - name: Check that the tolerated call is not a failure and not a change
+      ansible.builtin.assert:
+        that:
+          - _absent.rc == 2
+          - not _absent.changed
+
+    - name: Fail when the retries run out, even if the caller allows a failure
+      block:
+        - name: Wait for a condition that never holds
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+            apply:
+              environment: "{{ step_env | combine({'STUB_CAPTURE': _state.path ~ '/ranout'}) }}"
+          vars:
+            openbao_cli_operation: wait for a leader
+            openbao_cli_pod: openbao-0
+            openbao_cli_register: _ranout
+            openbao_cli_allow_failure: true
+            openbao_cli_retries: 2
+            openbao_cli_delay: 0
+            openbao_cli_until: "{{ openbao_cli_run.stdout is search('leader') }}"
+            openbao_cli_calls:
+              - {args: [status]}
+        - name: Fail the test when the retries did not fail the caller
+          ansible.builtin.fail:
+            msg: The shared task did not fail when the retries ran out.
+      rescue:
+        - name: Check that the failure names the operation and the reason
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('wait for a leader')
+              - ansible_failed_result.msg is search('the retries ran out')
+              - ansible_failed_result.msg is not search('The shared task did not fail')
+
+    - name: Let the caller judge the last attempt when it asks to
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ step_env | combine({'STUB_CAPTURE': _state.path ~ '/ranout'}) }}"
+      vars:
+        openbao_cli_operation: revoke with a caller that judges
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _judged
+        openbao_cli_allow_failure: true
+        openbao_cli_allow_exhausted_retries: true
+        openbao_cli_retries: 1
+        openbao_cli_delay: 0
+        openbao_cli_until: "{{ openbao_cli_run.rc == 0 }}"
+        openbao_cli_calls:
+          - {args: [write, fail]}
+
+    - name: Check that the caller sees the last attempt
+      ansible.builtin.assert:
+        that:
+          - _judged.rc == 1
+
+    - name: Report a change only for a call that succeeded
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ step_env | combine({'STUB_CAPTURE': _state.path ~ '/changed'}) }}"
+      vars:
+        openbao_cli_operation: write one value
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _changed_ok
+        openbao_cli_changed: true
+        openbao_cli_calls:
+          - {args: [write, one]}
+
+    - name: Report no change for a call that failed
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ step_env | combine({'STUB_CAPTURE': _state.path ~ '/failedchanged'}) }}"
+      vars:
+        openbao_cli_operation: write one value that fails
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _changed_failed
+        openbao_cli_changed: true
+        openbao_cli_allow_failure: true
+        openbao_cli_calls:
+          - {args: [write, fail]}
+
+    - name: Check the changed flags
+      ansible.builtin.assert:
+        that:
+          - _changed_ok.changed
+          - not _changed_failed.changed
+          - _changed_failed.rc == 1
+
+    - name: Name the operation and the reason when the input is not valid
+      block:
+        - name: Run a call that reads stdin without an input
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: write without a body
+            openbao_cli_pod: openbao-0
+            openbao_cli_register: _noinput
+            openbao_cli_token: "{{ literal_token }}"
+            openbao_cli_calls:
+              - args: [write, "secret/x", "-"]
+        - name: Fail the test when the input was accepted
+          ansible.builtin.fail:
+            msg: The shared task accepted a call without an input.
+      rescue:
+        - name: Check the message
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('write without a body')
+              - ansible_failed_result.msg is search('reads stdin but has no input')
+              - ansible_failed_result.msg is not search('tok')

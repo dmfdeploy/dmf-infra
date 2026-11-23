@@ -132,7 +132,8 @@ def unframed_reads(text):
     return hits
 
 
-SHARED_ROLE = REPO / "k3s-lab-bootstrap/roles/common/openbao-cli/tasks/main.yml"
+# step.yml holds the program and the stdin template of the role.
+SHARED_ROLE = REPO / "k3s-lab-bootstrap/roles/common/openbao-cli/tasks/step.yml"
 NEWLINE_VAR = "openbao_cli_nl"
 
 
@@ -173,7 +174,7 @@ def shared_role_framing_problems(role_text):
         words, body = segments[-2], segments[-1]
         if f"join({NEWLINE_VAR})" not in words.replace(" ", ""):
             problems.append("the words are not joined one per line")
-        if "openbao_cli_call.input" not in body:
+        if "_openbao_cli_call.input" not in body:
             problems.append("the input is not the last part sent")
     if leading_reads[:1] != ["BAO_TOKEN"]:
         problems.append("the program does not read the token first")
@@ -248,8 +249,8 @@ class ShellValuesOnStdin(unittest.TestCase):
         mutations = {
             "a read is dropped": text.replace("IFS= read -r OPENBAO_CLI_COUNT; ", ""),
             "an extra read is added": text.replace("IFS= read -r BAO_TOKEN;", "IFS= read -r BAO_TOKEN; IFS= read -r EXTRA;"),
-            "the count is not sent": text.replace("{{ openbao_cli_call.args | length }}{{ openbao_cli_nl }}", ""),
-            "the input is not sent": text.replace("{{ openbao_cli_call.input | default('') }}", ""),
+            "the count is not sent": text.replace("{{ _openbao_cli_call.args | length }}{{ openbao_cli_nl }}", ""),
+            "the input is not sent": text.replace("{{ _openbao_cli_call.input | default('') }}", ""),
             "the words share one line": text.replace("join(openbao_cli_nl)", "join(' ')"),
             "the loop reads two words": text.replace('IFS= read -r OPENBAO_CLI_WORD;', 'IFS= read -r OPENBAO_CLI_WORD; IFS= read -r OTHER;'),
             "the module adds a newline": text.replace("stdin_add_newline: false", "stdin_add_newline: true"),
