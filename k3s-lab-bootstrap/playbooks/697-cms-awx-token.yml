@@ -757,7 +757,8 @@
           ansible.builtin.debug:
             msg: |
               rc: {{ _cms_awx_openbao_verify.rc }}
-              stdout: '{{ _cms_awx_openbao_verify.stdout }}'
+              stdout empty: {{ _cms_awx_openbao_verify.stdout | length == 0 }}
+              stdout length: {{ _cms_awx_openbao_verify.stdout | length }}
               stderr: '{{ _cms_awx_openbao_verify.stderr }}'
           when: not _cms_awx_token_recovered_from_openbao | default(false) | bool
 
@@ -778,8 +779,7 @@
               - _cms_awx_openbao_verify.stdout | trim == _cms_awx_svc_token
             fail_msg: |
               AWX service account token failed to persist to OpenBao.
-              Expected: {{ _cms_awx_svc_token }}
-              Got: {{ _cms_awx_openbao_verify.stdout | trim }}
+              The value read back does not match the token that was written.
               This indicates OpenBao write succeeded but value is not consistent.
               Check OpenBao policies and mount permissions for secret/apps/awx/runtime.
           when: _cms_awx_openbao_verify.rc == 0
