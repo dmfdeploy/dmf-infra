@@ -3,6 +3,8 @@
   hosts: k3s_control
   become: true
   gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../../vars/service-hosts.yml"
   roles:
     - base/cluster-ready
     - stack/operator/dmf-promsd

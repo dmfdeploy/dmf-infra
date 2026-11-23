@@ -15,6 +15,8 @@
   hosts: k3s_control[0]
   become: true
   gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../../vars/service-hosts.yml"
 
   pre_tasks:
     - name: Establish OpenBao operator session

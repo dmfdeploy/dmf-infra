@@ -15,11 +15,13 @@
   hosts: localhost
   become: false
   gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../../vars/service-hosts.yml"
 
   tasks:
     - name: Check DMF Console health endpoint
       ansible.builtin.uri:
-        url: "https://{{ dmf_cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/healthz"
+        url: "https://{{ dmf_console_host_effective }}/healthz"
         method: GET
         status_code: [200]
         validate_certs: true
@@ -39,6 +41,8 @@
   hosts: localhost
   become: false
   gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../../vars/service-hosts.yml"
 
   tasks:
     - name: Check NetBox API root
@@ -56,11 +60,13 @@
   hosts: localhost
   become: false
   gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../../vars/service-hosts.yml"
 
   tasks:
     - name: Check Zot registry v2 endpoint
       ansible.builtin.uri:
-        url: "https://{{ registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com'))) }}/v2/"
+        url: "https://{{ dmf_registry_host_effective }}/v2/"
         method: GET
         status_code: [200, 401]
         validate_certs: true

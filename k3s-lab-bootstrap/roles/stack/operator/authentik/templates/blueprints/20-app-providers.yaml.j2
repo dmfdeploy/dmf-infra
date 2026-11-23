@@ -8,9 +8,9 @@
 {%- set _netbox_base_url = 'https://' ~ _netbox_host -%}
 {%- set _librenms_host = librenms_host | default('librenms.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
 {%- set _librenms_base_url = 'https://' ~ _librenms_host -%}
-{%- set _registry_host = registry_host | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _registry_host = dmf_registry_host_effective -%}
 {%- set _registry_base_url = 'https://' ~ _registry_host -%}
-{%- set _dmf_cms_host = dmf_cms_host | default('console.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}
+{%- set _dmf_cms_host = dmf_console_host_effective -%}
 {%- set _dmf_cms_base_url = 'https://' ~ _dmf_cms_host -%}
 {%- set _dmf_cms_callback_path = dmf_cms_oidc_callback_path | default('/auth/callback', true) -%}
 {%- set _awx_host = awx_host | default('awx.' ~ (cert_manager_cluster_domain | default('dmf.example.com')), true) -%}

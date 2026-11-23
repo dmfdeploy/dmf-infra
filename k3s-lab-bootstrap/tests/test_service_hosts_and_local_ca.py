@@ -46,12 +46,36 @@ CONSUMERS = {
     "playbooks/331-registry-zot.yml": [],
     "playbooks/vertical-security/191-zot-oidc.yml": [],
     "playbooks/694-born-inventory.yml": [],
+    "playbooks/300-k3s.yml": [],
+    "playbooks/339-container-platform-verify.yml": ["dmf_registry_host_effective"],
+    "playbooks/600-landing-page.yml": [],
+    "playbooks/vertical-monitoring/160-promsd.yml": [],
+    "playbooks/vertical-security/110-authentik.yml": [],
+    "playbooks/vertical-security/111-authentik-passkey-ensure.yml": [],
+    "playbooks/awx-autoscale-deploy.yml": [],
+    "playbooks/lifecycle/operate-health-probes.yml":
+        ["dmf_registry_host_effective", "dmf_console_host_effective"],
 }
 # Role files that read the variable.
 ROLE_USES = {
     "roles/stack/operator/zot/defaults/main.yml": "dmf_registry_host_effective",
     "roles/stack/operator/zot/defaults/main.yml#issuer": "dmf_registry_cert_issuer_effective",
     "roles/stack/operator/cms/defaults/main.yml": "dmf_registry_host_effective",
+    "roles/base/k3s/defaults/main.yml": "dmf_registry_host_effective",
+    "roles/stack/operator/dmf-promsd/defaults/main.yml": "dmf_registry_host_effective",
+    "roles/stack/operator/awx-autoscale/defaults/main.yml": "dmf_registry_host_effective",
+    "roles/stack/operator/authentik/templates/blueprints/20-app-providers.yaml.j2":
+        "dmf_registry_host_effective",
+    "roles/stack/operator/authentik/templates/blueprints/16-passwordless-bootstrap.yaml.j2":
+        "dmf_console_host_effective",
+    "roles/stack/operator/landing-page/templates/generate-html.sh.j2": "dmf_console_host_effective",
+}
+
+# Every place under playbooks/ and roles/ that may still spell a registry or
+# console name itself, with the reason it is allowed to.
+OWN_NAME_ALLOWED = {
+    "roles/stack/operator/cms/defaults/main.yml":
+        "defines cms_host, the console ingress name that the shared file reads",
 }
 
 
@@ -94,19 +118,64 @@ class ServiceHostNames(unittest.TestCase):
             rel = rel.split("#")[0]
             self.assertIn(name, (ROOT / rel).read_text(), f"{rel} does not use {name}")
 
-    def test_no_play_writes_its_own_registry_or_console_expression(self):
-        own = re.compile(r"'(registry|console)\.'\s*~")
-        allowed_files = {"vars/service-hosts.yml"}
-        # These read the same names for other purposes and are not part of the
-        # mapped-and-verified path: blueprint templates, the landing page, the
-        # Operate probes and the role defaults for cms_host itself.
-        skip = ("roles/stack/operator/authentik/", "roles/stack/operator/landing-page/",
-                "playbooks/lifecycle/", "roles/stack/operator/cms/defaults/")
-        for rel in list(CONSUMERS) + [r.split("#")[0] for r in ROLE_USES]:
-            if rel in allowed_files or rel.startswith(skip):
-                continue
-            self.assertIsNone(own.search((ROOT / rel).read_text()),
-                              f"{rel} builds its own registry or console name")
+    def test_no_play_or_role_writes_its_own_registry_or_console_name(self):
+        # Matches 'registry.' ~ ..., registry.{{ domain }}, `registry_host | default(`
+        # and the same for console and the console variables.
+        own = re.compile(
+            r"""['"]?(?:registry|console)\.['"]?\s*(?:~|\{\{)"""
+            r"|(?:registry_host|cms_host|dmf_cms_host)\s*\|\s*default\(\s*['\"](?:registry|console)\.")
+        found = {}
+        for sub in ("playbooks", "roles"):
+            for path in sorted((ROOT / sub).rglob("*")):
+                if path.suffix not in (".yml", ".yaml", ".j2", ".sh") or not path.is_file():
+                    continue
+                rel = str(path.relative_to(ROOT))
+                for number, line in enumerate(path.read_text().splitlines(), 1):
+                    if line.lstrip().startswith("#"):
+                        continue
+                    if own.search(line):
+                        found.setdefault(rel, []).append(number)
+        unexpected = {k: v for k, v in found.items() if k not in OWN_NAME_ALLOWED}
+        self.assertEqual(unexpected, {}, "these files build their own registry or console name")
+        for rel in OWN_NAME_ALLOWED:
+            self.assertIn(rel, found, f"{rel} no longer needs its allowlist entry")
+
+
+class ContainerdRegistryHost(unittest.TestCase):
+    """The containerd hosts.toml follows the effective registry name."""
+
+    def _host(self, variables):
+        raw = yaml.safe_load((ROOT / "roles/base/k3s/defaults/main.yml").read_text())
+        names = _render(variables)
+        env = Environment()
+        return env.from_string(raw["k3s_containerd_zot_ingress_host"]).render(**variables, **names)
+
+    def test_local_ca_lane_default_name(self):
+        self.assertEqual(self._host({"dmf_tls_mode": "local-ca", "cert_manager_cluster_domain": "lab.test"}),
+                         "registry.lab.test")
+
+    def test_local_ca_lane_follows_a_registry_override(self):
+        self.assertEqual(self._host({"dmf_tls_mode": "local-ca", "cert_manager_cluster_domain": "lab.test",
+                                     "registry_host": "reg.other.test"}), "reg.other.test")
+
+    def test_other_lanes_write_no_entry(self):
+        self.assertEqual(self._host({"dmf_tls_mode": "acme", "registry_host": "reg.other.test"}), "")
+        self.assertEqual(self._host({"cert_manager_cluster_domain": "lab.test"}), "")
+
+    def test_host_is_the_name_the_console_image_pulls_from(self):
+        variables = {"dmf_tls_mode": "local-ca", "cert_manager_cluster_domain": "lab.test",
+                     "registry_host": "reg.other.test"}
+        names = _render(variables)
+        repo = names["dmf_registry_host_effective"] + "/dmf-cms"
+        self.assertEqual(repo.split("/")[0], self._host(variables))
+
+    def test_hosts_toml_pins_the_node_local_ca_path(self):
+        text = (ROOT / "roles/base/k3s/tasks/containerd-registries.yml").read_text()
+        self.assertIn('ca = "{{ k3s_containerd_zot_ingress_ca }}"', text)
+        defaults = yaml.safe_load((ROOT / "roles/base/k3s/defaults/main.yml").read_text())
+        self.assertEqual(defaults["k3s_containerd_zot_ingress_ca"],
+                         "/usr/local/share/ca-certificates/dmf-local-ca.crt")
+        self.assertIn("/usr/local/share/ca-certificates/dmf-local-ca.crt", LOCAL_CA.read_text())
 
 
 def _run_task(task, variables, with_hosts_file=False):

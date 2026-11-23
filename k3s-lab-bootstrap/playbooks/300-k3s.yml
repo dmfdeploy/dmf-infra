@@ -321,6 +321,8 @@
 - name: Configure containerd registries for cluster-internal Zot
   hosts: k3s
   become: true
+  vars_files:
+    - "{{ playbook_dir }}/../vars/service-hosts.yml"
   tasks:
     - name: Apply containerd hosts.d entry for cluster-internal Zot
       ansible.builtin.include_role:
