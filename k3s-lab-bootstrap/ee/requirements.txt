@@ -6,7 +6,7 @@
 # need the kubernetes/openshift python clients at runtime) and provide
 # JSON-patch support used by community.kubernetes/k8s_json_patch.
 
-kubernetes==31.0.0
+kubernetes==37.0.3
 openshift==0.13.2
 jsonpatch==1.33
 
