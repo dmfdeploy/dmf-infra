@@ -25,7 +25,7 @@ awx_autoscale_service_account: awx-autoscale
 # by 630-zot-seed-platform (the `python` entry in zot_seed_images mirrors
 # docker.io/library/python → Zot per ADR-0025 + ADR-0036).
 awx_autoscale_image: >-
-  registry.{{ cert_manager_cluster_domain | default('dmf.example.com') }}/dmf/library/python@sha256:9bde4953fa9a7abb6db6669bb1b3f10aac83cf38d69a7bfc4941313ccd4c9686
+  {{ dmf_registry_host_effective }}/dmf/library/python@sha256:9bde4953fa9a7abb6db6669bb1b3f10aac83cf38d69a7bfc4941313ccd4c9686
 awx_autoscale_image_pull_policy: IfNotPresent
 
 # ── Helper tuning ────────────────────────────────────────────────────────

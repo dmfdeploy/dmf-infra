@@ -15,6 +15,8 @@
   hosts: k3s_control[0]
   become: true
   gather_facts: false
+  vars_files:
+    - "{{ playbook_dir }}/../vars/service-hosts.yml"
   vars:
     container_verify_kubeconfig: /etc/rancher/k3s/k3s.yaml
     container_verify_certificate_name: "{{ cert_manager_certificate_name | default('cluster-tls') }}"
@@ -26,10 +28,7 @@
       {{
         registry_external_url
         | default(
-            'https://' ~ (
-              registry_host
-              | default('registry.' ~ (cert_manager_cluster_domain | default('dmf.example.com')))
-            ),
+            'https://' ~ dmf_registry_host_effective,
             true
           )
       }}

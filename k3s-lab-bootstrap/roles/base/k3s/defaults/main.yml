@@ -24,8 +24,13 @@ zot_cluster_ip: 10.43.165.105
 # containerd does not trust by default; add a certs.d entry that pins the local
 # CA so those pulls verify properly (the node already resolves this host via
 # 321-local-ca-trust's /etc/hosts and has the CA installed there). Empty on
-# cloud/lab (publicly-trusted ingress cert) -> task skipped.
-k3s_containerd_zot_ingress_host: "{{ ('registry.' ~ cert_manager_cluster_domain) if (dmf_tls_mode | default('') == 'local-ca' and (cert_manager_cluster_domain | default('') | length > 0)) else '' }}"
+# cloud/lab (publicly-trusted ingress cert) -> task skipped. The name is the
+# effective registry name from vars/service-hosts.yml, the same one the Zot
+# ingress, 321's node mapping and the console image repository use, so an
+# overridden registry_host gets its hosts.toml too. 300-k3s configures
+# containerd before 321 installs the CA: the `ca` path below is read at pull
+# time, not when the file is written, so the order does not matter.
+k3s_containerd_zot_ingress_host: "{{ dmf_registry_host_effective if (dmf_tls_mode | default('') == 'local-ca') else '' }}"
 # Local CA cert path on the node, as installed by 321-local-ca-trust. containerd
 # reads it lazily at pull time (after 321 has run), so pinning it here verifies
 # the local-CA ingress cert rather than skipping verification. Keep in sync with
