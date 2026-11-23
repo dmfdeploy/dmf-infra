@@ -139,7 +139,7 @@
     openbao_cli_token: "{{ _openbao_policy_apply_token }}"
     openbao_cli_calls:
       - args: [policy, write, "{{ openbao_setup_issuer_policy_name }}", "-"]
-        input: "{{ _openbao_policy_text_setup_issuer }}\n"
+        input: "{{ _openbao_policy_text_setup_issuer | string }}\n"
     openbao_cli_register: _openbao_policy_write
     openbao_cli_changed: true
   when: openbao_is_initialized | bool

@@ -174,8 +174,12 @@ def shared_role_framing_problems(role_text):
         words, body = segments[-2], segments[-1]
         if f"join({NEWLINE_VAR})" not in words.replace(" ", ""):
             problems.append("the words are not joined one per line")
-        if "_openbao_cli_call.input" not in body:
+        if "openbao_cli_input" not in body:
             problems.append("the input is not the last part sent")
+        # The input variable holds the call's input, sent as JSON text when it arrives as a
+        # mapping or list.
+        if "_openbao_cli_call.input" not in command["vars"].get("openbao_cli_input", ""):
+            problems.append("the input part does not come from the call's input")
     if leading_reads[:1] != ["BAO_TOKEN"]:
         problems.append("the program does not read the token first")
     if command["ansible.builtin.command"].get("stdin_add_newline") is not False:
@@ -250,7 +254,7 @@ class ShellValuesOnStdin(unittest.TestCase):
             "a read is dropped": text.replace("IFS= read -r OPENBAO_CLI_COUNT; ", ""),
             "an extra read is added": text.replace("IFS= read -r BAO_TOKEN;", "IFS= read -r BAO_TOKEN; IFS= read -r EXTRA;"),
             "the count is not sent": text.replace("{{ _openbao_cli_call.args | length }}{{ openbao_cli_nl }}", ""),
-            "the input is not sent": text.replace("{{ _openbao_cli_call.input | default('') }}", ""),
+            "the input is not sent": text.replace("{{ openbao_cli_input | string }}", ""),
             "the words share one line": text.replace("join(openbao_cli_nl)", "join(' ')"),
             "the loop reads two words": text.replace('IFS= read -r OPENBAO_CLI_WORD;', 'IFS= read -r OPENBAO_CLI_WORD; IFS= read -r OTHER;'),
             "the module adds a newline": text.replace("stdin_add_newline: false", "stdin_add_newline: true"),

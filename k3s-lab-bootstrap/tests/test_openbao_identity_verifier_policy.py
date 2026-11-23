@@ -96,7 +96,7 @@ class IdentityVerifierPolicy(unittest.TestCase):
         self.assertIn("files/policies/identity-verifier.hcl", read["ansible.builtin.set_fact"]["_openbao_policy_text_identity_verifier"])
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["args"], ["policy", "write", "{{ openbao_identity_verifier_policy_name }}", "-"])
-        self.assertEqual(calls[0]["input"], "{{ _openbao_policy_text_identity_verifier }}\n")
+        self.assertEqual(calls[0]["input"], "{{ _openbao_policy_text_identity_verifier | string }}\n")
 
 class ExistingVerifierStaysWired(unittest.TestCase):
     def test_the_bootstrap_verify_play_still_imports_the_identity_model_verifier(self):

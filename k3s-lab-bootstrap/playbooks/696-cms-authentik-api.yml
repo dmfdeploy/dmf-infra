@@ -307,7 +307,7 @@
         openbao_cli_token: "{{ _openbao_session_client_token }}"
         openbao_cli_calls:
           - args: [kv, put, secret/apps/authentik/runtime, "-"]
-            input: "{{ _cms_authentik_runtime_secret_payload }}"
+            input: "{{ _cms_authentik_runtime_secret_payload | string }}"
         openbao_cli_register: _cms_authentik_runtime_secret_put
         openbao_cli_changed: true
       when: _cms_authentik_token_data.changed | default(false) | bool

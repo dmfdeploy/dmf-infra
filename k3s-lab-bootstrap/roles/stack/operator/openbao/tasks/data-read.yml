@@ -30,7 +30,7 @@
     openbao_cli_namespace: "{{ openbao_namespace }}"
     openbao_cli_calls:
       - args: [write, -format=json, "auth/userpass/login/{{ openbao_operator_username }}", "password=-"]
-        input: "{{ openbao_operator_password }}"
+        input: "{{ openbao_operator_password | string }}"
     openbao_cli_register: _openbao_data_read_login
 
 # A path that does not exist reads as absent. The shared task stops the play on

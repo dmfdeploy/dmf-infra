@@ -45,7 +45,7 @@
     openbao_cli_token: "{{ _openbao_session_client_token }}"
     openbao_cli_calls:
       - args: [policy, write, "{{ openbao_raft_snapshot_policy_name }}", "-"]
-        input: "{{ _openbao_raft_snapshot_policy_text }}"
+        input: "{{ _openbao_raft_snapshot_policy_text | string }}"
     openbao_cli_register: _openbao_raft_snapshot_policy_write
     openbao_cli_changed: true
   when: >-

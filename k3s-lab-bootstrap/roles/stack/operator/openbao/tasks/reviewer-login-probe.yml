@@ -114,7 +114,7 @@
         openbao_cli_namespace: "{{ openbao_namespace }}"
         openbao_cli_calls:
           - args: [write, -format=json, auth/kubernetes/login, "role={{ openbao_revoker_k8s_role }}", "jwt=-"]
-            input: "{{ _openbao_reviewer_guard_jwt.stdout | trim }}"
+            input: "{{ _openbao_reviewer_guard_jwt.stdout | trim | string }}"
         openbao_cli_register: _openbao_reviewer_guard_login
         openbao_cli_allow_failure: true
 
