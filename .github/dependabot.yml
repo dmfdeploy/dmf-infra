@@ -28,6 +28,9 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "ansible"
         versions: [">= 15"]
+      # requirements-ansible215.txt pins the ansible-core of the AWX image.
+      - dependency-name: "ansible-core"
+        versions: [">= 2.16"]
     groups:
       pip-minor-patch:
         update-types:

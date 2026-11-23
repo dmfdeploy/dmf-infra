@@ -19,6 +19,11 @@
 #     caller sets `openbao_cli_allow_exhausted_retries` to judge the last attempt itself;
 #   - `changed` is true for a successful call that changes OpenBao, and false for a failed one.
 #
+# The play runs on ansible-core 2.15 (the AWX image) and on the current version. On 2.15 a
+# template result that looks like a JSON object or list becomes a mapping or list, and a
+# result of a per-field template loses its type, so the play checks the body text, `rc` as a
+# number and a JSON-looking `stdout` as text.
+#
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-cli.yml
 - name: Test - the shared OpenBao command task
@@ -65,7 +70,24 @@
         openbao_cli_register: _probe
         openbao_cli_calls:
           - args: [write, "{{ literal_word }}", "-"]
-            input: "{{ literal_body }}"
+            input: "{{ literal_body | string }}"
+
+    - name: Send a body that arrives as a mapping on ansible-core 2.15, and one that is JSON text
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ env_stub }}"
+      vars:
+        openbao_cli_operation: send a mapping and a list as bodies
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _mapping
+        openbao_cli_calls:
+          - args: [write, "secret/map", "-"]
+            input: {password: "pa$HOME'ss"}
+          - args: [write, "secret/list", "-"]
+            input: ["a", "b"]
+          - args: [write, "secret/text", "-"]
+            input: "{{ literal_body | string }}"
 
     - name: Run one call without a token
       ansible.builtin.include_role:
@@ -82,7 +104,7 @@
     - name: Read what the stub saw
       ansible.builtin.slurp:
         src: "{{ _state.path }}/capture/{{ item }}"
-      loop: [argv-1, stdin-1, token-1, argv-2, token-2]
+      loop: [argv-1, stdin-1, token-1, argv-5, token-5, stdin-2, stdin-3, stdin-4]
       register: _seen
       changed_when: false
 
@@ -93,6 +115,14 @@
           - (_seen.results[1].content | b64decode) == literal_body
           - (_seen.results[2].content | b64decode) == literal_token
           - (_seen.results[4].content | b64decode) == ''
+          - "(_seen.results[5].content | b64decode) == ({'password': \"pa$HOME'ss\"} | to_json)"
+          - "(_seen.results[6].content | b64decode) == (['a', 'b'] | to_json)"
+          - (_seen.results[7].content | b64decode) == literal_body
+          - "_probe.rc | type_debug == 'int'"
+          - "_probe.stdout is string"
+          - "_probe.changed | type_debug == 'bool'"
+          - "_no_token.rc | type_debug == 'int'"
+          - "_mapping.results | map(attribute='rc') | map('type_debug') | unique | list == ['int']"
           - _probe.rc == 0
           - _probe.stdout == '{}'
           - _probe.results | length == 1
@@ -160,6 +190,7 @@
       ansible.builtin.assert:
         that:
           - _retried.stdout == '{}'
+          - "_retried.stdout is string"
 
     - name: Refuse an empty output when output is required
       block:

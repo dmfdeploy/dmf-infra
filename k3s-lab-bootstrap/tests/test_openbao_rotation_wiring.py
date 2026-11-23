@@ -126,7 +126,7 @@ class SchedulerIdentityTests(unittest.TestCase):
         self.assertTrue((OPENBAO_ROLE / "files/policies/rotation-scheduler.hcl").is_file())
         (call,) = write["openbao_cli_calls"]
         self.assertEqual(call["args"], ["policy", "write", "{{ openbao_rotation_scheduler_policy_name }}", "-"])
-        self.assertEqual(call["input"], "{{ _openbao_policy_text_rotation_scheduler }}\n")
+        self.assertEqual(call["input"], "{{ _openbao_policy_text_rotation_scheduler | string }}\n")
         names = {default(n) for n in (
             "openbao_rotation_scheduler_service_account", "openbao_rotation_scheduler_k8s_role",
             "openbao_rotation_scheduler_policy_name",
@@ -303,7 +303,7 @@ class VerifierTests(unittest.TestCase):
         (call,) = login["openbao_cli_calls"]
         # The JWT is the login's secret: it goes in as `input` for `jwt=-`, never as a word.
         self.assertIn("jwt=-", call["args"])
-        self.assertEqual(call["input"], "{{ _verify_scheduler_jwt.stdout | trim }}")
+        self.assertEqual(call["input"], "{{ _verify_scheduler_jwt.stdout | trim | string }}")
         self.assertNotIn("_verify_scheduler_jwt", str(call["args"]))
         self.assertNotIn("openbao_cli_token", login)
         self.assertNotIn("environment", login_task)

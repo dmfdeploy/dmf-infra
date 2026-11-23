@@ -68,7 +68,7 @@ COMMAND_MODULES = ("command", "shell", "raw", "script")
 # `bao` in command position: at the start, after a separator, after `--`, after an env
 # assignment, `exec` or `sudo`.
 BAO_COMMAND = re.compile(
-    r"(?:^|[;&|('\"`\n]|\$\(|(?<=\s)--(?=\s))\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:exec|sudo)\s+)*bao(?:\s+\S|\s*$)"
+    r"(?:^|[;&|('\"`\n]|\$\(|(?<=\s)--(?=\s))\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:(?:exec|sudo)\s+)*(?:[\w.-]*/)*bao(?:\s+\S|\s*$)"
 )
 
 
@@ -100,9 +100,12 @@ def direct_bao_task(task):
     lines, words = command_lines(task)
     if any(BAO_COMMAND.search(line) for line in lines):
         return True
-    if any(BAO_COMMAND.search(word) for word in words if word.strip() != "bao" and len(word) > 3):
+    if any(BAO_COMMAND.search(word) for word in words if word.rsplit("/", 1)[-1].strip() != "bao" and len(word) > 3):
         return True
-    return any(w == "bao" and (i == 0 or words[i - 1] in ("--", "exec", "sudo")) for i, w in enumerate(words))
+    return any(
+        w.rsplit("/", 1)[-1] == "bao" and (i == 0 or words[i - 1] in ("--", "exec", "sudo"))
+        for i, w in enumerate(words)
+    )
 
 
 def yaml_tasks(node):
@@ -119,10 +122,8 @@ def yaml_tasks(node):
 
 def direct_task_names(path):
     """Names of the tasks in a YAML file that run `bao` as a command."""
-    try:
-        documents = list(yaml.safe_load_all(path.read_text(errors="replace")))
-    except yaml.YAMLError:
-        return []
+    # A file that does not parse is not skipped: a command in it would go unseen.
+    documents = list(yaml.safe_load_all(path.read_text(errors="replace")))
     return [str(t.get("name", "(unnamed)")) for d in documents for t in yaml_tasks(d) if direct_bao_task(t)]
 
 
@@ -155,6 +156,47 @@ def violations(root):
         if BAO_IN_SCRIPT.search(text):
             found.append((str(rel), "runs bao in a script"))
     return found
+
+
+def call_inputs(root):
+    """(file, task name, `input` value) for each call of each include of the shared role."""
+    found = []
+    for path in sorted(root.rglob("*.yml")):
+        rel = path.relative_to(root)
+        if rel.parts[0] in SKIPPED_TOP_DIRS or SHARED_ROLE in rel.parents:
+            continue
+        for document in yaml.safe_load_all(path.read_text()):
+            for task in yaml_include_tasks(document):
+                calls = (task.get("vars") or {}).get("openbao_cli_calls")
+                if isinstance(calls, list):
+                    for call in calls:
+                        if isinstance(call, dict) and isinstance(call.get("input"), str):
+                            found.append((str(rel), task.get("name"), call["input"]))
+    return found
+
+
+def yaml_include_tasks(node):
+    if isinstance(node, list):
+        for item in node:
+            yield from yaml_include_tasks(item)
+    elif isinstance(node, dict):
+        include = node.get("ansible.builtin.include_role")
+        if isinstance(include, dict) and include.get("name") == "common/openbao-cli":
+            yield node
+        for value in node.values():
+            if isinstance(value, (list, dict)):
+                yield from yaml_include_tasks(value)
+
+
+def input_keeps_its_text(value):
+    """True when every template in an `input` ends with a filter that keeps it text.
+
+    ansible-core 2.15 turns a template result that starts with `{` or `[` into a mapping or
+    list, unless the template has a `string` or `to_json` filter. A text with no template is
+    safe.
+    """
+    expressions = re.findall(r"\{\{(.*?)\}\}", value, re.S)
+    return all(re.search(r"\|\s*(?:string|to_json)\s*\)?\s*$", e) for e in expressions)
 
 
 def allowed(found):
@@ -251,6 +293,9 @@ class SharedTaskTest(unittest.TestCase):
             "after --": "- name: J\n  ansible.builtin.command:\n    argv: [k3s, kubectl, exec, p, --, bao, status]\n",
             "in a block": "- name: K\n  block:\n    - name: L\n      ansible.builtin.raw: bao status\n",
             "pipe": "- name: M\n  ansible.builtin.shell: echo x | bao write y -\n",
+            "absolute path": "- name: U\n  ansible.builtin.command: /usr/bin/bao status\n",
+            "absolute path in argv": "- name: V\n  ansible.builtin.command:\n    argv: [/opt/openbao/bin/bao, status]\n",
+            "absolute path after ;": "- name: W\n  ansible.builtin.shell: cd /x; /usr/local/bin/bao read y\n",
         }
         clean = {
             "name": "- name: Run bao status by hand\n  ansible.builtin.debug:\n    msg: ok\n",
@@ -261,6 +306,7 @@ class SharedTaskTest(unittest.TestCase):
             "argv echo": "- name: R\n  ansible.builtin.command:\n    argv: [echo, bao, status]\n",
             "similar word": "- name: S\n  ansible.builtin.command: baobab --version\n",
             "flag text": "- name: T\n  ansible.builtin.command:\n    argv: [kubectl, apply, --description=the bao server]\n",
+            "path that holds bao": "- name: X\n  ansible.builtin.command:\n    argv: [cat, /openbao/config/tls/ca.crt, /usr/share/doc/bao-notes]\n",
         }
         with tempfile.TemporaryDirectory() as tmp:
             tree = Path(tmp)
@@ -272,6 +318,60 @@ class SharedTaskTest(unittest.TestCase):
             for i, name in enumerate(names):
                 path = "roles/x/tasks/case%02d.yml" % i
                 self.assertEqual(path in got, name in flagged, name)
+
+    def test_a_file_that_does_not_parse_fails_the_scan(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "roles/x/tasks").mkdir(parents=True)
+            (tree / "roles/x/tasks/broken.yml").write_text("- name: A\n  ansible.builtin.command: [unclosed\n")
+            with self.assertRaises(yaml.YAMLError):
+                violations(tree)
+
+    def test_the_text_that_ansible_2_15_turns_into_a_mapping_is_sent_as_text(self):
+        """ansible-core 2.15 types a template result that looks like JSON or a number.
+
+        The shared role must not rely on the typing of a per-field template, and a caller's
+        `input` must not be a bare variable that can look like JSON. tests/test-openbao-cli.yml
+        runs on 2.15 in CI; this test catches the same mistakes without it.
+        """
+        step = (ROOT / SHARED_ROLE / "tasks/step.yml").read_text()
+        document = yaml.safe_load(step)
+        run = next(t for t in document if "ansible.builtin.command" in t)
+        self.assertTrue(run["ansible.builtin.command"]["stdin"].rstrip("} ").endswith("| string"), "stdin must end with the `string` filter")
+        judge = next(t for t in document if t.get("name") == "Judge the call")
+        entry = judge["ansible.builtin.set_fact"]["_openbao_cli_entry"]
+        self.assertTrue(entry.lstrip().startswith("{{ {"), "the entry must be one expression")
+        self.assertNotIn("\n  rc: \"", entry)
+        self.assertIn("| int", entry)
+
+    def test_every_input_of_a_call_keeps_its_text_on_ansible_2_15(self):
+        bad = []
+        for rel, name, value in call_inputs(ROOT):
+            if not input_keeps_its_text(value):
+                bad.append((rel, name, value))
+        self.assertEqual(bad, [], "end each `input` template with `| string` or `| to_json`")
+
+    def test_the_input_check_flags_a_bare_variable_in_a_temporary_tree(self):
+        tasks = {
+            "bare": ("- name: A\n  ansible.builtin.include_role:\n    name: common/openbao-cli\n  vars:\n"
+                     "    openbao_cli_calls:\n      - args: [write, x, '-']\n        input: \"{{ body_var }}\"\n", True),
+            "string filter": ("- name: B\n  ansible.builtin.include_role:\n    name: common/openbao-cli\n  vars:\n"
+                              "    openbao_cli_calls:\n      - args: [write, x, '-']\n        input: \"{{ body_var | string }}\"\n", False),
+            "to_json": ("- name: C\n  ansible.builtin.include_role:\n    name: common/openbao-cli\n  vars:\n"
+                        "    openbao_cli_calls:\n      - args: [write, x, '-']\n        input: \"{{ {'a': b} | to_json }}\\n\"\n", False),
+            "literal text": ("- name: D\n  ansible.builtin.include_role:\n    name: common/openbao-cli\n  vars:\n"
+                             "    openbao_cli_calls:\n      - args: [write, x, '-']\n        input: plain text\n", False),
+            "first expression only": ("- name: E\n  ansible.builtin.include_role:\n    name: common/openbao-cli\n  vars:\n"
+                                      "    openbao_cli_calls:\n      - args: [write, x, '-']\n        input: \"{{ a | string }}{{ b }}\"\n", True),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / "roles/x/tasks").mkdir(parents=True)
+            for i, (name, (text, _)) in enumerate(tasks.items()):
+                (tree / "roles/x/tasks" / ("case%d.yml" % i)).write_text(text)
+            flagged = {rel for rel, _, value in call_inputs(tree) if not input_keeps_its_text(value)}
+            for i, (name, (_, expected)) in enumerate(tasks.items()):
+                self.assertEqual("roles/x/tasks/case%d.yml" % i in flagged, expected, name)
 
     def test_the_scan_passes_comments_and_the_shared_role(self):
         with tempfile.TemporaryDirectory() as tmp:

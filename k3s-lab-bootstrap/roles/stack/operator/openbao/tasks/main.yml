@@ -1282,7 +1282,7 @@
     openbao_cli_token: "{{ _openbao_policy_apply_token }}"
     openbao_cli_calls:
       - args: [policy, write, "{{ openbao_generate_root_policy_name }}", "-"]
-        input: "{{ _openbao_policy_text_generate_root }}\n"
+        input: "{{ _openbao_policy_text_generate_root | string }}\n"
     openbao_cli_register: _openbao_write_generate_root
     openbao_cli_changed: true
   when: openbao_is_initialized | bool
@@ -1307,7 +1307,7 @@
     openbao_cli_token: "{{ _openbao_policy_apply_token }}"
     openbao_cli_calls:
       - args: [policy, write, "{{ openbao_identity_verifier_policy_name }}", "-"]
-        input: "{{ _openbao_policy_text_identity_verifier }}\n"
+        input: "{{ _openbao_policy_text_identity_verifier | string }}\n"
     openbao_cli_register: _openbao_write_identity_verifier
     openbao_cli_changed: true
   when: openbao_is_initialized | bool
@@ -1330,7 +1330,7 @@
     openbao_cli_token: "{{ _openbao_policy_apply_token }}"
     openbao_cli_calls:
       - args: [policy, write, "{{ openbao_revoker_policy_name }}", "-"]
-        input: "{{ _openbao_policy_text_token_revoker }}\n"
+        input: "{{ _openbao_policy_text_token_revoker | string }}\n"
     openbao_cli_register: _openbao_write_token_revoker
     openbao_cli_changed: true
   when: openbao_is_initialized | bool

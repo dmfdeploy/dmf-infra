@@ -27,14 +27,22 @@
         set -- "$@" "$OPENBAO_CLI_WORD"; OPENBAO_CLI_COUNT=$((OPENBAO_CLI_COUNT - 1)); done;
         if [ -n "$BAO_TOKEN" ]; then export BAO_TOKEN; else unset BAO_TOKEN; fi;
         exec bao "$@"
-    stdin: "{{ openbao_cli_stdin }}"
+    stdin: "{{ openbao_cli_stdin | string }}"
     stdin_add_newline: false
   vars:
     ansible_pipelining: true
     openbao_cli_nl: "\n"
     openbao_cli_stdin: >-
       {{ openbao_cli_token | default('') }}{{ openbao_cli_nl }}{{ _openbao_cli_call.args | length }}{{ openbao_cli_nl }}{{
-      _openbao_cli_call.args | map('string') | join(openbao_cli_nl) }}{{ openbao_cli_nl }}{{ _openbao_cli_call.input | default('') }}
+      _openbao_cli_call.args | map('string') | join(openbao_cli_nl) }}{{ openbao_cli_nl }}{{ openbao_cli_input | string }}
+    # ansible-core 2.15 turns a template result that looks like a JSON object or list
+    # into a mapping or list, and `string` of that is a Python representation. Send
+    # such a value as JSON text. A text that is not a mapping or list stays as it is.
+    openbao_cli_input: >-
+      {{ (_openbao_cli_call.input | default('') | to_json
+      if (_openbao_cli_call.input | default('')) is mapping
+      or ((_openbao_cli_call.input | default('')) is sequence and (_openbao_cli_call.input | default('')) is not string)
+      else _openbao_cli_call.input | default('') | string) | string }}
   register: openbao_cli_run
   retries: "{{ openbao_cli_retries | default(0) }}"
   delay: "{{ openbao_cli_delay | default(0) }}"
@@ -56,12 +64,16 @@
       {%- elif openbao_cli_run.rc | default(1) != 0 and tolerated | length == 0 -%}exit code {{ openbao_cli_run.rc | default('none') }}
       {%- elif openbao_cli_require_output | default(false) | bool and (openbao_cli_run.stdout | default('') | trim | length == 0) -%}empty output
       {%- endif -%}
-    _openbao_cli_entry:
-      item: "{{ _openbao_cli_call.item | default(none) }}"
-      rc: "{{ openbao_cli_run.rc | default(0 if openbao_cli_run.skipped | default(false) else 1) }}"
-      stdout: "{{ openbao_cli_run.stdout | default('') }}"
-      stderr: "{{ openbao_cli_run.stderr | default('') }}"
-      changed: "{{ openbao_cli_run.changed | default(false) and not openbao_cli_run.skipped | default(false) }}"
+    # One expression, so the types of the values stay the same on every ansible-core
+    # version: a template per field turns `rc` into text and `{}` into a mapping on 2.15.
+    _openbao_cli_entry: >-
+      {{ {
+        'item': _openbao_cli_call.item | default(none),
+        'rc': openbao_cli_run.rc | default(0 if openbao_cli_run.skipped | default(false) else 1) | int,
+        'stdout': openbao_cli_run.stdout | default('') | string,
+        'stderr': openbao_cli_run.stderr | default('') | string,
+        'changed': (openbao_cli_run.changed | default(false) and not openbao_cli_run.skipped | default(false)) | bool
+      } }}
   no_log: true
 
 - name: "Stop when the retries ran out: {{ openbao_cli_operation }}"

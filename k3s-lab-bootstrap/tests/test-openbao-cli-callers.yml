@@ -1,0 +1,117 @@
+---
+# Test of callers that send a JSON body or a policy text through the shared OpenBao task, on
+# the ansible-core that runs the play. The fake kubectl runs each program here, and
+# tests/fixtures/capture-bao records the arguments and the standard input of every call.
+#
+# - The real app-admin-facts role reads a secret (`kv get`) and writes it (`kv put`) with a
+#   JSON body.
+# - A caller shaped like the NetBox integration chooses `patch` or `put` as a word and merges
+#   two mappings into the JSON body.
+# - A caller shaped like the policy writes sends an HCL text as the body.
+#
+# Each body must reach `bao` as the text that the caller built, on ansible-core 2.15 (the AWX
+# image) and on the current version.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-cli-callers.yml
+- name: Test - callers that send JSON bodies and policy text
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    literal_password: "pa$HOME'ss{x}"
+    policy_text: |
+      path "secret/data/apps/*" {
+        capabilities = ["read"]
+      }
+    env_capture:
+      FAKE_STATE: "{{ _state.path | default('') }}"
+      FAKE_EXEC_STUB_DIR: "{{ playbook_dir }}/fixtures/capture-bao"
+      STUB_CAPTURE: "{{ _state.path | default('') }}/capture"
+
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-cli-callers-
+      register: _state
+      changed_when: false
+
+    - name: Make the capture directory
+      ansible.builtin.file:
+        path: "{{ _state.path }}/capture"
+        state: directory
+        mode: "0700"
+      changed_when: false
+
+    - name: Write the app-admin secret through the real role
+      ansible.builtin.include_role:
+        name: common/app-admin-facts
+        apply:
+          environment: "{{ env_capture }}"
+      vars:
+        app_admin_app_name: probe
+        app_admin_fact_prefix: probe_admin
+        app_admin_username_input: probe-admin
+        app_admin_password_input: "{{ literal_password }}"
+        app_admin_email_input: probe@example.test
+        app_admin_openbao_namespace: openbao
+        _openbao_session_pod: openbao-0
+        _openbao_session_client_token: "tok$HOME'1"
+
+    - name: Patch or put with a merged mapping, as the NetBox integration does
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ env_capture }}"
+      vars:
+        openbao_cli_operation: write the integration secret
+        openbao_cli_pod: openbao-0
+        openbao_cli_token: "tok$HOME'1"
+        openbao_cli_register: _patched
+        openbao_cli_changed: true
+        patch_exists: true
+        openbao_cli_calls:
+          - args: [kv, "{{ 'patch' if patch_exists | bool else 'put' }}", "secret/apps/probe/runtime", "-"]
+            input: "{{ {'a_token': 'x', 'b_token': literal_password} | combine({'c_token': 'z'} if patch_exists | bool else {}) | to_json }}"
+
+    - name: Write a policy text, as the policy writes do
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ env_capture }}"
+      vars:
+        openbao_cli_operation: write a policy
+        openbao_cli_pod: openbao-0
+        openbao_cli_token: "tok$HOME'1"
+        openbao_cli_register: _policy
+        openbao_cli_changed: true
+        openbao_cli_calls:
+          - args: [policy, write, probe-policy, "-"]
+            input: "{{ policy_text | string }}"
+
+    - name: Read what the stub saw
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/capture/{{ item }}"
+      loop: [argv-1, argv-2, stdin-2, argv-3, stdin-3, argv-4, stdin-4, token-2]
+      register: _seen
+      changed_when: false
+
+    - name: Check each call and body
+      ansible.builtin.assert:
+        that:
+          - (_seen.results[0].content | b64decode) == 'kv\nget\n-format=json\nsecret/apps/probe/admin\n'
+          - (_seen.results[1].content | b64decode) == 'kv\nput\nsecret/apps/probe/admin\n-\n'
+          - (_seen.results[2].content | b64decode | from_json).username == 'probe-admin'
+          - (_seen.results[2].content | b64decode | from_json).password == literal_password
+          - (_seen.results[2].content | b64decode | from_json).email == 'probe@example.test'
+          - (_seen.results[3].content | b64decode) == 'kv\npatch\nsecret/apps/probe/runtime\n-\n'
+          - (_seen.results[4].content | b64decode | from_json).b_token == literal_password
+          - (_seen.results[4].content | b64decode | from_json).c_token == 'z'
+          - (_seen.results[5].content | b64decode) == 'policy\nwrite\nprobe-policy\n-\n'
+          - (_seen.results[6].content | b64decode) == policy_text
+          - (_seen.results[7].content | b64decode) == "tok$HOME'1"
+          - "_patched.rc | type_debug == 'int'"
+          - _patched.changed
+          - _policy.changed

@@ -1,0 +1,4 @@
+# The ansible-core that the AWX execution environment runs. The ansible-core-215 job in
+# ci.yml installs it in a Python 3.11 environment and runs the shared OpenBao task test.
+ansible-core==2.15.13
+PyYAML==6.0.4
