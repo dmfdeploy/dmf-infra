@@ -20,6 +20,8 @@
     openbao_cli_allow_failure: true
     openbao_cli_retries: "{{ openbao_status_retries }}"
     openbao_cli_delay: "{{ openbao_status_delay }}"
+    # Retrying only gives the call more chances; the task after this one stops when the status cannot be read.
+    openbao_cli_allow_exhausted_retries: true
     openbao_cli_until: >-
       {{ openbao_cli_run.stdout | default('') is match('(?s)\s*\{') and openbao_cli_run.stdout | default('') | from_json is mapping and 'initialized' in (openbao_cli_run.stdout | from_json) }}
 

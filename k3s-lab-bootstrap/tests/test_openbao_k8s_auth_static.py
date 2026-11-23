@@ -18,7 +18,8 @@ def text(path):
 
 
 CLI_ROLE = "common/openbao-cli"
-CLI_ROLE_TASKS = ROOT / "roles/common/openbao-cli/tasks/main.yml"
+# The role runs each call in step.yml; main.yml checks the input and starts the first call.
+CLI_ROLE_TASKS = ROOT / "roles/common/openbao-cli/tasks/step.yml"
 # A word that names a token or the reviewer JWT, not a TTL or a policy list.
 TOKEN_WORD = re.compile(r"\{\{[^}]*(?:token|jwt)(?!_(?:max_)?ttl|_polic)[^}]*\}\}", re.I)
 

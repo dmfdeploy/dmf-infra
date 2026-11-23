@@ -1,0 +1,99 @@
+---
+# One call of the list, then the next call. A loop cannot stop at a failure on the
+# ansible-core versions that dmf-infra supports, so the role runs the calls one at a
+# time and includes this file again for the next one.
+- name: Pick the call
+  ansible.builtin.set_fact:
+    _openbao_cli_call: "{{ openbao_cli_calls[openbao_cli_index | int] }}"
+  no_log: true
+
+- name: "Run the OpenBao command: {{ openbao_cli_operation }}"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_cli_namespace | default('openbao') }}"
+      - exec
+      - -i
+      - "{{ openbao_cli_pod }}"
+      - --
+      - sh
+      - -c
+      - >-
+        IFS= read -r BAO_TOKEN; IFS= read -r OPENBAO_CLI_COUNT; set --;
+        while [ "$OPENBAO_CLI_COUNT" -gt 0 ]; do IFS= read -r OPENBAO_CLI_WORD;
+        set -- "$@" "$OPENBAO_CLI_WORD"; OPENBAO_CLI_COUNT=$((OPENBAO_CLI_COUNT - 1)); done;
+        if [ -n "$BAO_TOKEN" ]; then export BAO_TOKEN; else unset BAO_TOKEN; fi;
+        exec bao "$@"
+    stdin: "{{ openbao_cli_stdin }}"
+    stdin_add_newline: false
+  vars:
+    ansible_pipelining: true
+    openbao_cli_nl: "\n"
+    openbao_cli_stdin: >-
+      {{ openbao_cli_token | default('') }}{{ openbao_cli_nl }}{{ _openbao_cli_call.args | length }}{{ openbao_cli_nl }}{{
+      _openbao_cli_call.args | map('string') | join(openbao_cli_nl) }}{{ openbao_cli_nl }}{{ _openbao_cli_call.input | default('') }}
+  register: openbao_cli_run
+  retries: "{{ openbao_cli_retries | default(0) }}"
+  delay: "{{ openbao_cli_delay | default(0) }}"
+  until: openbao_cli_until | default(true)
+  changed_when: openbao_cli_changed | default(false) | bool and openbao_cli_run.rc == 0
+  ignore_errors: true
+  no_log: true
+
+- name: Judge the call
+  ansible.builtin.set_fact:
+    _openbao_cli_ran_out: >-
+      {{ not openbao_cli_run.skipped | default(false) and not (openbao_cli_until | default(true) | bool) }}
+    _openbao_cli_failure: >-
+      {%- set tolerated = [] -%}
+      {%- for t in openbao_cli_tolerate_stderr | default([]) -%}
+      {%- if t in (openbao_cli_run.stderr | default('')) -%}{%- set _ = tolerated.append(t) -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if openbao_cli_run.skipped | default(false) -%}
+      {%- elif openbao_cli_run.rc | default(1) != 0 and tolerated | length == 0 -%}exit code {{ openbao_cli_run.rc | default('none') }}
+      {%- elif openbao_cli_require_output | default(false) | bool and (openbao_cli_run.stdout | default('') | trim | length == 0) -%}empty output
+      {%- endif -%}
+    _openbao_cli_entry:
+      item: "{{ _openbao_cli_call.item | default(none) }}"
+      rc: "{{ openbao_cli_run.rc | default(0 if openbao_cli_run.skipped | default(false) else 1) }}"
+      stdout: "{{ openbao_cli_run.stdout | default('') }}"
+      stderr: "{{ openbao_cli_run.stderr | default('') }}"
+      changed: "{{ openbao_cli_run.changed | default(false) and not openbao_cli_run.skipped | default(false) }}"
+  no_log: true
+
+- name: "Stop when the retries ran out: {{ openbao_cli_operation }}"
+  ansible.builtin.fail:
+    msg: >-
+      The OpenBao command "{{ openbao_cli_operation }}" failed (the retries ran out).
+      The details can hold a secret, so they are not shown.
+  when:
+    - _openbao_cli_ran_out | bool
+    - not (openbao_cli_allow_exhausted_retries | default(false) | bool)
+
+- name: "Stop when the OpenBao command failed: {{ openbao_cli_operation }}"
+  ansible.builtin.fail:
+    msg: >-
+      The OpenBao command "{{ openbao_cli_operation }}" failed
+      ({{ _openbao_cli_failure | default('', true) }}). The details can hold a secret, so they
+      are not shown. Run the command again by hand to read them.
+  when:
+    - not (openbao_cli_allow_failure | default(false) | bool)
+    - (_openbao_cli_failure | default('', true) | string | length) > 0
+
+- name: Keep the result of the call
+  ansible.builtin.set_fact:
+    _openbao_cli_results: "{{ _openbao_cli_results + [_openbao_cli_entry] }}"
+  no_log: true
+
+- name: Work out the next call
+  ansible.builtin.set_fact:
+    _openbao_cli_next: "{{ openbao_cli_index | int + 1 }}"
+
+- name: "Run the next call: {{ openbao_cli_operation }}"
+  ansible.builtin.include_tasks: step.yml
+  vars:
+    openbao_cli_index: "{{ _openbao_cli_next }}"
+  when: _openbao_cli_next | int < openbao_cli_calls | length

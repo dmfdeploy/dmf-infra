@@ -582,14 +582,18 @@ def secret_outside_token_and_input(text):
     return found
 
 
-CLI_ROLE_FILE = ROOT / "roles/common/openbao-cli/tasks/main.yml"
+CLI_ROLE_FILES = [ROOT / "roles/common/openbao-cli/tasks/main.yml", ROOT / "roles/common/openbao-cli/tasks/step.yml"]
+CLI_ROLE_FILE = CLI_ROLE_FILES[1]  # the command task and its stdin template
 
 
-def cli_role_tasks_without_no_log(text=None):
+def cli_role_tasks_without_no_log(text=None, main_text=None):
     """Return the names of tasks of the shared role that name a secret and do not set `no_log: true`."""
     import yaml
 
-    tasks = yaml.safe_load(text if text is not None else CLI_ROLE_FILE.read_text())
+    # `main_text` and `text` replace main.yml and step.yml, so a test can mutate them.
+    tasks = yaml.safe_load(main_text if main_text is not None else CLI_ROLE_FILES[0].read_text()) + yaml.safe_load(
+        text if text is not None else CLI_ROLE_FILES[1].read_text()
+    )
     return [
         task["name"]
         for task in tasks
@@ -689,11 +693,11 @@ class SharedRoleCallsNoSecretTest(unittest.TestCase):
         # Dropping no_log from the command task, then from the judge task, each shows up by name.
         without_command = text.replace("  ignore_errors: true\n  no_log: true\n", "  ignore_errors: true\n", 1)
         self.assertEqual(cli_role_tasks_without_no_log(without_command), ["Run the OpenBao command: {{ openbao_cli_operation }}"])
-        without_check = text.replace("    fail_msg: >-", "    fail_msg: >-", 1).replace(
-            "      A token or an argument must not hold a newline.\n  no_log: true\n",
-            "      A token or an argument must not hold a newline.\n", 1,
-        )
-        self.assertEqual(len(cli_role_tasks_without_no_log(without_check)), 1)
+        main = CLI_ROLE_FILES[0].read_text()
+        collect = "      {{ bad }}\n  no_log: true\n"
+        self.assertIn(collect, main)
+        without_check = main.replace(collect, "      {{ bad }}\n", 1)
+        self.assertEqual(len(cli_role_tasks_without_no_log(main_text=without_check)), 1)
 
 
 # Entries that stay for good, as "path::task name". Each is a different case and has its own

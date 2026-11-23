@@ -759,7 +759,7 @@
               rc: {{ _cms_awx_openbao_verify.rc }}
               stdout empty: {{ _cms_awx_openbao_verify.stdout | length == 0 }}
               stdout length: {{ _cms_awx_openbao_verify.stdout | length }}
-              stderr: '{{ _cms_awx_openbao_verify.stderr }}'
+              stderr length: {{ _cms_awx_openbao_verify.stderr | length }}
           when: not _cms_awx_token_recovered_from_openbao | default(false) | bool
 
         - name: Assert AWX token read succeeded from OpenBao
@@ -769,7 +769,7 @@
             fail_msg: |
               Failed to read AWX token back from OpenBao.
               Return code: {{ _cms_awx_openbao_verify.rc }}
-              stderr: {{ _cms_awx_openbao_verify.stderr | default('(none)') }}
+              The error text can hold a secret, so it is not shown.
               Check OpenBao is accessible and secret path exists.
           when: not _cms_awx_token_recovered_from_openbao | default(false) | bool
 
