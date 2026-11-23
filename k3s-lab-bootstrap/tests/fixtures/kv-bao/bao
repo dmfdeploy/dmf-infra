@@ -1,0 +1,15 @@
+#!/bin/sh
+# A stub bao for tests/test-openbao-cli-callers.yml. It reads its standard input and answers
+# every call with the contents of the file that $STUB_KV_FILE names, or with `{}` when there is
+# no file. With STUB_FAIL=1 it prints "boom" on standard error and exits 1.
+set -eu
+cat > /dev/null
+if [ "${STUB_FAIL:-}" = 1 ]; then
+  echo boom >&2
+  exit 1
+fi
+if [ -n "${STUB_KV_FILE:-}" ] && [ -f "$STUB_KV_FILE" ]; then
+  cat "$STUB_KV_FILE"
+else
+  printf '{}'
+fi

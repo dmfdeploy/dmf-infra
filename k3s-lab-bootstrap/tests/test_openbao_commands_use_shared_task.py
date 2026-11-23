@@ -158,6 +158,51 @@ def violations(root):
     return found
 
 
+# ansible-core 2.15 types the result of a template per field: `rc: "{{ x.rc }}"` is the text
+# "0", and `stdout: "{{ x.stdout }}"` is a mapping when the text looks like JSON. A fact that
+# copies a shared-role result field by field must say each type, or build the result as one
+# expression.
+TYPED_FIELDS = {"rc": "int", "changed": "bool", "stdout": "string", "stderr": "string"}
+
+
+def per_field_results(root):
+    """(file, task name, field) for each set_fact field that copies a result without its type."""
+    found = []
+    for path in sorted(root.rglob("*.yml")):
+        rel = path.relative_to(root)
+        if rel.parts[0] in SKIPPED_TOP_DIRS or SHARED_ROLE in rel.parents:
+            continue
+        for document in yaml.safe_load_all(path.read_text()):
+            for task in set_fact_tasks(document):
+                for field in nested_fields(task["ansible.builtin.set_fact"]):
+                    key, value = field
+                    if not re.search(r"\|\s*" + TYPED_FIELDS[key] + r"\s*\)?\s*\}\}\s*$", value):
+                        found.append((str(rel), str(task.get("name")), key))
+    return found
+
+
+def set_fact_tasks(node):
+    if isinstance(node, list):
+        for item in node:
+            yield from set_fact_tasks(item)
+    elif isinstance(node, dict):
+        if isinstance(node.get("ansible.builtin.set_fact"), dict):
+            yield node
+        for value in node.values():
+            if isinstance(value, (list, dict)):
+                yield from set_fact_tasks(value)
+
+
+def nested_fields(facts):
+    """(field name, template) for each typed field of a mapping inside a set_fact value."""
+    for value in facts.values():
+        if isinstance(value, dict):
+            for key, inner in value.items():
+                if key in TYPED_FIELDS and isinstance(inner, str) and "{{" in inner:
+                    yield key, inner
+            yield from nested_fields(value)
+
+
 def call_inputs(root):
     """(file, task name, `input` value) for each call of each include of the shared role."""
     found = []
@@ -197,6 +242,11 @@ def input_keeps_its_text(value):
     """
     expressions = re.findall(r"\{\{(.*?)\}\}", value, re.S)
     return all(re.search(r"\|\s*(?:string|to_json)\s*\)?\s*$", e) for e in expressions)
+
+
+def per_field_results_in(tree, rel, text):
+    (tree / rel).write_text(text)
+    return per_field_results(tree)
 
 
 def allowed(found):
@@ -350,6 +400,32 @@ class SharedTaskTest(unittest.TestCase):
             if not input_keeps_its_text(value):
                 bad.append((rel, name, value))
         self.assertEqual(bad, [], "end each `input` template with `| string` or `| to_json`")
+
+    def test_no_fact_copies_a_result_field_without_its_type(self):
+        self.assertEqual(per_field_results(ROOT), [], "build the result as one expression, or end each field with | int, | bool or | string")
+
+    def test_the_result_check_flags_the_old_697_extract_in_a_temporary_tree(self):
+        rel = "playbooks/tasks/cms-awx-token-readback.yml"
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp)
+            (tree / rel).parent.mkdir(parents=True)
+            text = (ROOT / rel).read_text()
+            self.assertEqual(per_field_results_in(tree, rel, text), [])
+            planted = text[: text.index("- name: Extract AWX token from OpenBao JSON")] + (
+                "- name: Extract AWX token from OpenBao JSON\n"
+                "  ansible.builtin.set_fact:\n"
+                "    _cms_awx_openbao_verify:\n"
+                "      rc: \"{{ _cms_awx_openbao_raw.rc }}\"\n"
+                "      stdout: \"{{ (_cms_awx_openbao_raw.stdout | from_json).data.data.cms_api_token | default('') }}\"\n"
+                "      stderr: \"{{ _cms_awx_openbao_raw.stderr }}\"\n"
+            ) + text[text.index("- name: Debug AWX token OpenBao read output"):]
+            self.assertEqual(
+                sorted(f for _, _, f in per_field_results_in(tree, rel, planted)), ["rc", "stderr", "stdout"]
+            )
+            typed = planted.replace('rc: "{{ _cms_awx_openbao_raw.rc }}"', 'rc: "{{ _cms_awx_openbao_raw.rc | int }}"')
+            self.assertEqual(
+                sorted(f for _, _, f in per_field_results_in(tree, rel, typed)), ["stderr", "stdout"]
+            )
 
     def test_the_input_check_flags_a_bare_variable_in_a_temporary_tree(self):
         tasks = {
