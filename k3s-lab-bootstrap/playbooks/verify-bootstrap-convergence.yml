@@ -242,27 +242,19 @@
       ansible.builtin.set_fact:
         _bootstrap_convergence_pod: "{{ _bootstrap_convergence_pod_info.resources[0].metadata.name }}"
 
+    # The old program set BAO_ADDR and BAO_CACERT in the pod. The same two settings
+    # go as flags, so the shared role (which sets no environment) reads the same status.
     - name: Read OpenBao Shamir status
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ verify_bootstrap_convergence_namespace }}"
-          - exec
-          - "{{ _bootstrap_convergence_pod }}"
-          - --
-          - sh
-          - -c
-          - >-
-            BAO_ADDR=https://127.0.0.1:8200
-            BAO_CACERT=/openbao/config/tls/ca.crt
-            bao status -format=json
-      register: _bootstrap_convergence_status_raw
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read OpenBao Shamir status
+        openbao_cli_pod: "{{ _bootstrap_convergence_pod }}"
+        openbao_cli_namespace: "{{ verify_bootstrap_convergence_namespace }}"
+        openbao_cli_calls:
+          - args: [status, -format=json, -address=https://127.0.0.1:8200, -ca-cert=/openbao/config/tls/ca.crt]
+        openbao_cli_register: _bootstrap_convergence_status_raw
+        openbao_cli_allow_failure: true
 
     - name: Parse OpenBao Shamir status
       ansible.builtin.set_fact:
@@ -359,41 +351,25 @@
       loop_control:
         label: "{{ item.id }}"
 
-    - name: Check that the secret path holds no newline
-      ansible.builtin.assert:
-        that:
-          - "(item.path) is not search('[\\r\\n]')"
-        fail_msg: "item.path must not contain a newline: the program reads it from stdin, one value per line."
-      loop: "{{ verify_bootstrap_convergence_openbao_secret_checks }}"
-      loop_control:
-        label: "{{ item.id }}"
-
     # ------------------------------------------------------------------
     # Step 5 - app-admin credentials already sealed into OpenBao
     # ------------------------------------------------------------------
     - name: Read sealed app-admin secrets from OpenBao
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ verify_bootstrap_convergence_namespace }}"
-          - exec
-          - -i
-          - "{{ _bootstrap_convergence_pod }}"
-          - --
-          - sh
-          - -c
-          - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
-        stdin: "{{ _bootstrap_convergence_operator_token }}\n{{ item.path }}\n"
-      register: _bootstrap_convergence_secret_results
-      changed_when: false
-      failed_when: false
-      no_log: true
-      loop: "{{ verify_bootstrap_convergence_openbao_secret_checks }}"
-      loop_control:
-        label: "{{ item.id }}"
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read sealed app-admin secrets from OpenBao
+        openbao_cli_pod: "{{ _bootstrap_convergence_pod }}"
+        openbao_cli_namespace: "{{ verify_bootstrap_convergence_namespace }}"
+        openbao_cli_token: "{{ _bootstrap_convergence_operator_token }}"
+        openbao_cli_calls: >-
+          {%- set out = [] -%}
+          {%- for c in verify_bootstrap_convergence_openbao_secret_checks -%}
+          {%- set _ = out.append({'item': c, 'args': ['kv', 'get', '-format=json', c.path]}) -%}
+          {%- endfor -%}
+          {{ out }}
+        openbao_cli_register: _bootstrap_convergence_secret_results
+        openbao_cli_allow_failure: true
 
     - name: Assert sealed app-admin secrets are present and source-atomic
       ansible.builtin.assert:

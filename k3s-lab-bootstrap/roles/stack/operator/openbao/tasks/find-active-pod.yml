@@ -17,24 +17,30 @@
       - "app.kubernetes.io/name=openbao"
   register: _openbao_active_pod_list
 
+# The shared role runs in one pod per call, so the include loops over the pods and
+# each pod keeps its own result under a name of its own. The next task joins them.
 - name: Ask each pod whether it is the active node
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ item }}"
-      - --
-      - bao
-      - status
-      - -format=json
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: ask a pod whether it is the active node
+    openbao_cli_pod: "{{ item }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [status, -format=json]
+    openbao_cli_register: "_openbao_active_pod_status_{{ item | regex_replace('[^A-Za-z0-9_]', '_') }}"
+    openbao_cli_allow_failure: true
   loop: "{{ _openbao_active_pod_list.resources | default([]) | map(attribute='metadata.name') | list }}"
-  register: _openbao_active_pod_status
-  changed_when: false
-  failed_when: false
+
+- name: Join the answers of the pods
+  ansible.builtin.set_fact:
+    _openbao_active_pod_status: >-
+      {%- set out = [] -%}
+      {%- for name in _openbao_active_pod_list.resources | default([]) | map(attribute='metadata.name') | list -%}
+      {%- set r = lookup('ansible.builtin.vars', '_openbao_active_pod_status_' ~ (name | regex_replace('[^A-Za-z0-9_]', '_'))) -%}
+      {%- set _ = out.append({'item': name, 'rc': r.rc, 'stdout': r.stdout, 'stderr': r.stderr}) -%}
+      {%- endfor -%}
+      {{ {'results': out} }}
 
 - name: Pick the pod that reports itself as active
   ansible.builtin.set_fact:

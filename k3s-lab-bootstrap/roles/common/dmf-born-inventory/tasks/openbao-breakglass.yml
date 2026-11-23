@@ -95,20 +95,19 @@
     _dmf_born_inventory_openbao_pod: "{{ _dmf_born_inventory_openbao_pod_info.resources[0].metadata.name }}"
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
-# The role ID and SecretID travel as a JSON body on stdin. A command argument or
-# a task `environment:` entry would show them in the process list.
+# The shared role sends the role ID and SecretID as a JSON body on stdin, so
+# no argument or `environment:` entry shows them in the process list.
 - name: Log into OpenBao with born-inventory AppRole
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ dmf_born_inventory_openbao_namespace }}
-      exec -i {{ _dmf_born_inventory_openbao_pod }}
-      -- sh -c '
-      bao write -format=json auth/approle/login -'
-    stdin: "{{ {'role_id': _dmf_born_inventory_openbao_role_id, 'secret_id': _dmf_born_inventory_openbao_secret_id} | to_json }}\n"
-  register: _dmf_born_inventory_openbao_login_raw
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: log in with the born-inventory AppRole
+    openbao_cli_pod: "{{ _dmf_born_inventory_openbao_pod }}"
+    openbao_cli_namespace: "{{ dmf_born_inventory_openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [write, -format=json, auth/approle/login, "-"]
+        input: "{{ {'role_id': _dmf_born_inventory_openbao_role_id, 'secret_id': _dmf_born_inventory_openbao_secret_id} | to_json }}"
+    openbao_cli_register: _dmf_born_inventory_openbao_login_raw
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
 - name: Extract OpenBao client token for born-inventory
@@ -118,22 +117,17 @@
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
 - name: Read NetBox runtime secret from OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ dmf_born_inventory_openbao_namespace }}
-      exec -i {{ _dmf_born_inventory_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao read -format=json secret/data/apps/netbox/runtime'
-    stdin: "{{ _dmf_born_inventory_openbao_client_token }}\n"
-  register: _dmf_born_inventory_runtime_secret_raw
-  changed_when: false
-  failed_when: false
-  environment:
-    BAO_ADDR: https://127.0.0.1:8200
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the NetBox runtime secret
+    openbao_cli_pod: "{{ _dmf_born_inventory_openbao_pod }}"
+    openbao_cli_namespace: "{{ dmf_born_inventory_openbao_namespace }}"
+    openbao_cli_token: "{{ _dmf_born_inventory_openbao_client_token }}"
+    openbao_cli_calls:
+      - args: [read, -format=json, secret/data/apps/netbox/runtime]
+    openbao_cli_register: _dmf_born_inventory_runtime_secret_raw
+    openbao_cli_allow_failure: true
   when: dmf_born_inventory_netbox_admin_token | default('') | length == 0
 
 - name: Log NetBox admin token read result

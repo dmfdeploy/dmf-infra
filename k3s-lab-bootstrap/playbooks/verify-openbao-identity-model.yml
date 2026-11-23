@@ -323,32 +323,17 @@
       changed_when: false
       no_log: true
 
-    - name: Check that the k8s role holds no newline
-      ansible.builtin.assert:
-        that:
-          - "(verify_setup_issuer_k8s_role) is not search('[\\r\\n]')"
-        fail_msg: "verify_setup_issuer_k8s_role must not contain a newline: the program reads it from stdin, one value per line."
-
     - name: Log in as the setup issuer
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ verify_openbao_namespace }}"
-          - exec
-          - -i
-          - "{{ _verify_openbao_pod }}"
-          - --
-          - sh
-          - -c
-          - 'IFS= read -r K8S_ROLE; exec bao write -format=json auth/kubernetes/login "role=$K8S_ROLE" jwt=-'
-        stdin: "{{ verify_setup_issuer_k8s_role }}\n{{ _verify_issuer_jwt.stdout | trim }}"
-        stdin_add_newline: false
-      register: _verify_issuer_login
-      changed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: log in as the setup issuer
+        openbao_cli_pod: "{{ _verify_openbao_pod }}"
+        openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+        openbao_cli_calls:
+          - args: [write, -format=json, auth/kubernetes/login, "role={{ verify_setup_issuer_k8s_role }}", "jwt=-"]
+            input: "{{ _verify_issuer_jwt.stdout | trim }}"
+        openbao_cli_register: _verify_issuer_login
 
     - name: Capture setup-issuer token
       ansible.builtin.set_fact:
@@ -387,34 +372,18 @@
       failed_when: false
       no_log: true
 
-    - name: Check that the k8s role holds no newline
-      ansible.builtin.assert:
-        that:
-          - "(verify_rotation_scheduler_k8s_role) is not search('[\\r\\n]')"
-        fail_msg: "verify_rotation_scheduler_k8s_role must not contain a newline: the program reads it from stdin, one value per line."
-      when: _verify_scheduler_jwt.rc == 0
-
     - name: Log in as the rotation scheduler
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ verify_openbao_namespace }}"
-          - exec
-          - -i
-          - "{{ _verify_openbao_pod }}"
-          - --
-          - sh
-          - -c
-          - 'IFS= read -r K8S_ROLE; exec bao write -format=json auth/kubernetes/login "role=$K8S_ROLE" jwt=-'
-        stdin: "{{ verify_rotation_scheduler_k8s_role }}\n{{ _verify_scheduler_jwt.stdout | trim }}"
-        stdin_add_newline: false
-      register: _verify_scheduler_login
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: log in as the rotation scheduler
+        openbao_cli_pod: "{{ _verify_openbao_pod }}"
+        openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+        openbao_cli_calls:
+          - args: [write, -format=json, auth/kubernetes/login, "role={{ verify_rotation_scheduler_k8s_role }}", "jwt=-"]
+            input: "{{ _verify_scheduler_jwt.stdout | trim }}"
+        openbao_cli_register: _verify_scheduler_login
+        openbao_cli_allow_failure: true
       when: _verify_scheduler_jwt.rc == 0
 
     - name: Work out whether the rotation scheduler is set up
@@ -498,31 +467,17 @@
     # ────────────────────────────────────────────────────────────────
     # Step 3 — AC-5 negative probes (Implementation Brief §7.5)
     # ────────────────────────────────────────────────────────────────
-    - name: Check that the caps path holds no newline
-      ansible.builtin.assert:
-        that:
-          - "(item.path) is not search('[\\r\\n]')"
-        fail_msg: "item.path must not contain a newline: the program reads it from stdin, one value per line."
-      loop: "{{ _verify_active_probes }}"
-      loop_control:
-        label: "{{ item.identity }} → {{ item.path }}"
-
+    # The token differs by identity, and the shared role takes one token per include, so
+    # the probes run as one include per identity. The results are put back in the order
+    # of _verify_active_probes, which the later checks rely on.
     - name: Probe capability matrix
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ verify_openbao_namespace }}"
-          - exec
-          - -i
-          - "{{ _verify_openbao_pod }}"
-          - --
-          - sh
-          - -c
-          - 'IFS= read -r BAO_TOKEN; IFS= read -r CAPS_PATH; export BAO_TOKEN; bao token capabilities -format=json "$CAPS_PATH"'
-        stdin: |-
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: "probe the capability matrix as {{ _verify_probe_identity }}"
+        openbao_cli_pod: "{{ _verify_openbao_pod }}"
+        openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+        openbao_cli_token: >-
           {{
             {
               'ops-admin': _verify_token_ops_admin,
@@ -530,15 +485,33 @@
               'approle-reconciler': _verify_token_approle_reconciler,
               'setup-issuer': _verify_token_setup_issuer,
               'rotation-scheduler': _verify_token_rotation_scheduler
-            }[item.identity]
+            }[_verify_probe_identity]
           }}
-          {{ item.path }}
-      register: _verify_probe_results
-      changed_when: false
-      no_log: true
-      loop: "{{ _verify_active_probes }}"
+        openbao_cli_calls: >-
+          {%- set out = [] -%}
+          {%- for p in _verify_active_probes | selectattr('identity', 'equalto', _verify_probe_identity) -%}
+          {%- set _ = out.append({'item': p, 'args': ['token', 'capabilities', '-format=json', p.path]}) -%}
+          {%- endfor -%}
+          {{ out }}
+        openbao_cli_register: "_verify_probe_by_{{ _verify_probe_identity | replace('-', '_') }}"
+      loop: "{{ _verify_active_probes | map(attribute='identity') | unique | list }}"
       loop_control:
-        label: "{{ item.identity }} → {{ item.path }}"
+        loop_var: _verify_probe_identity
+
+    - name: Collect the probe results in probe order
+      ansible.builtin.set_fact:
+        _verify_probe_results:
+          results: >-
+            {%- set out = [] -%}
+            {%- set seen = namespace(count={}) -%}
+            {%- for p in _verify_active_probes -%}
+            {%- set n = seen.count.get(p.identity, 0) -%}
+            {%- set group = lookup('ansible.builtin.vars', '_verify_probe_by_' ~ (p.identity | replace('-', '_'))) -%}
+            {%- set _ = out.append(group.results[n]) -%}
+            {%- set _ = seen.count.update({p.identity: n + 1}) -%}
+            {%- endfor -%}
+            {{ out }}
+      no_log: true
 
     - name: Build per-probe capability lists
       ansible.builtin.set_fact:
@@ -758,32 +731,17 @@
           changed_when: false
           no_log: true
 
-        - name: Check that the k8s role holds no newline
-          ansible.builtin.assert:
-            that:
-              - "(verify_eso_k8s_role) is not search('[\\r\\n]')"
-            fail_msg: "verify_eso_k8s_role must not contain a newline: the program reads it from stdin, one value per line."
-
         - name: Log in as ESO with the fresh token
-          ansible.builtin.command:
-            argv:
-              - kubectl
-              - --kubeconfig
-              - /etc/rancher/k3s/k3s.yaml
-              - -n
-              - "{{ verify_openbao_namespace }}"
-              - exec
-              - -i
-              - "{{ _verify_openbao_pod }}"
-              - --
-              - sh
-              - -c
-              - 'IFS= read -r K8S_ROLE; exec bao write -format=json auth/kubernetes/login "role=$K8S_ROLE" jwt=-'
-            stdin: "{{ verify_eso_k8s_role }}\n{{ _verify_eso_jwt.stdout | trim }}"
-            stdin_add_newline: false
-          register: _verify_eso_login
-          changed_when: false
-          no_log: true
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: log in as ESO with the fresh token
+            openbao_cli_pod: "{{ _verify_openbao_pod }}"
+            openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+            openbao_cli_calls:
+              - args: [write, -format=json, auth/kubernetes/login, "role={{ verify_eso_k8s_role }}", "jwt=-"]
+                input: "{{ _verify_eso_jwt.stdout | trim }}"
+            openbao_cli_register: _verify_eso_login
 
         - name: Capture the ESO login result
           ansible.builtin.set_fact:
@@ -803,18 +761,16 @@
           ansible.builtin.include_tasks: tasks/verify-eso-no-pki.yml
 
         - name: Revoke the token of the verification login
-          ansible.builtin.shell:
-            cmd: >-
-              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-              -n {{ verify_openbao_namespace }}
-              exec -i {{ _verify_openbao_pod }}
-              -- sh -c '
-              IFS= read -r BAO_TOKEN;
-              export BAO_TOKEN;
-              bao token revoke -self'
-            stdin: "{{ _verify_eso_auth.client_token }}\n"
-          changed_when: false
-          no_log: true
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: revoke the token of the verification login
+            openbao_cli_pod: "{{ _verify_openbao_pod }}"
+            openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+            openbao_cli_token: "{{ _verify_eso_auth.client_token }}"
+            openbao_cli_calls:
+              - args: [token, revoke, -self]
+            openbao_cli_register: _verify_eso_revoke
 
         - name: Request a token for the wrong ServiceAccount
           ansible.builtin.command:
@@ -913,45 +869,25 @@
           changed_when: false
           no_log: true
 
-        - name: Check that the k8s role holds no newline
-          ansible.builtin.assert:
-            that:
-              - "(verify_eso_k8s_role) is not search('[\\r\\n]')"
-            fail_msg: "verify_eso_k8s_role must not contain a newline: the program reads it from stdin, one value per line."
-          loop:
-            - { case: wrong ServiceAccount, jwt: "{{ _verify_wrong_sa_jwt.stdout | trim }}" }
-            - { case: wrong namespace, jwt: "{{ _verify_wrong_ns_jwt.stdout | trim }}" }
-            - { case: wrong audience, jwt: "{{ _verify_wrong_aud_jwt.stdout | trim }}" }
-          loop_control:
-            label: "{{ item.case }}"
-
         - name: Try to log in with each wrong token
-          ansible.builtin.command:
-            argv:
-              - kubectl
-              - --kubeconfig
-              - /etc/rancher/k3s/k3s.yaml
-              - -n
-              - "{{ verify_openbao_namespace }}"
-              - exec
-              - -i
-              - "{{ _verify_openbao_pod }}"
-              - --
-              - sh
-              - -c
-              - 'IFS= read -r K8S_ROLE; exec bao write -format=json auth/kubernetes/login "role=$K8S_ROLE" jwt=-'
-            stdin: "{{ verify_eso_k8s_role }}\n{{ item.jwt }}"
-            stdin_add_newline: false
-          register: _verify_wrong_logins
-          changed_when: false
-          failed_when: false
-          no_log: true
-          loop:
-            - { case: wrong ServiceAccount, jwt: "{{ _verify_wrong_sa_jwt.stdout | trim }}" }
-            - { case: wrong namespace, jwt: "{{ _verify_wrong_ns_jwt.stdout | trim }}" }
-            - { case: wrong audience, jwt: "{{ _verify_wrong_aud_jwt.stdout | trim }}" }
-          loop_control:
-            label: "{{ item.case }}"
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: try to log in with each wrong token
+            openbao_cli_pod: "{{ _verify_openbao_pod }}"
+            openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+            openbao_cli_calls:
+              - item: { case: wrong ServiceAccount }
+                args: [write, -format=json, auth/kubernetes/login, "role={{ verify_eso_k8s_role }}", "jwt=-"]
+                input: "{{ _verify_wrong_sa_jwt.stdout | trim }}"
+              - item: { case: wrong namespace }
+                args: [write, -format=json, auth/kubernetes/login, "role={{ verify_eso_k8s_role }}", "jwt=-"]
+                input: "{{ _verify_wrong_ns_jwt.stdout | trim }}"
+              - item: { case: wrong audience }
+                args: [write, -format=json, auth/kubernetes/login, "role={{ verify_eso_k8s_role }}", "jwt=-"]
+                input: "{{ _verify_wrong_aud_jwt.stdout | trim }}"
+            openbao_cli_register: _verify_wrong_logins
+            openbao_cli_allow_failure: true
 
         - name: Assert every wrong token is refused
           ansible.builtin.assert:
@@ -963,32 +899,42 @@
           loop_control:
             label: "{{ item.item.case }}"
 
+        # The body holds a public key that cannot parse. A token that may write
+        # the config gets a validation error and nothing changes; a token that
+        # may not gets 403 before the body is read. One include per identity, because
+        # the shared role takes one token per include.
         - name: Try to write the Kubernetes auth config as each standing identity
-          # The body holds a public key that cannot parse. A token that may write
-          # the config gets a validation error and nothing changes; a token that
-          # may not gets 403 before the body is read.
-          ansible.builtin.shell:
-            cmd: >-
-              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-              -n {{ verify_openbao_namespace }}
-              exec -i {{ _verify_openbao_pod }}
-              -- sh -c '
-              IFS= read -r BAO_TOKEN;
-              export BAO_TOKEN;
-              bao write auth/kubernetes/config pem_keys=not-a-public-key'
-            stdin: >-
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: "try to write the Kubernetes auth config as {{ _verify_config_identity }}"
+            openbao_cli_pod: "{{ _verify_openbao_pod }}"
+            openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+            openbao_cli_token: >-
               {{
                 {
                   'ops-admin': _verify_token_ops_admin,
                   'policy-reconciler': _verify_token_policy_reconciler,
                   'approle-reconciler': _verify_token_approle_reconciler
-                }[item]
+                }[_verify_config_identity]
               }}
-          register: _verify_config_writes
-          changed_when: false
-          failed_when: false
-          no_log: true
+            openbao_cli_calls:
+              - item: "{{ _verify_config_identity }}"
+                args: [write, auth/kubernetes/config, pem_keys=not-a-public-key]
+            openbao_cli_register: "_verify_config_write_{{ _verify_config_identity | replace('-', '_') }}"
+            openbao_cli_allow_failure: true
           loop: [ops-admin, policy-reconciler, approle-reconciler]
+          loop_control:
+            loop_var: _verify_config_identity
+
+        - name: Collect the config write results
+          ansible.builtin.set_fact:
+            _verify_config_writes:
+              results:
+                - "{{ _verify_config_write_ops_admin.results[0] }}"
+                - "{{ _verify_config_write_policy_reconciler.results[0] }}"
+                - "{{ _verify_config_write_approle_reconciler.results[0] }}"
+          no_log: true
 
         - name: Assert each standing identity gets 403 on the config write
           ansible.builtin.assert:

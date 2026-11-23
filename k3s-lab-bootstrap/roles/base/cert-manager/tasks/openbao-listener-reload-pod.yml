@@ -84,28 +84,24 @@
     # bao status exits 2 on a sealed pod and prints the status. It exits 1 and
     # prints nothing when the TLS handshake fails, so the output is what counts.
     - name: Wait until the pod serves a certificate that the projected CA verifies
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ cert_manager_openbao_namespace }}"
-          - exec
-          - "{{ cert_manager_openbao_pod }}"
-          - --
-          - sh
-          - -c
-          - BAO_ADDR=https://127.0.0.1:8200 BAO_CACERT=/openbao/config/tls/ca.crt bao status -format=json
-      register: cert_manager_openbao_served
-      changed_when: false
-      failed_when: false
-      until:
-        - cert_manager_openbao_served.stdout | default('') is match('(?s)\s*\{')
-        - cert_manager_openbao_served.stdout | default('') | from_json is mapping
-      retries: "{{ cert_manager_openbao_reload_retries }}"
-      delay: "{{ cert_manager_openbao_reload_delay }}"
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: check the certificate that the pod serves
+        openbao_cli_pod: "{{ cert_manager_openbao_pod }}"
+        openbao_cli_namespace: "{{ cert_manager_openbao_namespace }}"
+        openbao_cli_calls:
+          - args:
+              - status
+              - -address=https://127.0.0.1:8200
+              - -ca-cert=/openbao/config/tls/ca.crt
+              - -format=json
+        openbao_cli_register: cert_manager_openbao_served
+        openbao_cli_allow_failure: true
+        openbao_cli_retries: "{{ cert_manager_openbao_reload_retries }}"
+        openbao_cli_delay: "{{ cert_manager_openbao_reload_delay }}"
+        openbao_cli_until: >-
+          {{ openbao_cli_run.stdout | default('') is match('(?s)\s*\{') and openbao_cli_run.stdout | default('') | from_json is mapping }}
 
     # A task with failed_when: false that runs out of tries does not fail, so the
     # result is checked here.
@@ -120,28 +116,20 @@
     # certificate file, and that file holds the new certificate now, so this call
     # proves that path too.
     - name: Wait until the pod's own CLI works
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ cert_manager_openbao_namespace }}"
-          - exec
-          - "{{ cert_manager_openbao_pod }}"
-          - --
-          - bao
-          - status
-          - -format=json
-      register: cert_manager_openbao_cli
-      changed_when: false
-      failed_when: false
-      until:
-        - cert_manager_openbao_cli.stdout | default('') is match('(?s)\s*\{')
-        - cert_manager_openbao_cli.stdout | default('') | from_json is mapping
-      retries: "{{ cert_manager_openbao_reload_retries }}"
-      delay: "{{ cert_manager_openbao_reload_delay }}"
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: check that the pod's own CLI works
+        openbao_cli_pod: "{{ cert_manager_openbao_pod }}"
+        openbao_cli_namespace: "{{ cert_manager_openbao_namespace }}"
+        openbao_cli_calls:
+          - args: [status, -format=json]
+        openbao_cli_register: cert_manager_openbao_cli
+        openbao_cli_allow_failure: true
+        openbao_cli_retries: "{{ cert_manager_openbao_reload_retries }}"
+        openbao_cli_delay: "{{ cert_manager_openbao_reload_delay }}"
+        openbao_cli_until: >-
+          {{ openbao_cli_run.stdout | default('') is match('(?s)\s*\{') and openbao_cli_run.stdout | default('') | from_json is mapping }}
 
     - name: Check that the pod's own CLI works
       ansible.builtin.assert:

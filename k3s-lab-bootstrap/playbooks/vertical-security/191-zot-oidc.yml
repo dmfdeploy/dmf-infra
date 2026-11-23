@@ -43,20 +43,17 @@
 
   post_tasks:
     - name: Validate Zot admin secret was persisted to OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ openbao_session_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -field=password secret/apps/zot/admin'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _zot_admin_secret_verify
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read the Zot admin password to validate it was persisted
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ openbao_session_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -field=password, secret/apps/zot/admin]
+        openbao_cli_register: _zot_admin_secret_verify
+        openbao_cli_allow_failure: true
 
     - name: Assert Zot admin secret is readable
       ansible.builtin.assert:

@@ -4,23 +4,20 @@
 # calls sys/capabilities-self and prints a JSON list with -format=json
 # (OpenBao v2.5.2, command/token_capabilities.go lines 112-115).
 - name: Read the token's capabilities on the Raft paths
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_caps_pod | default('openbao-0') }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao token capabilities -format=json {{ item }}'
-    stdin: "{{ openbao_guard_token }}\n"
-  loop:
-    - sys/storage/raft/configuration
-    - sys/storage/raft/autopilot/state
-  register: _openbao_caps_raw
-  changed_when: false
-  failed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the token's capabilities on the Raft paths
+    openbao_cli_pod: "{{ openbao_caps_pod | default('openbao-0') }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ openbao_guard_token }}"
+    openbao_cli_calls:
+      - item: sys/storage/raft/configuration
+        args: [token, capabilities, -format=json, sys/storage/raft/configuration]
+      - item: sys/storage/raft/autopilot/state
+        args: [token, capabilities, -format=json, sys/storage/raft/autopilot/state]
+    openbao_cli_register: _openbao_caps_raw
+    openbao_cli_allow_failure: true
 
 # The capability list is parsed as JSON. A path passes only when the list has
 # `read` (or `root`, which a root token reports) and has no `deny`. `sudo` alone

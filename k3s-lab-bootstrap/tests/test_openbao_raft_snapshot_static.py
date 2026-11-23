@@ -98,12 +98,22 @@ class FailLoudlyTest(unittest.TestCase):
         self.assertIn("openbao_session_mode: policy-reconciler", text)
         self.assertNotIn("openbao_root_token", text)
         write = next(t for t in self.tasks_of("policy.yml") if t["name"] == "Write the openbao-raft-snapshot policy")
-        self.assertIn("_openbao_session_client_token", write["ansible.builtin.shell"]["stdin"])
+        # The shared command role takes the token from its token variable and sends it on
+        # stdin. The words and the policy text carry no token.
+        self.assertEqual("common/openbao-cli", write["ansible.builtin.include_role"]["name"])
+        self.assertEqual("{{ _openbao_session_client_token }}", write["vars"]["openbao_cli_token"])
+        call, = write["vars"]["openbao_cli_calls"]
+        self.assertEqual(["policy", "write", "{{ openbao_raft_snapshot_policy_name }}", "-"], call["args"])
+        self.assertNotIn("token", " ".join(call["args"]) + call["input"])
 
     def test_the_policy_read_fails_on_anything_but_a_missing_policy(self):
         read = next(t for t in self.tasks_of("policy.yml") if t["name"] == "Read the openbao-raft-snapshot policy")
-        self.assertIn("No value found", " ".join(read["failed_when"]))
-        self.assertIn("rc != 0", " ".join(read["failed_when"]))
+        # The shared role fails on a non-zero exit code unless the caller reads `rc` itself
+        # (`openbao_cli_allow_failure`), and it forgives only the stderr texts listed.
+        self.assertEqual("common/openbao-cli", read["ansible.builtin.include_role"]["name"])
+        call_vars = read["vars"]
+        self.assertEqual(["No value found"], call_vars["openbao_cli_tolerate_stderr"])
+        self.assertNotIn("openbao_cli_allow_failure", call_vars)
 
 
 if __name__ == "__main__":

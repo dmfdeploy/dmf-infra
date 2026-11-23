@@ -13,79 +13,72 @@
 # the command, the wait never sees output, and the play fails. The unseal write
 # below stays skipped in check mode.
 - name: Wait for the pod to report initialized
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ openbao_unseal_target }}"
-      - --
-      - bao
-      - status
-      - -format=json
-  register: _openbao_unseal_status
-  check_mode: false
-  changed_when: false
-  # bao status exits 2 while the pod is sealed (command/status.go lines 94-95).
-  # The output is what counts.
-  failed_when: false
-  until:
-    - _openbao_unseal_status.stdout | default('') | length > 0
-    - _openbao_unseal_status.stdout | default('') | from_json is mapping
-    - (_openbao_unseal_status.stdout | from_json).initialized | default(false) | bool
-  retries: 60
-  delay: 5
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+    apply:
+      check_mode: false
+  vars:
+    openbao_cli_operation: wait for the pod to report initialized
+    openbao_cli_pod: "{{ openbao_unseal_target }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [status, -format=json]
+    openbao_cli_register: _openbao_unseal_status
+    # bao status exits 2 while the pod is sealed (command/status.go lines 94-95).
+    # The output is what counts.
+    openbao_cli_allow_failure: true
+    openbao_cli_retries: 60
+    openbao_cli_delay: 5
+    openbao_cli_until: >-
+      {{ openbao_cli_run.stdout | default('') | length > 0 and openbao_cli_run.stdout | default('') | from_json is mapping and (openbao_cli_run.stdout | from_json).initialized | default(false) | bool }}
 
-# The share is placed in a JSON string by the pod's shell, so it must not hold a
-# quote or a backslash. Unseal keys are hex or base64, which never do.
-- name: Assert the shares are safe to place in a JSON string
+# Unseal keys are hex or base64. Refuse any other character before a share is sent.
+- name: Assert the shares are hex or base64
   ansible.builtin.assert:
     that: openbao_unseal_keys_hex[0:(openbao_shamir_threshold | int)] | map('regex_search', '^[A-Za-z0-9+/=_-]+$') | select('none') | list | length == 0
     fail_msg: An unseal share has a character that is not hex or base64.
   no_log: true
   when: (_openbao_unseal_status.stdout | from_json).sealed | default(true) | bool
 
-# The pod's shell reads the share from stdin and writes the JSON body to bao's
-# stdin. printf is a shell builtin, so no child process gets the share as an
-# argument.
+# The shared role sends each share to the pod on stdin as the JSON body that
+# `bao write sys/unseal -` reads. No process gets a share as an argument. The
+# write does not run in check mode.
 - name: Unseal the pod with the threshold of shares
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_unseal_target }}
-      -- sh -c '
-      IFS= read -r K;
-      printf "{\"key\":\"%s\"}" "$K" |
-      bao write -format=json sys/unseal -'
-    stdin: "{{ item }}\n"
-  loop: "{{ openbao_unseal_keys_hex[0:(openbao_shamir_threshold | int)] }}"
-  changed_when: true
-  no_log: true
-  when: (_openbao_unseal_status.stdout | from_json).sealed | default(true) | bool
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: unseal the pod with the threshold of shares
+    openbao_cli_pod: "{{ openbao_unseal_target }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for item in openbao_unseal_keys_hex[0:(openbao_shamir_threshold | int)] -%}
+      {%- set _ = out.append({'item': item, 'args': ['write', '-format=json', 'sys/unseal', '-'], 'input': {'key': item} | to_json}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _openbao_unseal_write
+    openbao_cli_changed: true
+  when:
+    - not ansible_check_mode
+    - (_openbao_unseal_status.stdout | from_json).sealed | default(true) | bool
 
 - name: Confirm the pod is unsealed
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ openbao_unseal_target }}"
-      - --
-      - bao
-      - status
-      - -format=json
-  register: _openbao_unseal_after
-  check_mode: false
-  changed_when: false
-  failed_when: >-
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+    apply:
+      check_mode: false
+  vars:
+    openbao_cli_operation: confirm the pod is unsealed
+    openbao_cli_pod: "{{ openbao_unseal_target }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [status, -format=json]
+    openbao_cli_register: _openbao_unseal_after
+    openbao_cli_allow_failure: true
+
+- name: Stop when the pod is still sealed
+  ansible.builtin.fail:
+    msg: The pod {{ openbao_unseal_target }} is still sealed after the unseal.
+  when: >-
     _openbao_unseal_after.stdout | default('') | length == 0
     or (_openbao_unseal_after.stdout | from_json).sealed | default(true) | bool
-  no_log: true

@@ -6,30 +6,22 @@
 # bao status exits 2 on a sealed pod and prints the status, so the output decides,
 # not the exit code. A pod that is still starting gets a few tries.
 - name: Check OpenBao init status
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ openbao_pod }}"
-      - --
-      - bao
-      - status
-      - -format=json
-  register: openbao_status_cmd
-  changed_when: false
-  failed_when: false
-  check_mode: false
-  until:
-    - openbao_status_cmd.stdout | default('') is match('(?s)\s*\{')
-    - openbao_status_cmd.stdout | default('') | from_json is mapping
-    - "'initialized' in (openbao_status_cmd.stdout | from_json)"
-  retries: "{{ openbao_status_retries }}"
-  delay: "{{ openbao_status_delay }}"
-  ignore_errors: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+    apply:
+      check_mode: false
+  vars:
+    openbao_cli_operation: check the OpenBao init status
+    openbao_cli_pod: "{{ openbao_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [status, -format=json]
+    openbao_cli_register: openbao_status_cmd
+    openbao_cli_allow_failure: true
+    openbao_cli_retries: "{{ openbao_status_retries }}"
+    openbao_cli_delay: "{{ openbao_status_delay }}"
+    openbao_cli_until: >-
+      {{ openbao_cli_run.stdout | default('') is match('(?s)\s*\{') and openbao_cli_run.stdout | default('') | from_json is mapping and 'initialized' in (openbao_cli_run.stdout | from_json) }}
 
 - name: Stop when the init status cannot be read
   ansible.builtin.fail:

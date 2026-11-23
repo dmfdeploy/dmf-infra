@@ -17,9 +17,27 @@ import pathlib
 import re
 import unittest
 
+import yaml
+
 TASKS = (pathlib.Path(__file__).resolve().parent.parent / "tasks/main.yml").read_text(encoding="utf-8")
 CODE = "\n".join(line for line in TASKS.splitlines() if not line.lstrip().startswith("#"))
-OPERATOR_STDIN = 'stdin: "{{ _awx_openbao_operator_client_token }}\\n'
+OPERATOR_TOKEN = "{{ _awx_openbao_operator_client_token }}"
+PARSED = yaml.safe_load(TASKS)
+
+
+def walk(items):
+    """Yield every task, including those inside block, rescue and always."""
+    for item in items or []:
+        yield item
+        for key in ("block", "rescue", "always"):
+            yield from walk(item.get(key))
+
+
+def openbao_cli_calls():
+    return [
+        t for t in walk(PARSED)
+        if str(t.get("ansible.builtin.include_role", {}).get("name", "")) == "common/openbao-cli"
+    ]
 
 
 def tasks(text):
@@ -48,12 +66,18 @@ class NoEsoApproleLoginTest(unittest.TestCase):
         # break the writes.
         self.assertNotRegex(CODE, r"token\s+revoke")
 
-    def test_every_openbao_read_sends_the_operator_token_on_stdin(self):
-        reads = [(name, body) for name, body in tasks(CODE) if "IFS= read -r BAO_TOKEN" in body]
-        self.assertGreaterEqual(len(reads), 4, [name for name, _ in reads])
-        for name, body in reads:
-            with self.subTest(task=name):
-                self.assertIn(OPERATOR_STDIN, body)
+    def test_every_openbao_read_uses_the_operator_token(self):
+        # A call without a token is the operator login itself. Every other call must
+        # pass the operator token and no other expression.
+        calls = openbao_cli_calls()
+        with_token = [t for t in calls if "openbao_cli_token" in t["vars"]]
+        self.assertGreaterEqual(len(with_token), 4, [t["name"] for t in with_token])
+        for t in calls:
+            with self.subTest(task=t["name"]):
+                if "openbao_cli_token" in t["vars"]:
+                    self.assertEqual(t["vars"]["openbao_cli_token"].strip(), OPERATOR_TOKEN)
+                else:
+                    self.assertIn("auth/userpass/login/", str(t["vars"]["openbao_cli_calls"]))
 
     def test_the_source_reads_need_the_operator_login(self):
         assertion = next(body for name, body in tasks(CODE) if name == "Assert the operator login is available for AWX source-token reads")

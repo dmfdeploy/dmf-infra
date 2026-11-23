@@ -91,20 +91,17 @@
     # ==================================================================
 
     - name: Read existing NetBox token from OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -format=json secret/apps/netbox/runtime'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _cms_netbox_openbao_check
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read the existing NetBox token
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, secret/apps/netbox/runtime]
+        openbao_cli_register: _cms_netbox_openbao_check
+        openbao_cli_allow_failure: true
 
     - name: Parse existing NetBox token from OpenBao
       ansible.builtin.set_fact:
@@ -232,37 +229,34 @@
       no_log: true
 
     - name: Persist NetBox token to OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv patch secret/apps/netbox/runtime -'
-        stdin: "{{ _openbao_session_client_token }}\n{{ {'cms_api_token': _cms_netbox_svc_token} | to_json }}\n"
-      register: _cms_netbox_openbao_write
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: merge the NetBox token into the runtime secret
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, patch, secret/apps/netbox/runtime, "-"]
+            input: "{{ {'cms_api_token': _cms_netbox_svc_token} | to_json }}"
+        openbao_cli_register: _cms_netbox_openbao_write
+        openbao_cli_changed: true
       when:
         - _cms_netbox_svc_token is defined
         - not _cms_netbox_token_recovered | default(false) | bool
-      no_log: true
 
     - name: Verify NetBox token was persisted to OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -format=json secret/apps/netbox/runtime'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _cms_netbox_openbao_verify
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read back the NetBox token
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, secret/apps/netbox/runtime]
+        openbao_cli_register: _cms_netbox_openbao_verify
+        openbao_cli_allow_failure: true
       when: _cms_netbox_svc_token is defined
 
     - name: Assert NetBox token read back from OpenBao
@@ -341,20 +335,17 @@
       no_log: true
 
     - name: Read existing Forgejo token from OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -format=json secret/apps/forgejo/runtime'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _cms_forgejo_openbao_check
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read the existing Forgejo token
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, secret/apps/forgejo/runtime]
+        openbao_cli_register: _cms_forgejo_openbao_check
+        openbao_cli_allow_failure: true
 
     - name: Parse existing Forgejo token from OpenBao
       ansible.builtin.set_fact:
@@ -549,37 +540,34 @@
       no_log: true
 
     - name: Persist Forgejo token to OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv patch secret/apps/forgejo/runtime -'
-        stdin: "{{ _openbao_session_client_token }}\n{{ {'cms_api_token': _cms_forgejo_svc_token} | to_json }}\n"
-      register: _cms_forgejo_openbao_write
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: merge the Forgejo token into the runtime secret
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, patch, secret/apps/forgejo/runtime, "-"]
+            input: "{{ {'cms_api_token': _cms_forgejo_svc_token} | to_json }}"
+        openbao_cli_register: _cms_forgejo_openbao_write
+        openbao_cli_changed: true
       when:
         - _cms_forgejo_svc_token is defined
         - not _cms_forgejo_token_recovered | default(false) | bool
-      no_log: true
 
     - name: Verify Forgejo token was persisted to OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -format=json secret/apps/forgejo/runtime'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _cms_forgejo_openbao_verify
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read back the Forgejo token
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, secret/apps/forgejo/runtime]
+        openbao_cli_register: _cms_forgejo_openbao_verify
+        openbao_cli_allow_failure: true
       when: _cms_forgejo_svc_token is defined
 
     - name: Assert Forgejo token read back from OpenBao

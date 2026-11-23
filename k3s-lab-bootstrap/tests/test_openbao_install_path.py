@@ -70,7 +70,10 @@ class FreshInstallPathTest(unittest.TestCase):
         # judged by its value and not by its text.
         tasks = yaml.safe_load((ROLE / "tasks/main.yml").read_text())
         upsert = next(t for t in tasks if t.get("name") == "Upsert operator userpass user")
-        stdin = upsert["ansible.builtin.shell"]["stdin"]
+        # The shared command role sends the token and the words on stdin ahead of `input`,
+        # so the JSON body of the user is the `input` of the one call.
+        call, = upsert["vars"]["openbao_cli_calls"]
+        stdin = call["input"]
         work = Path(tempfile.mkdtemp(prefix="install-path-render-"))
         self.addCleanup(__import__("shutil").rmtree, work, True)
         playbook = work / "render.yml"
@@ -82,7 +85,7 @@ class FreshInstallPathTest(unittest.TestCase):
         }]))
         subprocess.run(["ansible-playbook", str(playbook)], check=True, capture_output=True, cwd=ROOT)
 
-        body = json.loads((work / "stdin.txt").read_text().split("\n", 1)[1])
+        body = json.loads((work / "stdin.txt").read_text())
 
         self.assertEqual(body["token_policies"], "app-admin-writer,app-runtime-writer")
 

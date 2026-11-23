@@ -28,6 +28,12 @@ included. The command must not expand a value that it read from stdin into the
 arguments of another program. It sends the value on stdin to that program, as a JSON
 body.
 
+Most OpenBao calls now go through the shared role `common/openbao-cli` (an `include_role`
+task with a list `openbao_cli_calls`). Its command text is fixed, so the text scans above find
+no secret there. The checks on `include_role` tasks below read the tasks as YAML instead: no
+secret-bearing template in the `args` of any call, and a secret only in `openbao_cli_token` and
+in the `input` of a call.
+
 These checks read task files as text with patterns, so they guard against the common
 ways of writing these defects, not every possible one. A secret under an unusual
 variable name, a key written in quotes, or a template split across lines can pass them.
@@ -448,14 +454,18 @@ class OpenBaoNoSecretArgvTest(unittest.TestCase):
 
     def test_unseal_goes_through_the_api_with_a_json_body_on_stdin(self):
         text = (ROOT / "roles/stack/operator/openbao/tasks/unseal-pod.yml").read_text()
-        # The API form: a JSON body with a `key` field on stdin of `bao write`.
-        self.assertIn("bao write -format=json sys/unseal -", text)
-        self.assertIn('{\\"key\\":\\"%s\\"}', text)
-        self.assertIn('stdin: "{{ item }}\\n"', text)
+        # The API form: a JSON body with a `key` field is the `input` of `bao write sys/unseal -`,
+        # and the shared role sends it on stdin. The share is the loop item, never an argument.
+        self.assertIn("'args': ['write', '-format=json', 'sys/unseal', '-']", text)
+        self.assertIn("'input': {'key': item} | to_json", text)
         self.assertNotIn("OPENBAO_SHARE", text)
         # Not the positional command, which takes `-` as the key itself.
         code = "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#"))
         self.assertNotRegex(code, r"bao\s+operator\s+unseal")
+        # The args of the unseal call hold no template, so no share is an argument.
+        args = re.search(r"'args': (\[[^\]]*\])", code).group(1)
+        self.assertNotIn("{{", args)
+        self.assertNotRegex(args, r"item|key")
 
     def test_no_task_in_the_role_uses_the_positional_unseal_command(self):
         # Comments may name the command. Code may not.
@@ -489,6 +499,201 @@ class OpenBaoNoSecretArgvTest(unittest.TestCase):
         self.assertLess(baseline, first_change)
         # The capability preflight is also ahead of the first change.
         self.assertLess(code.index("capabilities-check.yml"), first_change)
+
+
+def cli_include_tasks(text):
+    """Return every task of a YAML text that includes the shared OpenBao role."""
+    import yaml
+
+    found = []
+
+    def walk(items):
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            include = item.get("ansible.builtin.include_role")
+            if isinstance(include, dict) and include.get("name") == "common/openbao-cli":
+                found.append(item)
+            for key in ("block", "rescue", "always"):
+                walk(item.get(key))
+
+    data = yaml.safe_load(text)
+    walk(data if isinstance(data, list) else [])
+    return found
+
+
+def call_parts(task):
+    """Return (args word lists, input templates) of the calls of an include.
+
+    The calls are a YAML list, or one template that builds the list (as the unseal task does).
+    A template is read for its `'args': [...]` and `'input': ...` parts.
+    """
+    calls = task["vars"]["openbao_cli_calls"]
+    if isinstance(calls, list):
+        return (
+            [[str(word) for word in call["args"]] for call in calls],
+            [str(call["input"]) for call in calls if "input" in call],
+        )
+    word = re.compile(r"'([^']*)'|\"([^\"]*)\"|(\{\{.*?\}\})")
+    return (
+        [
+            [next(group for group in groups if group) for groups in word.findall(body)]
+            for body in re.findall(r"'args':\s*\[(.*?)\]", calls)
+        ],
+        re.findall(r"'input':\s*([^,}]*(?:\{[^}]*\}[^,}]*)*)", calls),
+    )
+
+
+def secret_in_call_arguments(text):
+    """Return "task: word" for a secret-bearing template in the `args` of a call."""
+    found = []
+    for task in cli_include_tasks(text):
+        words_by_call, _ = call_parts(task)
+        for words in words_by_call:
+            for word in words:
+                for expr in wide_secret_expressions(word):
+                    found.append(f"{task['name']}: {{{{ {expr} }}}}")
+    return found
+
+
+def secret_outside_token_and_input(text):
+    """Return "task: key" for a secret-bearing template in an include outside its two secret keys.
+
+    A call's `input` and `openbao_cli_token` may hold a secret. The task name, the other
+    variables, and the `args` and `item` of every call may not.
+    """
+    found = []
+    for task in cli_include_tasks(text):
+        vars_ = dict(task["vars"])
+        calls = vars_.pop("openbao_cli_calls")
+        vars_.pop("openbao_cli_token", None)
+        parts = {"name": task["name"], **{key: value for key, value in vars_.items()}}
+        if isinstance(calls, list):
+            for index, call in enumerate(calls):
+                for key, value in call.items():
+                    if key != "input":
+                        parts[f"calls[{index}].{key}"] = value
+        else:
+            # A template that builds the list: leave out each `'input': ...` part.
+            parts["calls"] = re.sub(r"'input':\s*[^,}]*(?:\{[^}]*\}[^,}]*)*", "'input': x", calls)
+        for key, value in parts.items():
+            if wide_secret_expressions(repr(value)):
+                found.append(f"{task['name']}: {key}")
+    return found
+
+
+CLI_ROLE_FILE = ROOT / "roles/common/openbao-cli/tasks/main.yml"
+
+
+def cli_role_tasks_without_no_log(text=None):
+    """Return the names of tasks of the shared role that name a secret and do not set `no_log: true`."""
+    import yaml
+
+    tasks = yaml.safe_load(text if text is not None else CLI_ROLE_FILE.read_text())
+    return [
+        task["name"]
+        for task in tasks
+        if re.search(r"openbao_cli_token|openbao_cli_call\b|openbao_cli_run|openbao_cli_stdin", repr(task))
+        and not any(key.startswith("ansible.builtin.fail") for key in task)
+        and task.get("no_log") is not True
+    ]
+
+
+def non_test_yaml_files():
+    return [
+        path for path in sorted(ROOT.rglob("*.yml"))
+        if path.relative_to(ROOT).parts[0] != "tests"
+        and "common/openbao-cli" in path.read_text()
+    ]
+
+
+INCLUDE_SAMPLE = """
+- name: Write the thing
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: write the thing
+    openbao_cli_pod: pod-0
+    openbao_cli_token: "{{ admin_token }}"
+    openbao_cli_calls:
+      - args: [write, auth/userpass/login/bob, "password=-"]
+        input: "{{ admin_password }}"
+    openbao_cli_register: _out
+"""
+
+
+class SharedRoleCallsNoSecretTest(unittest.TestCase):
+    def test_the_scan_finds_the_include_tasks(self):
+        # The count guards against a scan that reads nothing.
+        tasks = [t for path in non_test_yaml_files() for t in cli_include_tasks(path.read_text())]
+        self.assertGreater(len(tasks), 40, len(tasks))
+        names = {path.name for path in non_test_yaml_files()}
+        for expected in ("unseal-pod.yml", "data-read.yml", "kubernetes-auth-config.yml"):
+            self.assertIn(expected, names)
+
+    def test_no_secret_in_the_args_of_any_call(self):
+        found = []
+        for path in non_test_yaml_files():
+            for entry in secret_in_call_arguments(path.read_text()):
+                found.append(f"{path.relative_to(ROOT)}::{entry}")
+        self.assertEqual(found, [], "secret material in the args of a call:\n" + "\n".join(found))
+
+    def test_a_secret_is_only_in_the_token_and_the_input(self):
+        found = []
+        for path in non_test_yaml_files():
+            for entry in secret_outside_token_and_input(path.read_text()):
+                found.append(f"{path.relative_to(ROOT)}::{entry}")
+        self.assertEqual(found, [], "secret outside openbao_cli_token and input:\n" + "\n".join(found))
+
+    def test_no_shell_variable_in_a_credential_word_of_a_call(self):
+        found = []
+        for path in non_test_yaml_files():
+            for task in cli_include_tasks(path.read_text()):
+                for words in call_parts(task)[0]:
+                    for word in words:
+                        if SHELL_CREDENTIAL.search(word):
+                            found.append(f"{path.relative_to(ROOT)}::{task['name']}: {word}")
+        self.assertEqual(found, [])
+
+    def test_the_shared_role_logs_nothing_of_a_secret(self):
+        # The role's own tasks carry the token, the input and the results.
+        self.assertEqual(cli_role_tasks_without_no_log(), [])
+
+    def test_the_include_check_flags_each_form(self):
+        self.assertEqual(secret_in_call_arguments(INCLUDE_SAMPLE), [])
+        self.assertEqual(secret_outside_token_and_input(INCLUDE_SAMPLE), [])
+        in_args = INCLUDE_SAMPLE.replace('"password=-"', '"password={{ admin_password }}"')
+        self.assertEqual(len(secret_in_call_arguments(in_args)), 1)
+        in_item = INCLUDE_SAMPLE.replace('input: "{{ admin_password }}"', 'input: "{{ admin_password }}"\n        item: "{{ admin_password }}"')
+        self.assertEqual(secret_outside_token_and_input(in_item), ["Write the thing: calls[0].item"])
+        in_pod = INCLUDE_SAMPLE.replace("pod-0", "\"{{ admin_token }}\"")
+        self.assertEqual(secret_outside_token_and_input(in_pod), ["Write the thing: openbao_cli_pod"])
+        in_name = INCLUDE_SAMPLE.replace("Write the thing", "Write {{ admin_token }}", 1)
+        self.assertTrue(secret_outside_token_and_input(in_name))
+        # The template form (as the unseal task writes it).
+        template = (
+            "- name: Unseal\n  ansible.builtin.include_role:\n    name: common/openbao-cli\n  vars:\n"
+            "    openbao_cli_operation: x\n    openbao_cli_pod: p\n    openbao_cli_register: r\n"
+            "    openbao_cli_calls: >-\n      {%- set out = [] -%}\n"
+            "      {%- set _ = out.append({'item': item, 'args': ['write', 'sys/unseal', '-'], 'input': {'key': item} | to_json}) -%}\n"
+            "      {{ out }}\n"
+        )
+        self.assertEqual(secret_in_call_arguments(template), [])
+        self.assertEqual(
+            secret_in_call_arguments(template.replace("'sys/unseal', '-'", "'sys/unseal', '{{ unseal_key }}'")),
+            ["Unseal: {{ unseal_key }}"],
+        )
+
+    def test_the_no_log_check_flags_a_missing_no_log(self):
+        text = CLI_ROLE_FILE.read_text()
+        # Dropping no_log from the command task, then from the judge task, each shows up by name.
+        without_command = text.replace("  ignore_errors: true\n  no_log: true\n", "  ignore_errors: true\n", 1)
+        self.assertEqual(cli_role_tasks_without_no_log(without_command), ["Run the OpenBao command: {{ openbao_cli_operation }}"])
+        without_check = text.replace("    fail_msg: >-", "    fail_msg: >-", 1).replace(
+            "      A token or an argument must not hold a newline.\n  no_log: true\n",
+            "      A token or an argument must not hold a newline.\n", 1,
+        )
+        self.assertEqual(len(cli_role_tasks_without_no_log(without_check)), 1)
 
 
 # Entries that stay for good, as "path::task name". Each is a different case and has its own

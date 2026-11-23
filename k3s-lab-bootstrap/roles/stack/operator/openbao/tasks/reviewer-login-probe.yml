@@ -20,23 +20,18 @@
 # no stored token and passes. A server that is still sealed, or whose status cannot be
 # read, stops the play: the check does not guess.
 - name: Read the init status of openbao-0
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - openbao-0
-      - --
-      - bao
-      - status
-      - -format=json
-  register: _openbao_reviewer_guard_status
-  changed_when: false
-  failed_when: false
-  check_mode: false
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+    apply:
+      check_mode: false
+  vars:
+    openbao_cli_operation: read the init status of openbao-0
+    openbao_cli_pod: openbao-0
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [status, -format=json]
+    openbao_cli_register: _openbao_reviewer_guard_status
+    openbao_cli_allow_failure: true
 
 - name: Stop when the init status cannot be read
   ansible.builtin.fail:
@@ -106,30 +101,22 @@
         _openbao_reviewer_guard_jwt.rc | default(1) != 0
         or _openbao_reviewer_guard_jwt.stdout | default('') | trim | length == 0
 
-    # The role name and the JWT are the two stdin lines of a fixed program. The
-    # JWT is the last line, so `jwt=-` reads it as the whole of what remains.
+    # The shared role sends the JWT on stdin, so `jwt=-` reads it as the whole input,
+    # with no trailing newline.
     - name: Log in to the Kubernetes auth mount inside openbao-0
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ openbao_namespace }}"
-          - exec
-          - -i
-          - openbao-0
-          - --
-          - sh
-          - -c
-          - 'IFS= read -r PROBE_ROLE; bao write -format=json auth/kubernetes/login role="$PROBE_ROLE" jwt=-'
-        stdin: "{{ openbao_revoker_k8s_role }}\n{{ _openbao_reviewer_guard_jwt.stdout | trim }}"
-        stdin_add_newline: false
-      register: _openbao_reviewer_guard_login
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          check_mode: false
+      vars:
+        openbao_cli_operation: log in to the Kubernetes auth mount
+        openbao_cli_pod: openbao-0
+        openbao_cli_namespace: "{{ openbao_namespace }}"
+        openbao_cli_calls:
+          - args: [write, -format=json, auth/kubernetes/login, "role={{ openbao_revoker_k8s_role }}", "jwt=-"]
+            input: "{{ _openbao_reviewer_guard_jwt.stdout | trim }}"
+        openbao_cli_register: _openbao_reviewer_guard_login
+        openbao_cli_allow_failure: true
 
     - name: Stop when the mount's reviewer cannot validate a login
       ansible.builtin.fail:
@@ -184,26 +171,19 @@
       no_log: true
 
     - name: Revoke the client token of the login
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ openbao_namespace }}"
-          - exec
-          - -i
-          - openbao-0
-          - --
-          - sh
-          - -c
-          - 'IFS= read -r BAO_TOKEN; export BAO_TOKEN; bao token revoke -self'
-        stdin: "{{ _openbao_reviewer_guard_client_token }}\n"
-      register: _openbao_reviewer_guard_revoke
-      changed_when: false
-      failed_when: false
-      check_mode: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          check_mode: false
+      vars:
+        openbao_cli_operation: revoke the client token of the login
+        openbao_cli_pod: openbao-0
+        openbao_cli_namespace: "{{ openbao_namespace }}"
+        openbao_cli_token: "{{ _openbao_reviewer_guard_client_token }}"
+        openbao_cli_calls:
+          - args: [token, revoke, -self]
+        openbao_cli_register: _openbao_reviewer_guard_revoke
+        openbao_cli_allow_failure: true
       when: _openbao_reviewer_guard_client_token | length > 0
 
     - name: Stop when the client token of the login stays live

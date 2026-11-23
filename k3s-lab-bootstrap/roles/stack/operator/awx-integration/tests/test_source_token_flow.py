@@ -12,7 +12,7 @@ For each combination it checks four properties:
 1. A read runs exactly when a token it fetches is missing. The catalog and purge
    tokens come from the NetBox read, and only when the break-glass file is set.
 2. When the play reaches a read, the break-glass file, the pod lookup and the operator
-   login all ran first, and the read sends the operator token on stdin.
+   login all ran first, and the read passes the operator token as the call's token.
 3. When no token is missing, no read runs and no set_fact task overwrites a supplied
    token.
 4. Without the break-glass file, a missing token stops the play at the assertion before
@@ -111,13 +111,17 @@ def run_play(file, netbox, forgejo, catalog, purge):
         after_login["_awx_openbao_operator_client_token"] = OPERATOR_TOKEN
     for name in (NETBOX_READ, FORGEJO_READ):
         ran[name] = not ran["assert_fails"] and holds(task(name).get("when"), after_login)
-        stdin = module_args(task(name))["stdin"]
+        read_vars = task(name)["vars"]
         values = dict(after_login, **OTHER_TOKENS)
         values.update(dict(SECRET_PATHS.values()))
         try:
-            ran[name + " stdin"] = ENV.from_string(stdin).render(**values)
+            ran[name + " token"] = ENV.from_string(read_vars["openbao_cli_token"]).render(**values)
+            ran[name + " words"] = [
+                ENV.from_string(str(word)).render(**values) for word in read_vars["openbao_cli_calls"][0]["args"]
+            ]
         except jinja2.UndefinedError:
-            ran[name + " stdin"] = None
+            ran[name + " token"] = None
+            ran[name + " words"] = None
     # The set_fact tasks run only when the read registered a result.
     with_result = dict(after_login)
     with_result["_awx_openbao_netbox_raw"] = {"stdout": "{}"}
@@ -161,24 +165,35 @@ class SourceTokenFlowTest(unittest.TestCase):
                     for before in (BREAKGLASS_LOAD, OPERATOR_CREDENTIALS, POD_FACT, OPERATOR_LOGIN):
                         self.assertTrue(ran[before], f"{before} did not run before {name}")
 
-    def test_a_read_that_runs_sends_the_operator_token_first_on_stdin(self):
+    def test_a_read_that_runs_passes_the_operator_token_and_the_secret_path(self):
         for label, _, ran in self.combinations():
             for name in (NETBOX_READ, FORGEJO_READ):
                 if not ran[name]:
                     continue
                 with self.subTest(label, read=name):
                     secret_path = SECRET_PATHS[name][1]
-                    self.assertEqual(ran[name + " stdin"], OPERATOR_TOKEN + "\n" + secret_path + "\n")
+                    self.assertEqual(ran[name + " token"], OPERATOR_TOKEN)
+                    self.assertEqual(ran[name + " words"][-1], secret_path)
 
-    def test_a_read_takes_the_token_and_then_the_path_from_stdin_and_nothing_from_its_arguments(self):
+    def test_a_read_takes_the_token_from_the_token_variable_and_nothing_secret_from_its_arguments(self):
+        # The shared role sends the token, then the words, on stdin to a fixed program
+        # (tests/test_openbao_commands_use_shared_task.py). Here the call must hand the
+        # token over as `openbao_cli_token` and keep it out of every argument word.
         for name in (NETBOX_READ, FORGEJO_READ):
             with self.subTest(read=name):
-                argv = module_args(task(name))["argv"]
-                program = argv[argv.index("-c") + 1]
-                self.assertLess(program.index("read -r BAO_TOKEN"), program.index("read -r SECRET_PATH"))
-                self.assertEqual(argv[-1], program, "no value may follow the program in argv")
-                self.assertNotIn("{{", program)
-                self.assertFalse([a for a in argv if "token" in a.lower() and "{{" in a])
+                read_vars = task(name)["vars"]
+                self.assertEqual(read_vars["openbao_cli_token"].strip(), "{{ _awx_openbao_operator_client_token }}")
+                calls = read_vars["openbao_cli_calls"]
+                self.assertEqual(len(calls), 1)
+                words = [str(w) for w in calls[0]["args"]]
+                self.assertEqual(words[-1], "{{ %s }}" % SECRET_PATHS[name][0])
+                self.assertFalse([w for w in words if "token" in w.lower()])
+                self.assertNotIn("input", calls[0])
+        for label, _, ran in self.combinations():
+            for name in (NETBOX_READ, FORGEJO_READ):
+                if ran[name]:
+                    with self.subTest(label, read=name):
+                        self.assertNotIn(OPERATOR_TOKEN, "".join(ran[name + " words"]))
 
     def test_supplied_tokens_skip_the_reads_and_are_kept(self):
         for label, (file, netbox, forgejo, catalog, purge), ran in self.combinations():
