@@ -2055,7 +2055,7 @@
   # so we see EVERY failing entry, not just the first.
   no_log: true
 
-- name: Surface AWX catalog JT create failures (per-entry response body)
+- name: Surface AWX catalog JT create failures (per-entry error fields)
   ansible.builtin.debug:
     msg: |
       {% for r in awx_catalog_jt_created.results %}
@@ -2067,7 +2067,13 @@
       JT '{{ r.jt_item.name }}': FAILED status={{ r.status | default('no-response') }}
         playbook    : {{ r.jt_item.playbook }}
         project     : {{ r.jt_item.project_name }}
-        response    : {{ r.json | default(r.content | default('(no body)')) }}
+      {% if r.json is defined and r.json is mapping %}
+      {% for field, problem in r.json.items() %}
+        error       : {{ field }}: {{ (problem if problem is string else (problem | map('string') | join('; ')) if (problem is iterable and problem is not mapping) else '(not a message list)') if field in ['__all__', 'detail', 'non_field_errors', 'name', 'description', 'job_type', 'inventory', 'project', 'playbook', 'execution_environment', 'instance_groups', 'ask_variables_on_launch'] else '(message withheld, it may echo request inputs)' }}
+      {% endfor %}
+      {% else %}
+        error       : the response has no JSON error body ({{ r.content | default('') | length }} bytes withheld)
+      {% endif %}
         msg         : {{ r.msg | default('') }}
       {% endif %}
       {% endfor %}
@@ -2989,7 +2995,7 @@
   # so we see EVERY failing entry, not just the first.
   no_log: true
 
-- name: Surface AWX infra JT create failures (per-entry response body)
+- name: Surface AWX infra JT create failures (per-entry error fields)
   ansible.builtin.debug:
     msg: |
       {% for r in awx_infra_jt_created.results %}
@@ -3001,7 +3007,13 @@
       JT '{{ r.jt_item.name }}': FAILED status={{ r.status | default('no-response') }}
         playbook    : {{ r.jt_item.playbook }}
         project     : {{ r.jt_item.project_name }}
-        response    : {{ r.json | default(r.content | default('(no body)')) }}
+      {% if r.json is defined and r.json is mapping %}
+      {% for field, problem in r.json.items() %}
+        error       : {{ field }}: {{ (problem if problem is string else (problem | map('string') | join('; ')) if (problem is iterable and problem is not mapping) else '(not a message list)') if field in ['__all__', 'detail', 'non_field_errors', 'name', 'description', 'job_type', 'inventory', 'project', 'playbook', 'execution_environment', 'instance_groups', 'ask_variables_on_launch'] else '(message withheld, it may echo request inputs)' }}
+      {% endfor %}
+      {% else %}
+        error       : the response has no JSON error body ({{ r.content | default('') | length }} bytes withheld)
+      {% endif %}
         msg         : {{ r.msg | default('') }}
       {% endif %}
       {% endfor %}

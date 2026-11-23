@@ -194,6 +194,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_certificate_verification_stays_on.py' -v
       - name: registry and console names agree, and 321 refuses a missing local CA
         run: python3 -m unittest discover -s tests -p 'test_service_hosts_and_local_ca.py' -v
+      - name: no task loops over a no_log result without no_log
+        run: python3 -m unittest discover -s tests -p 'test_no_log_result_not_looped.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
