@@ -256,20 +256,17 @@
         openbao_session_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
 
     - name: Read current Authentik runtime secret from OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -format=json secret/apps/authentik/runtime'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _cms_authentik_runtime_secret_raw
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read the Authentik runtime secret
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, secret/apps/authentik/runtime]
+        openbao_cli_register: _cms_authentik_runtime_secret_raw
+        openbao_cli_allow_failure: true
 
     - name: Parse current Authentik runtime secret from OpenBao
       ansible.builtin.set_fact:
@@ -301,20 +298,19 @@
       no_log: true
 
     - name: Persist API token to OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          --
-          sh -c 'IFS= read -r BAO_TOKEN;
-          payload=$(cat);
-          export BAO_ADDR=https://127.0.0.1:8200;
-          export BAO_TOKEN;
-          printf %s "$payload" | bao kv put secret/apps/authentik/runtime -'
-        stdin: "{{ _openbao_session_client_token }}\n{{ _cms_authentik_runtime_secret_payload }}\n"
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: write the Authentik API token to the runtime secret
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, put, secret/apps/authentik/runtime, "-"]
+            input: "{{ _cms_authentik_runtime_secret_payload }}"
+        openbao_cli_register: _cms_authentik_runtime_secret_put
+        openbao_cli_changed: true
       when: _cms_authentik_token_data.changed | default(false) | bool
-      no_log: true
 
     - name: Build stringData for DMF Console runtime Secret patch
       ansible.builtin.set_fact:

@@ -54,63 +54,35 @@
   ansible.builtin.set_fact:
     _netbox_openbao_pod: "{{ _netbox_openbao_pod_info.resources[0].metadata.name }}"
 
-- name: Check that the login user holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(_netbox_openbao_username) is not search('[\\r\\n]')"
-    fail_msg: "_netbox_openbao_username must not contain a newline: the program reads it from stdin, one value per line."
-
 - name: Log into OpenBao with operator userpass for NetBox bootstrap writes
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ netbox_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _netbox_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r LOGIN_USER; bao write -format=json "auth/userpass/login/$LOGIN_USER" -'
-    stdin: "{{ _netbox_openbao_username }}\n{{ {'password': _netbox_openbao_password} | to_json }}\n"
-  register: _netbox_openbao_login_raw
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: log in as the operator for the NetBox bootstrap writes
+    openbao_cli_pod: "{{ _netbox_openbao_pod }}"
+    openbao_cli_namespace: "{{ netbox_openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [write, -format=json, "auth/userpass/login/{{ _netbox_openbao_username }}", "-"]
+        input: "{{ {'password': _netbox_openbao_password} | to_json }}"
+    openbao_cli_register: _netbox_openbao_login_raw
 
 - name: Extract OpenBao client token for NetBox bootstrap writes
   ansible.builtin.set_fact:
     _netbox_openbao_client_token: "{{ (_netbox_openbao_login_raw.stdout | from_json).auth.client_token }}"
   no_log: true
 
-- name: Check that the secret path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(netbox_runtime_secret_path) is not search('[\\r\\n]')"
-    fail_msg: "netbox_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
-
 - name: Read current NetBox runtime secret from OpenBao
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ netbox_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _netbox_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
-    stdin: "{{ _netbox_openbao_client_token }}\n{{ netbox_runtime_secret_path }}\n"
-  register: _netbox_runtime_secret_raw
-  changed_when: false
-  failed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the NetBox runtime secret
+    openbao_cli_pod: "{{ _netbox_openbao_pod }}"
+    openbao_cli_namespace: "{{ netbox_openbao_namespace }}"
+    openbao_cli_token: "{{ _netbox_openbao_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, get, -format=json, "{{ netbox_runtime_secret_path }}"]
+    openbao_cli_register: _netbox_runtime_secret_raw
+    openbao_cli_allow_failure: true
 
 - name: Parse current NetBox runtime secret document
   ansible.builtin.set_fact:
@@ -282,70 +254,39 @@
       }}
   no_log: true
 
-- name: Check that the secret path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(netbox_runtime_secret_path) is not search('[\\r\\n]')"
-    fail_msg: "netbox_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
-  when:
-    - _netbox_runtime_secret_data.db_password | default('') != netbox_db_password_effective
-      or _netbox_runtime_secret_data.valkey_password | default('') != netbox_valkey_password_effective
-      or _netbox_runtime_secret_data.api_token_pepper | default('') != netbox_api_token_pepper_effective
-      or _netbox_runtime_secret_data.secret_key | default('') != netbox_secret_key_effective
-      or _netbox_runtime_secret_data.superuser_api_token | default('') != netbox_superuser_api_token_effective
-
 - name: Persist NetBox runtime secret to OpenBao
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ netbox_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _netbox_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv put "$SECRET_PATH" -'
-    stdin: "{{ _netbox_openbao_client_token }}\n{{ netbox_runtime_secret_path }}\n{{ {'db_password': netbox_db_password_effective, 'valkey_password': netbox_valkey_password_effective, 'api_token_pepper': netbox_api_token_pepper_effective, 'secret_key': netbox_secret_key_effective, 'superuser_api_token': netbox_superuser_api_token_effective} | to_json }}\n"
-  register: _netbox_openbao_write_result
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: write the NetBox runtime secret
+    openbao_cli_pod: "{{ _netbox_openbao_pod }}"
+    openbao_cli_namespace: "{{ netbox_openbao_namespace }}"
+    openbao_cli_token: "{{ _netbox_openbao_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, put, "{{ netbox_runtime_secret_path }}", "-"]
+        input: "{{ {'db_password': netbox_db_password_effective, 'valkey_password': netbox_valkey_password_effective, 'api_token_pepper': netbox_api_token_pepper_effective, 'secret_key': netbox_secret_key_effective, 'superuser_api_token': netbox_superuser_api_token_effective} | to_json }}"
+    openbao_cli_register: _netbox_openbao_write_result
+    openbao_cli_changed: true
   when:
     - _netbox_runtime_secret_data.db_password | default('') != netbox_db_password_effective
       or _netbox_runtime_secret_data.valkey_password | default('') != netbox_valkey_password_effective
       or _netbox_runtime_secret_data.api_token_pepper | default('') != netbox_api_token_pepper_effective
       or _netbox_runtime_secret_data.secret_key | default('') != netbox_secret_key_effective
       or _netbox_runtime_secret_data.superuser_api_token | default('') != netbox_superuser_api_token_effective
-  no_log: true
 
 - name: Verify NetBox runtime secret was persisted to OpenBao
   block:
-    - name: Check that the secret path holds no newline
-      ansible.builtin.assert:
-        that:
-          - "(netbox_runtime_secret_path) is not search('[\\r\\n]')"
-        fail_msg: "netbox_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
-
     - name: Read back NetBox password from OpenBao
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ netbox_openbao_namespace }}"
-          - exec
-          - -i
-          - "{{ _netbox_openbao_pod }}"
-          - --
-          - sh
-          - -c
-          - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
-        stdin: "{{ _netbox_openbao_client_token }}\n{{ netbox_runtime_secret_path }}\n"
-      register: _netbox_openbao_raw
-      changed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read back the NetBox runtime secret
+        openbao_cli_pod: "{{ _netbox_openbao_pod }}"
+        openbao_cli_namespace: "{{ netbox_openbao_namespace }}"
+        openbao_cli_token: "{{ _netbox_openbao_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, "{{ netbox_runtime_secret_path }}"]
+        openbao_cli_register: _netbox_openbao_raw
 
     - name: Extract NetBox password from OpenBao JSON
       ansible.builtin.set_fact:
@@ -362,7 +303,7 @@
           what was written (values redacted). The OpenBao write succeeded but the stored value
           is inconsistent — check OpenBao policies and mount permissions.
 
-  when: _netbox_openbao_write_result is changed
+  when: _netbox_openbao_write_result is defined and _netbox_openbao_write_result is changed
 
 - name: Read NetBox OAuth client credentials from Authentik
   ansible.builtin.include_role:

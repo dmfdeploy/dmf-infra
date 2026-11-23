@@ -14,6 +14,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "lib"))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -44,6 +46,32 @@ def code(text):
 def task(text, name):
     """The text of one task, from its `- name:` line to the next one."""
     return re.split(r"(?m)^\s*- name: ", text.split(f"- name: {name}\n")[1])[0]
+
+
+def yaml_task(text, name):
+    """The parsed task with this name, wherever it sits in the file (also inside a block)."""
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if node.get("name") == name:
+                found.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(yaml.safe_load(text))
+    assert len(found) == 1, f"{len(found)} tasks named {name!r}"
+    return found[0]
+
+
+def cli_include(text, name):
+    """The (task, vars) of a task that includes the shared OpenBao role."""
+    found = yaml_task(text, name)
+    assert found["ansible.builtin.include_role"]["name"] == "common/openbao-cli", name
+    return found, found["vars"]
 
 
 class RequestDurationTests(unittest.TestCase):
@@ -89,10 +117,16 @@ class SchedulerIdentityTests(unittest.TestCase):
         self.assertLess(issuer, scheduler)
 
     def test_the_policy_file_is_the_one_the_task_loads_and_the_names_agree(self):
-        write = task(SCHEDULER, "Write the rotation scheduler policy")
-        self.assertIn("files/policies/rotation-scheduler.hcl", write)
+        # The role runs the call, so a file lookup in the call would look in the shared role:
+        # a task before it reads the file into a fact, and the write task sends that fact.
+        read = yaml_task(SCHEDULER, "Read the rotation scheduler policy")
+        _, write = cli_include(SCHEDULER, "Write the rotation scheduler policy")
+        loaded = read["ansible.builtin.set_fact"]["_openbao_policy_text_rotation_scheduler"]
+        self.assertIn("files/policies/rotation-scheduler.hcl", loaded)
         self.assertTrue((OPENBAO_ROLE / "files/policies/rotation-scheduler.hcl").is_file())
-        self.assertIn("bao policy write {{ openbao_rotation_scheduler_policy_name }} -", write)
+        (call,) = write["openbao_cli_calls"]
+        self.assertEqual(call["args"], ["policy", "write", "{{ openbao_rotation_scheduler_policy_name }}", "-"])
+        self.assertEqual(call["input"], "{{ _openbao_policy_text_rotation_scheduler }}\n")
         names = {default(n) for n in (
             "openbao_rotation_scheduler_service_account", "openbao_rotation_scheduler_k8s_role",
             "openbao_rotation_scheduler_policy_name",
@@ -100,14 +134,26 @@ class SchedulerIdentityTests(unittest.TestCase):
         self.assertEqual(names, {rotation.SCHEDULER_ROLE})
 
     def test_the_policy_reaches_openbao_on_stdin_and_the_task_logs_nothing(self):
-        body = task(SCHEDULER, "Write the rotation scheduler policy")
-        self.assertIn("no_log: true", body)
-        self.assertRegex(body, r"(?m)^\s+stdin: \"\{\{ \w+ \}\}\\n")
-        self.assertNotRegex(body, r"(?m)^\s+environment:")
-        role = (OPENBAO_ROLE / "tasks/kubernetes-auth-role.yml").read_text(encoding="utf-8")
-        self.assertIn("no_log: true", role)
-        self.assertRegex(role, r"(?m)^\s+stdin: \"\{\{ openbao_k8s_auth_token \}\}\\n\{\{ \{")
-        self.assertNotRegex(role, r"(?m)^\s+environment:")
+        # The shared role sends `input` and the token on stdin, logs nothing and keeps
+        # both out of the program text (tests/test_openbao_commands_use_shared_task.py).
+        # Here: the callers pass the policy and the request body as `input`, the token as
+        # `openbao_cli_token`, and neither in `args`.
+        task_, write = cli_include(SCHEDULER, "Write the rotation scheduler policy")
+        self.assertEqual(write["openbao_cli_token"], "{{ _openbao_policy_apply_token }}")
+        self.assertNotIn("environment", task_)
+        (call,) = write["openbao_cli_calls"]
+        self.assertNotIn("_openbao_policy_text", str(call["args"]))
+        self.assertNotIn("token", str(call["args"]))
+        role_task, role = cli_include(
+            (OPENBAO_ROLE / "tasks/kubernetes-auth-role.yml").read_text(encoding="utf-8"),
+            "Write the Kubernetes-auth role {{ openbao_k8s_auth_role.name }}",
+        )
+        self.assertEqual(role["openbao_cli_token"], "{{ openbao_k8s_auth_token }}")
+        self.assertNotIn("environment", role_task)
+        (role_call,) = role["openbao_cli_calls"]
+        self.assertEqual(role_call["args"][-1], "-")
+        self.assertNotIn("token", str(role_call["args"]).replace("token_", ""))
+        self.assertIn("to_json", role_call["input"])
 
     def test_the_kubernetes_auth_role_is_written_on_a_fresh_install_with_the_shared_body(self):
         body = task(SCHEDULER, "Write the rotation scheduler Kubernetes-auth role")
@@ -193,10 +239,11 @@ class RotationPlaybookTests(unittest.TestCase):
 
 
 # The task list that playbook 110 ran before the switch existed, with its four
-# leading spaces removed, as it is in the legacy file. The two OpenBao tasks send
-# their secrets on stdin and send the userpass name or secret path to `sh -c` on stdin
-# as well; the rest is unchanged.
-LEGACY_BODY_SHA256 = "a663f10a50422de4bce1215a686a0eeaa0eb9764e388b1ece84a1a83e79211ab"
+# leading spaces removed, as it is in the legacy file. The two OpenBao calls (the userpass
+# login and the new secret_id) are includes of the shared OpenBao role, and the assert on a
+# newline in the login name is gone because that role refuses a newline in any value; the
+# rest is unchanged.
+LEGACY_BODY_SHA256 = "2447573911e96dddc3b7ee950e74d99638094540ee9a19f49f7c62d33cf61a10"
 LEGACY_HEADER_END = "Everything below this comment is the old task list.\n"
 SWITCH_ON = "approle_rotation_engine_enabled | default(false) | bool"
 
@@ -252,11 +299,14 @@ class VerifierTests(unittest.TestCase):
         self.assertIn("- name: Request a JWT for the rotation scheduler ServiceAccount", VERIFY)
         self.assertIn("- name: Log in as the rotation scheduler", VERIFY)
         self.assertIn("'rotation-scheduler': _verify_token_rotation_scheduler", VERIFY)
-        login = task(VERIFY, "Log in as the rotation scheduler")
-        self.assertIn("jwt=-", login)
-        self.assertIn(r'stdin: "{{ verify_rotation_scheduler_k8s_role }}\n{{ _verify_scheduler_jwt.stdout | trim }}"', login)
-        self.assertIn("stdin_add_newline: false", login)
-        self.assertNotRegex(login, r"(?m)^\s+environment:")
+        login_task, login = cli_include(VERIFY, "Log in as the rotation scheduler")
+        (call,) = login["openbao_cli_calls"]
+        # The JWT is the login's secret: it goes in as `input` for `jwt=-`, never as a word.
+        self.assertIn("jwt=-", call["args"])
+        self.assertEqual(call["input"], "{{ _verify_scheduler_jwt.stdout | trim }}")
+        self.assertNotIn("_verify_scheduler_jwt", str(call["args"]))
+        self.assertNotIn("openbao_cli_token", login)
+        self.assertNotIn("environment", login_task)
 
     def test_the_negative_probes_cover_every_required_class(self):
         denied = {path for path, expected in self.PROBES if expected == "deny"}
@@ -282,9 +332,10 @@ class VerifierTests(unittest.TestCase):
 
     def test_the_login_and_probes_run_only_when_the_scheduler_exists_or_the_switch_is_on(self):
         self.assertIn("failed_when: false", task(VERIFY, "Request a JWT for the rotation scheduler ServiceAccount"))
-        login = task(VERIFY, "Log in as the rotation scheduler")
-        self.assertIn("failed_when: false", login)
-        self.assertIn("when: _verify_scheduler_jwt.rc == 0", login)
+        login_task, login = cli_include(VERIFY, "Log in as the rotation scheduler")
+        self.assertIs(login["openbao_cli_allow_failure"], True)
+        self.assertEqual(login["openbao_cli_register"], "_verify_scheduler_login")
+        self.assertEqual(login_task["when"], "_verify_scheduler_jwt.rc == 0")
         ready = task(VERIFY, "Work out whether the rotation scheduler is set up")
         self.assertIn("approle_rotation_engine_enabled | default(false) | bool", ready)
         self.assertIn("'could not be found'", ready)
@@ -302,7 +353,15 @@ class VerifierTests(unittest.TestCase):
     def test_every_probe_loop_and_the_summary_use_the_chosen_probes(self):
         self.assertNotIn("loop: \"{{ verify_probes", code(VERIFY))
         self.assertNotRegex(code(VERIFY), r"for p in verify_probes|verify_probes \| length")
-        self.assertIn('loop: "{{ _verify_active_probes }}"', VERIFY)
+        # The token differs by identity, so the probes run as one include per identity of the
+        # chosen probes, and the results are put back in the order of the chosen probes.
+        probe_task, probe = cli_include(VERIFY, "Probe capability matrix")
+        self.assertEqual(probe_task["loop"], "{{ _verify_active_probes | map(attribute='identity') | unique | list }}")
+        self.assertIn("for p in _verify_active_probes", probe["openbao_cli_calls"])
+        collect = yaml_task(VERIFY, "Collect the probe results in probe order")
+        self.assertIn("for p in _verify_active_probes", collect["ansible.builtin.set_fact"]["_verify_probe_results"]["results"])
+        caps = yaml_task(VERIFY, "Build per-probe capability lists")
+        self.assertEqual(caps["loop"], "{{ _verify_probe_results.results }}")
         self.assertIn("loop: \"{{ _verify_active_probes | zip(_verify_probe_caps_list) | list }}\"", VERIFY)
 
     def test_the_verifier_defaults_match_the_role_defaults(self):

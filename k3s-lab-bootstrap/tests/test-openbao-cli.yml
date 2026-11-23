@@ -1,0 +1,196 @@
+---
+# Test of the shared OpenBao command task (roles/common/openbao-cli) against the fake
+# kubectl and the stub bao in tests/fixtures/capture-bao. The stub records the arguments,
+# the standard input and the token that the program passed to `bao`.
+#
+# The play checks that:
+#   - a token, words and a body that hold `$` and `'` arrive byte for byte, in order;
+#   - no value is part of the arguments of kubectl;
+#   - a call without a token gives `bao` no token;
+#   - a non-zero exit code fails the caller with a message that names the operation and
+#     holds no secret, unless the caller allows it or tolerates the stderr text;
+#   - an empty required output fails the caller;
+#   - a token or a word that holds a line break is refused before kubectl runs.
+#
+# Run locally, from k3s-lab-bootstrap:
+#   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-cli.yml
+- name: Test - the shared OpenBao command task
+  hosts: localhost
+  gather_facts: false
+  connection: local
+
+  vars:
+    literal_token: "tok$HOME'1"
+    literal_word: "key=$HOME/it's"
+    literal_body: "{\"password\": \"pa$HOME'ss\"}\n"
+    env_stub:
+      FAKE_STATE: "{{ _state.path | default('') }}"
+      FAKE_EXEC_STUB_DIR: "{{ playbook_dir }}/fixtures/capture-bao"
+      STUB_CAPTURE: "{{ _state.path | default('') }}/capture"
+
+  tasks:
+    - name: Make a state directory for the fake cluster
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: openbao-cli-
+      register: _state
+      changed_when: false
+
+    - name: Make the capture directory
+      ansible.builtin.file:
+        path: "{{ _state.path }}/capture"
+        state: directory
+        mode: "0700"
+      changed_when: false
+
+    - name: Run one call with a token, two words and a body
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ env_stub }}"
+      vars:
+        openbao_cli_operation: write a probe value
+        openbao_cli_pod: openbao-0
+        openbao_cli_token: "{{ literal_token }}"
+        openbao_cli_register: _probe
+        openbao_cli_calls:
+          - args: [write, "{{ literal_word }}", "-"]
+            input: "{{ literal_body }}"
+
+    - name: Run one call without a token
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ env_stub }}"
+      vars:
+        openbao_cli_operation: read the status
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _no_token
+        openbao_cli_calls:
+          - args: [status, -format=json]
+
+    - name: Read what the stub saw
+      ansible.builtin.slurp:
+        src: "{{ _state.path }}/capture/{{ item }}"
+      loop: [argv-1, stdin-1, token-1, argv-2, token-2]
+      register: _seen
+      changed_when: false
+
+    - name: Check that every value arrived unchanged and nothing reached kubectl arguments
+      ansible.builtin.assert:
+        that:
+          - (_seen.results[0].content | b64decode) == 'write\n' ~ literal_word ~ '\n-\n'
+          - (_seen.results[1].content | b64decode) == literal_body
+          - (_seen.results[2].content | b64decode) == literal_token
+          - (_seen.results[4].content | b64decode) == ''
+          - _probe.rc == 0
+          - _probe.stdout == '{}'
+          - _probe.results | length == 1
+          - lookup('ansible.builtin.file', _state.path ~ '/kubectl-argv.log') is not search('tok|pa\$HOME|it.s')
+
+    - name: Run a failing call and expect the play to stop
+      block:
+        - name: Fail with exit code 3 through the shared task
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+            apply:
+              environment: "{{ env_stub | combine({'FAKE_EXEC_STUB_DIR': playbook_dir ~ '/fixtures/fake-bao'}) }}"
+          vars:
+            openbao_cli_operation: fail on purpose
+            openbao_cli_pod: openbao-0
+            openbao_cli_token: "{{ literal_token }}"
+            openbao_cli_register: _failing
+            openbao_cli_calls:
+              - args: [no-such-subcommand]
+        - name: Fail the test when the shared task did not stop
+          ansible.builtin.fail:
+            msg: The shared task did not fail on a non-zero exit code.
+      rescue:
+        - name: Check that the message names the operation and holds no secret
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('fail on purpose')
+              - ansible_failed_result.msg is not search('tok')
+              - ansible_failed_result.msg is not search('The shared task did not fail')
+
+    - name: Allow the failure and read the exit code
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ env_stub | combine({'FAKE_EXEC_STUB_DIR': playbook_dir ~ '/fixtures/fake-bao'}) }}"
+      vars:
+        openbao_cli_operation: allow a failure
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _allowed
+        openbao_cli_allow_failure: true
+        openbao_cli_calls:
+          - args: [no-such-subcommand]
+
+    - name: Check that the caller sees the failure
+      ansible.builtin.assert:
+        that:
+          - _allowed.rc != 0
+
+    - name: Retry until the stub answers with output
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          environment: "{{ env_stub }}"
+      vars:
+        openbao_cli_operation: retry a status read
+        openbao_cli_pod: openbao-0
+        openbao_cli_register: _retried
+        openbao_cli_retries: 2
+        openbao_cli_delay: 0
+        openbao_cli_until: "{{ openbao_cli_run.stdout is match('(?s)\\s*[{]') }}"
+        openbao_cli_calls:
+          - args: [status]
+
+    - name: Check that the retry condition ran
+      ansible.builtin.assert:
+        that:
+          - _retried.stdout == '{}'
+
+    - name: Refuse an empty output when output is required
+      block:
+        - name: Run a call that prints nothing
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+            apply:
+              environment: "{{ env_stub | combine({'FAKE_EXEC_STUB_DIR': playbook_dir ~ '/fixtures/empty-bao'}) }}"
+          vars:
+            openbao_cli_operation: need output
+            openbao_cli_pod: openbao-0
+            openbao_cli_register: _empty
+            openbao_cli_require_output: true
+            openbao_cli_calls:
+              - args: [status]
+        - name: Fail the test when the shared task did not stop
+          ansible.builtin.fail:
+            msg: The shared task accepted an empty output.
+      rescue:
+        - name: Check the reason
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('need output')
+              - ansible_failed_result.msg is search('empty output')
+
+    - name: Refuse a word with a line break before kubectl runs
+      block:
+        - name: Run a call with a bad word
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: bad word
+            openbao_cli_pod: openbao-0
+            openbao_cli_register: _bad
+            openbao_cli_calls:
+              - args: ["a\nb"]
+        - name: Fail the test when the shared task did not stop
+          ansible.builtin.fail:
+            msg: The shared task accepted a word with a line break.
+      rescue:
+        - name: Check that the input check stopped it
+          ansible.builtin.assert:
+            that:
+              - ansible_failed_result.msg is search('must not hold a newline')

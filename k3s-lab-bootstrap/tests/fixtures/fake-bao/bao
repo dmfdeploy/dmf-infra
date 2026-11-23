@@ -438,8 +438,9 @@ field() { # field NAME ARGS...: the value of the NAME=value argument
 }
 
 # TLS (FAKE_TLS_MODEL set): the server answers over TLS with the certificate in
-# $state/served-POD, and the client verifies it against the file that BAO_CACERT names
-# (the pod's own environment, state file pod-cacert-POD, when the call sets none). The
+# $state/served-POD, and the client verifies it against the file that the -ca-cert flag
+# or BAO_CACERT names (the pod's own environment, state file pod-cacert-POD, when the
+# call sets none). The
 # file holds what the kubelet projects from k8s/Secret-openbao-tls.json. A certificate
 # verifies against a CA file that holds it, or the CA that the fake kubernetes.core wrote
 # into its text ("|issuer=" followed by the CA's identity, its text up to a "#"). A
@@ -452,7 +453,10 @@ tls_ok() {
   [ -n "${FAKE_TLS_MODEL:-}" ] || return 0
   local served cafile bundle
   served="$(cat "$state/served-$pod" 2>/dev/null || projected_text tls.crt)"
-  cafile="${BAO_CACERT:-$(cat "$state/pod-cacert-$pod" 2>/dev/null || echo /openbao/config/tls/ca.crt)}"
+  # The -ca-cert flag wins over BAO_CACERT, as in the real client.
+  cafile=""
+  for arg in "$@"; do case "$arg" in -ca-cert=*) cafile="${arg#-ca-cert=}" ;; esac; done
+  [ -n "$cafile" ] || cafile="${BAO_CACERT:-$(cat "$state/pod-cacert-$pod" 2>/dev/null || echo /openbao/config/tls/ca.crt)}"
   bundle="$(projected_text "$(basename "$cafile")")"
   [ "$served" = "$bundle" ] || [ "${served%|issuer=${bundle%%#*}}" != "$served" ]
 }
@@ -462,7 +466,7 @@ if [ "${1:-}" = status ] && [ -n "${FAKE_STATUS_FAILS:-}" ] && [ "$(count_call s
     *) echo "$FAKE_STATUS_FAILS" >&2; exit 1 ;;
   esac
 fi
-if [ "${1:-}" = status ] && ! tls_ok; then
+if [ "${1:-}" = status ] && ! tls_ok "$@"; then
   echo 'Error checking seal status: Get "https://127.0.0.1:8200/v1/sys/seal-status": tls: failed to verify certificate: x509: certificate signed by unknown authority' >&2
   exit 1
 fi
@@ -472,7 +476,12 @@ fi
 json_out=""
 args=()
 for arg in "$@"; do
-  if [ "$arg" = -format=json ]; then json_out=1; else args+=("$arg"); fi
+  case "$arg" in
+    -format=json) json_out=1 ;;
+    # Client connection flags, read by tls_ok above and not part of the command.
+    -address=*|-ca-cert=*) ;;
+    *) args+=("$arg") ;;
+  esac
 done
 set -- ${args[@]+"${args[@]}"}
 norm="$*"

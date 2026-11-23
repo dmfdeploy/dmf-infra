@@ -77,31 +77,18 @@
   ansible.builtin.set_fact:
     _openbao_session_pod: "{{ _openbao_session_pod_info.resources[0].metadata.name }}"
 
-- name: Check that the login user holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(_openbao_session_username) is not search('[\\r\\n]')"
-    fail_msg: "_openbao_session_username must not contain a newline: the program reads it from stdin, one value per line."
-
+# The shared role sends the user name and the password JSON on stdin.
 - name: Log into OpenBao with {{ openbao_session_mode }} userpass
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_session_namespace }}"
-      - exec
-      - -i
-      - "{{ _openbao_session_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r LOGIN_USER; bao write -format=json "auth/userpass/login/$LOGIN_USER" -'
-    stdin: "{{ _openbao_session_username }}\n{{ {'password': _openbao_session_password} | to_json }}\n"
-  register: _openbao_session_login_raw
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: log in with the {{ openbao_session_mode }} userpass account
+    openbao_cli_pod: "{{ _openbao_session_pod }}"
+    openbao_cli_namespace: "{{ openbao_session_namespace }}"
+    openbao_cli_calls:
+      - args: [write, -format=json, "auth/userpass/login/{{ _openbao_session_username }}", "-"]
+        input: "{{ {'password': _openbao_session_password} | to_json }}"
+    openbao_cli_register: _openbao_session_login_raw
 
 - name: Extract OpenBao client token
   ansible.builtin.set_fact:

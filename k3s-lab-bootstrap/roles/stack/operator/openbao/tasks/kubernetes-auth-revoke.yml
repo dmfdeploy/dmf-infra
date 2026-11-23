@@ -6,42 +6,37 @@
 # openbao_k8s_revoke_flag (the name of the fact that this file sets).
 # The flag is true when the revoke worked and the server refuses the token with a
 # 403. This file never fails: the caller decides what a token that stays
-# valid means. The token goes to the pod on stdin only.
+# valid means. The shared role sends the token to the pod on stdin only.
 
 - name: Revoke the token
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao token revoke -self'
-    stdin: "{{ openbao_k8s_revoke_token }}\n"
-  register: _openbao_k8s_revoke
-  changed_when: _openbao_k8s_revoke.rc == 0
-  failed_when: false
-  retries: 3
-  delay: 2
-  until: _openbao_k8s_revoke.rc == 0
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: revoke the token
+    openbao_cli_pod: "{{ openbao_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ openbao_k8s_revoke_token }}"
+    openbao_cli_calls:
+      - args: [token, revoke, -self]
+    openbao_cli_register: _openbao_k8s_revoke
+    openbao_cli_allow_failure: true
+    openbao_cli_changed: true
+    openbao_cli_retries: 3
+    openbao_cli_delay: 2
+    openbao_cli_until: "{{ openbao_cli_run.rc == 0 }}"
 
 - name: Prove the server refuses the revoked token
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao token lookup -format=json'
-    stdin: "{{ openbao_k8s_revoke_token }}\n"
-  register: _openbao_k8s_after_revoke
-  changed_when: false
-  failed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: look up the revoked token
+    openbao_cli_pod: "{{ openbao_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ openbao_k8s_revoke_token }}"
+    openbao_cli_calls:
+      - args: [token, lookup, -format=json]
+    openbao_cli_register: _openbao_k8s_after_revoke
+    openbao_cli_allow_failure: true
 
 # Only the server's refusal proves the revoke: the CLI reports OpenBao's answer as
 # "Code: 403" with "permission denied". A lookup that fails for another reason, such as

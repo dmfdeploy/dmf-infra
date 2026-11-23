@@ -36,8 +36,25 @@ def verifier_files():
     return [path for path in TASKS if "_verify_token_identity_reader" in path.read_text()]
 
 
-def split_tasks(text):
-    return re.split(r"(?m)^\s*- name:", text)[1:]
+def reader_includes(path):
+    """The vars of every common/openbao-cli include in a file that passes the reader's token."""
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            include = node.get("ansible.builtin.include_role")
+            variables = node.get("vars") or {}
+            if (isinstance(include, dict) and include.get("name") == "common/openbao-cli"
+                    and variables.get("openbao_cli_token") == "{{ _verify_token_identity_reader }}"):
+                found.append(variables)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(yaml.safe_load(path.read_text()))
+    return found
 
 
 def jinja_path(expr):
@@ -74,20 +91,30 @@ def source_list_paths():
     return paths
 
 
+def call_requests(calls):
+    """The (operation, path expression) pairs of an `openbao_cli_calls` value.
+
+    A literal list of calls is read as yaml. A template builds the list in a loop, so its
+    `'args': [...]` words are read from the text, and every `{{ }}`-free string literal
+    in a path expression joins with a name for each variable part.
+    """
+    if isinstance(calls, list):
+        return [(call["args"][0], call["args"][2]) for call in calls]
+    found = []
+    for op, expr in re.findall(r"'args': \['(list|read)', '-format=json', (.*?)\]\}", calls):
+        parts = [part.strip() for part in expr.split(" ~ ")]
+        found.append((op, "".join(part[1:-1] if re.fullmatch(r"'[^']*'", part) else "{{ " + part + " }}"
+                                  for part in parts)))
+    return found
+
+
 def verifier_requests():
     """Every (operation, path) that the playbooks send with the reader's token."""
     requests = set()
     for path in verifier_files():
-        for task in split_tasks(path.read_text()):
-            token_paths = re.findall(r'stdin:\s*"\{\{ _verify_token_identity_reader \}\}\\n(.*?)\\n"', task)
-            if not token_paths:
-                continue
-            ops = set(re.findall(r"exec bao (list|read) ", task))
-            if len(ops) != 1:
-                raise AssertionError(f"{path.name}: cannot tell the operation of a task: {task[:80]!r}")
-            op = ops.pop()
-            for expr in token_paths:
-                if "_verify_src.list_path" in expr:
+        for variables in reader_includes(path):
+            for op, expr in call_requests(variables["openbao_cli_calls"]):
+                if "_verify_src" in expr:
                     continue   # a source's own paths, added below
                 requests.add((op, jinja_path(expr)))
     for list_path in source_list_paths():
@@ -166,6 +193,15 @@ class TheVerifierRequestsAreFound(unittest.TestCase):
             ("list", "identity/group/id"), ("read", f"identity/group/id/{NAME}"),
         }
         self.assertEqual(requests, expected)
+
+    def test_the_token_goes_in_the_token_variable_and_never_in_an_argument_list(self):
+        # The shared role sends the token on stdin. A token word in `args` would reach
+        # kubectl's argument list instead.
+        includes = [v for path in verifier_files() for v in reader_includes(path)]
+        self.assertGreaterEqual(len(includes), 6)
+        for variables in includes:
+            with self.subTest(operation=variables["openbao_cli_operation"]):
+                self.assertNotIn("_verify_token", str(variables["openbao_cli_calls"]))
 
     def test_the_reader_token_holds_the_two_policies_the_check_uses(self):
         main = (ROLE / "tasks/main.yml").read_text()

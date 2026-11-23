@@ -212,13 +212,19 @@ class BornInventorySwitchTest(unittest.TestCase):
 
     def test_the_break_glass_login_sends_the_ids_as_json_on_stdin(self):
         task = self.BREAKGLASS.split("- name: Log into OpenBao with born-inventory AppRole")[1].split("\n- name:")[0]
-        self.assertIn("bao write -format=json auth/approle/login -'", task)
+        # The login goes through the shared command role. The words are `write ... -`, so
+        # `bao` reads the body from stdin. The body is the `input` and holds both ids as JSON.
+        self.assertIn("name: common/openbao-cli", task)
+        self.assertIn("- args: [write, -format=json, auth/approle/login, \"-\"]\n", task)
         self.assertRegex(
             task,
-            r"stdin: \"\{\{ \{'role_id': _dmf_born_inventory_openbao_role_id, "
-            r"'secret_id': _dmf_born_inventory_openbao_secret_id\} \| to_json \}\}\\n\"",
+            r"input: \"\{\{ \{'role_id': _dmf_born_inventory_openbao_role_id, "
+            r"'secret_id': _dmf_born_inventory_openbao_secret_id\} \| to_json \}\}\"",
         )
-        self.assertIn("no_log: true", task)
+        # The ids appear in `input` only, never in the `args` line, and the task puts no
+        # token or id in an environment. The shared role keeps `input` on stdin and out of the log.
+        args_line = next(line for line in task.splitlines() if "- args:" in line)
+        self.assertNotIn("_dmf_born_inventory_openbao_", args_line)
         self.assertNotIn("environment:", task)
         self.assertNotIn("$OPENBAO", task)
         self.assertNotRegex(task, r"(role_id|secret_id)=")

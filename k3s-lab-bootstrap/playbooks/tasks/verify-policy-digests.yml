@@ -22,40 +22,24 @@
     label: "{{ item.name }}"
   no_log: true
 
-- name: Check that the read path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "('sys/policies/acl/' ~ (item.name)) is not search('[\\r\\n]')"
-    fail_msg: "sys/policies/acl/item.name must not contain a newline: the program reads it from stdin, one value per line."
-  loop: "{{ _verify_policy_sources }}"
-  loop_control:
-    label: "{{ item.name }}"
-
+# A policy that does not exist reads as missing, and only when OpenBao says so: `bao read`
+# exits 2 and prints "No value found". Any other failure stops the play.
 - name: Read the live policies that the role writes
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ verify_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _verify_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r READ_PATH; export BAO_TOKEN; exec bao read -format=json "$READ_PATH"'
-    stdin: "{{ _verify_token_identity_reader }}\nsys/policies/acl/{{ item.name }}\n"
-  register: _verify_policy_reads
-  changed_when: false
-  failed_when:
-    - _verify_policy_reads.rc != 0
-    - not (_verify_policy_reads.rc == 2 and 'No value found' in _verify_policy_reads.stderr)
-  no_log: true
-  loop: "{{ _verify_policy_sources }}"
-  loop_control:
-    label: "{{ item.name }}"
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the live policies that the role writes
+    openbao_cli_pod: "{{ _verify_openbao_pod }}"
+    openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+    openbao_cli_token: "{{ _verify_token_identity_reader }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for src in _verify_policy_sources -%}
+      {%- set _ = out.append({'item': src, 'args': ['read', '-format=json', 'sys/policies/acl/' ~ src.name]}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _verify_policy_reads
+    openbao_cli_tolerate_stderr: ["No value found"]
 
 - name: Work out which policies differ from their files
   ansible.builtin.set_fact:

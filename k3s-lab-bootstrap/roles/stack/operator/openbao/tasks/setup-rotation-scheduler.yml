@@ -56,18 +56,26 @@
   loop_control:
     label: "{{ item.kind }}/{{ item.metadata.name }}"
 
-- name: Write the rotation scheduler policy
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao policy write {{ openbao_rotation_scheduler_policy_name }} -'
-    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/rotation-scheduler.hcl') }}\n"
+# The role runs the call, so a file lookup in the call would look in that role. Read
+# the file here.
+- name: Read the rotation scheduler policy
+  ansible.builtin.set_fact:
+    _openbao_policy_text_rotation_scheduler: "{{ lookup('ansible.builtin.file', role_path ~ '/files/policies/rotation-scheduler.hcl') }}"
   no_log: true
+
+- name: Write the rotation scheduler policy
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: write the rotation scheduler policy
+    openbao_cli_pod: "{{ openbao_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _openbao_policy_apply_token }}"
+    openbao_cli_calls:
+      - args: [policy, write, "{{ openbao_rotation_scheduler_policy_name }}", "-"]
+        input: "{{ _openbao_policy_text_rotation_scheduler }}\n"
+    openbao_cli_register: _openbao_policy_write
+    openbao_cli_changed: true
   when: openbao_is_initialized | bool
 
 # Writing a Kubernetes-auth role needs a privileged token, as for the setup

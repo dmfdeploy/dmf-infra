@@ -23,24 +23,16 @@
 # _verify_token_identity_reader, and the pod is in _verify_openbao_pod.
 
 - name: Read the enabled auth methods
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ verify_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _verify_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r READ_PATH; export BAO_TOKEN; exec bao read -format=json "$READ_PATH"'
-    stdin: "{{ _verify_token_identity_reader }}\nsys/auth\n"
-  register: _verify_auth_read
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the enabled auth methods
+    openbao_cli_pod: "{{ _verify_openbao_pod }}"
+    openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+    openbao_cli_token: "{{ _verify_token_identity_reader }}"
+    openbao_cli_calls:
+      - args: [read, -format=json, sys/auth]
+    openbao_cli_register: _verify_auth_read
 
 - name: Take the enabled auth methods from the answer
   ansible.builtin.set_fact:

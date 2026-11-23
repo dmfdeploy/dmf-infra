@@ -151,34 +151,21 @@
       or (awx_integration_netbox_purge_token | default('', true) | length == 0
           and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
 
-- name: Check that the login user holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(_awx_openbao_username) is not search('[\\r\\n]')"
-    fail_msg: "_awx_openbao_username must not contain a newline: the program reads it from stdin, one value per line."
-  when: awx_integration_persist_to_openbao | bool
-  run_once: true
-
 - name: Log into OpenBao with operator userpass for AWX persistence
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ awx_integration_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _awx_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r LOGIN_USER; bao write -format=json "auth/userpass/login/$LOGIN_USER" -'
-    stdin: "{{ _awx_openbao_username }}\n{{ {'password': _awx_openbao_password} | to_json }}\n"
-  register: _awx_openbao_operator_login_raw
-  changed_when: false
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  args:
+    apply:
+      run_once: true
+  vars:
+    openbao_cli_operation: log in as the operator for the AWX persistence
+    openbao_cli_pod: "{{ _awx_openbao_pod }}"
+    openbao_cli_namespace: "{{ awx_integration_openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [write, -format=json, "auth/userpass/login/{{ _awx_openbao_username }}", "-"]
+        input: "{{ {'password': _awx_openbao_password} | to_json }}"
+    openbao_cli_register: _awx_openbao_operator_login_raw
   run_once: true
-  no_log: true
   when: awx_integration_persist_to_openbao | bool
 
 - name: Extract OpenBao client token for AWX persistence
@@ -188,39 +175,21 @@
   no_log: true
   when: awx_integration_persist_to_openbao | bool
 
-- name: Check that the secret path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(awx_integration_netbox_runtime_secret_path) is not search('[\\r\\n]')"
-    fail_msg: "awx_integration_netbox_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
-  when: >-
-    awx_integration_netbox_token | default('', true) | length == 0
-    or (awx_integration_netbox_catalog_token | default('', true) | length == 0
-        and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
-    or (awx_integration_netbox_purge_token | default('', true) | length == 0
-        and awx_integration_openbao_breakglass_file | default('', true) | length > 0)
-  run_once: true
-
 - name: Read NetBox runtime token from in-cluster OpenBao
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ awx_integration_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _awx_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
-    stdin: "{{ _awx_openbao_operator_client_token }}\n{{ awx_integration_netbox_runtime_secret_path }}\n"
-  register: _awx_openbao_netbox_raw
-  changed_when: false
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  args:
+    apply:
+      run_once: true
+  vars:
+    openbao_cli_operation: read the NetBox runtime secret
+    openbao_cli_pod: "{{ _awx_openbao_pod }}"
+    openbao_cli_namespace: "{{ awx_integration_openbao_namespace }}"
+    openbao_cli_token: "{{ _awx_openbao_operator_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, get, -format=json, "{{ awx_integration_netbox_runtime_secret_path }}"]
+    openbao_cli_register: _awx_openbao_netbox_raw
   run_once: true
-  no_log: true
   when: >-
     awx_integration_netbox_token | default('', true) | length == 0
     or (awx_integration_netbox_catalog_token | default('', true) | length == 0
@@ -277,34 +246,21 @@
     - _awx_openbao_netbox_raw.stdout is defined
     - _awx_openbao_netbox_raw.stdout | length > 0
 
-- name: Check that the secret path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(awx_integration_forgejo_runtime_secret_path) is not search('[\\r\\n]')"
-    fail_msg: "awx_integration_forgejo_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
-  when: awx_integration_forgejo_token | default('', true) | length == 0
-  run_once: true
-
 - name: Read Forgejo runtime token from in-cluster OpenBao
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ awx_integration_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _awx_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
-    stdin: "{{ _awx_openbao_operator_client_token }}\n{{ awx_integration_forgejo_runtime_secret_path }}\n"
-  register: _awx_openbao_forgejo_raw
-  changed_when: false
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  args:
+    apply:
+      run_once: true
+  vars:
+    openbao_cli_operation: read the Forgejo runtime secret
+    openbao_cli_pod: "{{ _awx_openbao_pod }}"
+    openbao_cli_namespace: "{{ awx_integration_openbao_namespace }}"
+    openbao_cli_token: "{{ _awx_openbao_operator_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, get, -format=json, "{{ awx_integration_forgejo_runtime_secret_path }}"]
+    openbao_cli_register: _awx_openbao_forgejo_raw
   run_once: true
-  no_log: true
   when: awx_integration_forgejo_token | default('', true) | length == 0
 
 - name: Set Forgejo token from in-cluster OpenBao
@@ -1526,34 +1482,46 @@
   become: false
   when: not awx_integration_persist_to_openbao | bool
 
-- name: Check that the secret path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(awx_integration_runtime_secret_path) is not search('[\\r\\n]')"
-    fail_msg: "awx_integration_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
-  when: awx_integration_persist_to_openbao | bool
-  run_once: true
-
 - name: Persist AWX integration secrets to in-cluster OpenBao
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ awx_integration_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _awx_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; BODY=$(cat); export BAO_TOKEN; printf %s "$BODY" | bao kv patch "$SECRET_PATH" - || printf %s "$BODY" | bao kv put "$SECRET_PATH" -'
-    stdin: "{{ _awx_openbao_operator_client_token }}\n{{ awx_integration_runtime_secret_path }}\n{{ {'awx_svc_password': awx_integration_svc_password_effective, 'awx_svc_token': awx_integration_svc_token_effective} | to_json }}\n"
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  args:
+    apply:
+      run_once: true
+  vars:
+    openbao_cli_operation: write the AWX integration secret by patch
+    openbao_cli_pod: "{{ _awx_openbao_pod }}"
+    openbao_cli_namespace: "{{ awx_integration_openbao_namespace }}"
+    openbao_cli_token: "{{ _awx_openbao_operator_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, patch, "{{ awx_integration_runtime_secret_path }}", "-"]
+        input: "{{ {'awx_svc_password': awx_integration_svc_password_effective, 'awx_svc_token': awx_integration_svc_token_effective} | to_json }}"
+    openbao_cli_register: _awx_openbao_persist_patch
+    openbao_cli_allow_failure: true
   run_once: true
-  changed_when: false
-  no_log: true
   when: awx_integration_persist_to_openbao | bool
+
+# `kv patch` needs the secret to exist. On a first run it fails, so the same
+# body goes to `kv put` to create it.
+- name: Create the AWX integration secret in in-cluster OpenBao when the patch failed
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  args:
+    apply:
+      run_once: true
+  vars:
+    openbao_cli_operation: write the AWX integration secret by put
+    openbao_cli_pod: "{{ _awx_openbao_pod }}"
+    openbao_cli_namespace: "{{ awx_integration_openbao_namespace }}"
+    openbao_cli_token: "{{ _awx_openbao_operator_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, put, "{{ awx_integration_runtime_secret_path }}", "-"]
+        input: "{{ {'awx_svc_password': awx_integration_svc_password_effective, 'awx_svc_token': awx_integration_svc_token_effective} | to_json }}"
+    openbao_cli_register: _awx_openbao_persist_put
+  run_once: true
+  when:
+    - awx_integration_persist_to_openbao | bool
+    - _awx_openbao_persist_patch.rc | default(0) != 0
 
 # ---------------------------------------------------------------------------
 # Move 2: Job template for eso-openbao-health-check workflow
@@ -2220,21 +2188,21 @@
     - awx_control_node_ssh_privkey_path | length > 0
 
 - name: Bootstrap AWX SSH privkey to OpenBao (write)
-  ansible.builtin.shell:
-    cmd: |
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml \
-      -n {{ awx_integration_openbao_namespace }} \
-      exec -i {{ _awx_openbao_pod }} \
-      -- sh -c '
-      IFS= read -r BAO_TOKEN
-      export BAO_TOKEN
-      bao kv put secret/apps/awx/control_node_ssh -
-      '
-    stdin: "{{ _awx_openbao_operator_client_token }}\n{{ {'ssh_key_data': _awx_ssh_privkey_slurp.content | b64decode} | to_json }}\n"
-  register: _awx_ssh_bootstrap_write
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  args:
+    apply:
+      run_once: true
+  vars:
+    openbao_cli_operation: write the AWX control-node SSH key
+    openbao_cli_pod: "{{ _awx_openbao_pod }}"
+    openbao_cli_namespace: "{{ awx_integration_openbao_namespace }}"
+    openbao_cli_token: "{{ _awx_openbao_operator_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, put, secret/apps/awx/control_node_ssh, "-"]
+        input: "{{ {'ssh_key_data': _awx_ssh_privkey_slurp.content | b64decode} | to_json }}"
+    openbao_cli_register: _awx_ssh_bootstrap_write
   run_once: true
-  changed_when: false
-  no_log: true
   when:
     - awx_integration_persist_to_openbao | bool
     - _awx_openbao_operator_client_token is defined
@@ -2284,24 +2252,24 @@
   run_once: true
 
 - name: Read AWX control-node SSH privkey from OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ awx_integration_openbao_namespace }}
-      exec -i {{ _awx_openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json secret/apps/awx/control_node_ssh'
-    stdin: "{{ _awx_openbao_operator_client_token }}\n"
-  register: _awx_control_node_ssh_raw
-  changed_when: false
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  args:
+    apply:
+      run_once: true
+  vars:
+    openbao_cli_operation: read the AWX control-node SSH key
+    openbao_cli_pod: "{{ _awx_openbao_pod }}"
+    openbao_cli_namespace: "{{ awx_integration_openbao_namespace }}"
+    openbao_cli_token: "{{ _awx_openbao_operator_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, get, -format=json, secret/apps/awx/control_node_ssh]
+    openbao_cli_register: _awx_control_node_ssh_raw
+    openbao_cli_allow_failure: true
   run_once: true
-  no_log: true
   when:
     - awx_integration_persist_to_openbao | bool
     - _awx_openbao_operator_client_token is defined
-  failed_when: false
 
 - name: Extract SSH key data from OpenBao
   ansible.builtin.set_fact:

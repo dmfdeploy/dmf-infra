@@ -1,0 +1,142 @@
+---
+# The one place that runs the OpenBao command-line tool in a pod. Include it with
+# `ansible.builtin.include_role: {name: openbao-cli}` and these variables:
+#
+#   openbao_cli_operation   what the call does, in a few words. Failure messages
+#                           name it. Required.
+#   openbao_cli_pod         the pod to run in. Required.
+#   openbao_cli_namespace   default "openbao".
+#   openbao_cli_token       the token for the call. Leave it out for a login, a
+#                           status read or any call that needs none.
+#   openbao_cli_calls       a list with one entry per call, run in order. Each entry
+#                           has `args` (the words after `bao`) and may have `input`
+#                           (the text `bao` reads from stdin for an argument of `-`,
+#                           `key=-` or `password=-`) and `item` (anything the caller
+#                           wants back next to that call's result).
+#   openbao_cli_register    the name of the fact that receives the result. Required.
+#                           It holds `results`, a list with `item`, `rc`, `stdout`
+#                           and `stderr` per call. With one call, `rc`, `stdout` and
+#                           `stderr` are also set at the top.
+#   openbao_cli_allow_failure   true when the caller reads `rc` itself. The default
+#                           is to fail on a non-zero exit code.
+#   openbao_cli_tolerate_stderr  a list of texts. A non-zero exit whose stderr holds
+#                           one of them is not a failure (for example "No value
+#                           found" for a path that does not exist).
+#   openbao_cli_require_output  true to fail on an empty stdout.
+#   openbao_cli_changed     true when a successful call changes OpenBao. Default false.
+#   openbao_cli_retries, openbao_cli_delay, openbao_cli_until
+#                           retry a call until `openbao_cli_until` is true. Write it
+#                           as a template, "{{ openbao_cli_run.rc == 0 }}", which
+#                           reads the attempt as `openbao_cli_run`. Ansible fills
+#                           the template in on each attempt, not when the caller
+#                           sets the variable.
+#
+# In check mode the command does not run. The result then has rc 0 and no output,
+# and nothing fails.
+#
+# Everything the call needs goes to the pod on stdin, one value per line: the
+# token, the number of words, each word, then `input`. The program text below never
+# changes, so no value is ever part of a program or of an argument list. A value
+# cannot hold a newline, and the first task refuses one. Ansible expands `$NAME` in
+# every argument of the command module (ansible-core before 2.16 cannot switch that
+# off), so a value in an argument list could be rewritten. Stdin is not expanded.
+#
+# Pipelining is on for the call alone, so Ansible does not copy a module file that
+# holds the token to the node. `ANSIBLE_DEBUG` still prints module input, and the
+# operator chooses to turn it on.
+- name: "Check the input of the OpenBao command: {{ openbao_cli_operation | default('no operation named') }}"
+  ansible.builtin.assert:
+    that:
+      - openbao_cli_operation is defined
+      - openbao_cli_operation | length > 0
+      - openbao_cli_pod is defined
+      - openbao_cli_pod | length > 0
+      - openbao_cli_register is defined
+      - openbao_cli_calls is sequence
+      - openbao_cli_calls is not string
+      - openbao_cli_calls | length > 0
+      - openbao_cli_calls | rejectattr('args', 'defined') | list | length == 0
+      - >-
+        openbao_cli_calls | map(attribute='args') | flatten | map('string')
+        | select('search', '[\r\n]') | list | length == 0
+      - (openbao_cli_token | default('') | string) is not search('[\r\n]')
+    fail_msg: >-
+      The OpenBao command "{{ openbao_cli_operation | default('no operation named') }}"
+      needs an operation, a pod, a result name and at least one call with args.
+      A token or an argument must not hold a newline.
+  no_log: true
+
+- name: "Run the OpenBao command: {{ openbao_cli_operation }}"
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - --kubeconfig
+      - /etc/rancher/k3s/k3s.yaml
+      - -n
+      - "{{ openbao_cli_namespace | default('openbao') }}"
+      - exec
+      - -i
+      - "{{ openbao_cli_pod }}"
+      - --
+      - sh
+      - -c
+      - >-
+        IFS= read -r BAO_TOKEN; IFS= read -r OPENBAO_CLI_COUNT; set --;
+        while [ "$OPENBAO_CLI_COUNT" -gt 0 ]; do IFS= read -r OPENBAO_CLI_WORD;
+        set -- "$@" "$OPENBAO_CLI_WORD"; OPENBAO_CLI_COUNT=$((OPENBAO_CLI_COUNT - 1)); done;
+        if [ -n "$BAO_TOKEN" ]; then export BAO_TOKEN; else unset BAO_TOKEN; fi;
+        exec bao "$@"
+    stdin: "{{ openbao_cli_stdin }}"
+    stdin_add_newline: false
+  vars:
+    ansible_pipelining: true
+    openbao_cli_nl: "\n"
+    openbao_cli_stdin: >-
+      {{ openbao_cli_token | default('') }}{{ openbao_cli_nl }}{{ openbao_cli_call.args | length }}{{ openbao_cli_nl }}{{
+      openbao_cli_call.args | map('string') | join(openbao_cli_nl) }}{{ openbao_cli_nl }}{{ openbao_cli_call.input | default('') }}
+  loop: "{{ openbao_cli_calls }}"
+  loop_control:
+    loop_var: openbao_cli_call
+    label: "{{ openbao_cli_operation }}"
+  register: openbao_cli_run
+  retries: "{{ openbao_cli_retries | default(0) }}"
+  delay: "{{ openbao_cli_delay | default(0) }}"
+  until: openbao_cli_until | default(true)
+  changed_when: openbao_cli_changed | default(false) | bool
+  ignore_errors: true
+  no_log: true
+
+- name: "Judge the OpenBao command: {{ openbao_cli_operation }}"
+  ansible.builtin.set_fact:
+    _openbao_cli_failed: >-
+      {%- set bad = [] -%}
+      {%- for r in openbao_cli_run.results if not r.skipped | default(false) -%}
+      {%- set tolerated = [] -%}
+      {%- for t in openbao_cli_tolerate_stderr | default([]) -%}
+      {%- if t in (r.stderr | default('')) -%}{%- set _ = tolerated.append(t) -%}{%- endif -%}
+      {%- endfor -%}
+      {%- if r.rc | default(1) != 0 and tolerated | length == 0 -%}{%- set _ = bad.append('exit code ' ~ r.rc | default('none')) -%}
+      {%- elif r.failed | default(false) and r.rc | default(1) == 0 -%}{%- set _ = bad.append('the retries ran out') -%}
+      {%- elif openbao_cli_require_output | default(false) | bool and (r.stdout | default('') | trim | length == 0) -%}{%- set _ = bad.append('empty output') -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ bad }}
+    "{{ openbao_cli_register }}": >-
+      {%- set out = [] -%}
+      {%- for r in openbao_cli_run.results -%}
+      {%- set _ = out.append({'item': r.openbao_cli_call.item | default(none), 'rc': r.rc | default(0 if r.skipped | default(false) else 1), 'stdout': r.stdout | default(''), 'stderr': r.stderr | default('')}) -%}
+      {%- endfor -%}
+      {%- set top = {'results': out} -%}
+      {%- if out | length == 1 -%}{%- set _ = top.update({'rc': out[0].rc, 'stdout': out[0].stdout, 'stderr': out[0].stderr, 'changed': openbao_cli_changed | default(false) | bool}) -%}{%- endif -%}
+      {{ top }}
+  no_log: true
+
+- name: "Stop when the OpenBao command failed: {{ openbao_cli_operation }}"
+  ansible.builtin.fail:
+    msg: >-
+      The OpenBao command "{{ openbao_cli_operation }}" failed
+      ({{ _openbao_cli_failed | join(', ') }}). The details can hold a secret, so they
+      are not shown. Run the command again by hand to read them.
+  when:
+    - not (openbao_cli_allow_failure | default(false) | bool)
+    - _openbao_cli_failed | length > 0

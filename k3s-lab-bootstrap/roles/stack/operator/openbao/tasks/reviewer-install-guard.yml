@@ -37,23 +37,18 @@
     - _openbao_reviewer_guard_account != openbao_service_account
   block:
     - name: Read the init status of openbao-0
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ openbao_namespace }}"
-          - exec
-          - openbao-0
-          - --
-          - bao
-          - status
-          - -format=json
-      register: _openbao_reviewer_guard_status
-      changed_when: false
-      failed_when: false
-      check_mode: false
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+        apply:
+          check_mode: false
+      vars:
+        openbao_cli_operation: read the init status of openbao-0
+        openbao_cli_pod: openbao-0
+        openbao_cli_namespace: "{{ openbao_namespace }}"
+        openbao_cli_calls:
+          - args: [status, -format=json]
+        openbao_cli_register: _openbao_reviewer_guard_status
+        openbao_cli_allow_failure: true
 
     - name: Stop when the init status cannot be read
       ansible.builtin.fail:

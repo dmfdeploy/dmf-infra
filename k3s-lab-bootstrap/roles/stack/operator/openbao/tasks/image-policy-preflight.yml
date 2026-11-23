@@ -81,22 +81,16 @@
   when: not (_openbao_preflight_skip | bool) and (_openbao_preflight_needed | bool)
   block:
     - name: Read the init status of the running server
-      ansible.builtin.command:
-        argv:
-          - kubectl
-          - --kubeconfig
-          - /etc/rancher/k3s/k3s.yaml
-          - -n
-          - "{{ openbao_namespace }}"
-          - exec
-          - openbao-0
-          - --
-          - bao
-          - status
-          - -format=json
-      register: _openbao_preflight_status
-      changed_when: false
-      failed_when: false
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read the init status of the running server
+        openbao_cli_pod: openbao-0
+        openbao_cli_namespace: "{{ openbao_namespace }}"
+        openbao_cli_calls:
+          - args: [status, -format=json]
+        openbao_cli_register: _openbao_preflight_status
+        openbao_cli_allow_failure: true
 
     - name: Stop when the status cannot be read
       ansible.builtin.fail:
@@ -130,17 +124,16 @@
           no_log: true
 
         - name: Log in as policy-reconciler
-          ansible.builtin.shell:
-            cmd: >-
-              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-              -n {{ openbao_namespace }}
-              exec -i openbao-0
-              -- sh -c '
-              bao write -format=json auth/userpass/login/{{ openbao_policy_reconciler_username }} -'
-            stdin: "{{ {'password': (_openbao_preflight_breakglass.content | b64decode | from_json).policy_reconciler_password | default('')} | to_json }}\n"
-          register: _openbao_preflight_login
-          changed_when: false
-          no_log: true
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: log in as policy-reconciler
+            openbao_cli_pod: openbao-0
+            openbao_cli_namespace: "{{ openbao_namespace }}"
+            openbao_cli_calls:
+              - args: [write, -format=json, "auth/userpass/login/{{ openbao_policy_reconciler_username }}", "-"]
+                input: "{{ {'password': (_openbao_preflight_breakglass.content | b64decode | from_json).policy_reconciler_password | default('')} | to_json }}\n"
+            openbao_cli_register: _openbao_preflight_login
 
         - name: Keep the login token and its accessor
           ansible.builtin.set_fact:
@@ -149,39 +142,34 @@
           no_log: true
 
         - name: Read the executor's Kubernetes-auth role
-          ansible.builtin.shell:
-            cmd: >-
-              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-              -n {{ openbao_namespace }}
-              exec -i openbao-0
-              -- sh -c '
-              IFS= read -r BAO_TOKEN;
-              export BAO_TOKEN;
-              bao read -format=json auth/kubernetes/role/{{ openbao_executor_k8s_role }}'
-            stdin: "{{ _openbao_preflight_token }}\n"
-          register: _openbao_preflight_role
-          changed_when: false
-          failed_when: false
-          no_log: true
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: read the executor's Kubernetes-auth role
+            openbao_cli_pod: openbao-0
+            openbao_cli_namespace: "{{ openbao_namespace }}"
+            openbao_cli_token: "{{ _openbao_preflight_token }}"
+            openbao_cli_calls:
+              - args: [read, -format=json, "auth/kubernetes/role/{{ openbao_executor_k8s_role }}"]
+            openbao_cli_register: _openbao_preflight_role
+            openbao_cli_allow_failure: true
       always:
         - name: Revoke the login token
-          ansible.builtin.shell:
-            cmd: >-
-              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-              -n {{ openbao_namespace }}
-              exec -i openbao-0
-              -- sh -c '
-              IFS= read -r BAO_TOKEN;
-              export BAO_TOKEN;
-              bao token revoke -self'
-            stdin: "{{ _openbao_preflight_token }}\n"
-          register: _openbao_preflight_revoke
-          until: _openbao_preflight_revoke.rc == 0
-          retries: 2
-          delay: "{{ openbao_preflight_revoke_delay | default(2) }}"
-          changed_when: true
-          failed_when: false
-          no_log: true
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: revoke the login token
+            openbao_cli_pod: openbao-0
+            openbao_cli_namespace: "{{ openbao_namespace }}"
+            openbao_cli_token: "{{ _openbao_preflight_token }}"
+            openbao_cli_calls:
+              - args: [token, revoke, -self]
+            openbao_cli_register: _openbao_preflight_revoke
+            openbao_cli_allow_failure: true
+            openbao_cli_changed: true
+            openbao_cli_retries: 2
+            openbao_cli_delay: "{{ openbao_preflight_revoke_delay | default(2) }}"
+            openbao_cli_until: "{{ openbao_cli_run.rc == 0 }}"
           when: _openbao_preflight_token is defined
 
         - name: Stop because the policy-reconciler login token may still be live

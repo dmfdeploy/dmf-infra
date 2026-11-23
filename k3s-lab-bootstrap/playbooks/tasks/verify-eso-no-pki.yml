@@ -5,34 +5,20 @@
 # token after this file runs.
 #
 # `bao token capabilities` asks OpenBao for the capabilities of the calling token on one
-# path (sys/capabilities-self). The token goes in on stdin, as in the other probes, and
+# path (sys/capabilities-self). The shared OpenBao role sends the token on stdin, and
 # the output holds only a capability list. A path with no grant answers `deny`.
 
-- name: Check that the caps path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(verify_eso_pki_probe_path) is not search('[\\r\\n]')"
-    fail_msg: "verify_eso_pki_probe_path must not contain a newline: the program reads it from stdin, one value per line."
-
 - name: Read the ESO token's capabilities on the PKI issue path
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ verify_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _verify_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r CAPS_PATH; export BAO_TOKEN; bao token capabilities -format=json "$CAPS_PATH"'
-    stdin: "{{ _verify_eso_auth.client_token }}\n{{ verify_eso_pki_probe_path }}\n"
-  register: _verify_eso_pki_probe
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the ESO token's capabilities on the PKI issue path
+    openbao_cli_pod: "{{ _verify_openbao_pod }}"
+    openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+    openbao_cli_token: "{{ _verify_eso_auth.client_token }}"
+    openbao_cli_calls:
+      - args: [token, capabilities, -format=json, "{{ verify_eso_pki_probe_path }}"]
+    openbao_cli_register: _verify_eso_pki_probe
 
 - name: Assert the ESO token has no capability on the PKI issue path
   vars:

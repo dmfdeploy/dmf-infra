@@ -17,6 +17,48 @@ def text(path):
     return path.read_text(encoding="utf-8")
 
 
+CLI_ROLE = "common/openbao-cli"
+CLI_ROLE_TASKS = ROOT / "roles/common/openbao-cli/tasks/main.yml"
+# A word that names a token or the reviewer JWT, not a TTL or a policy list.
+TOKEN_WORD = re.compile(r"\{\{[^}]*(?:token|jwt)(?!_(?:max_)?ttl|_polic)[^}]*\}\}", re.I)
+
+
+def load_tasks(path):
+    """Return every task of a task file, with the tasks of blocks, rescues and always parts."""
+    import yaml
+
+    tasks = []
+
+    def walk(items):
+        for item in items:
+            tasks.append(item)
+            for key in ("block", "rescue", "always"):
+                walk(item.get(key, []))
+
+    walk(yaml.safe_load(text(path)))
+    return tasks
+
+
+def is_cli_include(task):
+    include = task.get("ansible.builtin.include_role")
+    return bool(include) and include.get("name") == CLI_ROLE
+
+
+def cli_includes(path):
+    return [t for t in load_tasks(path) if is_cli_include(t)]
+
+
+def cli_call_words(task):
+    """Return every word of `args` of every call of a shared-role include (the calls are a list here)."""
+    calls = task["vars"]["openbao_cli_calls"]
+    assert isinstance(calls, list), task["name"]
+    return [str(word) for call in calls for word in call["args"]]
+
+
+def role_command_task():
+    return next(t for t in load_tasks(CLI_ROLE_TASKS) if "ansible.builtin.command" in t)
+
+
 class OneVariableTest(unittest.TestCase):
     def test_openbao_role_reads_the_external_secrets_variable_and_defaults_to_approle(self):
         self.assertIn(
@@ -82,11 +124,21 @@ class ConfigStepTest(unittest.TestCase):
     config = text(OPENBAO / "tasks/kubernetes-auth-config.yml")
 
     def test_config_has_the_portable_host_and_pins_no_ca_or_token(self):
-        self.assertIn('"kubernetes_host=$K8S_HOST"', self.config)
-        self.assertIn("{{ openbao_kubernetes_auth_host }}", self.config)
-        self.assertIn('kubernetes_ca_cert=""', self.config)
-        self.assertIn('token_reviewer_jwt=""', self.config)
-        self.assertIn("disable_local_ca_jwt=false", self.config)
+        # The config write is one `bao write` whose arguments are the words below. The host is
+        # an argument word, and the empty CA and reviewer values are words with nothing after `=`.
+        writes = [
+            call["args"]
+            for task in cli_includes(OPENBAO / "tasks/kubernetes-auth-config.yml")
+            for call in task["vars"]["openbao_cli_calls"]
+            if call["args"][:2] == ["write", "auth/kubernetes/config"]
+        ]
+        self.assertEqual(len(writes), 1)
+        words = writes[0]
+        self.assertIn("kubernetes_host={{ openbao_kubernetes_auth_host }}", words)
+        self.assertIn("kubernetes_ca_cert=", words)
+        self.assertIn("token_reviewer_jwt=", words)
+        self.assertIn("disable_local_ca_jwt=false", words)
+        self.assertEqual(sum(w.startswith("kubernetes_host=") for w in words), 1)
         self.assertEqual(
             re.search(r"(?m)^openbao_kubernetes_auth_host: (\S+)$", text(OPENBAO / "defaults/main.yml")).group(1),
             "https://kubernetes.default.svc",
@@ -98,17 +150,35 @@ class ConfigStepTest(unittest.TestCase):
             self.assertNotIn("KUBERNETES_SERVICE_HOST", text(path))
 
     def test_token_goes_in_by_standard_input_only(self):
+        # The caller hands the token to the shared role as `openbao_cli_token`, and the role
+        # sends it on stdin. No argument word of any call holds a token, and no task of these
+        # files runs a command of its own.
         for path in [
             OPENBAO / "tasks/kubernetes-auth-config.yml",
             OPENBAO / "tasks/kubernetes-auth-revoke.yml",
         ]:
             body = text(path)
             self.assertNotRegex(body, r"(?m)^\s+environment:")
-            commands = re.findall(r"cmd: >-\n(.*?)\n\s+stdin: ", body, re.S)
-            self.assertGreater(len(commands), 0)
-            for command in commands:
-                self.assertIn("IFS= read -r BAO_TOKEN", command)
-                self.assertNotRegex(command, r"\{\{[^}]*token(?!_(max_)?ttl|_polic)[^}]*\}\}")
+            includes = cli_includes(path)
+            self.assertGreater(len(includes), 0)
+            for task in load_tasks(path):
+                with self.subTest(path=path.name, task=task["name"]):
+                    self.assertNotIn("ansible.builtin.command", task)
+                    self.assertNotIn("ansible.builtin.shell", task)
+            for task in includes:
+                with self.subTest(path=path.name, task=task["name"]):
+                    self.assertRegex(task["vars"]["openbao_cli_token"], r"^\{\{ openbao_k8s_\w*token \}\}$")
+                    for word in cli_call_words(task):
+                        self.assertNotRegex(word, TOKEN_WORD)
+
+    def test_the_shared_role_keeps_the_token_on_stdin_and_out_of_the_log(self):
+        command = role_command_task()
+        argv = " ".join(command["ansible.builtin.command"]["argv"])
+        self.assertIs(command.get("no_log"), True)
+        self.assertIn("openbao_cli_token", command["vars"]["openbao_cli_stdin"])
+        self.assertNotIn("openbao_cli_token", argv)
+        self.assertNotIn("openbao_cli_call", argv)
+        self.assertIs(command["vars"]["ansible_pipelining"], True)
 
 
 class VerifierTest(unittest.TestCase):
@@ -200,22 +270,17 @@ class VerifierTest(unittest.TestCase):
 class ReviewerGuardProbeStaticTest(unittest.TestCase):
     """The login probe keeps the JWT and the client token off every command line."""
 
+    PROBE = OPENBAO / "tasks/reviewer-login-probe.yml"
+
     @classmethod
     def setUpClass(cls):
-        import yaml
-
-        cls.tasks = []
-
-        def walk(items):
-            for item in items:
-                cls.tasks.append(item)
-                for key in ("block", "rescue", "always"):
-                    walk(item.get(key, []))
-
-        walk(yaml.safe_load(text(OPENBAO / "tasks/reviewer-login-probe.yml")))
+        cls.tasks = load_tasks(cls.PROBE)
 
     def commands(self):
         return [t for t in self.tasks if "ansible.builtin.command" in t]
+
+    def includes(self):
+        return [t for t in self.tasks if is_cli_include(t)]
 
     def test_no_argument_holds_a_token_or_the_jwt(self):
         for task in self.commands():
@@ -224,36 +289,61 @@ class ReviewerGuardProbeStaticTest(unittest.TestCase):
                 for word in argv:
                     self.assertNotRegex(word, r"_openbao_reviewer_guard_(jwt|login|client_token|revoke)", "a probe result in an argument")
                     self.assertNotRegex(word, r"\{\{.*stdout", "a command output in an argument")
+        for task in self.includes():
+            with self.subTest(task=task["name"]):
+                for word in cli_call_words(task):
+                    self.assertNotRegex(word, r"_openbao_reviewer_guard_|stdout", "a probe result in an argument")
 
     def test_the_login_and_the_revoke_read_their_secret_from_stdin(self):
-        by_name = {t["name"]: t for t in self.commands()}
+        by_name = {t["name"]: t for t in self.includes()}
         login = by_name["Log in to the Kubernetes auth mount inside openbao-0"]
         revoke = by_name["Revoke the client token of the login"]
-        for task, secret in [(login, "_openbao_reviewer_guard_jwt"), (revoke, "_openbao_reviewer_guard_client_token")]:
-            argv = task["ansible.builtin.command"]["argv"]
-            with self.subTest(task=task["name"]):
-                self.assertIn("-i", argv)
-                self.assertIn(secret, task["ansible.builtin.command"]["stdin"])
-                self.assertRegex(argv[-1], r"^IFS= read -r \w+;")
-                self.assertEqual(argv[-2], "-c")
+        # The JWT is the `input` of the login. The client token is the token of the revoke.
+        login_call = login["vars"]["openbao_cli_calls"][0]
+        self.assertIn("_openbao_reviewer_guard_jwt", login_call["input"])
+        self.assertNotIn("openbao_cli_token", login["vars"])
+        self.assertEqual(
+            revoke["vars"]["openbao_cli_token"], "{{ _openbao_reviewer_guard_client_token }}"
+        )
+        self.assertNotIn("input", revoke["vars"]["openbao_cli_calls"][0])
 
     def test_the_jwt_is_never_a_command_line_value(self):
-        # The one command that holds the JWT in its output is the mint. `kubectl exec`
-        # carries it on stdin only: the login's `jwt=-` reads it there.
-        login = next(t for t in self.commands() if t["name"].startswith("Log in to"))
-        self.assertIn("jwt=-", login["ansible.builtin.command"]["argv"][-1])
+        # The JWT is in the login's `input` and in no `args` word of any call. The login reads
+        # it from stdin through `jwt=-`.
+        login = next(t for t in self.includes() if t["name"].startswith("Log in to"))
+        call = login["vars"]["openbao_cli_calls"][0]
+        self.assertIn("jwt=-", call["args"])
+        self.assertIn("_openbao_reviewer_guard_jwt", call["input"])
+        for task in self.includes():
+            for word in cli_call_words(task):
+                self.assertNotIn("_guard_jwt", word)
+        # The mint is the one command task that prints a JWT. It runs `kubectl create token`
+        # and takes no secret as an argument.
+        for task in self.commands():
+            self.assertNotRegex(" ".join(task["ansible.builtin.command"]["argv"]), r"_guard_jwt")
 
     def test_every_task_that_holds_a_token_logs_nothing(self):
+        # A shared-role include gets its no_log from the role, so the role's command task
+        # must have it. A task of the probe that is not an include and holds a token must set
+        # it itself.
+        self.assertIs(role_command_task().get("no_log"), True)
         for task in self.tasks:
             body = repr(task)
             if any(name in body for name in ("_guard_jwt.stdout", "_guard_client_token", "_guard_login.stdout")) \
-                    and "ansible.builtin.fail" not in task and "block" not in task:
+                    and "ansible.builtin.fail" not in task and "block" not in task and not is_cli_include(task):
                 with self.subTest(task=task["name"]):
                     self.assertIs(task.get("no_log"), True)
         for task in self.commands():
             if task["name"].split()[0] in ("Mint", "Log", "Revoke"):
                 with self.subTest(task=task["name"]):
                     self.assertIs(task.get("no_log"), True)
+
+    def test_no_task_prints_a_token_bearing_result(self):
+        # The registers hold a token in their stdout. No debug task may print one of them.
+        for task in self.tasks:
+            if "ansible.builtin.debug" in task:
+                with self.subTest(task=task["name"]):
+                    self.assertNotRegex(repr(task), r"_openbao_reviewer_guard_(jwt|login|client_token|revoke)")
 
     def test_no_failure_message_prints_a_token(self):
         for task in self.tasks:

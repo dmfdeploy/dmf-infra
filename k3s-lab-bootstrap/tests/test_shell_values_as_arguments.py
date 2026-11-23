@@ -132,6 +132,56 @@ def unframed_reads(text):
     return hits
 
 
+SHARED_ROLE = REPO / "k3s-lab-bootstrap/roles/common/openbao-cli/tasks/main.yml"
+NEWLINE_VAR = "openbao_cli_nl"
+
+
+def shared_role_framing_problems(role_text):
+    """Return the ways in which the shared role's program and its stdin template disagree.
+
+    The program reads the token and the word count, then one word per count, and leaves the
+    rest of stdin to `bao`. The template must send those values in that order: the token, the
+    count of `args`, each word of `args` on its own line, then `input`. The number of leading
+    reads comes from the program text, not from a constant in this check.
+    """
+    import yaml
+
+    command = next(t for t in yaml.safe_load(role_text) if "ansible.builtin.command" in t)
+    program = command["ansible.builtin.command"]["argv"][-1]
+    template = command["vars"]["openbao_cli_stdin"]
+    problems = []
+    before_loop, _, loop = program.partition("while")
+    leading_reads = re.findall(r"IFS= read -r (\w+)", before_loop)
+    loop_reads = re.findall(r"IFS= read -r (\w+)", loop)
+    if len(loop_reads) != 1:
+        problems.append(f"the loop reads {len(loop_reads)} values per word, not 1")
+    if "$((" not in loop or "- 1" not in loop:
+        problems.append("the loop does not count one word down per read")
+    if "exec bao" not in program:
+        problems.append("the program does not hand the rest of stdin to bao")
+    # Lines of the template, split at the newline variable, outside the expressions.
+    segments = [seg.strip() for seg in re.split(r"\{\{\s*" + NEWLINE_VAR + r"\s*\}\}", template)]
+    # Token, count, then the words (one expression that joins them with the newline), then input.
+    if len(segments) != len(leading_reads) + 2:
+        problems.append(f"the template has {len(segments)} parts for {len(leading_reads)} leading reads, the words and the input")
+    else:
+        sent = segments[: len(leading_reads)]
+        if "openbao_cli_token" not in sent[0]:
+            problems.append("the first line sent is not the token")
+        if "args | length" not in sent[1]:
+            problems.append("the second line sent is not the word count")
+        words, body = segments[-2], segments[-1]
+        if f"join({NEWLINE_VAR})" not in words.replace(" ", ""):
+            problems.append("the words are not joined one per line")
+        if "openbao_cli_call.input" not in body:
+            problems.append("the input is not the last part sent")
+    if leading_reads[:1] != ["BAO_TOKEN"]:
+        problems.append("the program does not read the token first")
+    if command["ansible.builtin.command"].get("stdin_add_newline") is not False:
+        problems.append("the module adds a newline to the input")
+    return problems
+
+
 def repo_files():
     for path in sorted(REPO.rglob("*")):
         relative = path.relative_to(REPO)
@@ -180,11 +230,34 @@ class ShellValuesOnStdin(unittest.TestCase):
             for line in path.read_text().splitlines()
             if PROGRAM_ITEM.match(line)
         )
-        self.assertGreaterEqual(programs, 38, "the check found too few programs that read their values")
+        # The OpenBao calls moved into the shared role, whose one program is checked by
+        # `test_the_shared_role_reads_what_its_stdin_sends`. One hand-written program in
+        # this form remains (the break-glass user in the Authentik role), and the check must
+        # still find it.
+        self.assertGreaterEqual(programs, 1, "the check found too few programs that read their values")
         self.assertEqual(
             scan(unframed_reads), {},
             "the stdin lines of the task must match the `IFS= read -r` calls of the program",
         )
+
+    def test_the_shared_role_reads_what_its_stdin_sends(self):
+        self.assertEqual(shared_role_framing_problems(SHARED_ROLE.read_text()), [])
+
+    def test_the_shared_role_check_flags_each_mismatch(self):
+        text = SHARED_ROLE.read_text()
+        mutations = {
+            "a read is dropped": text.replace("IFS= read -r OPENBAO_CLI_COUNT; ", ""),
+            "an extra read is added": text.replace("IFS= read -r BAO_TOKEN;", "IFS= read -r BAO_TOKEN; IFS= read -r EXTRA;"),
+            "the count is not sent": text.replace("{{ openbao_cli_call.args | length }}{{ openbao_cli_nl }}", ""),
+            "the input is not sent": text.replace("{{ openbao_cli_call.input | default('') }}", ""),
+            "the words share one line": text.replace("join(openbao_cli_nl)", "join(' ')"),
+            "the loop reads two words": text.replace('IFS= read -r OPENBAO_CLI_WORD;', 'IFS= read -r OPENBAO_CLI_WORD; IFS= read -r OTHER;'),
+            "the module adds a newline": text.replace("stdin_add_newline: false", "stdin_add_newline: true"),
+        }
+        for label, mutated in mutations.items():
+            with self.subTest(label=label):
+                self.assertNotEqual(mutated, text, label)
+                self.assertTrue(shared_role_framing_problems(mutated), label)
 
     def test_detector_counts_reads_against_stdin_lines(self):
         program = "'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; bao kv put \"$SECRET_PATH\" -'"

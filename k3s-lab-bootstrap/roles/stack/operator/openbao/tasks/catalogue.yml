@@ -9,21 +9,34 @@
   ansible.builtin.set_fact:
     _openbao_catalogue: "{{ lookup('ansible.builtin.file', role_path ~ '/files/catalogue.yml') | from_yaml }}"
 
-- name: Write the pinned policy of each catalogue entry
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ openbao_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao policy write {{ item.policy_name }} -'
-    stdin: "{{ _openbao_policy_apply_token }}\n{{ lookup('ansible.builtin.file', role_path ~ '/' ~ item.policy_file) }}\n"
-  loop: "{{ _openbao_catalogue.entries }}"
-  loop_control:
-    label: "{{ item.policy_name }}"
+# The role runs the call, so a file lookup in the call would look in that role. Read the
+# files here.
+- name: Read the pinned policy of each catalogue entry
+  ansible.builtin.set_fact:
+    _openbao_catalogue_policy_text: >-
+      {%- set out = {} -%}
+      {%- for entry in _openbao_catalogue.entries -%}
+      {%- set _ = out.update({entry.policy_name: lookup('ansible.builtin.file', role_path ~ '/' ~ entry.policy_file)}) -%}
+      {%- endfor -%}
+      {{ out }}
   no_log: true
+
+- name: Write the pinned policy of each catalogue entry
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: write the pinned policy of each catalogue entry
+    openbao_cli_pod: "{{ openbao_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _openbao_policy_apply_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for item in _openbao_catalogue.entries -%}
+      {%- set _ = out.append({'item': item.policy_name, 'args': ['policy', 'write', item.policy_name, '-'], 'input': _openbao_catalogue_policy_text[item.policy_name] ~ '\n'}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _openbao_catalogue_policy_write
+    openbao_cli_changed: true
   when: openbao_is_initialized | bool
 
 - name: Render the catalogue ConfigMap

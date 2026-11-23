@@ -59,17 +59,16 @@
     _authentik_openbao_pod: "{{ _authentik_openbao_pod_info.resources[0].metadata.name }}"
 
 - name: Log into OpenBao with operator userpass for Authentik bootstrap writes
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ authentik_openbao_namespace }}
-      exec -i {{ _authentik_openbao_pod }}
-      -- sh -c '
-      bao write -format=json auth/userpass/login/{{ _authentik_openbao_username }} -'
-    stdin: "{{ {'password': _authentik_openbao_password} | to_json }}\n"
-  register: _authentik_openbao_login_raw
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: log in as the operator for the Authentik bootstrap writes
+    openbao_cli_pod: "{{ _authentik_openbao_pod }}"
+    openbao_cli_namespace: "{{ authentik_openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [write, -format=json, "auth/userpass/login/{{ _authentik_openbao_username }}", "-"]
+        input: "{{ {'password': _authentik_openbao_password} | to_json }}"
+    openbao_cli_register: _authentik_openbao_login_raw
 
 - name: Extract OpenBao client token for Authentik bootstrap writes
   ansible.builtin.set_fact:

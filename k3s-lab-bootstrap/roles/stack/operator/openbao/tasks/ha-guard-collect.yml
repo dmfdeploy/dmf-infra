@@ -24,28 +24,35 @@
 # change nothing, and the guard needs their output. 100-openbao.yml --check reaches
 # them through seal-check.yml. Without it, check mode skips the commands and the
 # guard reports every pod as unreachable.
+# The shared role runs in one pod per call, so the include loops over the pods and
+# each pod keeps its own result under a name of its own. The next task joins them.
 - name: Read the seal state of each OpenBao pod
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - "{{ item }}"
-      - --
-      - bao
-      - status
-      - -format=json
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+    apply:
+      check_mode: false
+  vars:
+    openbao_cli_operation: read the seal state of an OpenBao pod
+    openbao_cli_pod: "{{ item }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [status, -format=json]
+    openbao_cli_register: "_openbao_guard_status_{{ item | regex_replace('[^A-Za-z0-9_]', '_') }}"
+    # bao status exits 2 while a pod is sealed and 1 when it cannot be reached
+    # (command/status.go). The evaluate task reads the output, so a failed call is
+    # not an error here.
+    openbao_cli_allow_failure: true
   loop: "{{ _openbao_guard_names }}"
-  register: _openbao_guard_status
-  check_mode: false
-  changed_when: false
-  # bao status exits 2 while a pod is sealed and 1 when it cannot be reached
-  # (command/status.go). The evaluate task reads the output, so a failed call is
-  # not an error here.
-  failed_when: false
+
+- name: Join the seal states of the pods
+  ansible.builtin.set_fact:
+    _openbao_guard_status: >-
+      {%- set out = [] -%}
+      {%- for name in _openbao_guard_names -%}
+      {%- set r = lookup('ansible.builtin.vars', '_openbao_guard_status_' ~ (name | regex_replace('[^A-Za-z0-9_]', '_'))) -%}
+      {%- set _ = out.append({'item': name, 'rc': r.rc, 'stdout': r.stdout, 'stderr': r.stderr}) -%}
+      {%- endfor -%}
+      {{ {'results': out} }}
 
 - name: Summarize the pod states
   ansible.builtin.set_fact:
@@ -70,22 +77,26 @@
 # same state with Go field names (Healthy, FailureTolerance, Servers, NodeType,
 # LastContact), which ha-guard-evaluate.yml does not read. Both forms were checked
 # against a running OpenBao 2.5.2.
-- name: Read the Raft state from Autopilot
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _openbao_guard_asker }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao read -format=json sys/storage/raft/autopilot/state'
-    stdin: "{{ openbao_guard_token }}\n"
-  register: _openbao_guard_state_raw
-  check_mode: false
-  changed_when: false
-  failed_when: false
+# A poll that skips the read must not see the answer of an earlier poll.
+- name: Clear the Raft state answer of an earlier poll
+  ansible.builtin.set_fact:
+    _openbao_guard_state_raw: {}
   no_log: true
+
+- name: Read the Raft state from Autopilot
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+    apply:
+      check_mode: false
+  vars:
+    openbao_cli_operation: read the Raft state from Autopilot
+    openbao_cli_pod: "{{ _openbao_guard_asker }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ openbao_guard_token }}"
+    openbao_cli_calls:
+      - args: [read, -format=json, sys/storage/raft/autopilot/state]
+    openbao_cli_register: _openbao_guard_state_raw
+    openbao_cli_allow_failure: true
   when:
     - _openbao_guard_names | length > 1
     - openbao_guard_token | default('') | length > 0

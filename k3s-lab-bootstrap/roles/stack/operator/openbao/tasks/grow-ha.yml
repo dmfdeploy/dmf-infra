@@ -85,23 +85,16 @@
       interrupted migration"). Nothing has changed.
 
 - name: Read the state of the existing pod
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - openbao-0
-      - --
-      - bao
-      - status
-      - -format=json
-  register: _openbao_grow_status
-  changed_when: false
-  failed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the state of the existing pod
+    openbao_cli_pod: openbao-0
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [status, -format=json]
+    openbao_cli_register: _openbao_grow_status
+    openbao_cli_allow_failure: true
 
 - name: Refuse unless the existing pod is initialized, unsealed and active
   ansible.builtin.assert:
@@ -268,46 +261,35 @@
     openbao_unseal_target: openbao-0
 
 - name: Wait for pod 0 to lead
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ openbao_namespace }}"
-      - exec
-      - openbao-0
-      - --
-      - bao
-      - status
-      - -format=json
-  register: _openbao_grow_leader
-  changed_when: false
-  failed_when: false
-  until:
-    - _openbao_grow_leader.stdout | default('') | length > 0
-    - (_openbao_grow_leader.stdout | from_json).is_self | default(false) | bool
-  retries: 30
-  delay: 5
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: wait for pod 0 to lead
+    openbao_cli_pod: openbao-0
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_calls:
+      - args: [status, -format=json]
+    openbao_cli_register: _openbao_grow_leader
+    openbao_cli_allow_failure: true
+    openbao_cli_retries: 30
+    openbao_cli_delay: 5
+    openbao_cli_until: >-
+      {{ openbao_cli_run.stdout | default('') | length > 0 and (openbao_cli_run.stdout | from_json).is_self | default(false) | bool }}
 
 # Scale only when node 1 is at its per-pod address. With node 1 at the Service
 # address, a leader dials a random pod for that peer and steps down.
 - name: Read the Raft configuration
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i openbao-0
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao read -format=json sys/storage/raft/configuration'
-    stdin: "{{ openbao_guard_token }}\n"
-  register: _openbao_grow_raft_config
-  changed_when: false
-  failed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the Raft configuration
+    openbao_cli_pod: openbao-0
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ openbao_guard_token }}"
+    openbao_cli_calls:
+      - args: [read, -format=json, sys/storage/raft/configuration]
+    openbao_cli_register: _openbao_grow_raft_config
+    openbao_cli_allow_failure: true
 
 - name: Find the address of node 1
   ansible.builtin.set_fact:

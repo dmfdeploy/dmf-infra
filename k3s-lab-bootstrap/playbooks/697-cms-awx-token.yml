@@ -66,20 +66,17 @@
         openbao_session_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
 
     - name: Read AWX runtime secret from OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -format=json secret/apps/awx/runtime'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _cms_awx_runtime_secret_raw
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read the AWX runtime secret
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, secret/apps/awx/runtime]
+        openbao_cli_register: _cms_awx_runtime_secret_raw
+        openbao_cli_allow_failure: true
 
     - name: Parse AWX runtime secret from OpenBao
       ansible.builtin.set_fact:
@@ -187,20 +184,17 @@
       no_log: true
 
     - name: Check if AWX token exists in OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -format=json secret/apps/awx/runtime'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _cms_awx_openbao_check
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: check whether the AWX token exists
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, secret/apps/awx/runtime]
+        openbao_cli_register: _cms_awx_openbao_check
+        openbao_cli_allow_failure: true
 
     - name: Parse OpenBao token
       ansible.builtin.set_fact:
@@ -682,20 +676,17 @@
 
     # ── Persist to OpenBao ───────────────────────────────────────────────
     - name: Read current AWX runtime secret from OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv get -format=json secret/apps/awx/runtime'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      register: _cms_awx_runtime_secret_raw
-      changed_when: false
-      failed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: read the current AWX runtime secret
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, get, -format=json, secret/apps/awx/runtime]
+        openbao_cli_register: _cms_awx_runtime_secret_raw
+        openbao_cli_allow_failure: true
       when: not _cms_awx_token_already_provisioned
 
     - name: Parse current AWX runtime secret from OpenBao
@@ -725,37 +716,34 @@
     # (known 69x-class bug). Persist BOTH the token and dmf-cms-svc's password
     # so reruns are stable + the svc identity survives.
     - name: Persist AWX token to OpenBao
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ cms_openbao_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv patch secret/apps/awx/runtime -'
-        stdin: "{{ _openbao_session_client_token }}\n{{ {'cms_api_token': _cms_awx_svc_token, 'cms_svc_password': _cms_awx_svc_password | default('')} | to_json }}\n"
-      register: _cms_awx_openbao_write_result
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: merge the AWX token into the runtime secret
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, patch, secret/apps/awx/runtime, "-"]
+            input: "{{ {'cms_api_token': _cms_awx_svc_token, 'cms_svc_password': _cms_awx_svc_password | default('')} | to_json }}"
+        openbao_cli_register: _cms_awx_openbao_write_result
+        openbao_cli_changed: true
       when: not _cms_awx_token_already_provisioned
-      no_log: true
 
     - name: Verify AWX token was persisted to OpenBao
       block:
         - name: Read back AWX token from OpenBao
-          ansible.builtin.shell:
-            cmd: >-
-              kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-              -n {{ cms_openbao_namespace | default('openbao') }}
-              exec -i {{ _openbao_session_pod }}
-              -- sh -c '
-              IFS= read -r BAO_TOKEN;
-              export BAO_TOKEN;
-              bao kv get -format=json secret/apps/awx/runtime'
-            stdin: "{{ _openbao_session_client_token }}\n"
-          register: _cms_awx_openbao_raw
-          changed_when: false
-          failed_when: false
-          no_log: true
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: read back the AWX token
+            openbao_cli_pod: "{{ _openbao_session_pod }}"
+            openbao_cli_namespace: "{{ cms_openbao_namespace | default('openbao') }}"
+            openbao_cli_token: "{{ _openbao_session_client_token }}"
+            openbao_cli_calls:
+              - args: [kv, get, -format=json, secret/apps/awx/runtime]
+            openbao_cli_register: _cms_awx_openbao_raw
+            openbao_cli_allow_failure: true
 
         - name: Extract AWX token from OpenBao JSON
           ansible.builtin.set_fact:

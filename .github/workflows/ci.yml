@@ -292,6 +292,7 @@ jobs:
         3 fakes tests/test-openbao-ca-bundle.yml
         3 fakes tests/test-openbao-init-status.yml
         3 fakes tests/test-openbao-tls-secret-wait.yml
+        3 fakes tests/test-openbao-cli.yml
         3 fakes tests/test-born-inventory-breakglass-login.yml
         4 fakes tests/test-openbao-identity-verifier.yml 1/2
         5 fakes tests/test-openbao-identity-verifier.yml 2/2

@@ -14,6 +14,32 @@ ROOT = Path(__file__).resolve().parent.parent
 ROLE = ROOT / "roles/stack/operator/openbao"
 
 
+def role_tasks():
+    """Every task of the openbao role's main task file, including the ones in blocks."""
+    found = []
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "name" in node:
+                found.append(node)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(yaml.safe_load((ROLE / "tasks/main.yml").read_text()))
+    return found
+
+
+def cli_calls(task):
+    """The `args` lists of the shared-role include in a task, or an empty list."""
+    include = task.get("ansible.builtin.include_role")
+    if not (isinstance(include, dict) and include.get("name") == "common/openbao-cli"):
+        return []
+    return [call["args"] for call in task["vars"]["openbao_cli_calls"]]
+
+
 def policy_grants(text):
     """The path blocks of an HCL policy as {path: sorted capabilities}."""
     found = {}
@@ -61,14 +87,16 @@ class IdentityVerifierPolicy(unittest.TestCase):
         self.assertEqual(defaults["openbao_identity_verifier_policy_name"], "identity-verifier")
 
     def test_the_main_play_writes_this_file_under_that_name(self):
-        main = (ROLE / "tasks/main.yml").read_text()
-        write = main.index("- name: Write the identity-verifier policy")
-        block = main[write:main.index("- name:", write + 1)]
+        # The role runs the call, so the policy text is read into a fact by the task before it.
+        tasks = {task["name"]: task for task in role_tasks()}
+        read = tasks["Read the identity-verifier policy"]
+        write = tasks["Write the identity-verifier policy"]
+        calls = write["vars"]["openbao_cli_calls"]
 
-        self.assertIn("files/policies/identity-verifier.hcl", block)
-        self.assertIn("bao policy write {{ openbao_identity_verifier_policy_name }} -", block)
-
-
+        self.assertIn("files/policies/identity-verifier.hcl", read["ansible.builtin.set_fact"]["_openbao_policy_text_identity_verifier"])
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["args"], ["policy", "write", "{{ openbao_identity_verifier_policy_name }}", "-"])
+        self.assertEqual(calls[0]["input"], "{{ _openbao_policy_text_identity_verifier }}\n")
 
 class ExistingVerifierStaysWired(unittest.TestCase):
     def test_the_bootstrap_verify_play_still_imports_the_identity_model_verifier(self):
@@ -112,15 +140,17 @@ class AllowlistHasAnEnumerator(unittest.TestCase):
         # is not enabled by the role.
         allowed = yaml.safe_load((ROOT / "playbooks/vars/identity-verifier.yml").read_text())[
             "verify_identity_allowed_auth_mounts"]
-        role = (ROOT / "roles/stack/operator/openbao/tasks/main.yml").read_text()
+        enabled = [args[-1] for task in role_tasks() for args in cli_calls(task)
+                   if args[:2] == ["auth", "enable"]]
 
+        self.assertGreaterEqual(len(enabled), 3)
         self.assertEqual(allowed["token/"], "token")
         for mount, auth_type in allowed.items():
             if auth_type == "token":
                 continue
             with self.subTest(mount=mount):
                 self.assertEqual(mount, f"{auth_type}/")
-                self.assertRegex(role, rf"bao auth enable [^\n]*\b{auth_type}'")
+                self.assertIn(auth_type, enabled)
 
 
 if __name__ == "__main__":

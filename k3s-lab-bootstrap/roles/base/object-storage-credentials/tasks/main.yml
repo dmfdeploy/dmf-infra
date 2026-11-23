@@ -174,43 +174,40 @@
   changed_when: false
 
 - name: Apply OpenBao reader policy
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _osc_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao policy write object-storage-{{ logical_item.logical_dashed }}-reader /tmp/object-storage-{{ logical_item.logical_dashed }}-reader.hcl'
-    stdin: "{{ _osc_policy_token }}\n"
-  loop: "{{ _os_logical_items }}"
-  loop_control:
-    loop_var: logical_item
-    label: "{{ logical_item.logical }}"
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: write the object-storage reader policies
+    openbao_cli_pod: "{{ _osc_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _osc_policy_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for li in _os_logical_items -%}
+      {%- set _ = out.append({'item': li, 'args': ['policy', 'write', 'object-storage-' ~ li.logical_dashed ~ '-reader', '/tmp/object-storage-' ~ li.logical_dashed ~ '-reader.hcl']}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _os_policy_apply_raw
+    openbao_cli_changed: true
 
 # ── Step 4: Check AppRole existence (idempotency gate) ───────────────────────
 
 - name: Check if AppRole exists
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _osc_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao read -format=json auth/approle/role/object-storage-{{ logical_item.logical_dashed }}/role-id'
-    stdin: "{{ _osc_approle_token }}\n"
-  register: _os_approle_roleid_checks
-  loop: "{{ _os_logical_items }}"
-  loop_control:
-    loop_var: logical_item
-    label: "{{ logical_item.logical }}"
-  failed_when: false
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: check which object-storage AppRoles exist
+    openbao_cli_pod: "{{ _osc_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _osc_approle_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for li in _os_logical_items -%}
+      {%- set _ = out.append({'item': li, 'args': ['read', '-format=json', 'auth/approle/role/object-storage-' ~ li.logical_dashed ~ '/role-id']}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _os_approle_roleid_checks
+    openbao_cli_allow_failure: true
 
 # ── Step 4b: Check eso-binding presence (interrupted-state recovery gate) ───
 # Hazard: if a prior run created the AppRole (Step 5) but died before storing
@@ -219,24 +216,21 @@
 # This check lets Step 6 fire whenever EITHER role OR binding is missing.
 
 - name: Check if eso-binding exists
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _osc_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json secret/platform/eso-bindings/object-storage-{{ logical_item.logical_dashed }}'
-    stdin: "{{ _osc_approle_token }}\n"
-  register: _os_eso_binding_checks
-  loop: "{{ _os_logical_items }}"
-  loop_control:
-    loop_var: logical_item
-    label: "{{ logical_item.logical }}"
-  failed_when: false
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: check which eso bindings exist
+    openbao_cli_pod: "{{ _osc_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _osc_approle_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for li in _os_logical_items -%}
+      {%- set _ = out.append({'item': li, 'args': ['kv', 'get', '-format=json', 'secret/platform/eso-bindings/object-storage-' ~ li.logical_dashed]}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _os_eso_binding_checks
+    openbao_cli_allow_failure: true
 
 # ── Step 5: Create AppRoles where they don't exist ──────────────────────────
 # DEVIATES FROM EXISTING PATTERN: the openbao role uses `-force` on every
@@ -248,22 +242,23 @@
 # _os_approle_roleid_checks.results[].logical_item carries logical metadata.
 
 - name: Create AppRole
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _osc_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao write auth/approle/role/object-storage-{{ item.logical_item.logical_dashed }} token_policies=object-storage-{{ item.logical_item.logical_dashed }}-reader secret_id_ttl={{openbao_approle_lifecycle_registry.runtime_targets['object-storage-' ~ item.logical_item.logical_dashed].secret_id_ttl}} token_ttl={{ openbao_approle_token_ttl }} token_max_ttl={{ openbao_approle_token_max_ttl }}'
-    stdin: "{{ _osc_approle_token }}\n"
-  loop: "{{ _os_approle_roleid_checks.results }}"
-  loop_control:
-    loop_var: item
-    label: "{{ item.logical_item.logical }}"
-  when: item.rc != 0
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: create the missing object-storage AppRoles
+    openbao_cli_pod: "{{ _osc_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _osc_approle_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for r in _os_approle_roleid_checks.results if r.rc != 0 -%}
+      {%- set li = r.item -%}
+      {%- set _ = out.append({'item': li, 'args': ['write', 'auth/approle/role/object-storage-' ~ li.logical_dashed, 'token_policies=object-storage-' ~ li.logical_dashed ~ '-reader', 'secret_id_ttl=' ~ openbao_approle_lifecycle_registry.runtime_targets['object-storage-' ~ li.logical_dashed].secret_id_ttl, 'token_ttl=' ~ openbao_approle_token_ttl, 'token_max_ttl=' ~ openbao_approle_token_max_ttl]}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _os_approle_create_raw
+    openbao_cli_changed: true
+  when: _os_approle_roleid_checks.results | rejectattr('rc', 'eq', 0) | list | length > 0
 
 # ── Step 6: Generate secret-id when role OR binding is missing ──────────────
 # Fires on:
@@ -278,26 +273,28 @@
 # _os_approle_roleid_checks.results, so we can use the loop index to pair them.
 
 - name: Generate secret-id
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _osc_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao write -format=json -force auth/approle/role/object-storage-{{ item.logical_item.logical_dashed }}/secret-id'
-    stdin: "{{ _osc_approle_token }}\n"
-  register: _os_approle_secret_ids
-  loop: "{{ _os_approle_roleid_checks.results }}"
-  loop_control:
-    loop_var: item
-    extended: true
-    label: "{{ item.logical_item.logical }}"
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: generate secret-ids for the object-storage AppRoles
+    openbao_cli_pod: "{{ _osc_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _osc_approle_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for r in _os_approle_roleid_checks.results -%}
+      {%- if r.rc != 0 or _os_eso_binding_checks.results[loop.index0].rc != 0 -%}
+      {%- set _ = out.append({'item': r.item, 'args': ['write', '-format=json', '-force', 'auth/approle/role/object-storage-' ~ r.item.logical_dashed ~ '/secret-id']}) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _os_approle_secret_ids
+    openbao_cli_changed: true
+  # A pair of exit codes adds up to zero only when the role and the binding both exist.
   when: >-
-    item.rc != 0
-    or _os_eso_binding_checks.results[ansible_loop.index0].rc != 0
-  no_log: true
+    (_os_approle_roleid_checks.results | map(attribute='rc') | list)
+    | zip(_os_eso_binding_checks.results | map(attribute='rc') | list)
+    | map('sum') | select | list | length > 0
 
 # ── Step 7: Store secret-id in OpenBao (operator reference / break-glass) ───
 # The secret-id goes to `bao kv put` as a JSON body on stdin, so it is in no
@@ -308,64 +305,62 @@
 # logical metadata.
 
 - name: Store secret-id in OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _osc_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv put secret/platform/eso-bindings/object-storage-{{ item.item.logical_item.logical_dashed }} -'
-    stdin: "{{ _osc_approle_token }}\n{{ {'secret_id': (item.stdout | from_json).data.secret_id} | to_json }}\n"
-  loop: "{{ _os_approle_secret_ids.results }}"
-  loop_control:
-    loop_var: item
-    label: "{{ item.item.logical_item.logical }}"
-  when: item.stdout is defined and item.stdout | length > 0
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: store the secret-ids as eso bindings
+    openbao_cli_pod: "{{ _osc_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _osc_approle_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for r in _os_approle_secret_ids.results if r.stdout | length > 0 -%}
+      {%- set _ = out.append({'item': r.item, 'args': ['kv', 'put', 'secret/platform/eso-bindings/object-storage-' ~ r.item.logical_dashed, '-'], 'input': {'secret_id': (r.stdout | from_json).data.secret_id} | to_json}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _os_approle_binding_write_raw
+    openbao_cli_changed: true
+  when:
+    - _os_approle_secret_ids is defined
+    - _os_approle_secret_ids.results | map(attribute='stdout') | select | list | length > 0
 
 # ── Step 8: Read role-id for ALL logicals (existing or newly created) ───────
 
 - name: Read AppRole role-id
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _osc_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao read -format=json auth/approle/role/object-storage-{{ logical_item.logical_dashed }}/role-id'
-    stdin: "{{ _osc_approle_token }}\n"
-  register: _os_approle_final_roleids
-  loop: "{{ _os_logical_items }}"
-  loop_control:
-    loop_var: logical_item
-    label: "{{ logical_item.logical }}"
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the object-storage AppRole role-ids
+    openbao_cli_pod: "{{ _osc_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _osc_approle_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for li in _os_logical_items -%}
+      {%- set _ = out.append({'item': li, 'args': ['read', '-format=json', 'auth/approle/role/object-storage-' ~ li.logical_dashed ~ '/role-id']}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _os_approle_final_roleids
 
 # ── Step 9: Read secret-id from OpenBao for ALL logicals ────────────────────
 # For new AppRoles: reads back what Step 7 stored.
 # For existing AppRoles: reads the secret-id stored during a prior run.
 
 - name: Read secret-id from OpenBao
-  ansible.builtin.shell:
-    cmd: >-
-      kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-      -n {{ openbao_namespace }}
-      exec -i {{ _osc_pod }}
-      -- sh -c '
-      IFS= read -r BAO_TOKEN;
-      export BAO_TOKEN;
-      bao kv get -format=json secret/platform/eso-bindings/object-storage-{{ logical_item.logical_dashed }}'
-    stdin: "{{ _osc_approle_token }}\n"
-  register: _os_approle_final_secretids
-  loop: "{{ _os_logical_items }}"
-  loop_control:
-    loop_var: logical_item
-    label: "{{ logical_item.logical }}"
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the object-storage secret-ids
+    openbao_cli_pod: "{{ _osc_pod }}"
+    openbao_cli_namespace: "{{ openbao_namespace }}"
+    openbao_cli_token: "{{ _osc_approle_token }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for li in _os_logical_items -%}
+      {%- set _ = out.append({'item': li, 'args': ['kv', 'get', '-format=json', 'secret/platform/eso-bindings/object-storage-' ~ li.logical_dashed]}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _os_approle_final_secretids
 
 # ── Step 10: Build combined credential list with namespace subelements ──────
 # Zip role-id and secret-id results by index. Both lists follow

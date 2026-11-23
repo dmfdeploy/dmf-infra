@@ -101,7 +101,7 @@ PINNED_MATCHES = {
     "k3s-lab-bootstrap/tests/test_openbao_approle_transports.py": 5,
     "k3s-lab-bootstrap/tests/test_openbao_a2a_static.py": 1,
     "k3s-lab-bootstrap/tests/openbao_fakes.py": 1,
-    "k3s-lab-bootstrap/tests/test_openbao_approle_lifecycle_registry.py": 31,
+    "k3s-lab-bootstrap/tests/test_openbao_approle_lifecycle_registry.py": 32,
     "k3s-lab-bootstrap/tests/test_openbao_approle_registry_assertions.py": 4,
     "k3s-lab-bootstrap/tests/test_openbao_approle_registry_model.py": 1,
     "k3s-lab-bootstrap/tests/test_openbao_setup_only_issuance.py": 13,
@@ -198,31 +198,55 @@ def scanned_texts(extra=None):
     return [text for path, text in sorted(files.items()) if path not in skipped]
 
 
-ROLE_CREATE = re.compile(r"bao\s+write\s+auth/approle/role/([^\s/'\"]+)(?=\s)")
+# A role is created by a `write` call to the shared OpenBao command role. The
+# call is an `args` list on one line, either a YAML flow list in a task or a
+# dictionary built inside a Jinja loop. The older shell spelling is still
+# recognized so that a command written that way is counted too.
+ARGS_WRITE = re.compile(r"""args['"]?\s*:\s*\[\s*['"]?write['"]?\s*,(?P<rest>[^\n]*)""")
+ROLE_PATH = re.compile(r"auth/approle/role/(?P<path>[^,\]]*)")
+SHELL_CREATE = re.compile(r"bao\s+write\s+auth/approle/role/(?P<name>[^\s/'\"]+)(?=\s)")
+# A TTL assignment inside an args list reads either a template in the value or
+# a quoted key joined to an expression with `~`.
+TTL_TEMPLATE = r"\{\{[^}]+\}\}"
+TTL_JOINED = r"""['"]\s*~\s*[^,]+?(?=\s*,)"""
+
+
+def role_creations(text):
+    """Yield (role name, the text that must hold the TTL) for each create call."""
+    for call in ARGS_WRITE.finditer(text):
+        rest = call.group("rest")
+        # Templates are replaced first so that their brackets and quotes do not
+        # end the path early.
+        path = ROLE_PATH.search(re.sub(r"\{\{[^}]*\}\}", "<template>", rest))
+        # A path that continues with `/role-id` or `/secret-id` is not a create.
+        if path and "/" not in path.group("path"):
+            yield path.group("path").strip(" '\""), rest
+    for match in SHELL_CREATE.finditer(text):
+        following = text[match.end():]
+        end = re.search(r"\n\s*- name:", following)
+        yield match.group("name"), following[: end.start()] if end else following
 
 
 def role_creation_errors(texts):
-    """Check the `bao write auth/approle/role/<name>` create commands in the
-    given texts: each must set a TTL, a TTL key must not appear outside the
-    registry, and there must be exactly three create sites. This check knows
-    one create-command spelling. The two-part rule above covers the rest: a
-    file that mentions a role path any other way is flagged unless it is
-    allowed, and a new mention inside an allowed file changes its pinned
-    count."""
+    """Check the AppRole create calls in the given texts: each must set a TTL,
+    a TTL key must not appear outside the registry, and there must be exactly
+    three create sites. This check knows the `write` call spelling above. The
+    two-part rule above covers the rest: a file that mentions a role path any
+    other way is flagged unless it is allowed, and a new mention inside an
+    allowed file changes its pinned count."""
     errors = []
     sites = 0
     for text in texts:
-        for match in ROLE_CREATE.finditer(text):
+        for name, command in role_creations(text):
             sites += 1
-            following = text[match.end():]
-            end = re.search(r"\n\s*- name:", following)
-            command = following[: end.start()] if end else following
             if "secret_id_ttl=" not in command:
                 errors.append(
-                    f"AppRole {match.group(1)} is created without a registry TTL: "
+                    f"AppRole {name} is created without a registry TTL: "
                     "add it to the registry or give it an explicit disposition"
                 )
-        if re.search(r"^\s*secret_id_ttl\s*:", text, re.M) or re.search(r"secret[-_]id[-_]ttl\s*=\s*[^{\s]", text):
+        if re.search(r"^\s*secret_id_ttl\s*:", text, re.M) or re.search(
+            rf"secret[-_]id[-_]ttl\s*=\s*(?!{TTL_TEMPLATE}|{TTL_JOINED})\S", text
+        ):
             errors.append("a SecretID TTL is set outside the registry")
     if sites != 3:
         errors.append(f"expected exactly three AppRole create sites, found {sites}")
@@ -230,12 +254,19 @@ def role_creation_errors(texts):
 
 
 def ttl_assignment_inventory(*texts):
+    """Return the registry expressions the TTL assignments read, with spaces
+    removed, and the number of assignments."""
     expressions = set()
     count = 0
     for text in texts:
-        assignments = re.findall(
-            r"\bsecret_id_ttl\s*=\s*(\{\{[^}]+\}\})", text
-        )
+        assignments = [
+            "".join((match.group("template") or "{{" + match.group("joined") + "}}").split())
+            for match in re.finditer(
+                r"""\bsecret_id_ttl\s*=\s*(?:(?P<template>\{\{[^}]+\}\})"""
+                r"""|['"]\s*~\s*(?P<joined>[^,]+?)(?=\s*,))""",
+                text,
+            )
+        ]
         occurrences = re.findall(r"\bsecret_id_ttl\s*=", text)
         if len(assignments) != len(occurrences):
             raise AssertionError("every AppRole TTL assignment must use a registry expression")
@@ -291,7 +322,7 @@ def registry_coverage_errors(
 
     expected_ttl_expressions = {
         "{{openbao_approle_lifecycle_registry.runtime_targets['external-secrets'].secret_id_ttl}}",
-        "{{openbao_approle_lifecycle_registry.runtime_targets['object-storage-' ~ item.logical_item.logical_dashed].secret_id_ttl}}",
+        "{{openbao_approle_lifecycle_registry.runtime_targets['object-storage-'~li.logical_dashed].secret_id_ttl}}",
         "{{openbao_approle_lifecycle_registry.dispositions['born-inventory-netbox-reader'].secret_id_ttl}}",
     }
     if ttl_expressions != expected_ttl_expressions:
@@ -369,9 +400,11 @@ class OpenBaoAppRoleLifecycleRegistryTests(unittest.TestCase):
     def test_an_unregistered_finite_ttl_role_fixture_fails_the_check(self):
         rogue = (
             "- name: Create a rogue role\n"
-            "  ansible.builtin.shell:\n"
-            "    cmd: >-\n"
-            "      bao write auth/approle/role/rogue-role token_policies=x secret_id_ttl=24h\n"
+            "  ansible.builtin.include_role:\n"
+            "    name: common/openbao-cli\n"
+            "  vars:\n"
+            "    openbao_cli_calls:\n"
+            "      - args: [write, auth/approle/role/rogue-role, token_policies=x, secret_id_ttl=24h]\n"
         )
         errors = role_creation_errors([*scanned_texts(), rogue])
         self.assertTrue(any("three AppRole create sites" in error for error in errors), errors)
@@ -382,11 +415,21 @@ class OpenBaoAppRoleLifecycleRegistryTests(unittest.TestCase):
     def test_a_role_created_without_any_ttl_fixture_fails_the_check(self):
         rogue = (
             "- name: Create a role with no TTL\n"
-            "  ansible.builtin.shell:\n"
-            "    cmd: bao write auth/approle/role/no-ttl token_policies=x\n"
+            "  ansible.builtin.include_role:\n"
+            "    name: common/openbao-cli\n"
+            "  vars:\n"
+            "    openbao_cli_calls:\n"
+            "      - args: [write, auth/approle/role/no-ttl, token_policies=x]\n"
         )
         errors = role_creation_errors([rogue])
         self.assertTrue(any("no-ttl is created without a registry TTL" in error for error in errors), errors)
+        shell_rogue = (
+            "- name: Create a role with no TTL\n"
+            "  ansible.builtin.shell:\n"
+            "    cmd: bao write auth/approle/role/shell-no-ttl token_policies=x\n"
+        )
+        errors = role_creation_errors([shell_rogue])
+        self.assertTrue(any("shell-no-ttl is created without a registry TTL" in error for error in errors), errors)
 
     def test_a_ttl_key_outside_the_registry_fixture_fails_the_check(self):
         keyed = "vars:\n  secret_id_ttl: \"{{ some_variable }}\"\n"

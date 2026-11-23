@@ -18,56 +18,32 @@
 # See the role's README, "The identity verifier".
 
 - name: List the live ACL policies
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ verify_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _verify_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r LIST_PATH; export BAO_TOKEN; exec bao list -format=json "$LIST_PATH"'
-    stdin: "{{ _verify_token_identity_reader }}\nsys/policies/acl\n"
-  register: _verify_acl_list
-  changed_when: false
-  no_log: true
-
-- name: Check that the read path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "('sys/policies/acl/' ~ (item)) is not search('[\\r\\n]')"
-    fail_msg: "sys/policies/acl/item must not contain a newline: the program reads it from stdin, one value per line."
-  loop: "{{ _verify_acl_list.stdout | from_json | difference(['root', verify_generate_root_policy]) }}"
-  loop_control:
-    label: "{{ item }}"
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: list the live ACL policies
+    openbao_cli_pod: "{{ _verify_openbao_pod }}"
+    openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+    openbao_cli_token: "{{ _verify_token_identity_reader }}"
+    openbao_cli_calls:
+      - args: [list, -format=json, sys/policies/acl]
+    openbao_cli_register: _verify_acl_list
 
 - name: Read every live ACL policy except root and the executor's
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ verify_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _verify_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r READ_PATH; export BAO_TOKEN; exec bao read -format=json "$READ_PATH"'
-    stdin: "{{ _verify_token_identity_reader }}\nsys/policies/acl/{{ item }}\n"
-  register: _verify_acl_reads
-  changed_when: false
-  no_log: true
-  loop: "{{ _verify_acl_list.stdout | from_json | difference(['root', verify_generate_root_policy]) }}"
-  loop_control:
-    label: "{{ item }}"
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read every live ACL policy except root and the executor's
+    openbao_cli_pod: "{{ _verify_openbao_pod }}"
+    openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+    openbao_cli_token: "{{ _verify_token_identity_reader }}"
+    openbao_cli_calls: >-
+      {%- set out = [] -%}
+      {%- for name in _verify_acl_list.stdout | from_json | difference(['root', verify_generate_root_policy]) -%}
+      {%- set _ = out.append({'item': name, 'args': ['read', '-format=json', 'sys/policies/acl/' ~ name]}) -%}
+      {%- endfor -%}
+      {{ out }}
+    openbao_cli_register: _verify_acl_reads
 
 - name: Work out which policies name a path under sys/generate-root
   ansible.builtin.set_fact:

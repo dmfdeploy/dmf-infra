@@ -37,32 +37,18 @@
 - name: Establish OpenBao operator session for Authentik bootstrap writes
   ansible.builtin.include_tasks: openbao_session.yml
 
-- name: Check that the secret path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(authentik_runtime_secret_path) is not search('[\\r\\n]')"
-    fail_msg: "authentik_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
-
 - name: Read current Authentik runtime secret from OpenBao
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ authentik_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _authentik_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv get -format=json "$SECRET_PATH"'
-    stdin: "{{ _authentik_openbao_client_token }}\n{{ authentik_runtime_secret_path }}\n"
-  register: _authentik_runtime_secret_raw
-  changed_when: false
-  failed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read the Authentik runtime secret
+    openbao_cli_pod: "{{ _authentik_openbao_pod }}"
+    openbao_cli_namespace: "{{ authentik_openbao_namespace }}"
+    openbao_cli_token: "{{ _authentik_openbao_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, get, -format=json, "{{ authentik_runtime_secret_path }}"]
+    openbao_cli_register: _authentik_runtime_secret_raw
+    openbao_cli_allow_failure: true
 
 - name: Parse current Authentik runtime secret document
   ansible.builtin.set_fact:
@@ -144,32 +130,19 @@
       }}
   no_log: true
 
-- name: Check that the secret path holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(authentik_runtime_secret_path) is not search('[\\r\\n]')"
-    fail_msg: "authentik_runtime_secret_path must not contain a newline: the program reads it from stdin, one value per line."
-  when:
-    - _authentik_runtime_secret_data.secret_key | default('') != authentik_secret_key_effective
-      or _authentik_runtime_secret_data.bootstrap_token | default('') != authentik_bootstrap_token_effective
-      or _authentik_runtime_secret_data.postgres_password | default('') != authentik_postgresql_password_effective
-
 - name: Persist Authentik runtime secret to OpenBao
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ authentik_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _authentik_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r SECRET_PATH; export BAO_TOKEN; bao kv put "$SECRET_PATH" -'
-    stdin: "{{ _authentik_openbao_client_token }}\n{{ authentik_runtime_secret_path }}\n{{ {'secret_key': authentik_secret_key_effective, 'bootstrap_token': authentik_bootstrap_token_effective, 'postgres_password': authentik_postgresql_password_effective} | to_json }}\n"
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: write the Authentik runtime secret
+    openbao_cli_pod: "{{ _authentik_openbao_pod }}"
+    openbao_cli_namespace: "{{ authentik_openbao_namespace }}"
+    openbao_cli_token: "{{ _authentik_openbao_client_token }}"
+    openbao_cli_calls:
+      - args: [kv, put, "{{ authentik_runtime_secret_path }}", "-"]
+        input: "{{ {'secret_key': authentik_secret_key_effective, 'bootstrap_token': authentik_bootstrap_token_effective, 'postgres_password': authentik_postgresql_password_effective} | to_json }}"
+    openbao_cli_register: _authentik_runtime_write_raw
+    openbao_cli_changed: true
   when:
     - _authentik_runtime_secret_data.secret_key | default('') != authentik_secret_key_effective
       or _authentik_runtime_secret_data.bootstrap_token | default('') != authentik_bootstrap_token_effective

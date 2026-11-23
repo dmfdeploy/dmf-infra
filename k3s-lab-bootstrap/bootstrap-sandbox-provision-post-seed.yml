@@ -24,21 +24,17 @@
 
   tasks:
     - name: Confirm required bootstrap seed path exists
-      ansible.builtin.shell:
-        cmd: >-
-          kubectl --kubeconfig /etc/rancher/k3s/k3s.yaml
-          -n {{ openbao_session_namespace | default('openbao') }}
-          exec -i {{ _openbao_session_pod }}
-          -- sh -c '
-          IFS= read -r BAO_TOKEN;
-          export BAO_TOKEN;
-          bao kv metadata get -format=json {{ item }} >/dev/null'
-        stdin: "{{ _openbao_session_client_token }}\n"
-      loop:
-        - secret/platform/bootstrap_admin
-        - secret/platform/k3s/cluster
-      changed_when: false
-      no_log: true
+      ansible.builtin.include_role:
+        name: common/openbao-cli
+      vars:
+        openbao_cli_operation: confirm the bootstrap seed paths exist
+        openbao_cli_pod: "{{ _openbao_session_pod }}"
+        openbao_cli_namespace: "{{ openbao_session_namespace | default('openbao') }}"
+        openbao_cli_token: "{{ _openbao_session_client_token }}"
+        openbao_cli_calls:
+          - args: [kv, metadata, get, -format=json, secret/platform/bootstrap_admin]
+          - args: [kv, metadata, get, -format=json, secret/platform/k3s/cluster]
+        openbao_cli_register: _openbao_seed_guard
 
 # ── Vertical: Identity base ──────────────────────────────────────────────────
 - import_playbook: playbooks/vertical-security/110-authentik.yml

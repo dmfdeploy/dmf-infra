@@ -8,31 +8,17 @@
 # role outside the rotation registry. The caller holds its token in
 # _verify_token_rotation_scheduler and runs this file only when the scheduler logged in.
 
-- name: Check that the role name holds no newline
-  ansible.builtin.assert:
-    that:
-      - "(verify_eso_approle_role) is not search('[\\r\\n]')"
-    fail_msg: "verify_eso_approle_role must not contain a newline: the program reads it from stdin, one value per line."
-
 - name: Read ESO's AppRole role
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - --kubeconfig
-      - /etc/rancher/k3s/k3s.yaml
-      - -n
-      - "{{ verify_openbao_namespace }}"
-      - exec
-      - -i
-      - "{{ _verify_openbao_pod }}"
-      - --
-      - sh
-      - -c
-      - 'IFS= read -r BAO_TOKEN; IFS= read -r ROLE_NAME; export BAO_TOKEN; bao read -format=json "auth/approle/role/$ROLE_NAME"'
-    stdin: "{{ _verify_token_rotation_scheduler }}\n{{ verify_eso_approle_role }}\n"
-  register: _verify_eso_role_read
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_role:
+    name: common/openbao-cli
+  vars:
+    openbao_cli_operation: read ESO's AppRole role
+    openbao_cli_pod: "{{ _verify_openbao_pod }}"
+    openbao_cli_namespace: "{{ verify_openbao_namespace }}"
+    openbao_cli_token: "{{ _verify_token_rotation_scheduler }}"
+    openbao_cli_calls:
+      - args: [read, -format=json, "auth/approle/role/{{ verify_eso_approle_role }}"]
+    openbao_cli_register: _verify_eso_role_read
 
 - name: Assert ESO's AppRole role carries the eso-reader policy only
   vars:

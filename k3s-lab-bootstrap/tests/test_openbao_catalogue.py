@@ -172,9 +172,18 @@ class CatalogueRole(unittest.TestCase):
         self.assertIn("include_tasks: catalogue.yml", main)
         tasks = yaml.safe_load(TASKS.read_text(encoding="utf-8"))
         write = next(t for t in tasks if t["name"].startswith("Write the pinned policy"))
-        self.assertIn("bao policy write {{ item.policy_name }} -", write["ansible.builtin.shell"]["cmd"])
+        # The role runs the call through the shared OpenBao command role. The call writes
+        # the policy by its stable name, reads the policy text from stdin (the `-` word),
+        # and gets the token through the token variable. The shared role keeps the token
+        # and the input off the command line and out of the log.
+        self.assertEqual("common/openbao-cli", write["ansible.builtin.include_role"]["name"])
+        call_vars = write["vars"]
+        calls = call_vars["openbao_cli_calls"]
+        self.assertIn("'args': ['policy', 'write', item.policy_name, '-']", calls)
+        self.assertIn("'input': _openbao_catalogue_policy_text[item.policy_name]", calls)
+        self.assertIn("_openbao_policy_apply_token", call_vars["openbao_cli_token"])
+        self.assertNotIn("token", calls)
         self.assertEqual("openbao_is_initialized | bool", write["when"])
-        self.assertTrue(write["no_log"])
         render = next(t for t in tasks if t["name"] == "Render the catalogue ConfigMap")
         self.assertIn("catalogue-configmap.yml.j2", render["kubernetes.core.k8s"]["definition"])
 

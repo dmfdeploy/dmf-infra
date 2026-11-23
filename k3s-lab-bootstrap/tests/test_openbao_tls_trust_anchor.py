@@ -191,11 +191,14 @@ class ConsumersTrustTheCa(unittest.TestCase):
         )
 
     def test_in_pod_cli_calls_trust_the_ca(self):
+        # A call trusts the CA through the BAO_CACERT variable in a shell command, or
+        # through the -ca-cert flag in an `args` list of the shared command role.
         for relative_path in (
             "playbooks/runbooks/eso-openbao-health-check.yml",
             "playbooks/verify-bootstrap-convergence.yml",
+            "roles/base/cert-manager/tasks/openbao-listener-reload-pod.yml",
         ):
-            self.assert_ca(paths_after(relative_path, r"BAO_CACERT=([^\s;\"']+)"))
+            self.assert_ca(paths_after(relative_path, r"(?:BAO_CACERT=|-ca-cert=)([^\s;\"',\]]+)"))
 
     def test_no_other_file_uses_the_leaf_as_trust_anchor(self):
         # A backstop for a consumer that the checks above do not name.

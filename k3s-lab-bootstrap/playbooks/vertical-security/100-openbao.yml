@@ -67,24 +67,17 @@
           no_log: true
 
         - name: Check OpenBao seal state before failed-init root disposal
-          ansible.builtin.command:
-            argv:
-              - kubectl
-              - --kubeconfig
-              - /etc/rancher/k3s/k3s.yaml
-              - -n
-              - "{{ openbao_namespace }}"
-              - exec
-              - "{{ openbao_pod }}"
-              - --
-              - bao
-              - status
-              - -format=json
-          register: _openbao_failed_init_status
-          changed_when: false
-          failed_when: false
+          ansible.builtin.include_role:
+            name: common/openbao-cli
+          vars:
+            openbao_cli_operation: read the seal state before failed-init root disposal
+            openbao_cli_pod: "{{ openbao_pod }}"
+            openbao_cli_namespace: "{{ openbao_namespace }}"
+            openbao_cli_calls:
+              - args: [status, -format=json]
+            openbao_cli_register: _openbao_failed_init_status
+            openbao_cli_allow_failure: true
           when: _openbao_failed_tokens_left | bool
-          no_log: true
 
         # A failed unseal must not end the rescue: the revokes and the final message
         # still run, and the message says the tokens are not proven revoked.

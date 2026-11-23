@@ -24,7 +24,8 @@ POLICY = OPENBAO_ROLE / "files/policies/generate-root.hcl"
 
 PINNED = re.compile(r"^docker\.io/openbao/openbao:2\.7\.\d+@sha256:[0-9a-f]{64}$")
 # A line that runs the command, as opposed to one that only names the procedure.
-INVOCATION = re.compile(r"operator generate-root|^\s*- generate-root\s*$")
+# It covers the shell words, a block list item, and the flow list of an `args` call.
+INVOCATION = re.compile(r"operator generate-root|^\s*- generate-root\s*$|operator['\"]?\s*,\s*['\"]?generate-root")
 SCANNED_SUFFIXES = {".yml", ".yaml", ".j2", ".sh", ".hcl"}
 
 
@@ -71,6 +72,58 @@ REAL_SUBCOMMANDS = {
     "lease": {"renew", "lookup", "revoke"},
 }
 BAO_CALL = re.compile(r"\bbao\s+(?:-[\w=-]+\s+)*(" + "|".join(REAL_SUBCOMMANDS) + r")\s+([a-z][a-z-]*)")
+# The tasks call `bao` through the shared command role, which takes the words after `bao`
+# as an `args` list. The leading plain words of such a list are read here. A list that
+# starts with a template is not a subcommand call that can be checked.
+ARGS_LIST = re.compile(
+    r"""\bargs['"]?\s*:\s*\[\s*((?:['"]?[A-Za-z-][\w=-]*['"]?\s*,\s*)*['"]?[A-Za-z-][\w=-]*['"]?)"""
+)
+# The smallest number of `args` calls that the scan must find in this repository. A lower
+# number means that the scan no longer reads the shape the tasks use.
+MINIMUM_ARGS_CALLS = 40
+
+
+def subcommand(words):
+    """Return (group, subcommand) for the words after `bao`, or None."""
+    positional = [w for w in words if not w.startswith("-")]
+    if len(positional) >= 2 and positional[0] in REAL_SUBCOMMANDS:
+        return positional[0], positional[1]
+    return None
+
+
+def walk_args(node):
+    """Yield each `args` list of plain strings in a parsed YAML document."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "args" and isinstance(value, list) and all(isinstance(w, str) for w in value):
+                yield [w for w in value]
+            else:
+                yield from walk_args(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from walk_args(value)
+
+
+def args_calls():
+    """Return the set of (file, group, subcommand) for every `args` call to `bao`.
+
+    A task file is read twice. Its YAML gives the lists in any layout. Its text gives the
+    lists that sit inside a Jinja string, which YAML does not parse."""
+    found = set()
+    for path in repository_files():
+        relative = str(path.relative_to(ROOT))
+        word_lists = [m.group(1) for _, line in code_lines(path) for m in ARGS_LIST.finditer(line)]
+        word_lists = [[w.strip("'\" ") for w in text.split(",")] for text in word_lists]
+        if path.suffix in {".yml", ".yaml"}:
+            try:
+                word_lists += list(walk_args(yaml.safe_load(path.read_text())))
+            except yaml.YAMLError:
+                pass
+        for words in word_lists:
+            call = subcommand(words)
+            if call:
+                found.add((relative, *call))
+    return found
 
 
 class CliRegistryTests(unittest.TestCase):
@@ -85,8 +138,40 @@ class CliRegistryTests(unittest.TestCase):
 
         self.assertEqual(invented, [])
 
+    def test_every_args_call_in_the_repository_names_a_subcommand_of_the_cli(self) -> None:
+        # A subcommand chosen by a template is checked by each quoted word in it.
+        invented = [
+            f"{relative}: bao {group} {sub}"
+            for relative, group, sub in sorted(args_calls())
+            for word in (re.findall(r"'([a-z][a-z-]*)'", sub) if "{{" in sub else [sub])
+            if word not in REAL_SUBCOMMANDS[group]
+        ]
+
+        self.assertEqual(invented, [])
+
+    def test_the_args_scan_finds_the_calls_and_does_not_pass_vacuously(self) -> None:
+        # Catches a scan that reads nothing, which would let every invented subcommand
+        # through: it must find many calls, in more than one group and in a task file.
+        calls = args_calls()
+        self.assertGreaterEqual(len(calls), MINIMUM_ARGS_CALLS)
+        self.assertTrue({"policy", "token", "auth", "secrets"} <= {group for _, group, _ in calls})
+        self.assertIn(("policy", "write"), {(group, sub) for _, group, sub in calls})
+        self.assertTrue(any(relative.endswith("openbao/tasks/main.yml") for relative, _, _ in calls))
+
     def test_the_check_would_catch_token_lookup_self(self) -> None:
         self.assertEqual(BAO_CALL.findall("bao token lookup-self -format=json"), [("token", "lookup-self")])
+        # The same invented call in an `args` list, as a flow list in YAML and inside a
+        # Jinja string, and with a leading flag.
+        self.assertEqual(subcommand(["token", "lookup-self"]), ("token", "lookup-self"))
+        self.assertEqual(subcommand(["-format=json", "token", "lookup-self"]), ("token", "lookup-self"))
+        for line in (
+            "- args: [token, lookup-self, -format=json]",
+            "{%- set _ = out.append({'item': li, 'args': ['token', 'lookup-self']}) -%}",
+        ):
+            words = [w.strip("'\" ") for w in ARGS_LIST.search(line).group(1).split(",")]
+            self.assertEqual(subcommand(words), ("token", "lookup-self"), line)
+        self.assertEqual(list(walk_args(yaml.safe_load("a:\n  - args:\n      - token\n      - lookup-self\n"))),
+                         [["token", "lookup-self"]])
 
 
 class ImagePinTests(unittest.TestCase):
@@ -141,9 +226,15 @@ class PolicyTests(unittest.TestCase):
     def test_role_writes_the_policy_on_every_run(self) -> None:
         tasks = yaml.safe_load((OPENBAO_ROLE / "tasks/main.yml").read_text())
         write = next(t for t in tasks if t.get("name") == "Write the generate-root policy")
+        read = next(t for t in tasks if t.get("vars") is None and "_openbao_policy_text_generate_root" in str(t.get("ansible.builtin.set_fact", "")))
 
-        self.assertIn("bao policy write {{ openbao_generate_root_policy_name }} -", write["ansible.builtin.shell"]["cmd"])
-        self.assertIn("files/policies/generate-root.hcl", write["ansible.builtin.shell"]["stdin"])
+        # The call writes the policy by its configured name, reads the policy text from
+        # stdin (the `-` word and `input`), and the text comes from the policy file.
+        self.assertEqual(write["ansible.builtin.include_role"]["name"], "common/openbao-cli")
+        call, = write["vars"]["openbao_cli_calls"]
+        self.assertEqual(call["args"], ["policy", "write", "{{ openbao_generate_root_policy_name }}", "-"])
+        self.assertIn("_openbao_policy_text_generate_root", call["input"])
+        self.assertIn("files/policies/generate-root.hcl", str(read["ansible.builtin.set_fact"]))
         self.assertEqual(write["when"], "openbao_is_initialized | bool")
 
     def test_the_install_never_attaches_the_policy_to_ops_admin(self) -> None:
@@ -177,6 +268,15 @@ class CallerTests(unittest.TestCase):
 
     def test_no_file_of_this_repository_calls_generate_root(self) -> None:
         self.assertEqual([str(p.relative_to(ROOT)) for p in self.callers()], [])
+
+    def test_the_caller_scan_matches_each_spelling_of_the_call(self) -> None:
+        for line in (
+            "bao operator generate-root -init",
+            "    - generate-root",
+            "- args: [operator, generate-root, -init]",
+            "'args': ['operator', 'generate-root']",
+        ):
+            self.assertTrue(INVOCATION.search(line), line)
 
     def test_the_ops_admin_rotation_path_stays_retired(self) -> None:
         # The rotation of the ops-admin password is an entry of the approval catalogue,
