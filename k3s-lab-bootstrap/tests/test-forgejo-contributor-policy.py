@@ -84,7 +84,18 @@ def render_authentik_blueprint(subject_mode):
     environment = jinja2.Environment(undefined=jinja2.StrictUndefined)
     environment.filters["regex_replace"] = lambda value, pattern, replacement: re.sub(pattern, replacement, value)
     environment.filters["to_json"] = json.dumps
-    return environment.from_string(template).render(authentik_forgejo_oidc_sub_mode=subject_mode)
+    return environment.from_string(template).render(
+        authentik_forgejo_oidc_sub_mode=subject_mode, **shared_host_names())
+
+
+def shared_host_names():
+    """Render vars/service-hosts.yml the way a play that loads it does."""
+    environment = jinja2.Environment()
+    environment.tests["match"] = lambda value, pattern: re.match(pattern, value) is not None
+    names = {}
+    for key, template in yaml.safe_load((ROOT / "vars/service-hosts.yml").read_text()).items():
+        names[key] = environment.from_string(template).render(**names)
+    return names
 
 
 def render_forgejo_values():
