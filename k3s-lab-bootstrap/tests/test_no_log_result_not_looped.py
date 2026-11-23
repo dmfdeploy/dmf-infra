@@ -12,7 +12,11 @@ properties:
 
 - It loops with `loop`, `with_items`, `with_list` or another `with_*` keyword.
 - The loop expression names a variable that a `no_log` task registered.
-- The task is not `no_log` itself, directly or through its block or play.
+- The task is not `no_log` itself, directly or through its block or play. Only a literal
+  `true` or `yes` counts. A template such as `no_log: "{{ hide | default(false) }}"` can
+  be false, so the task counts as visible.
+
+A file that does not parse fails the test with its path.
 
 The scan follows registered variables, and the names given to the `common/openbao-cli`
 role as `openbao_cli_register`, only. A `no_log` `set_fact` that reduces a result
@@ -24,6 +28,7 @@ Run from k3s-lab-bootstrap:
     python3 -m unittest discover -s tests -p 'test_no_log_result_not_looped.py' -v
 """
 import re
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -36,12 +41,10 @@ IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def is_no_log(value):
-    """True when a `no_log` value is the literal true, or a template we cannot read."""
+    """True only for a literal true. A template, a variable or anything else can be false."""
     if value is True:
         return True
-    if isinstance(value, str):
-        return value.strip().lower() in {"true", "yes"} or "{{" in value
-    return False
+    return isinstance(value, str) and value.strip().lower() in {"true", "yes"}
 
 
 def walk(items, inherited=False):
@@ -61,8 +64,8 @@ def file_tasks(path):
     """Every (task, effective no_log) of a playbook, a tasks file or a role file."""
     try:
         document = yaml.safe_load(path.read_text())
-    except yaml.YAMLError:
-        return []
+    except yaml.YAMLError as error:
+        raise AssertionError("%s does not parse as YAML: %s" % (path, error)) from error
     if not isinstance(document, list):
         return []
     out = []
@@ -222,6 +225,20 @@ LEAK_FROM_ROLE = """
 """
 
 
+LEAK_TEMPLATED_NO_LOG = """
+- hosts: all
+  tasks:
+    - name: Look up
+      ansible.builtin.uri: {url: "https://x/api"}
+      register: _lookup
+      no_log: true
+    - name: Assert every lookup
+      ansible.builtin.assert: {that: ["item.json.results | length > 0"]}
+      loop: "{{ _lookup.results }}"
+      no_log: "{{ hide | default(false) }}"
+"""
+
+
 class NoLogResultNotLoopedTest(unittest.TestCase):
     def test_no_task_loops_over_a_no_log_result_without_no_log(self):
         self.assertEqual(violations(ROOT), [])
@@ -239,6 +256,19 @@ class NoLogResultNotLoopedTest(unittest.TestCase):
 
     def test_the_scan_flags_a_loop_over_a_result_the_openbao_cli_role_sets(self):
         self.assertEqual(violations_in(LEAK_FROM_ROLE), [("Assert each", "_logins")])
+
+    def test_a_templated_no_log_counts_as_visible(self):
+        self.assertEqual(violations_in(LEAK_TEMPLATED_NO_LOG), [("Assert every lookup", "_lookup")])
+
+    def test_a_file_that_does_not_parse_fails_with_its_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "playbooks" / "broken.yml"
+            bad.parent.mkdir()
+            bad.write_text("- name: x\n  bad: [unclosed\n")
+            (Path(tmp) / "roles").mkdir()
+            with self.assertRaises(AssertionError) as caught:
+                violations(Path(tmp))
+            self.assertIn(str(bad), str(caught.exception))
 
     def test_the_scan_allows_the_safe_forms(self):
         for name, text in (
