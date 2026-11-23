@@ -8,14 +8,14 @@
 
 kubernetes==31.0.0
 openshift==0.13.2
-jsonpatch==1.33
+jsonpatch==1.48
 
 # Runtime dependency of netbox.netbox's nb_inventory plugin (baked in
 # requirements.yml). Required so the NetBox dynamic inventory resolves
 # offline from the EE — no public galaxy/pip fetch at job time.
-pynetbox==7.8.0
+pynetbox==7.9.0
 
 # The json_query filter in community.general needs jmespath. The pinned base
 # image already ships jmespath 1.0.1; the pin keeps it when the base image
 # changes. The playbook host needs it too: see ../requirements.txt.
-jmespath==1.0.1
+jmespath==1.1.0
