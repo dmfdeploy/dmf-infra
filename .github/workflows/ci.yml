@@ -382,8 +382,12 @@ jobs:
           SHARD: ${{ matrix.shard }}
 
   ansible-unit:
-    # The OpenBao unit tests, split by file. Files are dealt out in name order, so a
-    # new test file lands in a shard without a change here. About 5, 3 and 1 minutes.
+    # The OpenBao unit tests, split by file. Each file has a weight, in seconds of
+    # test time, and a file without one counts for 2. The slowest files are placed
+    # first, each in the lightest shard, so a new test file lands in a shard without a
+    # change here. Three files run the install playbook for real and take 6, 5 and
+    # 1.5 minutes on a CI runner. Keep their weights in step when those times change.
+    # The shards take about 6, 5 and 4 minutes of test time.
     name: ansible-unit (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -423,9 +427,26 @@ jobs:
           shopt -s nullglob
           files=(tests/test_openbao_*.py)
           [ ${#files[@]} -gt 0 ] || { echo "No OpenBao unit tests found"; exit 1; }
-          modules=$(printf '%s\n' "${files[@]}" | sort |
-            awk -v shard="$SHARD" -v total="$TOTAL" '(NR - 1) % total == shard - 1 {print $0}' |
-            sed 's|^tests/||; s|\.py$||')
+          modules=$(printf '%s\n' "${files[@]}" | sort | python3 -c '
+          import os, sys
+          weights = {
+              "test_openbao_install_path": 350, "test_openbao_fresh_init_token": 310,
+              "test_openbao_revoker": 85, "test_openbao_image_preflight": 55,
+              "test_openbao_fake_bao_tokens": 30, "test_openbao_rotation_wiring": 15,
+              "test_openbao_a2a_static": 11, "test_openbao_approle_registry_assertions": 8,
+              "test_openbao_generate_root": 6,
+          }
+          shard, total = int(os.environ["SHARD"]), int(os.environ["TOTAL"])
+          names = [line.strip()[len("tests/"):-len(".py")] for line in sys.stdin if line.strip()]
+          load = [0] * total
+          mine = []
+          for name in sorted(names, key=lambda n: -weights.get(n, 2)):
+              lightest = load.index(min(load))
+              load[lightest] += weights.get(name, 2)
+              if lightest == shard - 1:
+                  mine.append(name)
+          print("\n".join(sorted(mine)))
+          ')
           echo "$modules"
           [ -n "$modules" ] || { echo "Shard $SHARD has no test files"; exit 1; }
           echo "$modules" | PYTHONPATH=tests xargs python3 -m unittest -v
