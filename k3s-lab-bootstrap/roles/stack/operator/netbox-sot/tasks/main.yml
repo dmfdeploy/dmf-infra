@@ -605,19 +605,34 @@
       when: item.json.count | int == 0
       no_log: true
 
+    # The lookup result is no_log, so the warning below loops over a summary with
+    # only the fields it prints.
+    - name: Summarise the existing NetBox monitoring custom fields
+      ansible.builtin.set_fact:
+        _netbox_sot_monitoring_cf_existing: >-
+          {%- set out = [] -%}
+          {%- for r in _netbox_sot_monitoring_cf_lookup.results if r.json.count | int > 0 -%}
+          {%- set found = r.json.results | first -%}
+          {%- set _ = out.append({
+                'name': r.item.name,
+                'wanted_type': r.item.type,
+                'existing_type': found.type.value | default(found.type)
+              }) -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+      no_log: true
+
     - name: Warn on NetBox monitoring custom-field type drift
       ansible.builtin.debug:
         msg: >-
-          NetBox custom field {{ item.item.name }} exists with type
-          '{{ (item.json.results | first).type.value | default((item.json.results | first).type) }}'
-          but the role wants type '{{ item.item.type }}'. Re-shape manually;
+          NetBox custom field {{ item.name }} exists with type
+          '{{ item.existing_type }}'
+          but the role wants type '{{ item.wanted_type }}'. Re-shape manually;
           the role will not PATCH existing custom fields.
-      loop: "{{ _netbox_sot_monitoring_cf_lookup.results }}"
+      loop: "{{ _netbox_sot_monitoring_cf_existing | from_json }}"
       loop_control:
-        label: "{{ item.item.name }}"
-      when:
-        - item.json.count | int > 0
-        - (item.json.results | first).type.value | default((item.json.results | first).type) != item.item.type
+        label: "{{ item.name }}"
+      when: item.existing_type != item.wanted_type
 
 - name: Lookup AWX group
   ansible.builtin.uri:

@@ -889,15 +889,31 @@
             openbao_cli_register: _verify_wrong_logins
             openbao_cli_allow_failure: true
 
+        # A login that OpenBao wrongly accepts puts a client token in the result's
+        # stdout, so the assert below loops over a summary without it.
+        - name: Reduce the wrong-token logins to facts that hold no token
+          ansible.builtin.set_fact:
+            _verify_wrong_login_outcomes: >-
+              {%- set out = [] -%}
+              {%- for r in _verify_wrong_logins.results -%}
+              {%- set _ = out.append({
+                    'case': r.item.case,
+                    'rc': r.rc,
+                    'accepted': 1 if 'client_token' in r.stdout else 0
+                  }) -%}
+              {%- endfor -%}
+              {{ out | to_json }}
+          no_log: true
+
         - name: Assert every wrong token is refused
           ansible.builtin.assert:
             that:
               - item.rc != 0
-              - "'client_token' not in item.stdout"
-            fail_msg: "OpenBao accepted a login with the {{ item.item.case }} token."
-          loop: "{{ _verify_wrong_logins.results }}"
+              - item.accepted == 0
+            fail_msg: "OpenBao accepted a login with the {{ item.case }} token."
+          loop: "{{ _verify_wrong_login_outcomes | from_json }}"
           loop_control:
-            label: "{{ item.item.case }}"
+            label: "{{ item.case }}"
 
         # The body holds a public key that cannot parse. A token that may write
         # the config gets a validation error and nothing changes; a token that
