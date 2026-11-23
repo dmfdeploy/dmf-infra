@@ -13,6 +13,10 @@ updates:
       - "no-issue"
     commit-message:
       prefix: "ci(deps)"
+    # Major upgrades are done on purpose, as their own changes.
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
   - package-ecosystem: "pip"
     directory: "/k3s-lab-bootstrap"
     schedule:
@@ -20,6 +24,8 @@ updates:
     # CI runs Python 3.12 and ansible 15 needs 3.13 or newer. Remove this
     # ignore when CI moves to Python 3.13.
     ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
       - dependency-name: "ansible"
         versions: [">= 15"]
     groups:
