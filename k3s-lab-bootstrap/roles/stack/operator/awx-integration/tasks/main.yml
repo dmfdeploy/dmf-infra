@@ -2800,6 +2800,8 @@
   loop_control:
     label: "{{ item.item }}"
   run_once: true
+  # The loop item is the lookup result, which carries the credential's inputs block.
+  no_log: true
 
 - name: Detach inactive optional secret credentials from catalog job templates
   ansible.builtin.uri:

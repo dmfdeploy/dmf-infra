@@ -148,38 +148,67 @@
         label: "{{ item.slug }}"
       no_log: true
 
+    # The registered lookups above hold provider fields such as client secrets, so
+    # no task loops over them or templates them. These facts keep only what the
+    # asserts below need: a name, a count and the ids the provider lists.
+    - name: Reduce the lookups to facts that hold no secret
+      ansible.builtin.set_fact:
+        _verify_application_slugs: >-
+          {{ _verify_applications.results
+             | map(attribute='json.results')
+             | map('map', attribute='slug')
+             | map('list')
+             | list }}
+        _verify_oauth_summary: >-
+          {%- set out = [] -%}
+          {%- for r in _verify_oauth_providers.results -%}
+          {%- set _ = out.append({
+                'name': r.item.name,
+                'count': r.json.results | length,
+                'mappings': (r.json.results[0].property_mappings | default([])) if (r.json.results | length) > 0 else []
+              }) -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+        _verify_saml_summary: >-
+          {%- set out = [] -%}
+          {%- for r in _verify_saml_providers.results -%}
+          {%- set _ = out.append({'name': r.item.name, 'count': r.json.results | length}) -%}
+          {%- endfor -%}
+          {{ out | to_json }}
+      no_log: true
+
     - name: Assert every application is provisioned
       ansible.builtin.assert:
         that:
-          - item.json.results | selectattr('slug', 'equalto', item.item.slug) | list | length > 0
+          - item.1 | select('equalto', item.0.slug) | list | length > 0
         fail_msg: >-
-          Application with slug '{{ item.item.slug }}' is missing in Authentik
-          (the lookup returned {{ item.json.results | map(attribute='slug') | list }}).
+          Application with slug '{{ item.0.slug }}' is missing in Authentik
+          (the lookup returned {{ item.1 }}).
           If the lookup returned other applications, it did not find this one.
           Confirm the 20-app-providers blueprint applied successfully.
-      loop: "{{ _verify_applications.results }}"
+      loop: "{{ verify_apps | zip(_verify_application_slugs) | list }}"
       loop_control:
-        label: "{{ item.item.slug }}"
+        label: "{{ item.0.slug }}"
 
     - name: Assert every OIDC provider is provisioned
       ansible.builtin.assert:
         that:
-          - item.json.results | length > 0
+          - item.count > 0
         fail_msg: >-
-          OAuth2 provider '{{ item.item.name }}' is missing in Authentik.
-      loop: "{{ _verify_oauth_providers.results }}"
+          OAuth2 provider '{{ item.name }}' is missing in Authentik.
+      loop: "{{ _verify_oauth_summary | from_json }}"
       loop_control:
-        label: "{{ item.item.name }}"
+        label: "{{ item.name }}"
 
     - name: Assert every SAML provider is provisioned
       ansible.builtin.assert:
         that:
-          - item.json.results | length > 0
+          - item.count > 0
         fail_msg: >-
-          SAML provider '{{ item.item.name }}' is missing in Authentik.
-      loop: "{{ _verify_saml_providers.results }}"
+          SAML provider '{{ item.name }}' is missing in Authentik.
+      loop: "{{ _verify_saml_summary | from_json }}"
       loop_control:
-        label: "{{ item.item.name }}"
+        label: "{{ item.name }}"
 
     # ────────────────────────────────────────────────────────────────
     # Check 3 — every OIDC provider carries the DMF groups scope
@@ -210,14 +239,13 @@
     - name: Assert each OIDC provider includes the DMF groups scope
       ansible.builtin.assert:
         that:
-          - _verify_dmf_groups_scope_pk in
-              (item.json.results[0].property_mappings | default([]))
+          - _verify_dmf_groups_scope_pk in item.mappings
         fail_msg: >-
-          OAuth2 provider '{{ item.item.name }}' does not include the
+          OAuth2 provider '{{ item.name }}' does not include the
           'DMF groups' scope mapping. ops-admin claims will not reach the app.
-      loop: "{{ _verify_oauth_providers.results }}"
+      loop: "{{ _verify_oauth_summary | from_json }}"
       loop_control:
-        label: "{{ item.item.name }}"
+        label: "{{ item.name }}"
 
     # ────────────────────────────────────────────────────────────────
     # Summary
