@@ -55,13 +55,6 @@ SHELL_CREDENTIAL = re.compile(r"\b[a-z_]*(?:password|secret_id|token|key)=\"?\$[
 SECRET = re.compile(r"unseal_key|root_token|_token|password|secret_id|share_|_share|[a-z]_otp\\b", re.I)
 # Names that look secret but carry none.
 BENIGN = re.compile(r"openbao_shamir_|breakglass_(?:file|path|secret_path|secret_name)|_name\b|_path\b|_dir\b|_service\b|_ttl\b|openbao_namespace")
-# Known earlier defects of the same class, outside the unseal path and not yet fixed.
-# Each entry is an expression that this check tolerates for now. Remove the entry
-# when the task is fixed.
-KNOWN = {
-    # Writes share 3 to the macOS Keychain on the operator workstation with `security -w`.
-    "openbao_unseal_keys_b64[2]",
-}
 
 
 # Key names that carry a secret in a task `environment:`.
@@ -367,7 +360,7 @@ class OpenBaoNoSecretArgvTest(unittest.TestCase):
             relative = path.relative_to(ROOT)
             for number, line in argv_and_cmd_lines(path):
                 for expr in wide_secret_expressions(line):
-                    if expr in KNOWN or f"{relative}::{expr}" in ARGV_ALLOWED:
+                    if f"{relative}::{expr}" in ARGV_ALLOWED:
                         continue
                     found.append(f"{relative}:{number}: {{{{ {expr} }}}}")
         self.assertEqual(found, [], "secret material in a command argument:\n" + "\n".join(found))
