@@ -88,12 +88,12 @@ class BuildRefusalTest(unittest.TestCase):
     """build.sh refuses before it looks for Docker or ansible-builder."""
 
     def _build(self, script, env_extra=None):
-        env = {k: v for k, v in os.environ.items() if k not in ("IMAGE_VERSION", "LOCAL_TAG")}
+        env = {k: v for k, v in os.environ.items() if k not in ("IMAGE_VERSION", "LOCAL_TAG", "VCS_REF")}
         env.update(env_extra or {})
         return subprocess.run(["bash", str(script)], capture_output=True, text=True, env=env)
 
-    def test_refuses_an_image_version_or_local_tag_from_the_environment(self):
-        for name, value in {"IMAGE_VERSION": "9.9.9", "LOCAL_TAG": "example.invalid/x:1"}.items():
+    def test_refuses_an_image_version_local_tag_or_vcs_ref_from_the_environment(self):
+        for name, value in {"IMAGE_VERSION": "9.9.9", "LOCAL_TAG": "example.invalid/x:1", "VCS_REF": "0" * 40}.items():
             with self.subTest(name):
                 result = self._build(BUILD, {name: value})
                 self.assertNotEqual(result.returncode, 0)

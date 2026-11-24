@@ -8,12 +8,11 @@
 # registry.dmf.example.com/dmf/awx-ee:<DEFAULT_IMAGE_VERSION> (a placeholder
 # registry; scripts/publish-to-ghcr.sh retags for GHCR). A build refuses to run
 # when IMAGE_VERSION or LOCAL_TAG is set in the environment, so the tag that
-# --print-version reports is the tag the build produces.
+# --print-version reports is the tag the build produces. The revision label is
+# always the checkout's HEAD, so a build also refuses VCS_REF from the
+# environment.
 #
 # Env knobs:
-#   VCS_REF          full commit SHA stamped into the OCI revision label
-#                    (default: git rev-parse HEAD of the source tree; the
-#                    build stops if neither is available)
 #   DOCKER_HOST      Colima docker-build socket (default: docker-build profile)
 
 # The ansible-core version comes from ../requirements-ansible-core.txt, the one
@@ -107,20 +106,22 @@ EE_DIR="$(dirname "$SCRIPT_DIR")"
 # repo root = parent of k3s-lab-bootstrap
 REPO_ROOT="$(cd "$EE_DIR/../.." && pwd)"
 
-# DEFAULT_IMAGE_VERSION is the only source of the version and the local tag.
-for override in IMAGE_VERSION LOCAL_TAG; do
+# DEFAULT_IMAGE_VERSION is the only source of the version and the local tag,
+# and the checkout's HEAD is the only source of the revision label.
+for override in IMAGE_VERSION LOCAL_TAG VCS_REF; do
   if [[ -n "${!override+set}" ]]; then
     echo "ERROR: $override is set in the environment; build.sh does not accept it." >&2
-    echo "       Change DEFAULT_IMAGE_VERSION in build.sh, commit, and build from that commit." >&2
+    echo "       Unset it. The version comes from DEFAULT_IMAGE_VERSION and the revision label from HEAD," >&2
+    echo "       so change DEFAULT_IMAGE_VERSION, commit, and build from a clean checkout of that commit." >&2
     exit 1
   fi
 done
 
 IMAGE_VERSION="$DEFAULT_IMAGE_VERSION"
 LOCAL_TAG="registry.dmf.example.com/dmf/awx-ee:${IMAGE_VERSION}"
-VCS_REF="${VCS_REF:-$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)}"
+VCS_REF="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || true)"
 if ! [[ "$VCS_REF" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "ERROR: VCS_REF must be a full 40-character commit SHA; run from a git checkout or set VCS_REF." >&2
+  echo "ERROR: build.sh must run from a git checkout; it labels the image with HEAD." >&2
   exit 1
 fi
 DOCKER_HOST="${DOCKER_HOST:-unix://$HOME/.colima/docker-build/docker.sock}"
