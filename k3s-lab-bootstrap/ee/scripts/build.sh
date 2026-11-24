@@ -6,7 +6,7 @@
 #
 # The image version is DEFAULT_IMAGE_VERSION below, and the local tag is always
 # registry.dmf.example.com/dmf/awx-ee:<DEFAULT_IMAGE_VERSION> (a placeholder
-# registry; scripts/publish-to-ghcr.sh retags for GHCR). A build refuses to run
+# registry; the publish step in ../README.md retags for GHCR). A build refuses to run
 # when IMAGE_VERSION or LOCAL_TAG is set in the environment, so the tag that
 # --print-version reports is the tag the build produces. The revision label is
 # always the checkout's HEAD, so a build also refuses VCS_REF from the
@@ -35,8 +35,8 @@ set -euo pipefail
 
 PIN_PATTERN='^ansible-core==[0-9]+\.[0-9]+\.[0-9]+$'
 PLACEHOLDER='__ANSIBLE_CORE_PIN__'
-# The one place the default image version is set. publish-to-ghcr.sh reads it
-# with --print-version.
+# The one place the default image version is set. The commands in ../README.md
+# read it with --print-version.
 DEFAULT_IMAGE_VERSION='0.2.0'
 # The files execution-environment.yml references, besides itself.
 STAGED_INPUTS=(requirements.yml requirements.txt bindep.txt)
@@ -204,4 +204,4 @@ echo "  DOCKER_HOST=$DOCKER_HOST docker image inspect $LOCAL_TAG \\"
 echo "    --format '{{json .Config.Labels}}' | python3 -m json.tool"
 
 echo ""
-echo "Next: publish to GHCR via scripts/publish-to-ghcr.sh"
+echo "Next: publish to GHCR (see ../README.md, 'Publish, mirror, switch and rollback')"

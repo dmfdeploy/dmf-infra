@@ -1,0 +1,9 @@
+---
+# The tag of the AWX execution environment image (ghcr.io/dmfdeploy/awx-ee,
+# mirrored into Zot as dmf/awx-ee), in one place. Playbooks 050, 630 and 693
+# load this file with vars_files, and `-e awx_ee_image_tag=<tag>` overrides it
+# for one run.
+#
+# To bump: build and publish the image (ee/README.md), change this one line, and
+# rerun 630-zot-seed-platform.yml and 693-awx-integration.yml.
+awx_ee_image_tag: "0.2.0"
