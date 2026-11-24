@@ -83,9 +83,9 @@ Raise the value when the sum for an environment approaches it.
 
 ## Container choice
 
-Main container: `quay.io/skopeo/stable`. The `aws` CLI is copied out
-of `amazon/aws-cli` via an initContainer into a shared `emptyDir`
-mounted at `/shared-bin/`; main container's `PATH` includes it.
+Main container: the Skopeo image in `zot_mirror_skopeo_image`. The `aws` CLI
+is copied out of the AWS CLI image in `zot_mirror_awscli_image` via an
+initContainer into a shared `emptyDir` mounted at `/shared-bin/`; main container's `PATH` includes it.
 Single image build, no custom image to maintain.
 
 ## Important: NO `--remove` (or equivalent destructive flag)
@@ -128,9 +128,10 @@ aws s3 ls s3://dmf-app-backups-<env>/zot/ --endpoint-url <b2-endpoint>
 #    break-glass restore you can use the `admin` account instead
 #    (`secret/apps/zot/admin`): change the user name and mount a Secret
 #    that holds its password.
-#    Replace <snapshot-timestamp> with the value from step 1. If you
-#    changed the image defaults, use the same images as the backup job
-#    (`zot_mirror_awscli_image` and `zot_mirror_skopeo_image`).
+#    Replace <snapshot-timestamp> with the value from step 1. Replace
+#    the two image placeholders with the values of `zot_mirror_awscli_image`
+#    and `zot_mirror_skopeo_image`, so the restore uses the same images as
+#    the backup job.
 #    The `mirror` volume must hold the whole snapshot. To cap it, add
 #    `sizeLimit` with the value of `zot_mirror_scratch_size`.
 kubectl -n zot apply -f - <<'EOF'
@@ -151,7 +152,7 @@ spec:
       emptyDir: {}
   initContainers:
     - name: download
-      image: amazon/aws-cli:2.42.2@sha256:6c24ad4e8cdf12defd41c7e6d2ed836e73da9cbfecc1e9d7fd148bb9f4ea5eb2
+      image: <zot_mirror_awscli_image>
       command: ["/bin/sh", "-c"]
       args:
         - |
@@ -167,7 +168,7 @@ spec:
         - { name: mirror, mountPath: /mirror }
   containers:
     - name: restore
-      image: quay.io/skopeo/stable:v1.25.1@sha256:638c591f8a72f447eb61e2075b6db023f81175839931675f93fbb3b55be27339
+      image: <zot_mirror_skopeo_image>
       command: ["/bin/bash", "-c"]
       args:
         - |
@@ -230,7 +231,7 @@ the execution plan.
 | `zot_mirror_pull_creds_username` | `zot-svc` |
 | `zot_mirror_eso_cluster_secret_store` | `openbao` |
 | `zot_mirror_s3_creds_secret` | `s3-creds-app-backups` |
-| `zot_mirror_skopeo_image` | `quay.io/skopeo/stable:v1.25.1@sha256:638c591f8a72f447eb61e2075b6db023f81175839931675f93fbb3b55be27339` |
-| `zot_mirror_awscli_image` | `amazon/aws-cli:2.42.2@sha256:6c24ad4e8cdf12defd41c7e6d2ed836e73da9cbfecc1e9d7fd148bb9f4ea5eb2` |
+| `zot_mirror_skopeo_image` | Pinned by digest in `defaults/main.yml` |
+| `zot_mirror_awscli_image` | Pinned by digest in `defaults/main.yml` |
 | `zot_mirror_scratch_size` | `25Gi` |
 | `zot_mirror_deadline_seconds` | `10800` (3h) |

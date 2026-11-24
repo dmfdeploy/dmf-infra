@@ -6,7 +6,8 @@ the gzipped result to `s3://dmf-app-backups-<env>/pg/<app>/<timestamp>.sql.gz`.
 
 ## Supported source PostgreSQL versions
 
-The CronJob image is `postgres:16`. `pg_dump 16` supports source servers
+The CronJob image is `postgres_backups_image`, a PostgreSQL 16 image pinned
+by digest in `defaults/main.yml`. `pg_dump 16` supports source servers
 from PostgreSQL **9.2 through 16 inclusive**. It will **fail against
 PostgreSQL 17+** (pg_dump is forward-compatible but not backward).
 
