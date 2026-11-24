@@ -44,44 +44,36 @@ After `05-harden.yml` completes, update `ansible_user` in your inventory to
 
 ## Unattended upgrades and reboots
 
-`Automatic-Reboot "true"` is set, but **this does not reboot nightly**. A reboot
-only occurs if an upgrade sets `/var/run/reboot-required` (typically a kernel or
-libc update). Most nightly runs install nothing or install packages that need no
-reboot.
+Unattended upgrades install security updates. On a fresh install, the harden
+role turns off their automatic reboot (`Automatic-Reboot "false"`). Reboots from
+other sources, such as power loss, provider actions, or other node
+configuration, are outside this control. A reboot seals the OpenBao pod on that node, and
+rebooting a second node while the first pod is still sealed takes a Raft cluster
+below quorum. The role has no setting that turns scheduled reboots back on.
 
-### ⚠️ Known issue: simultaneous reboots on a multi-node cluster
+When `/var/run/reboot-required` exists on a node, reboot the nodes one at a time.
+On a single-node site, the reboot is an OpenBao outage until you unseal the pod.
 
-All nodes share the same reboot window (`harden_reboot_time`, default `02:00 UTC`).
-If a kernel update lands on all nodes on the same night, all three will reboot
-simultaneously, taking the cluster down completely.
+1. Run `playbooks/vertical-security/102-openbao-ha-guard.yml`. It checks that
+   every OpenBao pod is unsealed and a healthy Raft voter, and refuses when the
+   cluster cannot take the next restart.
+2. Identify the OpenBao pod on the node, for example with
+   `kubectl get pods -n openbao -o wide`. Then drain the node,
+   reboot it, wait for it to rejoin, and uncordon it.
+3. Check that OpenBao pod wherever it reschedules, which might not be the node
+   you rebooted. A restarted pod comes back sealed. Unseal
+   it with the threshold of shares, as described in "High availability and
+   restarts" in `docs/openbao-bootstrap-security-model.md`.
+4. Run the guard again. Reboot the next node only after it passes, which confirms
+   the pod is unsealed and a healthy Raft voter.
 
-**Workarounds (choose one):**
+With more than one OpenBao replica, a sealed pod counts against the
+PodDisruptionBudget, so a drain waits until you unseal it. The role creates the
+budget only when `openbao_replicas` is greater than 1.
 
-**Option A — Stagger reboot times per node** (pragmatic for a lab)
-
-Set per-host variables in your inventory:
-
-```ini
-# hosts.ini
-k3s-node-01 ... harden_reboot_time="02:00"
-k3s-node-02 ... harden_reboot_time="02:20"
-k3s-node-03 ... harden_reboot_time="02:40"
-```
-
-Nodes don't coordinate, but a reboot takes ~2-3 minutes so 20-minute gaps are
-sufficient for a 3-node cluster to stay healthy throughout.
-
-**Option B — Disable auto-reboot, use a drain/reboot playbook** (production approach)
-
-Set `harden_reboot_time` to a sentinel and `Automatic-Reboot "false"` (override
-the template), then run a playbook that:
-1. `kubectl cordon && kubectl drain` the node
-2. Reboots and waits for it to rejoin
-3. `kubectl uncordon`
-4. Repeats for the next node
-
-This is the correct approach if uptime matters. Not yet implemented — tracked as
-future work.
+On a single-node site, a drain can still block on a PodDisruptionBudget or on a
+pod with local data. Find the blocking pod and resolve it. Don't override the
+budget to get past it.
 
 ## Key variables
 
@@ -93,7 +85,6 @@ future work.
 | `harden_admin_pubkey` | `""` | SSH public key for the admin user |
 | `harden_private_cidr` | `10.0.0.0/28` | Private cluster network — fully allowed in nftables |
 | `harden_public_tcp_ports` | `[80, 443]` | TCP ports open to the world (cloud FW + nftables) |
-| `harden_reboot_time` | `02:00` | UTC time for unattended-upgrades auto-reboot |
 | `harden_fail2ban_maxretry` | `3` | Failed SSH attempts before ban |
 | `harden_fail2ban_bantime` | `1h` | Ban duration |
 | `harden_fail2ban_ignoreip` | `127.0.0.1/8 ::1` | Space-separated sources fail2ban never bans; the role appends the Ansible controller's address; add any extra operator CIDRs here |

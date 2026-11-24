@@ -18,6 +18,7 @@ Unattended-Upgrade::DevRelease "false";
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 Unattended-Upgrade::Remove-New-Unused-Dependencies "true";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
-Unattended-Upgrade::Automatic-Reboot "true";
-Unattended-Upgrade::Automatic-Reboot-WithUsers "false";
-Unattended-Upgrade::Automatic-Reboot-Time "{{ harden_reboot_time }}";
+// Never reboot on a schedule. A reboot seals the OpenBao pod on the node, and
+// a second reboot while the first pod is sealed takes a Raft cluster below
+// quorum. To reboot, follow docs/hardening.md.
+Unattended-Upgrade::Automatic-Reboot "false";
