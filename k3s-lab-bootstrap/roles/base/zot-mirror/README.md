@@ -151,7 +151,7 @@ spec:
       emptyDir: {}
   initContainers:
     - name: download
-      image: amazon/aws-cli:latest
+      image: amazon/aws-cli:2.42.2@sha256:6c24ad4e8cdf12defd41c7e6d2ed836e73da9cbfecc1e9d7fd148bb9f4ea5eb2
       command: ["/bin/sh", "-c"]
       args:
         - |
@@ -167,7 +167,7 @@ spec:
         - { name: mirror, mountPath: /mirror }
   containers:
     - name: restore
-      image: quay.io/skopeo/stable:latest
+      image: quay.io/skopeo/stable:v1.25.1@sha256:638c591f8a72f447eb61e2075b6db023f81175839931675f93fbb3b55be27339
       command: ["/bin/bash", "-c"]
       args:
         - |
@@ -230,7 +230,7 @@ the execution plan.
 | `zot_mirror_pull_creds_username` | `zot-svc` |
 | `zot_mirror_eso_cluster_secret_store` | `openbao` |
 | `zot_mirror_s3_creds_secret` | `s3-creds-app-backups` |
-| `zot_mirror_skopeo_image` | `quay.io/skopeo/stable:latest` |
-| `zot_mirror_awscli_image` | `amazon/aws-cli:latest` |
+| `zot_mirror_skopeo_image` | `quay.io/skopeo/stable:v1.25.1@sha256:638c591f8a72f447eb61e2075b6db023f81175839931675f93fbb3b55be27339` |
+| `zot_mirror_awscli_image` | `amazon/aws-cli:2.42.2@sha256:6c24ad4e8cdf12defd41c7e6d2ed836e73da9cbfecc1e9d7fd148bb9f4ea5eb2` |
 | `zot_mirror_scratch_size` | `25Gi` |
 | `zot_mirror_deadline_seconds` | `10800` (3h) |

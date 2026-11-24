@@ -107,3 +107,75 @@ bin/run-playbook.sh ../dmf-infra/k3s-lab-bootstrap/playbooks/05-harden.yml \
 
 Note: the Hetzner firewall task does not yet use tags — add `tags: hetzner_firewall`
 to the `include_tasks` call in `roles/harden/tasks/main.yml` if needed.
+
+## Image pins
+
+The platform pins its third-party container images as `name:tag@sha256:<digest>`.
+The tag tells you the release. The digest fixes the content, so a tag that someone
+re-publishes cannot change what the cluster pulls. Never use `:latest` as the only
+reference. The exceptions are listed under [Exceptions](#exceptions): Zot, the
+NetBox Valkey tag, the AWX execution environment, the vendored Helm charts, and the
+images this project builds.
+
+For a multi-arch image, the digest is the one of the index (the manifest list), not
+of a single platform image, so arm64 and amd64 nodes both pull the pinned release.
+
+### Update a pin
+
+1. Choose the new tag. For an image that named `:latest`, use the newest stable
+   release tag.
+2. Save the manifest, resolve the digest, and check the platforms. The script stops
+   if `skopeo` fails or returns nothing, so you never copy the hash of an empty
+   result:
+
+   ```bash
+   ref=docker.io/library/nginx:1.27   # registry/name:tag
+   set -e
+   skopeo inspect --raw "docker://$ref" > manifest.json
+   test -s manifest.json
+   shasum -a 256 manifest.json
+   python3 -c 'import json; d=json.load(open("manifest.json")); p={m["platform"]["os"]+"/"+m["platform"]["architecture"] for m in d["manifests"]}; print(d["mediaType"], sorted(p)); assert {"linux/amd64","linux/arm64"} <= p'
+   ```
+
+3. Write `<name>:<tag>@sha256:<digest>` where the image is defined. Where two
+   defaults must run the same release, such as `openbao_image` and
+   `openbao_raft_snapshot_image`, change both.
+
+### Exceptions
+
+- **Zot** (`zot_image`) is `zot-linux-arm64`, a single-platform arm64 manifest. It is
+  not an index, so there is no amd64 entry. Pin the digest of that manifest. Run the
+  same steps, but replace the python check with
+  `python3 -c 'import json; d=json.load(open("manifest.json")); print(d["mediaType"]); assert "manifests" not in d'`.
+- **NetBox Valkey** (`netbox.valkey.image` in the NetBox values template) keeps
+  `tag: latest` because `docker.io/bitnami/valkey` publishes no versioned tag. The
+  chart renders `docker.io/bitnami/valkey@sha256:<digest>` from `image.digest`, so
+  the pod runs pinned content. Update the digest with the steps above, using
+  `docker.io/bitnami/valkey:latest`.
+- **AWX execution environment** (`ee/`) is tracked on dmfdeploy/dmfdeploy#975.
+  `awx_control_plane_ee_image` is already pinned by digest.
+- **Vendored Helm charts** (`charts/`) are not scanned. Chart image pins are a separate
+  question on dmfdeploy/dmfdeploy#903.
+
+### What CI checks
+
+`tests/test_image_references_pinned.py` reads the files that git tracks under
+`k3s-lab-bootstrap/`, except `charts/`, `ee/` and `tests/`.
+
+It covers:
+
+- Literal values under image-named keys (`image`, `*_image`, `images`) and their list
+  items, indented or not. Each must end in `@sha256:<digest>`, with or without a tag. A
+  value that mixes literal text and a template, such as `nginx:{{ tag }}`, fails when it
+  has no `@sha256:` digest.
+- Helm `repository:` blocks. Each needs a `digest: sha256:<digest>` key beside it, with
+  or without a `tag:`.
+- Only the exact (file, value) pairs in the test's `ALLOWED` set pass without a digest.
+
+It does not prove:
+
+- References stored under other names, such as `backup_container` or `source_repo`.
+- What a template variable holds. A value made only of templates, such as
+  `"{{ img }}"`, passes.
+
+Review covers both.

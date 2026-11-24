@@ -189,7 +189,7 @@ class Render(unittest.TestCase):
         self.assertEqual(pod["securityContext"]["runAsNonRoot"], True)
         self.assertEqual(pod["securityContext"]["runAsUser"], 65534)
         self.assertEqual(pod["automountServiceAccountToken"], False)
-        self.assertEqual(container["image"], "python:3.13-alpine")
+        self.assertEqual(container["image"], "python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e")
         self.assertEqual(set(container["resources"]), {"requests", "limits"})
         self.assertIn("memory", container["resources"]["limits"])
         self.assertIn("cpu", container["resources"]["limits"])

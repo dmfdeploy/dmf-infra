@@ -27,8 +27,8 @@ postgres_backups_concurrency_policy: Forbid
 # Backup image — postgres:16 includes pg_dump natively.
 # An initContainer (amazon/aws-cli) copies the `aws` binary into a shared
 # emptyDir so the main container has both pg_dump and aws available.
-postgres_backups_image: "postgres:16"
-postgres_backups_awscli_image: "amazon/aws-cli:latest"
+postgres_backups_image: "postgres:16@sha256:07abc3f43c9395b0bdbbab36bc25ddb0e8d83cd4fcafb5fb7d6abe14ff156dd8"
+postgres_backups_awscli_image: "amazon/aws-cli:2.42.2@sha256:6c24ad4e8cdf12defd41c7e6d2ed836e73da9cbfecc1e9d7fd148bb9f4ea5eb2"
 
 # Per-app overrides — these map to each app's DB credentials Secret.
 # Each entry has:
