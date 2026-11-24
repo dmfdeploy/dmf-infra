@@ -41,10 +41,10 @@ SUFFIXES = {".yml", ".yaml", ".j2", ".sh", ".py"}
 RUNNER = "roles/stack/operator/ansible-runner/defaults/main.yml"
 AWX = "roles/stack/operator/awx-integration/defaults/main.yml"
 ALLOWED = {
-    (RUNNER, "registry.dmf.example.com/dmf/awx-ee:{{ ansible_runner_image_tag }}"):
-        "execution environment image (dmfdeploy/dmfdeploy#975); the tag is ansible_runner_image_tag",
+    (RUNNER, "registry.dmf.example.com/dmf/awx-ee:{{ awx_ee_image_tag }}"):
+        "execution environment image (dmfdeploy/dmfdeploy#975); the tag is awx_ee_image_tag, set in vars/awx-ee.yml",
     (AWX, "zot.zot.svc.cluster.local:5000/dmf/awx-ee"):
-        "repository only; awx-integration/tasks/main.yml appends awx_ee_catalog_tag; EE image, #975",
+        "repository only; awx_ee_catalog_ref (awx-integration/defaults/main.yml) appends awx_ee_image_tag; EE image, dmfdeploy/dmfdeploy#975",
     (AWX, "zot.zot.svc.cluster.local:5000/dmf/nmos-cpp-registry"):
         "repository only; the release tag is nmos_cpp_registry_tag and no digest is carried",
     (AWX, "zot.zot.svc.cluster.local:5000/dmf/nmos-cpp-node"):

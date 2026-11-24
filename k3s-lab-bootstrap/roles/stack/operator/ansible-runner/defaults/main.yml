@@ -21,18 +21,18 @@ ansible_runner_cluster_role: cluster-admin
 
 # Container image — shared DMF AWX EE per ADR-0025.
 #
-# Built by ../../../ee/scripts/build.sh, published to GHCR via
-# ../../../ee/scripts/publish-to-ghcr.sh, mirrored into cluster-internal
+# Built by ../../../ee/scripts/build.sh, published to GHCR as ../../../ee/README.md
+# describes, mirrored into cluster-internal
 # Zot by playbooks/630-zot-seed-platform.yml. The Zot path is the runtime default;
 # pods pull from inside the cluster, no external dependency once Stage 4b
 # has run.
 #
-# To bump: rebuild + republish + run 630-zot-seed-platform, then update
-# ansible_runner_image_tag here. Stay version-pinned for repro — never
-# use :latest in steady state.
+# The tag is awx_ee_image_tag, set once in vars/awx-ee.yml, which playbook 050
+# loads. To bump: rebuild + republish + run 630-zot-seed-platform, then change
+# that one line. Stay version-pinned for repro — never use :latest in steady
+# state.
 #
 # Fallback: if Zot is not (yet) seeded, override ansible_runner_image to
-# `ghcr.io/dmfdeploy/awx-ee:{{ ansible_runner_image_tag }}` at run time.
-ansible_runner_image_tag: "0.1.1"
-ansible_runner_image: "registry.dmf.example.com/dmf/awx-ee:{{ ansible_runner_image_tag }}"
+# `ghcr.io/dmfdeploy/awx-ee:{{ awx_ee_image_tag }}` at run time.
+ansible_runner_image: "registry.dmf.example.com/dmf/awx-ee:{{ awx_ee_image_tag }}"
 ansible_runner_image_pull_policy: IfNotPresent

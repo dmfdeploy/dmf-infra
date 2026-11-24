@@ -20,7 +20,7 @@ quay.io/fedora/fedora-minimal:43@sha256:<index digest>   (upstream base)
             ▼
 registry.dmf.example.com/dmf/awx-ee:<tag>   (local Colima build artifact)
             │
-            │   scripts/publish-to-ghcr.sh (operator workstation)
+            │   bin/publish-image-to-ghcr.sh (umbrella checkout, operator workstation)
             ▼
 ghcr.io/dmfdeploy/awx-ee:<tag>              (public source of truth — Lane A)
             │
@@ -59,7 +59,6 @@ removes the copy on exit. A stray or ignored file in this directory, such as a
 | `requirements.txt` | Python packages (kubernetes, openshift, jsonpatch, pynetbox, jmespath) |
 | `bindep.txt` | System packages (helm, git, ca-certificates, skopeo) |
 | `scripts/build.sh` | Checks the pin, renders the spec and its inputs into a temporary directory, and wraps `ansible-builder build` with the right `DOCKER_HOST` and the commit SHA for the revision label |
-| `scripts/publish-to-ghcr.sh` | Operator-side push to `ghcr.io/dmfdeploy/awx-ee` (token via stdin, isolated DOCKER_CONFIG) |
 | `../playbooks/630-zot-seed-platform.yml` | Cluster-side mirror from GHCR digest into cluster-internal Zot |
 
 ## Operator workflow
@@ -128,7 +127,7 @@ docker run --rm -v "$PWD/..":/work -w /work -e HOME=/tmp/home --entrypoint bash 
 Record the local image ID and the revision label:
 
 ```bash
-docker image inspect --format '{{.Id}}' $IMG    # config digest of the tested image
+docker image inspect --format '{{.Id}}' $IMG    # the image ID: the config digest, or the index digest on the containerd image store
 docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' $IMG
 ```
 
@@ -136,9 +135,98 @@ The revision label must equal the full SHA of the commit you are releasing.
 
 ### Publish, mirror, switch and rollback
 
-Slice 1 changes no consumer: nothing in the repository points at this image yet.
-Slice 3 (the switch to the shared tag variable) adds the publish, remote-verify,
-mirror, switch and rollback steps.
+Consumers read the image tag from one variable, `awx_ee_image_tag` in
+`../vars/awx-ee.yml`. Playbooks 050 (the runner foundation), 630 (the Zot
+mirror) and 693 (the AWX integration) load that file with `vars_files`, and
+`-e awx_ee_image_tag=<tag>` overrides it for one run. The value is `0.2.0`.
+
+**Architecture.** The image is built and published for arm64 only, as 0.1.1
+was: its GHCR index lists one `linux/arm64` image and an attestation. Playbook
+630 copies the platform named by `dmf_seed_arch`, which is `dmf_architecture`
+from the inventory and falls back to `amd64` when that is unset. The environment
+wizard renders `dmf_architecture` from the architecture you choose, and the
+sandbox profile renders `arm64`. An install must therefore have
+`dmf_architecture: arm64` (that is, `dmf_seed_arch=arm64`) before it seeds this
+image. An `amd64` seed fails, because the index has no `amd64` manifest:
+`no image found in image index for architecture "amd64", variant "", OS "linux"`.
+
+**Publish** (needs the operator's approval; it pushes to the public registry).
+From the umbrella checkout, with the image built by `scripts/build.sh` on the
+same Docker host:
+
+```bash
+gh auth token | GHCR_USER=<github-user> bin/publish-image-to-ghcr.sh \
+  registry.dmf.example.com/dmf/awx-ee:<tag> ghcr.io/dmfdeploy/awx-ee:<tag>
+```
+
+The helper reads the token on stdin and keeps it out of argv. Then check the
+push in two separate ways.
+
+- **The image you tested is the image GHCR holds.** Compare the arm64 platform
+  manifest digest locally and on GHCR. A local image ID is not a portable
+  identity (it is the config digest on Docker's classic image store and the
+  index digest on the containerd image store, which the Colima `docker-build`
+  profile uses), so read the platform manifest from the index. On the build host,
+  with the containerd image store, the local index is in the saved image:
+
+  ```bash
+  IMG=registry.dmf.example.com/dmf/awx-ee:<tag>
+  INDEX=$(docker image inspect --format '{{.Descriptor.digest}}' $IMG)
+  docker save $IMG | tar -xOf - blobs/sha256/${INDEX#sha256:} \
+    | jq -r '.manifests[] | select(.platform.architecture == "arm64") | .digest'
+  docker buildx imagetools inspect ghcr.io/dmfdeploy/awx-ee:<tag> --raw \
+    | jq -r '.manifests[] | select(.platform.architecture == "arm64") | .digest'
+  ```
+
+  The two lines must be equal. On a host with the classic image store there is
+  no index locally, so compare the config digest instead: the local
+  `docker image inspect --format '{{.Id}}' $IMG` against
+  `skopeo inspect --raw docker://ghcr.io/dmfdeploy/awx-ee@<arm64 manifest digest> | jq -r .config.digest`.
+- **The registry serves the index you record.** Take the tag's index digest from
+  `docker buildx imagetools inspect ghcr.io/dmfdeploy/awx-ee:<tag> --format '{{.Manifest.Digest}}'`
+  and record it in this README. It is the identity for a pull by digest, and it
+  is not the platform manifest digest above.
+
+**Mirror.** `630-zot-seed-platform.yml` copies the platform manifest for
+`dmf_seed_arch` from GHCR into Zot. Its tag gate skips a tag that Zot already
+holds, so a tag that was copied earlier and then re-cut stays as it was; run 630
+with `zot_seed_force=true` to copy it again. A new tag has no such entry. Verify
+the copy by comparing the arm64 platform manifest digest, not the index digest
+(Zot holds the platform manifest only):
+
+```bash
+# GHCR: the digest of the arm64 entry in the index
+skopeo inspect --raw docker://ghcr.io/dmfdeploy/awx-ee:<tag> \
+  | jq -r '.manifests[] | select(.platform.architecture == "arm64") | .digest'
+# Zot: the digest of the manifest that the tag resolves to
+skopeo inspect --raw docker://<registry-host>/dmf/awx-ee:<tag> | shasum -a 256
+```
+
+| Tag | Index digest | arm64 platform manifest digest |
+|---|---|---|
+| `0.2.0` | `sha256:352e46fa1a72597cf8fa0a2a2c5e5e682f4b7e96fac536b9282b7b76a7d24b94` | `sha256:7b558a7a5e67c5df53c79e8736a44b61d05b93b7af0714736b019295ae308981` |
+| `0.1.1` | `sha256:867faa97ed7391befe599ca0ad96fab1f6dfeeddb25b542c79229b6434ee9b51` | `sha256:925d8a35ffabe934091fa063696842583524e40d0a4314c2f1a597d06a42cb3f` |
+
+Zot holds the platform manifest for a seeded tag, so a pod that pulls the tag
+from Zot should report that platform manifest digest as its `imageID`; the
+rollback check below compares against the platform column, and the live proof
+confirms it. Read a tag's platform digest with the GHCR command above.
+
+**Switch.** Change the one line in `../vars/awx-ee.yml`, then run 630 and
+`693-awx-integration.yml`, which points AWX at the new tag.
+
+**Rollback.** Do not roll back by editing the line on a checkout: the next
+checkout advance loses the edit. Before the final cleanup of
+dmfdeploy/dmfdeploy#975 (it removes the ansible-core 2.15 CI job and
+compatibility code) lands, revert the commit that switched the tag
+on `main` (a revert pull request), advance the Manage checkout to the revert,
+wake AWX, rerun 630 and 693, and check that the AWX execution environment object
+names `0.1.1` and that one job pod's `imageID` is the 0.1.1 arm64 platform
+manifest digest from the table above. After the cleanup
+lands, revert the cleanup commit first and then the switch commit, in that
+order, and only with the operator's approval. Keep 0.1.1 in GHCR and in Zot for
+at least 30 days after dmfdeploy/dmfdeploy#975 closes. The rollback drill is a
+separate live acceptance step.
 
 ## Version bumps
 
@@ -153,8 +241,9 @@ mirror, switch and rollback steps.
    local image (see "Verify the local image"). The build refuses to run when
    `ee/` or the pin file has uncommitted changes, or when `IMAGE_VERSION`,
    `LOCAL_TAG` or `VCS_REF` is set in the environment.
-5. Publishing, mirroring and switching consumers to the new tag follow the steps
-   that slice 3 adds.
+5. Publish, mirror and switch consumers to the new tag as described under
+   "Publish, mirror, switch and rollback": change `awx_ee_image_tag` in
+   `../vars/awx-ee.yml`, then rerun 630 and 693.
 
 ## Yearly Fedora refresh
 
@@ -172,7 +261,8 @@ Refresh the base once a year, and sooner when a fix matters.
    at https://docs.ansible.com/projects/ansible/latest/reference_appendices/release_and_maintenance.html.
    If Fedora moves to a Python that the pinned core does not support, move the
    core pin first.
-4. Check that every package in `bindep.txt` still resolves, then build and verify as a new version. Slice 3 adds publishing.
+4. Check that every package in `bindep.txt` still resolves, then build and verify as a new version, and publish it as described under
+   "Publish, mirror, switch and rollback".
 5. Update the versions table above.
 
 ## Known constraints

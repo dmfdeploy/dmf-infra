@@ -166,7 +166,7 @@ awx_task_manage_replicas: true
 
 # Control-plane execution environment — the awx-ee container of the awx-task
 # Deployment, where receptor runs and streams job pod logs. NOT the catalog job
-# EE (zot .../dmf/awx-ee, awx-integration/defaults awx_ee_catalog_tag); that one
+# EE (zot .../dmf/awx-ee, tag awx_ee_image_tag in vars/awx-ee.yml); that one
 # is untouched by this pin.
 #
 # PINNED BY DIGEST, deliberately. quay.io/ansible/awx-ee publishes no versioned

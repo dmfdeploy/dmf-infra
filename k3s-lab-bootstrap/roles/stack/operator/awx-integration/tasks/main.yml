@@ -1687,7 +1687,7 @@
     body_format: json
     body:
       name: "{{ awx_ee_catalog_display_name }}"
-      image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
+      image: "{{ awx_ee_catalog_ref }}"
       pull: missing
     status_code: 201
   until: >-
@@ -1708,7 +1708,7 @@
     force_basic_auth: true
     body_format: json
     body:
-      image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
+      image: "{{ awx_ee_catalog_ref }}"
       pull: missing
     status_code: 200
   until: >-
@@ -1765,7 +1765,7 @@
         automountServiceAccountToken: true
         containers:
           - name: worker
-            image: "{{ awx_ee_catalog_image }}:{{ awx_ee_catalog_tag }}"
+            image: "{{ awx_ee_catalog_ref }}"
             imagePullPolicy: IfNotPresent
             resources:
               requests:

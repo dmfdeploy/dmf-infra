@@ -800,10 +800,11 @@ awx_dmf_catalog_ee_memory_request: "512Mi"
 #     /api/v2/execution_environments/ and pin it on each catalog JT via
 #     instance_groups + execution_environment fields.
 #
-# To bump: republish a new GHCR tag (see ../../../../ee/README.md), then
-# update awx_ee_catalog_tag here and re-run 630-zot-seed-platform.yml + 693.
+# The tag is awx_ee_image_tag, set once in vars/awx-ee.yml, which playbook 693
+# loads. To bump: republish a new GHCR tag (see ../../../../ee/README.md),
+# change that one line, and re-run 630-zot-seed-platform.yml + 693.
 awx_ee_catalog_image: "zot.zot.svc.cluster.local:5000/dmf/awx-ee"
-awx_ee_catalog_tag: "0.1.1"
+awx_ee_catalog_ref: "{{ awx_ee_catalog_image }}:{{ awx_ee_image_tag }}"
 awx_ee_catalog_display_name: "DMF AWX EE"
 awx_ee_catalog_description: "Shared Ansible EE for dmfdeploy platform catalog launchers (ADR-0025)"
 
