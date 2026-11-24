@@ -52,13 +52,43 @@
 # cert-manager CRDs must be installed separately because Helm hooks can fail
 # on first install (the webhook depends on CRDs, CRDs depend on the webhook).
 # See: https://cert-manager.io/docs/installation/helm/#1-add-the-jetstack-helm-repository
-- name: Install cert-manager CRDs directly from upstream manifest
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    src: "https://github.com/cert-manager/cert-manager/releases/download/{{ cert_manager_helm_version }}/cert-manager.crds.yaml"
+# The manifest is checked against a pinned hash before it reaches the cluster,
+# so the apply reads the local, verified file and never the URL.
+- name: Install cert-manager CRDs from the checked upstream manifest
   when:
     - _cert_manager_certificate_crd.resources | length == 0
+  block:
+    - name: Create a private file for the cert-manager CRD manifest
+      ansible.builtin.tempfile:
+        state: file
+        prefix: cert-manager-crds-
+        suffix: .yaml
+      register: _cert_manager_crds_file
+
+    - name: Download cert-manager CRD manifest
+      ansible.builtin.get_url:
+        url: "https://github.com/cert-manager/cert-manager/releases/download/{{ cert_manager_helm_version }}/cert-manager.crds.yaml"
+        dest: "{{ _cert_manager_crds_file.path }}"
+        # The temp file already exists and is empty, so its hash differs from the
+        # pinned one and get_url downloads. It checks the download against the hash
+        # before it replaces the file.
+        checksum: >-
+          sha256:{{ cert_manager_crds_sha256[cert_manager_helm_version]
+          | mandatory('cert_manager_crds_sha256 has no hash for ' ~ cert_manager_helm_version
+          ~ '; add the SHA-256 of cert-manager.crds.yaml for that release') }}
+        mode: "0600"
+
+    - name: Apply cert-manager CRDs from the downloaded manifest
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        src: "{{ _cert_manager_crds_file.path }}"
+  always:
+    - name: Remove the downloaded cert-manager CRD manifest
+      ansible.builtin.file:
+        path: "{{ _cert_manager_crds_file.path }}"
+        state: absent
+      when: _cert_manager_crds_file.path is defined
 
 - name: Install cert-manager via Helm
   kubernetes.core.helm:

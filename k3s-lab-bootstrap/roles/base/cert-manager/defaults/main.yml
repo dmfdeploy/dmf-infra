@@ -2,6 +2,12 @@
 cert_manager_namespace: cert-manager
 cert_manager_helm_repo: https://charts.jetstack.io
 cert_manager_helm_version: "v1.20.2"
+# SHA-256 of cert-manager.crds.yaml, keyed by release. cert-manager publishes no
+# checksum file, so each value is the hash of the asset at that release (GitHub
+# records the same digest for it). Add the new version's hash when you change
+# cert_manager_helm_version; the install fails until you do.
+cert_manager_crds_sha256:
+  v1.20.2: "6da9beb5324695037de31fea998099c1446f6ce4e809f32b13a76894f4f169f0"
 cert_manager_cluster_issuer: letsencrypt-http
 cert_manager_force_helm_upgrade: false
 
