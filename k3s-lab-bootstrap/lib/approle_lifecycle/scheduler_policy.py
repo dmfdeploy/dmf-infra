@@ -3,8 +3,11 @@ identity, both rendered from the registry.
 
 The identity may only reach what the rotation engine in `rotation.py` calls,
 for the targets the registry lists. The policy names every path in full: no
-glob, no `sys/*`, no policy or auth administration, no application data, no
-random `secret-id` endpoint and no accessor listing. The custom SecretID
+glob, no `sys/*`, no policy or auth administration, no application data and no
+random `secret-id` endpoint. The identity may list the SecretID accessors of a
+target role, which it needs to confirm that a destroyed SecretID is gone.
+Accessor IDs are not secrets, and the identity can already create and destroy
+SecretIDs for those roles. The custom SecretID
 grant lists every parameter of the request, because OpenBao denies a
 parameter that an `allowed_parameters` map leaves out. The candidate value
 itself is free (an empty list); the TTL and the use limit are fixed to the
@@ -63,6 +66,7 @@ def render_policy(registry_data):
         blocks = [
             f"# {target}",
             _block(role, ["read"]),
+            _block(f"{role}/secret-id", ["list"]),
             _block(f"{role}/secret-id/lookup", ["update"]),
             _block(
                 f"{role}/custom-secret-id",

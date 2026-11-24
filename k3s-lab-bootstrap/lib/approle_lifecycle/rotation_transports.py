@@ -475,10 +475,29 @@ class RotationOpenBao(_Bounded):
         )
         if rc == 0:
             return None
-        lowered = err.lower()
-        if _answered(err) and ("not found" in lowered or "failed to find" in lowered):
-            return None  # the accessor is already gone
-        self._fail(err, "the accessor destroy failed")
+        if not _answered(err):
+            self._fail(err, "the accessor destroy failed")
+        # OpenBao answered with an error. The wording of that error does not
+        # show whether the SecretID is gone, so read the role's accessor list
+        # and accept the failure only when the accessor is not in it.
+        if accessor in self._list_secret_id_accessors(approle_name):
+            self._fail(err, "the accessor destroy failed")
+
+    def _list_secret_id_accessors(self, approle_name):
+        rc, out, err = self._bao(f"list -format=json auth/approle/role/{_safe(approle_name)}/secret-id")
+        # A role with no SecretIDs answers 404, which `bao list -format=json`
+        # prints as an empty object with exit status 2 and no error text.
+        if rc == 2 and out.strip() == "{}" and not err.strip():
+            return []
+        if rc != 0:
+            self._fail(err, "the SecretID accessor list failed")
+        try:
+            accessors = json.loads(out)
+        except ValueError:
+            raise TransportError("the accessor list response is malformed") from None
+        if not isinstance(accessors, list) or not all(isinstance(a, str) and a for a in accessors):
+            raise TransportError("the accessor list response is malformed")
+        return accessors
 
     # KV v2
 
