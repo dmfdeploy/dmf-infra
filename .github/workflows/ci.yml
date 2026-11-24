@@ -271,9 +271,18 @@ jobs:
     # identity-verifier playbook is the longest: its 62 cases take about 40 minutes of
     # runner time, 20 seconds each, so it is in four slices of about 10 minutes. Two
     # slices took 18 to 25 minutes each, too close to the 30-minute job limit. The other
-    # playbooks take less than 10 minutes in a shard, setup included. Each playbook also
-    # has its own time limit, so a stuck one fails by name before the job limit cancels
-    # the whole job without a result.
+    # playbooks take less than 10 minutes in a shard, setup included. Two limits make a
+    # stuck test fail by name. The verifier gives each task a limit (case_task_timeout,
+    # 120 seconds), and its failure names the case; that bounds each task, not a stuck
+    # step outside the verifier. The test step also has a deadline: the job's start, plus
+    # the 30-minute job limit, less 90 seconds to report. Each playbook gets the time that
+    # is left, so setup that runs long leaves less. When the time is used, the step fails
+    # and names the playbook or says that setup used it. A playbook that itself exits with
+    # 124 is reported as out of time too. Setup steps have their own limits, which total 11
+    # minutes (1 + 1 + 3 + 5 + 1; runs take under 2 minutes). The 90 seconds to report also
+    # hold the 20 seconds that a playbook gets to leave after the stop signal before it is
+    # killed (exit 137). So the test step has at least 17 minutes; its longest shards take
+    # about 15.
     name: ansible-openbao (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -309,15 +318,22 @@ jobs:
       run:
         working-directory: k3s-lab-bootstrap
     steps:
+      - name: Record the start of the job
+        timeout-minutes: 1
+        working-directory: .
+        run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        timeout-minutes: 1
         with:
           persist-credentials: false
       - name: Install ansible tooling
+        timeout-minutes: 3
         run: |
           python3 -m pip install --user -r requirements-ci.txt
           python3 -m pip install --user -r requirements.txt
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Install collections
+        timeout-minutes: 5
         # Galaxy sometimes sends a malformed response. Retry, and clear the
         # response cache after the first failure.
         run: |
@@ -332,6 +348,7 @@ jobs:
           done
           exit 1
       - name: Every OpenBao test playbook is in the list, once
+        timeout-minutes: 1
         env:
           SHARDS: ${{ strategy.job-total }}
         run: |
@@ -369,6 +386,8 @@ jobs:
           set -eu
           echo "$PLAYBOOKS" | awk -v shard="$SHARD" 'NF && $1 == shard' | grep -q . ||
             { echo "Shard $SHARD has no playbooks"; exit 1; }
+          # The job limit is 30 minutes; keep 90 seconds to report before it.
+          deadline=$(( JOB_START + 30 * 60 - 90 ))
           echo "$PLAYBOOKS" | awk -v shard="$SHARD" 'NF && $1 == shard {print $2, $3, $4}' |
           while read -r mode playbook slice; do
             echo "=== $playbook ($mode) ${slice:-} ==="
@@ -381,9 +400,14 @@ jobs:
               env_prefix=(env "PATH=$PWD/tests/fixtures/fake-kubectl:$PATH"
                 "ANSIBLE_COLLECTIONS_PATH=$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections")
             fi
-            "${env_prefix[@]}" timeout 20m ansible-playbook "$playbook" "${args[@]}" </dev/null || {
+            left=$(( deadline - $(date +%s) ))
+            if [ "$left" -le 0 ]; then
+              echo "::error::$playbook did not start: setup and the earlier playbooks used the time before the job limit"
+              exit 1
+            fi
+            "${env_prefix[@]}" timeout --kill-after=20s "$left" ansible-playbook "$playbook" "${args[@]}" </dev/null || {
               rc=$?
-              if [ "$rc" -eq 124 ]; then echo "::error::$playbook did not finish within 20 minutes"; fi
+              if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then echo "::error::$playbook was still running when the time before the job limit ended"; fi
               exit "$rc"
             }
           done

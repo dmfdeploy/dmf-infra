@@ -57,6 +57,8 @@
     verify_openbao_namespace: openbao
     case_shards: 1
     case_shard: 1
+    # The longest a task of one case may take. A case takes about 20 seconds in all.
+    case_task_timeout: 120
     _verify_openbao_pod: openbao-0
     _verify_token_identity_reader: fake-reader
     # What a fresh install holds once the executor and the revoker are installed and
