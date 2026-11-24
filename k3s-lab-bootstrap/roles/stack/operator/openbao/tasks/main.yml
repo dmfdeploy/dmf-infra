@@ -264,6 +264,73 @@
       that long, and no longer.
   when: not openbao_is_initialized | bool
 
+# Share 3 goes to the login Keychain only after init, and only a fresh init writes it,
+# so a Keychain that refuses the write would leave a new install initialized with no
+# custody copy of share 3. The probe therefore runs before init and stops the role
+# before init and before the revoker is paused.
+#
+# `security -i` reads its commands on stdin, so the value never appears in the
+# argument list of `security` or of any other process. `security` creates the item,
+# so its access list keeps trusting /usr/bin/security.
+#
+# `security -i` parses each line itself: a double-quoted word may hold spaces, and a
+# backslash escapes the next character. The service name and the share are therefore
+# wrapped in double quotes with `\` and `"` escaped. A line break would end the
+# command, which a base64 share never contains. The account name is fixed.
+- name: Refuse a share-3 Keychain service name with a line break
+  ansible.builtin.assert:
+    that: "'\\n' not in openbao_keychain_share3_service and '\\r' not in openbao_keychain_share3_service"
+    fail_msg: openbao_keychain_share3_service must be one line; security -i ends a command at a line break.
+  when: openbao_breakglass_distribution_enabled | bool and not openbao_is_initialized | bool
+
+- name: Quote the share-3 Keychain service name for security -i
+  ansible.builtin.set_fact:
+    _share3_keychain_service_q: >-
+      {{ openbao_keychain_share3_service | replace('\\', '\\\\') | replace('"', '\\"') }}
+  when: openbao_breakglass_distribution_enabled | bool and not openbao_is_initialized | bool
+
+- name: Preflight — verify login Keychain accepts share-3 writes
+  ansible.builtin.command:
+    argv:
+      - security
+      - -i
+    stdin: >-
+      add-generic-password -s "{{ _share3_keychain_service_q }}-write-test"
+      -a "share" -w "openbao-keychain-write-test" -U
+  register: _share3_keychain_preflight
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  when: openbao_breakglass_distribution_enabled | bool and not openbao_is_initialized | bool
+  no_log: true
+
+- name: Cleanup share-3 Keychain smoke-test item
+  ansible.builtin.command:
+    argv:
+      - security
+      - -i
+    stdin: >-
+      delete-generic-password -s "{{ _share3_keychain_service_q }}-write-test"
+      -a "share"
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  failed_when: false
+  when: openbao_breakglass_distribution_enabled | bool and not openbao_is_initialized | bool
+  no_log: true
+
+- name: Fail before init if login Keychain is not write-authorized for share 3
+  ansible.builtin.assert:
+    that:
+      - _share3_keychain_preflight.rc | default(1) == 0
+    fail_msg: >-
+      The macOS login Keychain refused a test write, so this run stops before it
+      initializes OpenBao. Run the play from the operator's logged-in macOS session
+      with the login keychain unlocked, then run it again. OpenBao isn't initialized
+      and the revoker isn't paused yet.
+  when: openbao_breakglass_distribution_enabled | bool and not openbao_is_initialized | bool
+
 # The revoker revokes any root-policy token that the executor's record does not hold, and
 # the init makes the first one. A fresh init therefore stops the revoker and waits for its
 # pods to end first. A rerun makes no such token and leaves the revoker running. Only
@@ -371,66 +438,6 @@
     - openbao_init_raw is defined and openbao_init_raw.changed | default(false)
     - _juicefs_stat is defined
 
-# Keychain writes from this automation context are not reliably authorized via
-# direct `security add-generic-password`, but the same write succeeds through
-# `osascript`/SecurityAgent in the logged-in macOS session. Keep share 3 in the
-# login Keychain per the custody plan, using osascript as the write path.
-- name: Preflight — verify login Keychain accepts share-3 writes
-  ansible.builtin.command:
-    argv:
-      - osascript
-      - -e
-      - on run argv
-      - -e
-      - >-
-        do shell script "security add-generic-password -s " & quoted form of
-        item 1 of argv & " -a " & quoted form of item 2 of argv & " -w " &
-        quoted form of item 3 of argv & " -U"
-      - -e
-      - end run
-      - "{{ openbao_keychain_share3_service }}-write-test"
-      - share
-      - openbao-keychain-write-test
-  register: _share3_keychain_preflight
-  delegate_to: localhost
-  become: false
-  changed_when: false
-  failed_when: false
-  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
-  no_log: true
-
-- name: Cleanup share-3 Keychain smoke-test item
-  ansible.builtin.command:
-    argv:
-      - osascript
-      - -e
-      - on run argv
-      - -e
-      - >-
-        do shell script "security delete-generic-password -s " & quoted form
-        of item 1 of argv & " -a " & quoted form of item 2 of argv
-      - -e
-      - end run
-      - "{{ openbao_keychain_share3_service }}-write-test"
-      - share
-  delegate_to: localhost
-  become: false
-  changed_when: false
-  failed_when: false
-  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
-  no_log: true
-
-- name: Fail if login Keychain is not write-authorized for share 3
-  ansible.builtin.assert:
-    that:
-      - _share3_keychain_preflight.rc | default(1) == 0
-    fail_msg: >-
-      macOS login Keychain is not write-authorized for share 3. This run
-      follows the original custody plan and stores share 3 in service
-      '{{ openbao_keychain_share3_service }}'. Unlock or authorize the login
-      keychain in an interactive session, then re-run.
-  when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
-
 - name: Ensure environment break-glass directory on JuiceFS exists
   ansible.builtin.file:
     path: "{{ openbao_breakglass_dir }}"
@@ -472,19 +479,11 @@
 - name: Write share 3 to macOS Keychain
   ansible.builtin.command:
     argv:
-      - osascript
-      - -e
-      - on run argv
-      - -e
-      - >-
-        do shell script "security add-generic-password -s " & quoted form of
-        item 1 of argv & " -a " & quoted form of item 2 of argv & " -w " &
-        quoted form of item 3 of argv & " -U"
-      - -e
-      - end run
-      - "{{ openbao_keychain_share3_service }}"
-      - share
-      - "{{ openbao_unseal_keys_b64[2] }}"
+      - security
+      - -i
+    stdin: >-
+      add-generic-password -s "{{ _share3_keychain_service_q }}" -a "share"
+      -w "{{ openbao_unseal_keys_b64[2] | replace('\\', '\\\\') | replace('"', '\\"') }}" -U
   register: _share3_keychain_write
   delegate_to: localhost
   become: false
@@ -499,8 +498,12 @@
       - _share3_keychain_write.rc | default(1) == 0
     fail_msg: >-
       Failed to write share 3 to macOS Keychain service
-      '{{ openbao_keychain_share3_service }}'. Unlock or authorize the login
-      keychain in an interactive session, then re-run.
+      '{{ openbao_keychain_share3_service }}' after OpenBao was initialized. A rerun
+      does not store it, because only the init run distributes shares. Store it by
+      hand: take the third entry of unseal_keys_hex from {{ openbao_key_path }}.json,
+      convert it to base64, and add it with `security add-generic-password -s
+      '{{ openbao_keychain_share3_service }}' -a share -U -w`, which prompts for the
+      value instead of taking it as an argument.
   when: openbao_breakglass_distribution_enabled | bool and openbao_init_raw is defined and openbao_init_raw.changed | default(false)
 
 - name: Ensure environment USB share directory exists on OPENBAO_A
