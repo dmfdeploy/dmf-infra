@@ -17,6 +17,7 @@ from openbao_fakes import SECRET, FakeKubernetes, FakeOpenBao  # noqa: E402
 
 REGISTRY = json.loads((ROOT / "vars/openbao-approle-lifecycle-registry.json").read_text(encoding="utf-8"))
 TXN = "txn-0001"
+DELIVERY = "accessor-0001"
 SINCE = 1_700_000_000
 INVENTORY = {"object_storage_consumer_namespaces": {"openbao_snapshots": ["openbao"], "app_backups": ["app-a", "app-b"]}}
 
@@ -156,9 +157,14 @@ EXTERNAL_SECRET_GATE = {
     "condition": "Ready=True",
 }
 STORE_GATE = {"kind": "ClusterSecretStore", "name": "openbao", "condition": "Ready=True"}
-LATER = "2023-11-14T22:14:00Z"
-STALE = "2023-11-14T22:13:19Z"
-EQUAL = "2023-11-14T22:13:20Z"  # the same second as SINCE
+# Times that ESO wrote, in order. SINCE is 2023-11-14T22:13:20Z by the adapter's
+# clock; BASELINE is older and the others are newer, but no test relies on that
+# comparison: the gate compares ESO's times with each other only.
+BASELINE = "2023-11-14T22:00:00Z"
+FIRST = "2023-11-14T23:00:00Z"
+SECOND = "2023-11-15T00:00:00Z"
+LATER = SECOND
+STALE = BASELINE
 
 
 class ReadinessAdapterTests(unittest.TestCase):
@@ -169,12 +175,27 @@ class ReadinessAdapterTests(unittest.TestCase):
     def gate(self, entry_gate, store=None):
         return adapters.build_gate(entry_gate, self.clients, store)
 
-    def external_secret(self, name, status, refreshed, store="openbao", kind="ClusterSecretStore"):
+    def external_secret(self, name, status, refreshed, store="openbao", kind="ClusterSecretStore", spec=None):
         item = condition(status)
         item["metadata"] = {"name": name}
-        item["spec"] = {"secretStoreRef": {"name": store, "kind": kind}}
+        item["spec"] = {"secretStoreRef": {"name": store, "kind": kind}, **(spec or {})}
         item["status"]["refreshTime"] = refreshed
         return item
+
+    def read_at(self, gate, refreshed, **kwargs):
+        """One gate call while the ExternalSecret shows `refreshed`."""
+        self.kube.lists[("ExternalSecret", "authentik")] = [
+            self.external_secret("authentik-runtime", kwargs.pop("status", "True"), refreshed, **kwargs)
+        ]
+        return gate.check(SINCE)
+
+    def converge(self, gates, entry, store, namespaces):
+        """Show three refresh times in turn to every gate, as three scheduler
+        runs would. Return the last results."""
+        for refreshed in (BASELINE, FIRST, SECOND):
+            self.passing_cluster(entry, store, namespaces, refreshed)
+            results = [g.check(SINCE, INVENTORY) for g in gates]
+        return results
 
     def test_cluster_secret_store_gate(self):
         gate = self.gate(STORE_GATE)
@@ -185,44 +206,180 @@ class ReadinessAdapterTests(unittest.TestCase):
         self.assertTrue(gate.check(SINCE).ok)
         self.assertFalse(gate.proves_acceptance)
 
-    def test_external_secret_gate_needs_ready_and_a_refresh_strictly_after_delivery(self):
+    def test_a_refresh_that_is_newer_only_by_the_adapters_clock_does_not_pass(self):
+        # SINCE is on the adapter's clock. A refreshTime far after it, read for
+        # the first time, is a baseline and not a proof.
+        gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        result = self.read_at(gate, "2099-01-01T00:00:00Z")
+        self.assertFalse(result.ok)
+        self.assertIn("baseline recorded", result.detail)
+        self.assertFalse(self.read_at(gate, "2099-01-01T00:00:00Z").ok)  # no new refresh
+
+    def test_a_refresh_newer_than_the_baseline_passes_only_after_a_second_one(self):
+        gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        self.assertFalse(self.read_at(gate, BASELINE).ok)
+        first = self.read_at(gate, FIRST)
+        self.assertFalse(first.ok)  # may have started before the delivery
+        self.assertIn("refreshed once", first.detail)
+        self.assertEqual(gate.progress["authentik/authentik-runtime"], {"seen": FIRST, "advanced": True})
+        self.assertTrue(self.read_at(gate, SECOND).ok)
+
+    def test_an_unchanged_or_older_time_never_passes_and_an_older_one_restarts_the_baseline(self):
+        gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        self.read_at(gate, BASELINE)
+        self.read_at(gate, FIRST)
+        self.assertFalse(self.read_at(gate, FIRST).ok)
+        self.assertFalse(self.read_at(gate, BASELINE).ok)  # the clock or the object went back
+        self.assertEqual(gate.progress["authentik/authentik-runtime"], {"seen": BASELINE, "advanced": False})
+        self.assertFalse(self.read_at(gate, FIRST).ok)
+        self.assertTrue(self.read_at(gate, SECOND).ok)
+
+    def test_a_pass_needs_ready_on_the_passing_read_and_a_missing_time_never_counts(self):
+        gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        self.read_at(gate, BASELINE)
+        self.read_at(gate, FIRST)
+        not_ready = self.read_at(gate, SECOND, status="False")
+        self.assertFalse(not_ready.ok)
+        self.assertIn("not Ready", not_ready.detail)
+        self.assertTrue(self.read_at(gate, SECOND).ok)  # the failed read recorded nothing
+        for text in (None, "", "not a time"):
+            self.assertFalse(self.read_at(self.gate(EXTERNAL_SECRET_GATE, store="openbao"), text).ok)
+
+    def test_every_matching_namespace_and_object_has_to_pass(self):
         gate = self.gate(
-            {
-                "kind": "ExternalSecret",
-                "namespaces_from": "object_storage_consumer_namespaces.app_backups",
-                "name_pattern": "s3-creds-app-backups",
-                "condition": "Ready=True",
-            },
+            {"kind": "ExternalSecret", "namespaces_from": "object_storage_consumer_namespaces.app_backups",
+             "name_pattern": "s3-creds-app-backups", "condition": "Ready=True"},
             store="openbao-app-backups",
         )
-        make = lambda status, when: [self.external_secret("s3-creds-app-backups", status, when, store="openbao-app-backups")]
+        make = lambda when: [self.external_secret("s3-creds-app-backups", "True", when, store="openbao-app-backups")]
         self.assertFalse(gate.check(SINCE, INVENTORY).ok)
-        self.kube.lists[("ExternalSecret", "app-a")] = make("True", LATER)
+        self.kube.lists[("ExternalSecret", "app-a")] = make(BASELINE)
         self.assertFalse(gate.check(SINCE, INVENTORY).ok)  # app-b has none
-        self.kube.lists[("ExternalSecret", "app-b")] = make("True", STALE)
-        self.assertFalse(gate.check(SINCE, INVENTORY).ok)  # refreshed before the delivery
-        self.kube.lists[("ExternalSecret", "app-b")] = make("False", LATER)
-        self.assertFalse(gate.check(SINCE, INVENTORY).ok)  # not Ready
-        self.kube.lists[("ExternalSecret", "app-b")] = make("True", LATER)
+        for when in (BASELINE, FIRST):
+            self.kube.lists[("ExternalSecret", "app-a")] = make(when)
+            self.kube.lists[("ExternalSecret", "app-b")] = make(when)
+            self.assertFalse(gate.check(SINCE, INVENTORY).ok)
+        self.kube.lists[("ExternalSecret", "app-a")] = make(SECOND)
+        self.kube.lists[("ExternalSecret", "app-b")] = make(FIRST)  # app-b did not refresh again
+        result = gate.check(SINCE, INVENTORY)
+        self.assertFalse(result.ok)
+        self.assertIn("app-b", result.detail)
+        self.kube.lists[("ExternalSecret", "app-b")] = make(SECOND)
         self.assertTrue(gate.check(SINCE, INVENTORY).ok)
         self.assertFalse(gate.check(SINCE, {}).ok)  # namespaces not resolved
 
-    def test_a_refresh_equal_to_the_delivery_time_does_not_count(self):
+    def test_the_gate_never_writes_to_an_external_secret(self):
         gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
-        self.kube.lists[("ExternalSecret", "authentik")] = [self.external_secret("authentik-runtime", "True", EQUAL)]
-        result = gate.check(SINCE)
-        self.assertFalse(result.ok)
-        self.assertIn("not refreshed after the delivery", result.detail)
+        for refreshed in (BASELINE, FIRST, SECOND):
+            self.read_at(gate, refreshed)
+        self.assertEqual({call[0] for call in self.kube.calls}, {"list_objects"})
 
-    def test_an_external_secret_that_reads_another_store_fails(self):
+    def test_the_progress_survives_a_restore_for_the_same_delivery(self):
+        first = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        self.read_at(first, BASELINE)
+        self.read_at(first, FIRST)
+        saved = adapters.collect_progress([first], DELIVERY)
+        self.assertEqual(saved["delivery"], DELIVERY)
+        second = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        adapters.restore_progress([second], saved, DELIVERY)
+        self.assertTrue(self.read_at(second, SECOND).ok)
+
+    def test_progress_for_another_delivery_or_without_a_binding_restarts_the_baseline(self):
+        first = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        self.read_at(first, BASELINE)
+        self.read_at(first, FIRST)
+        saved = adapters.collect_progress([first], DELIVERY)
+        entries = saved["entries"]
+        forged = {"authentik/authentik-runtime": {"seen": "2020-01-01T00:00:00Z", "advanced": True}}
+        cases = {
+            "a previous delivery": (saved, "accessor-other"),
+            "no binding": ({"entries": entries}, DELIVERY),
+            "a bare entry map": (entries, DELIVERY),
+            "a forged entry, another binding": ({"delivery": "accessor-other", "entries": forged}, DELIVERY),
+            "a forged entry, no binding": ({"entries": forged}, DELIVERY),
+            "a forged entry, a bare map": (forged, DELIVERY),
+        }
+        for label, (record, delivery) in cases.items():
+            with self.subTest(label):
+                gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+                adapters.restore_progress([gate], record, delivery)
+                self.assertEqual(gate.progress, {})
+                result = self.read_at(gate, SECOND)
+                self.assertFalse(result.ok)
+                self.assertIn("baseline recorded", result.detail)
+
+    def test_a_damaged_entry_for_the_current_delivery_restarts_the_baseline(self):
+        for damaged in (
+            {"authentik/authentik-runtime": {"seen": FIRST}},
+            {"authentik/authentik-runtime": {"seen": FIRST, "advanced": "yes"}},
+            {"authentik/authentik-runtime": {"seen": 5, "advanced": True}},
+            {"authentik/authentik-runtime": "advanced"},
+            [],
+        ):
+            with self.subTest(damaged=damaged):
+                gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+                adapters.restore_progress([gate], {"delivery": DELIVERY, "entries": damaged}, DELIVERY)
+                self.assertFalse(self.read_at(gate, SECOND).ok)
+
+    def test_a_not_ready_read_still_records_the_baseline_but_cannot_pass(self):
         gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
-        self.kube.objects[("ClusterSecretStore", None, "openbao")] = condition("True")
-        self.kube.lists[("ExternalSecret", "authentik")] = [self.external_secret("authentik-runtime", "True", LATER, store="other-store")]
-        result = gate.check(SINCE)
-        self.assertFalse(result.ok)
-        self.assertIn("expected store", result.detail)
-        self.kube.lists[("ExternalSecret", "authentik")] = [self.external_secret("authentik-runtime", "True", LATER, kind="SecretStore")]
-        self.assertFalse(gate.check(SINCE).ok)
+        self.read_at(gate, BASELINE, status="False")
+        self.assertEqual(gate.progress["authentik/authentik-runtime"], {"seen": BASELINE, "advanced": False})
+        self.read_at(gate, FIRST, status="False")
+        self.assertFalse(self.read_at(gate, SECOND, status="False").ok)
+        self.assertTrue(self.read_at(gate, SECOND).ok)
+
+    def test_the_pass_text_claims_a_reconcile_after_the_delivery_and_not_two_refreshes(self):
+        gate = self.primed()
+        self.assertNotIn("twice", self.read_at(gate, SECOND).detail)
+        self.assertIn("a reconcile after the delivery", self.read_at(gate, SECOND).detail)
+
+    def primed(self):
+        """A gate that has seen the baseline and the first newer refresh."""
+        gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        self.read_at(gate, BASELINE)
+        self.read_at(gate, FIRST)
+        return gate
+
+    def test_an_external_secret_that_reads_another_store_fails_on_the_passing_read(self):
+        for label, change in {
+            "other store": {"store": "other-store"},
+            "namespaced store": {"kind": "SecretStore"},
+        }.items():
+            with self.subTest(label):
+                gate = self.primed()
+                result = self.read_at(gate, SECOND, **change)
+                self.assertFalse(result.ok)
+                self.assertIn("expected store", result.detail)
+                self.assertTrue(self.read_at(gate, SECOND).ok)  # back to the expected store
+
+    def test_a_store_change_between_reads_fails_the_read_that_shows_it(self):
+        gate = self.gate(EXTERNAL_SECRET_GATE, store="openbao")
+        self.read_at(gate, BASELINE, store="other-store")
+        self.assertFalse(self.read_at(gate, FIRST).ok)
+        self.assertFalse(self.read_at(gate, SECOND, store="other-store").ok)
+        # The wrong-store reads recorded nothing; only the right-store read set the baseline.
+        self.assertEqual(gate.progress, {"authentik/authentik-runtime": {"seen": FIRST, "advanced": False}})
+
+    def test_an_alternate_source_ref_or_a_generator_ref_fails(self):
+        good = {"storeRef": {"kind": "ClusterSecretStore", "name": "openbao"}}
+        cases = {
+            "data from another store": {"data": [{"secretKey": "k", "sourceRef": {"storeRef": {"kind": "ClusterSecretStore", "name": "other"}}}]},
+            "data from a namespaced store": {"data": [{"secretKey": "k", "sourceRef": {"storeRef": {"kind": "SecretStore", "name": "openbao"}}}]},
+            "dataFrom from another store": {"dataFrom": [{"sourceRef": {"storeRef": {"kind": "ClusterSecretStore", "name": "other"}}}]},
+            "dataFrom from a generator": {"dataFrom": [{"sourceRef": {"generatorRef": {"kind": "Password", "name": "g"}}}]},
+            "data source without a store": {"data": [{"secretKey": "k", "sourceRef": {}}]},
+        }
+        for label, spec in cases.items():
+            with self.subTest(label):
+                result = self.read_at(self.primed(), SECOND, spec=spec)
+                self.assertFalse(result.ok)
+                self.assertIn("expected store", result.detail)
+        ok = self.read_at(
+            self.primed(), SECOND,
+            spec={"data": [{"secretKey": "k", "sourceRef": good}], "dataFrom": [{"sourceRef": good}, {"extract": {"key": "x"}}]},
+        )
+        self.assertTrue(ok.ok)
 
     def test_an_external_secret_gate_with_no_expected_store_fails_closed(self):
         gate = self.gate(EXTERNAL_SECRET_GATE)
@@ -271,9 +428,10 @@ class ReadinessAdapterTests(unittest.TestCase):
 
     def test_a_passing_gate_still_leaves_the_external_secrets_target_not_accepted(self):
         self.kube.objects[("ClusterSecretStore", None, "openbao")] = condition("True")
-        self.kube.lists[("ExternalSecret", "authentik")] = [self.external_secret("authentik-runtime", "True", LATER)]
         entry = self.entry("missing")
         _, gates = adapters.adapters_for({**REGISTRY["runtime_targets"]["external-secrets"]}, self.clients)
+        for refreshed in (BASELINE, FIRST, SECOND):
+            self.read_at(gates[1], refreshed)
         self.assertTrue(all(result.ok for result in (gate.check(SINCE) for gate in gates)))
         verdict = adapters.evaluate_target(REGISTRY["runtime_targets"]["external-secrets"], gates, SINCE)
         self.assertFalse(verdict.ok)
@@ -281,14 +439,14 @@ class ReadinessAdapterTests(unittest.TestCase):
         self.assertEqual(adapters.evaluate_target(entry, gates, SINCE).reason_code, adapters.FRESH_AUTHENTICATION_MISSING)
         self.assertEqual(adapters.evaluate_target(self.entry(None), gates, SINCE).reason_code, adapters.FRESH_AUTHENTICATION_MISSING)
 
-    def passing_cluster(self, entry, store, namespaces):
+    def passing_cluster(self, entry, store, namespaces, refreshed=LATER):
         """Make every gate of a registry entry pass, as the real cluster would."""
         self.kube.objects[("ClusterSecretStore", None, store)] = condition("True")
         for gate in entry["readiness_gates"]:
             if gate["kind"] == "ExternalSecret":
                 for namespace in namespaces:
                     self.kube.lists[("ExternalSecret", namespace)] = [
-                        self.external_secret(gate["name_pattern"], "True", LATER, store=store)
+                        self.external_secret(gate["name_pattern"], "True", refreshed, store=store)
                     ]
             if gate["kind"] == "KubernetesSecret":
                 self.kube.secrets[(gate["namespace"], gate["name"])] = {
@@ -309,9 +467,8 @@ class ReadinessAdapterTests(unittest.TestCase):
                 self.assertEqual(entry["fresh_authentication_proof"]["status"], "missing")
                 self.assertTrue(entry["fresh_authentication_proof"]["evidence_gap"])
                 self.assertEqual(adapters.store_name(entry), store)
-                self.passing_cluster(entry, store, namespaces)
                 _, gates = adapters.adapters_for(entry, self.clients)
-                self.assertTrue(all(g.check(SINCE, INVENTORY).ok for g in gates), target)
+                self.assertTrue(all(r.ok for r in self.converge(gates, entry, store, namespaces)), target)
                 verdict = adapters.evaluate_target(entry, gates, SINCE, INVENTORY)
                 self.assertFalse(verdict.ok)
                 self.assertEqual(verdict.reason_code, adapters.FRESH_AUTHENTICATION_MISSING)
@@ -355,8 +512,8 @@ class ReadinessAdapterTests(unittest.TestCase):
         for target, (store, namespaces) in shapes.items():
             with self.subTest(target):
                 entry = {**REGISTRY["runtime_targets"][target], "fresh_authentication_proof": {"status": "provided"}}
-                self.passing_cluster(entry, store, namespaces)
                 _, gates = adapters.adapters_for(entry, self.clients)
+                self.converge(gates, entry, store, namespaces)
                 verdict = adapters.evaluate_target(entry, gates, SINCE, INVENTORY)
                 self.assertFalse(verdict.ok)
                 self.assertEqual(verdict.reason_code, adapters.FRESH_AUTHENTICATION_MISSING)

@@ -101,6 +101,12 @@ status `missing` for `fresh_authentication_proof`), so with the default a
 transaction stops at `delivered-pending-readiness` and keeps its replacement.
 A later change that defines the proof supplies it.
 
+The record also holds `readiness_progress`, the ExternalSecret gate's progress
+between runs, bound to the random `delivery_id` that each delivery writes in
+the same update that clears the progress (see `adapters.ExternalSecretGate`).
+A record without either key reads as empty progress with no delivery id, and
+the next readiness check gives it one; a malformed value is refused.
+
 Metadata v1 has no field for the transaction id, state, staging path or the
 pending accessor. The engine keeps them in its own record at
 `transaction_path` and writes the v1 record in its documented shape.
@@ -498,6 +504,8 @@ class _Transaction:
         "delivered_at", "cleanup_done", "request_id",
         "last_failure_at", "last_failure_reason_code", "last_failure_cause",
     }
+    # Absent in a record written before the key existed; read as empty.
+    _OPTIONAL_KEYS = {"readiness_progress", "delivery_id"}
 
     def __init__(self, bao, path, data, version):
         self.bao = bao
@@ -514,13 +522,16 @@ class _Transaction:
         data, version = current
         if (
             not isinstance(data, dict)
-            or set(data) != cls._KEYS
+            or not cls._KEYS <= set(data) <= cls._KEYS | cls._OPTIONAL_KEYS
             or data["schema_version"] != TRANSACTION_SCHEMA_VERSION
             or data["state"] not in STATES
             or data["target"] != entry["approle_name"]
             or not isinstance(data["transaction_id"], str)
+            or not isinstance(data.get("readiness_progress", {}), dict)
+            or not isinstance(data.get("delivery_id"), (str, type(None)))
         ):
             raise RotationError("invalid_state", "the transaction record is malformed")
+        data = {"readiness_progress": {}, "delivery_id": None, **data}
         return cls(bao, path, data, version)
 
     def pending(self):
@@ -554,6 +565,7 @@ def _new_transaction(entry, context, target_version, now):
         "last_failure_at": None,
         "last_failure_reason_code": None,
         "last_failure_cause": None,
+        "readiness_progress": {},
     }
 
 
@@ -823,7 +835,10 @@ class _TargetRun:
         raise RotationError("delivery_failed", _EXPIRING, "credential_expiring")
 
     def _mark_delivered(self):
-        self.tx.update(state=DELIVERED_PENDING_READINESS, delivered_at=self.now())
+        self.tx.update(
+            state=DELIVERED_PENDING_READINESS, delivered_at=self.now(),
+            delivery_id=secrets.token_hex(16), readiness_progress={},
+        )
 
     def _classify(self):
         """Any destination with the marker makes the transaction delivered."""
@@ -852,11 +867,22 @@ class _TargetRun:
         if self.config.reconcile is not None:
             _call("readiness_failed", "the consumer could not be reconciled", self.config.reconcile, self.entry, self.tx.data["transaction_id"])
             self.lease.stop_if_stale()
+        if not self.tx.data["delivery_id"]:
+            # A record from before delivery ids: start the baseline afresh.
+            self.tx.update(delivery_id=secrets.token_hex(16), readiness_progress={})
+        delivered_at = self.tx.data["delivered_at"]
+        # Each delivery gets its own random id. A clock reading or the SecretID's
+        # accessor is not unique per delivery: one transaction can deliver again.
+        delivery = self.tx.data["delivery_id"]
+        adapters.restore_progress(self.gates, self.tx.data["readiness_progress"], delivery)
         verdict = _call(
             "readiness_failed", "the readiness check failed", self.config.evaluate,
-            self.entry, self.gates, self.tx.data["delivered_at"], self.config.inventory,
+            self.entry, self.gates, delivered_at, self.config.inventory,
         )
         self.lease.stop_if_stale()
+        progress = adapters.collect_progress(self.gates, delivery)
+        if progress != self.tx.data["readiness_progress"]:
+            self.tx.update(readiness_progress=progress)
         if not verdict.ok:
             raise RotationError("readiness_failed", "a readiness gate did not pass")
 

@@ -35,7 +35,7 @@
           "name_pattern": "authentik-runtime",
           "condition": "Ready=True",
           "status": "required_rotation_gate",
-          "evidence_gap": "no current step waits for this ExternalSecret to refresh after a SecretID change, and its refresh interval is one hour, so the rotation transaction has to trigger a refresh"
+          "evidence_gap": "the gate shows, across runs, at least one successful ESO reconcile through the expected store that began after the delivery (typically about two hours at this one-hour refresh interval, not guaranteed). It does not show that ESO authenticated with the replacement SecretID"
         }
       ]
     },

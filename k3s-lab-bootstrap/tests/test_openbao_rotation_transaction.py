@@ -770,6 +770,110 @@ class TransactionTests(unittest.TestCase):
         self.assertEqual(h.bao.destroyed, [])
         self.assertEqual(h.main(ONE)["secret_id_accessor"], f"old-accessor-{ONE}")
 
+    def test_the_gate_progress_is_saved_in_the_record_and_given_back_on_the_next_run(self):
+        h = Harness()
+        seen_at_start = []
+        key = "authentik/authentik-runtime"
+
+        def evaluate(entry, gates, since, inventory):
+            keeping = [g for g in gates if hasattr(g, "progress")]
+            self.assertEqual(len(keeping), 1)
+            seen_at_start.append(dict(keeping[0].progress))
+            keeping[0].progress = {key: {"seen": f"t{len(seen_at_start)}", "advanced": False}}
+            return adapters.TargetReadiness(False, (), "readiness_failed")
+
+        h.config.evaluate = evaluate
+        h.run(ONE)
+        self.assertEqual(h.tx(ONE)["readiness_progress"], {"delivery": h.tx(ONE)["delivery_id"], "entries": {key: {"seen": "t1", "advanced": False}}})
+        h.run(ONE, context(request_id="run-0002"))
+        self.assertEqual(seen_at_start, [{}, {key: {"seen": "t1", "advanced": False}}])
+        self.assertEqual(h.tx(ONE)["readiness_progress"]["entries"], {key: {"seen": "t2", "advanced": False}})
+        self.assertEqual(h.tx(ONE)["state"], DELIVERED_PENDING_READINESS)
+
+    def test_progress_with_the_same_delivered_at_but_another_delivery_is_not_given_to_the_gates(self):
+        h = Harness()
+        key = "authentik/authentik-runtime"
+        h.ready.ok = False
+        h.run(ONE)
+        path = rotation.transaction_path(h.entry(ONE))
+        data, version = h.bao.records[path]
+        forged = {key: {"seen": "2020-01-01T00:00:00Z", "advanced": True}}
+        h.bao.records[path] = ({**data, "readiness_progress": {"delivered_at": data["delivered_at"], "delivery": "accessor-of-a-previous-delivery", "entries": forged}}, version)
+        seen = []
+
+        def evaluate(entry, gates, since, inventory):
+            seen.extend(dict(g.progress) for g in gates if hasattr(g, "progress"))
+            return adapters.TargetReadiness(False, (), "readiness_failed")
+
+        h.config.evaluate = evaluate
+        h.run(ONE, context(request_id="run-0002"))
+        self.assertEqual(seen, [{}])
+
+    def test_progress_from_an_earlier_delivery_of_the_same_accessor_is_not_given_to_the_gates(self):
+        h = Harness()
+        key = "authentik/authentik-runtime"
+        h.ready.ok = False
+        h.run(ONE)
+        path = rotation.transaction_path(h.entry(ONE))
+        data, version = h.bao.records[path]
+        first_id = data["delivery_id"]
+        stale = {"delivery": first_id, "entries": {key: {"seen": "2020-01-01T00:00:00Z", "advanced": True}}}
+        # Another delivery of the same SecretID: what _mark_delivered writes.
+        h.bao.records[path] = ({**data, "delivery_id": "0" * 32, "readiness_progress": stale}, version)
+        seen = []
+
+        def evaluate(entry, gates, since, inventory):
+            seen.extend(dict(g.progress) for g in gates if hasattr(g, "progress"))
+            return adapters.TargetReadiness(False, (), "readiness_failed")
+
+        h.config.evaluate = evaluate
+        h.run(ONE, context(request_id="run-0002"))
+        self.assertEqual(seen, [{}])
+
+    def test_every_delivery_writes_a_fresh_id_and_clears_the_progress(self):
+        h = Harness()
+        h.ready.ok = False
+        h.run(ONE)
+        first = h.tx(ONE)["delivery_id"]
+        self.assertRegex(first, r"^[0-9a-f]{32}$")
+        h.kube.secrets[h.destinations(ONE)[0][:2]]["annotations"] = {}  # the destination loses its marker
+        h.run(ONE, context(request_id="run-0002"))
+        self.assertNotEqual(h.tx(ONE)["delivery_id"], first)
+
+    def test_a_delivered_record_without_a_delivery_id_gets_one_and_restarts_the_baseline(self):
+        h = Harness()
+        h.ready.ok = False
+        h.run(ONE)
+        path = rotation.transaction_path(h.entry(ONE))
+        data, version = h.bao.records[path]
+        h.bao.records[path] = ({k: v for k, v in data.items() if k not in ("delivery_id", "readiness_progress")}, version)
+        h.run(ONE, context(request_id="run-0002"))
+        self.assertRegex(h.tx(ONE)["delivery_id"], r"^[0-9a-f]{32}$")
+
+    def test_a_record_without_the_progress_key_loads_and_recovers(self):
+        for completed in (False, True):
+            with self.subTest(completed=completed):
+                h = Harness()
+                h.ready.ok = completed
+                h.run(ONE)
+                path = rotation.transaction_path(h.entry(ONE))
+                data, version = h.bao.records[path]
+                self.assertEqual(data["state"], ACTIVE if completed else DELIVERED_PENDING_READINESS)
+                h.bao.records[path] = ({k: v for k, v in data.items() if k != "readiness_progress"}, version)
+                h.ready.ok = True
+                if completed:
+                    # The next rotation has to start from the old record.
+                    h.clock.t += int(registry.thresholds(h.entry(ONE)).ttl * 0.7)
+                result = h.run(ONE, context(request_id="run-0002"))
+                self.assertEqual((result.outcome, result.reason_code), ("rotated", ""))
+                self.assertEqual(h.tx(ONE)["state"], ACTIVE)
+
+    def test_a_new_transaction_starts_with_no_gate_progress(self):
+        h = Harness()
+        h.ready.ok = False
+        h.run(ONE)
+        self.assertEqual(h.tx(ONE)["readiness_progress"], {})
+
     def test_unconfirmed_bounds_stop_before_any_delivery(self):
         h = Harness()
         h.bao.wrong_bounds = True
@@ -1126,6 +1230,7 @@ class GuardTests(unittest.TestCase):
             "not a mapping": lambda r: 5,
             "extra key": lambda r: {**r, "extra": 1},
             "missing key": drop("cleanup_done"),
+            "progress not a mapping": lambda r: {**r, "readiness_progress": []},
             "other schema": lambda r: {**r, "schema_version": 2},
             "unknown state": lambda r: {**r, "state": "bogus"},
             "other target": lambda r: {**r, "target": "other"},
