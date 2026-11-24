@@ -63,9 +63,25 @@ or a test can run it. It does not read or print a credential.
   `readiness_failed` without it. The ClusterSecretStore gate and the Secret key
   gate are preconditions and never accept a replacement alone. The
   ExternalSecret gate checks that the ExternalSecret reads the expected
-  ClusterSecretStore (the one the target's own store gate names), is Ready,
-  and has a `refreshTime` strictly after the delivery. A pass proves a
-  successful refresh through the expected store after the delivery. It does
+  ClusterSecretStore (the one the target's own store gate names, in its
+  default reference and in every `sourceRef`), is Ready, and shows a refresh
+  that began after the delivery. The gate never writes to an ExternalSecret and
+  never compares a clock on its host with a time ESO wrote. Its first read
+  records `status.refreshTime` as a baseline. A newer value on a later read
+  becomes the next baseline, because that refresh may have begun before the
+  delivery. A still newer value passes, with Ready and the expected store on
+  the same read. The gate does not wait: the rotation engine saves its
+  progress in the transaction record (`readiness_progress`, bound to the
+  delivery it was observed for, and dropped when it is not the current one)
+  and a later run continues. With a one-hour refresh interval a pass
+  typically takes about two hours, which is not a guarantee. The transaction
+  record is trusted: whoever can write it already controls rotation. The old SecretID stays valid meanwhile, because the engine destroys
+  it only after promotion. The reasoning assumes one ESO controller (leader
+  election is off in the chart's defaults) and no spec edit between the
+  refresh and the passing read; the gate's docstring states the rest.
+  Under the one-controller assumption, a pass proves at least one successful
+  ESO reconcile of that ExternalSecret, through the expected store, that
+  began after the delivery, on ESO's own clock. It does
   not prove authentication with the replacement, because ESO may reuse a
   cached token. That proof belongs to step 3, so no status can make a target
   accepted until step 3 defines it. Every runtime target carries
@@ -82,8 +98,10 @@ or a test can run it. It does not read or print a credential.
   namespace as its ExternalSecret
   (`roles/stack/operator/authentik/tasks/main.yml`, created from the main
   `openbao` store by default). Its refresh interval is one hour, so the
-  rotation transaction has to trigger a refresh. The registry records that as
-  `required_rotation_gate` with an `evidence_gap`.
+  gate waits for ESO's own refreshes across runs and does not trigger one. The
+  registry records the gate as `required_rotation_gate` with an `evidence_gap`.
+  Today the gate is evidence only, because `fresh_authentication_proof_missing`
+  blocks promotion.
   Every client call goes through a wrapper that replaces any exception, a
   `BaseException` included, with a fixed-message error or a fresh instance of
   the interrupt class, so a response body cannot reach a traceback. A failed

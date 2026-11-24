@@ -292,20 +292,73 @@ class ClusterSecretStoreGate:
 
 
 class ExternalSecretGate:
-    """Every matching ExternalSecret reads the expected store, is Ready, and
-    refreshed strictly after `since`.
+    """Every matching ExternalSecret reads only the expected store, is Ready,
+    and shows a refresh that began after the delivery, as ESO's own times show.
 
     Client method: `list_objects(kind, namespace)` returns a list of dicts.
     The gate names its namespaces with `namespace` or with `namespaces_from`,
     a dotted path into the inventory mapping. `store` is the name of the
     ClusterSecretStore that the registry declares for the target. Without it
-    the gate fails.
+    the gate fails. The gate never writes to an ExternalSecret.
 
-    What a pass proves: a successful refresh through the expected store after
-    the delivery. It does not prove authentication with the replacement,
-    because ESO may reuse a cached token. The fresh-authentication proof is not defined yet; see
+    The gate does not wait. ESO refreshes on its own interval (an hour for
+    `authentik-runtime`), so each call reads and returns, and the transaction
+    stays `delivered-pending-readiness` until a later run passes. The gate
+    keeps its progress in `progress`, which the engine saves in the
+    transaction record with the delivery it was observed for (the
+    random id that each delivery writes), and restores
+    before the next call only when the record's delivery is the current one
+    (see `restore_progress`). Each entry, keyed `namespace/name`, holds `seen`
+    (the last `status.refreshTime` that this gate recorded) and `advanced`
+    (whether a newer one followed the first).
+
+    Trust boundary: the transaction record is trusted. Whoever can write it
+    already controls rotation, so forged progress in it is out of scope. The
+    binding to the delivery protects against stale progress, not against that.
+
+    Every comparison is between two times that ESO wrote, so no clock on this
+    host is compared with one on ESO's node:
+
+    1. The first read after the delivery records its refreshTime as the
+       baseline. That read is a failure. It records whether or not the object
+       is Ready, because ESO writes refreshTime only after a successful
+       refresh; only the passing read needs Ready.
+    2. A later read with a newer refreshTime records it and sets `advanced`.
+       That read is also a failure. The refresh may have started before the
+       delivery and finished after the baseline read.
+    3. A later read with a refreshTime newer than the one recorded in step 2
+       passes, with Ready and the expected store on that same read: the
+       default `secretStoreRef` and every `data[].sourceRef` and
+       `dataFrom[].sourceRef` (a generatorRef or another store fails). A pass
+       leaves the record as it was, so a later call passes again on any newer
+       refresh and objects that refresh at different times can pass together.
+
+    Why two steps. ESO v2.3.0 stamps `refreshTime` with the time the reconcile
+    began, and writes it when the reconcile ends successfully (`start` in
+    `Reconcile` and `markAsDone`, pkg/controllers/externalsecret). The queue
+    runs one reconcile of an object at a time, whatever the worker count. So
+    the reconcile that wrote the third time began after the one that wrote
+    the second ended, which was after the baseline read, which was after the
+    delivery. A refresh that was already running at the delivery can only
+    produce the second time. So a pass shows at least one successful
+    reconcile that began after the delivery, not two. With a one-hour refresh
+    interval a pass typically takes about two hours; that is not a guarantee.
+
+    Residual window. The reasoning needs one ESO controller reconciling the
+    object: the chart's leader election is off by default, so two replicas
+    could overlap. A spec edit between the refresh and the passing read is
+    not caught either. A time that goes backwards (a recreated object, or a
+    clock step on ESO's node) restarts the baseline.
+
+    What a pass proves, under the one-controller assumption: ESO reconciled
+    that ExternalSecret successfully, through the expected store, in a
+    reconcile that began after the delivery, on its own clock. It does not prove that ESO
+    authenticated with the replacement SecretID, because ESO may reuse a
+    cached token. The fresh-authentication proof is not defined yet; see
     `docs/plans/openbao-approle-credential-lifecycle-plan.md` in the dmfdeploy
-    umbrella repository.
+    umbrella repository. Until it is, this gate is evidence only: the reason
+    code `fresh_authentication_proof_missing` blocks promotion whatever the
+    gate returns.
     """
 
     proves_acceptance = True
@@ -314,6 +367,44 @@ class ExternalSecretGate:
         self.gate = gate
         self.client = client
         self.store = store
+        self.progress = {}
+
+    def _is_store(self, reference):
+        reference = reference or {}
+        return reference.get("kind") == "ClusterSecretStore" and reference.get("name") == self.store
+
+    def _reads_store(self, item):
+        """The ExternalSecret reads its data only through the expected store: the
+        default store reference is the expected one, and no data or dataFrom
+        entry names another store or a generator in its own sourceRef."""
+        spec = item.get("spec") or {}
+        if not self._is_store(spec.get("secretStoreRef")):
+            return False
+        for entry in (spec.get("data") or []) + (spec.get("dataFrom") or []):
+            source = entry.get("sourceRef")
+            if source is not None and (source.get("generatorRef") or not self._is_store(source.get("storeRef"))):
+                return False
+        return True
+
+    def _step(self, key, refreshed_text, ready):
+        """Advance the progress of one object by this read. Return None when
+        the read passes, else the reason."""
+        refreshed = _parse_time(refreshed_text)
+        if refreshed is None:
+            return "has no refresh time"
+        state = self.progress.get(key)
+        seen = _parse_time(state["seen"]) if state else None
+        if seen is None or refreshed < seen:
+            self.progress[key] = {"seen": refreshed_text, "advanced": False}
+            return "baseline recorded; waiting for newer refreshes"
+        if refreshed == seen:
+            return "not refreshed since the last read"
+        if not state["advanced"]:
+            self.progress[key] = {"seen": refreshed_text, "advanced": True}
+            return "refreshed once; waiting for one more, which began after the delivery"
+        if not ready:
+            return "not Ready"
+        return None
 
     def check(self, since=None, inventory=None):
         gate = f"ExternalSecret {self.gate['name_pattern']}"
@@ -327,6 +418,7 @@ class ExternalSecretGate:
             namespaces = _lookup(inventory or {}, self.gate["namespaces_from"])
         if not namespaces or not isinstance(namespaces, (list, tuple)):
             return _fail(gate, "no namespaces could be resolved")
+        reasons = []
         for namespace in namespaces:
             listed, failed = _read(self.client.list_objects, "ExternalSecret", namespace)
             if failed:
@@ -339,16 +431,45 @@ class ExternalSecretGate:
             if not matches:
                 return _fail(gate, f"none found in {namespace}")
             for item in matches:
-                reference = (item.get("spec") or {}).get("secretStoreRef") or {}
-                if reference.get("kind") != "ClusterSecretStore" or reference.get("name") != self.store:
+                if not self._reads_store(item):
                     return _fail(gate, f"not read through the expected store in {namespace}")
                 ready = _condition(item, "Ready")
-                if ready is None or ready.get("status") != "True":
-                    return _fail(gate, f"not Ready in {namespace}")
-                refreshed = _parse_time((item.get("status") or {}).get("refreshTime"))
-                if refreshed is None or refreshed <= since:
-                    return _fail(gate, f"not refreshed after the delivery in {namespace}")
-        return _pass(gate, "Ready and refreshed through the expected store")
+                key = f"{namespace}/{item['metadata']['name']}"
+                reason = self._step(key, (item.get("status") or {}).get("refreshTime"), bool(ready and ready.get("status") == "True"))
+                if reason:
+                    reasons.append(f"{reason} in {key}")
+        if reasons:
+            return _fail(gate, "; ".join(reasons))
+        return _pass(gate, "a reconcile after the delivery is shown, Ready, through the expected store")
+
+
+def restore_progress(gates, saved, delivery):
+    """Give each gate that keeps progress its saved entries, but only when
+    `saved` was observed for the delivery identified by `delivery`. Progress without
+    that binding, or bound to another delivery, is dropped, so the baseline
+    restarts. So is an entry that is not exactly a `seen` string and an
+    `advanced` boolean."""
+    bound = isinstance(saved, dict) and delivery is not None and saved.get("delivery") == delivery
+    entries = saved.get("entries") if bound else None
+    for gate in gates:
+        if hasattr(gate, "progress"):
+            gate.progress = {
+                key: dict(entry)
+                for key, entry in (entries if isinstance(entries, dict) else {}).items()
+                if isinstance(entry, dict)
+                and set(entry) == {"seen", "advanced"}
+                and isinstance(entry["seen"], str)
+                and isinstance(entry["advanced"], bool)
+            }
+
+
+def collect_progress(gates, delivery):
+    """The progress of every gate that keeps it, bound to the delivery it was
+    observed for, as one mapping to save. An empty result is `{}`."""
+    entries = {}
+    for gate in gates:
+        entries.update(getattr(gate, "progress", {}))
+    return {"delivery": delivery, "entries": entries} if entries else {}
 
 
 class KubernetesSecretKeyGate:
