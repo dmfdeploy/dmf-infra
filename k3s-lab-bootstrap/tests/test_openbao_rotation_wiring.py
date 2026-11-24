@@ -329,6 +329,7 @@ class VerifierTests(unittest.TestCase):
 
     def test_the_assertion_accepts_read(self):
         self.assertIn("(item.0.expected == 'read' and item.1 == ['read'])", VERIFY)
+        self.assertIn("(item.0.expected == 'list' and item.1 == ['list'])", VERIFY)
 
     def test_the_login_and_probes_run_only_when_the_scheduler_exists_or_the_switch_is_on(self):
         self.assertIn("failed_when: false", task(VERIFY, "Request a JWT for the rotation scheduler ServiceAccount"))

@@ -12,6 +12,10 @@ path "auth/approle/role/external-secrets" {
   capabilities = ["read"]
 }
 
+path "auth/approle/role/external-secrets/secret-id" {
+  capabilities = ["list"]
+}
+
 path "auth/approle/role/external-secrets/secret-id/lookup" {
   capabilities = ["update"]
 }
@@ -50,6 +54,10 @@ path "secret/metadata/platform/approle-rotation-staging/external-secrets" {
 
 path "auth/approle/role/object-storage-app-backups" {
   capabilities = ["read"]
+}
+
+path "auth/approle/role/object-storage-app-backups/secret-id" {
+  capabilities = ["list"]
 }
 
 path "auth/approle/role/object-storage-app-backups/secret-id/lookup" {
@@ -94,6 +102,10 @@ path "secret/data/platform/eso-bindings/object-storage-app-backups" {
 
 path "auth/approle/role/object-storage-openbao-snapshots" {
   capabilities = ["read"]
+}
+
+path "auth/approle/role/object-storage-openbao-snapshots/secret-id" {
+  capabilities = ["list"]
 }
 
 path "auth/approle/role/object-storage-openbao-snapshots/secret-id/lookup" {

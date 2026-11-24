@@ -247,6 +247,45 @@ class KubernetesCalls(unittest.TestCase):
                     getattr(kube(FakeRunner(response)), method)(*args)
                 self.assertEqual(type(caught.exception), expected)
 
+    def test_a_failed_destroy_counts_as_done_only_when_the_accessor_is_not_listed(self):
+        # The error text is deliberately one the old text match accepted.
+        failed = (1, "", API_ERROR + "* failed to find accessor entry for secret_id_accessor")
+        others = json.dumps(["another-accessor"])
+        none_left = (2, "{}\n", "")
+        for listing in ((0, others, ""), none_left):
+            with self.subTest(listing=listing[1]):
+                runner = FakeRunner(failed, listing)
+                self.assertIsNone(bao(runner).destroy_secret_id_accessor("external-secrets", ACCESSOR))
+                argv, stdin, _timeout = runner.calls[1]
+                self.assertIn("auth/approle/role/external-secrets/secret-id", argv[-1])
+                self.assertEqual(stdin, f"{TOKEN}\n")
+                runner.assert_no_credential_in_argv(self)
+
+    def test_a_failed_destroy_fails_when_the_accessor_is_still_listed(self):
+        failed = (1, "", API_ERROR + "* failed to find accessor entry for secret_id_accessor")
+        runner = FakeRunner(failed, (0, json.dumps([ACCESSOR]), ""))
+        with self.assertRaises(ApiError):
+            bao(runner).destroy_secret_id_accessor("external-secrets", ACCESSOR)
+
+    def test_a_failed_accessor_list_fails_the_destroy_without_output(self):
+        failed = (1, "", API_ERROR + "* not found")
+        leaky = f"{TOKEN} {ACCESSOR} {CANDIDATE}"
+        no_role = (2, "", 'Error listing auth/approle/role/x/secret-id: Error making API request.\n\nCode: 400. Errors:\n\n* role "x" does not exist')
+        for listing in (no_role, (2, "{}", "something went wrong"), (1, "{}", ""), (1, "", API_ERROR + "* denied " + leaky), (1, "", leaky), (0, "not json", ""), (0, "{}", ""),
+                        (0, json.dumps([{"id": ACCESSOR}]), ""), (0, json.dumps([None]), ""),
+                        (0, json.dumps([5]), ""), (0, json.dumps([""]), ""), (0, json.dumps(["ok", ACCESSOR, None]), "")):
+            with self.subTest(listing=listing):
+                with self.assertRaises((TransportError, ApiError)) as caught:
+                    bao(FakeRunner(failed, listing)).destroy_secret_id_accessor("external-secrets", ACCESSOR)
+                for secret in CREDENTIALS:
+                    self.assertNotIn(secret, str(caught.exception))
+
+    def test_an_unanswered_destroy_is_not_listed(self):
+        runner = FakeRunner((1, "", "connection reset"))
+        with self.assertRaises(TransportError):
+            bao(runner).destroy_secret_id_accessor("external-secrets", ACCESSOR)
+        self.assertEqual(len(runner.calls), 1)
+
     def test_a_call_without_an_answer_is_unanswered_and_carries_no_output(self):
         leaky = f"Unable to connect to the server: dial tcp: lookup {TOKEN}"
         for method, args in (("get_lease", ("ns", "n")), ("get_secret", ("ns", "n"))):
@@ -383,8 +422,6 @@ class OpenBaoCalls(unittest.TestCase):
         self.assertIsNone(bao(FakeRunner(missing)).read_kv2("secret/data/x"))
         self.assertIsNone(bao(FakeRunner(missing)).read_role("external-secrets"))
         self.assertIsNone(bao(FakeRunner((0, "", ""))).lookup_secret_id("external-secrets", CANDIDATE))
-        gone = (1, "", API_ERROR + "* failed to find accessor entry for secret_id_accessor")
-        self.assertIsNone(bao(FakeRunner(gone)).destroy_secret_id_accessor("external-secrets", ACCESSOR))
 
     def test_a_call_without_an_answer_is_unanswered_and_carries_no_output(self):
         leaky = f'Put "https://127.0.0.1:8200": context deadline exceeded for {TOKEN} {CANDIDATE}'

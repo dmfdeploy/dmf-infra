@@ -61,7 +61,7 @@ def expected_paths(registry_data):
     for entry in registry_data["runtime_targets"].values():
         role = f"auth/approle/role/{entry['approle_name']}"
         paths |= {
-            role, f"{role}/secret-id/lookup", f"{role}/custom-secret-id", f"{role}/secret-id-accessor/destroy",
+            role, f"{role}/secret-id", f"{role}/secret-id/lookup", f"{role}/custom-secret-id", f"{role}/secret-id-accessor/destroy",
             entry["metadata_path"], rotation.transaction_path(entry), rotation.staging_path(entry),
             rotation.staging_path(entry).replace("/data/", "/metadata/", 1),
         }
@@ -93,10 +93,14 @@ class NegativePropertyTests(unittest.TestCase):
         for path, grant in self.POLICY.items():
             with self.subTest(path=path):
                 self.assertNotRegex(path, r"[*+]")
-                self.assertTrue(set(grant["capabilities"]) <= {"create", "read", "update", "delete"}, grant)
+                self.assertTrue(set(grant["capabilities"]) <= {"create", "read", "update", "delete", "list"}, grant)
         text = scheduler_policy.render_policy(REGISTRY)
-        for word in ("sudo", "list", "patch", "deny"):
+        for word in ("sudo", "patch", "deny"):
             self.assertNotIn(f'"{word}"', text)
+        for path, grant in self.POLICY.items():
+            if "list" in grant["capabilities"]:
+                self.assertRegex(path, r"^auth/approle/role/[^/]+/secret-id$")
+                self.assertEqual(grant["capabilities"], ["list"])
 
     def test_nothing_reaches_sys_auth_administration_or_application_data(self):
         for path in self.POLICY:
@@ -104,7 +108,8 @@ class NegativePropertyTests(unittest.TestCase):
                 self.assertFalse(path.startswith("sys/"))
                 self.assertFalse(path.startswith("auth/kubernetes"))
                 self.assertFalse(path.startswith("secret/data/apps/"))
-                self.assertFalse(path.endswith("/secret-id"), "the random SecretID endpoint")
+                if path.endswith("/secret-id"):
+                    self.assertEqual(self.POLICY[path]["capabilities"], ["list"], "never the random SecretID endpoint")
                 self.assertNotIn("secret-id-accessor/lookup", path)
                 self.assertNotIn("/list", path)
 
