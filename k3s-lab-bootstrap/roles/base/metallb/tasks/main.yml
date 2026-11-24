@@ -13,11 +13,41 @@
           pod-security.kubernetes.io/audit: privileged
           pod-security.kubernetes.io/warn: privileged
 
-- name: Apply MetalLB manifests
-  kubernetes.core.k8s:
-    kubeconfig: /etc/rancher/k3s/k3s.yaml
-    state: present
-    src: "{{ metallb_manifest_url }}"
+# The manifest is checked against a pinned hash before it reaches the cluster,
+# so the apply reads the local, verified file and never the URL.
+- name: Apply the checked MetalLB manifest
+  block:
+    - name: Create a private file for the MetalLB manifest
+      ansible.builtin.tempfile:
+        state: file
+        prefix: metallb-native-
+        suffix: .yaml
+      register: _metallb_manifest_file
+
+    - name: Download MetalLB manifest
+      ansible.builtin.get_url:
+        url: "{{ metallb_manifest_url }}"
+        dest: "{{ _metallb_manifest_file.path }}"
+        # The temp file already exists and is empty, so its hash differs from the
+        # pinned one and get_url downloads. It checks the download against the hash
+        # before it replaces the file.
+        checksum: >-
+          sha256:{{ metallb_manifest_sha256[metallb_version]
+          | mandatory('metallb_manifest_sha256 has no hash for ' ~ metallb_version
+          ~ '; add the SHA-256 of metallb-native.yaml for that release') }}
+        mode: "0600"
+
+    - name: Apply MetalLB manifests from the downloaded manifest
+      kubernetes.core.k8s:
+        kubeconfig: /etc/rancher/k3s/k3s.yaml
+        state: present
+        src: "{{ _metallb_manifest_file.path }}"
+  always:
+    - name: Remove the downloaded MetalLB manifest
+      ansible.builtin.file:
+        path: "{{ _metallb_manifest_file.path }}"
+        state: absent
+      when: _metallb_manifest_file.path is defined
 
 - name: Wait for MetalLB controller to be ready
   kubernetes.core.k8s_info:
