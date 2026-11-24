@@ -38,13 +38,6 @@ UNVERIFIED_TOOL_USE = [
     ("download redirected to a file", re.compile(TOOL + r"[^\n|;&<]*[^\d&<>]>>?\s*(?!/dev/null|&)\S")),
     ("wget saves a file by default", re.compile(r"(?<![\w./-])wget\s+\S(?![^\n|;&]*\s-[A-Za-z]*O\s*-)(?![^\n|;&]*--output-document[= ]-)")),
 ]
-# Each entry is a file and the exact `src` that `k8s` may fetch or template without a check.
-# These two tasks apply an upstream manifest without a checksum and must move to the checked
-# path: a checksummed `get_url`, then `k8s` on the local file. Add nothing else.
-ALLOWED_K8S_SRC = {
-    ("playbooks/330-longhorn.yml", "{{ longhorn_manifest_url }}"),
-    ("roles/base/metallb/tasks/main.yml", "{{ metallb_manifest_url }}"),
-}
 URL_SCHEME = re.compile(r"^\s*[a-z][a-z0-9+.-]*://", re.I)
 REGISTERED_PATH = re.compile(r"^\{\{\s*(\w+)\.path\s*\}\}$")
 TEMPFILE = re.compile(r"^(?:ansible\.builtin\.)?tempfile$")
@@ -77,9 +70,7 @@ def tempfile_registers(node):
     return names
 
 
-def k8s_src_unchecked(src, name, temp_names):
-    if (name, src) in ALLOWED_K8S_SRC:
-        return False
+def k8s_src_unchecked(src, temp_names):
     if URL_SCHEME.match(src):
         return True
     if "{{" not in src:
@@ -88,11 +79,11 @@ def k8s_src_unchecked(src, name, temp_names):
     return not (src.startswith("/") or (registered and registered.group(1) in temp_names))
 
 
-def module_problems(node, name="", temp_names=frozenset()):
+def module_problems(node, temp_names=frozenset()):
     """Yield a message for each download task in a parsed YAML document."""
     if isinstance(node, list):
         for item in node:
-            yield from module_problems(item, name, temp_names)
+            yield from module_problems(item, temp_names)
     elif isinstance(node, dict):
         for key, value in node.items():
             found = MODULE.match(str(key))
@@ -104,17 +95,17 @@ def module_problems(node, name="", temp_names=frozenset()):
                 yield f"uri of {args.get('url')} writes a file; use get_url with a checksum"
             elif kind == "unarchive" and re.match(r"https?://", str(args.get("src", ""))):
                 yield f"unarchive reads {args['src']} directly, with no checksum"
-            elif kind == "k8s" and k8s_src_unchecked(str(args.get("src", "")), name, temp_names):
+            elif kind == "k8s" and k8s_src_unchecked(str(args.get("src", "")), temp_names):
                 yield f"k8s applies {args['src']}, which may be a URL, with no checksum; download it with get_url first"
             else:
-                yield from module_problems(value, name, temp_names)
+                yield from module_problems(value, temp_names)
 
 
 def problems_in(text, is_yaml, name=""):
     found = []
     if is_yaml:
         for document in yaml.safe_load_all(text):
-            found.extend(module_problems(document, name, tempfile_registers(document)))
+            found.extend(module_problems(document, tempfile_registers(document)))
     # Join continuation lines and drop comments, then scan each command line.
     code = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
     for number, line in enumerate(re.sub(r"\\\n\s*", " ", code).splitlines(), 1):
@@ -188,13 +179,6 @@ class DownloadsAreVerified(unittest.TestCase):
         self.assertTrue(problems_in(line + " && curl -o /tmp/x https://e.test/x\n", False, name))
         self.assertTrue(problems_in(line.replace("catalog.body", "other.body") + "\n", False, name))
         self.assertTrue(problems_in(line + "\n", False, "other/file.j2"))
-
-    def test_k8s_url_allowance_is_scoped_to_its_file(self):
-        for name, src in sorted(ALLOWED_K8S_SRC):
-            text = f"- name: x\n  kubernetes.core.k8s:\n    src: \"{src}\"\n"
-            self.assertEqual([], problems_in(text, True, name))
-            self.assertTrue(problems_in(text, True, "roles/other/tasks/main.yml"))
-            self.assertTrue(problems_in(text, True))
 
     def test_verified_download_passes(self):
         text = (

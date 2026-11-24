@@ -4,6 +4,12 @@
   become: true
   vars:
     longhorn_version: "v1.10.1"
+    # SHA-256 of longhorn.yaml, keyed by release. Longhorn publishes no checksum file,
+    # so each value is the hash of the file at that release tag, downloaded from
+    # longhorn_manifest_url and run through `shasum -a 256`. Add the new version's
+    # hash when you change longhorn_version; the install fails until you do.
+    longhorn_manifest_sha256:
+      v1.10.1: "9dcd2472b009e468424fc708802e4a3a0e1e0880e44add6035ec2426d312994a"
     longhorn_manifest_url: "https://raw.githubusercontent.com/longhorn/longhorn/{{ longhorn_version }}/deploy/longhorn.yaml"
   tasks:
     - name: Create longhorn-system namespace
@@ -16,12 +22,42 @@
           metadata:
             name: longhorn-system
 
-    - name: Apply Longhorn manifests
-      kubernetes.core.k8s:
-        kubeconfig: /etc/rancher/k3s/k3s.yaml
-        state: present
-        src: "{{ longhorn_manifest_url }}"
-      register: longhorn_apply
+    # The manifest is checked against a pinned hash before it reaches the cluster,
+    # so the apply reads the local, verified file and never the URL.
+    - name: Apply the checked Longhorn manifest
+      block:
+        - name: Create a private file for the Longhorn manifest
+          ansible.builtin.tempfile:
+            state: file
+            prefix: longhorn-
+            suffix: .yaml
+          register: _longhorn_manifest_file
+
+        - name: Download Longhorn manifest
+          ansible.builtin.get_url:
+            url: "{{ longhorn_manifest_url }}"
+            dest: "{{ _longhorn_manifest_file.path }}"
+            # The temp file already exists and is empty, so its hash differs from the
+            # pinned one and get_url downloads. It checks the download against the hash
+            # before it replaces the file.
+            checksum: >-
+              sha256:{{ longhorn_manifest_sha256[longhorn_version]
+              | mandatory('longhorn_manifest_sha256 has no hash for ' ~ longhorn_version
+              ~ '; add the SHA-256 of longhorn.yaml for that release') }}
+            mode: "0600"
+
+        - name: Apply Longhorn manifests from the downloaded manifest
+          kubernetes.core.k8s:
+            kubeconfig: /etc/rancher/k3s/k3s.yaml
+            state: present
+            src: "{{ _longhorn_manifest_file.path }}"
+          register: longhorn_apply
+      always:
+        - name: Remove the downloaded Longhorn manifest
+          ansible.builtin.file:
+            path: "{{ _longhorn_manifest_file.path }}"
+            state: absent
+          when: _longhorn_manifest_file.path is defined
 
     - name: Wait for Longhorn manager to be ready
       kubernetes.core.k8s_info:
