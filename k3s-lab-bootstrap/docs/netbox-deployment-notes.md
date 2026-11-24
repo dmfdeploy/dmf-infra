@@ -32,21 +32,9 @@ The deployment required solving several issues related to:
 
 **Problem:** Bitnami has deprecated version-specific tags from their public Docker Hub registry. Tags like `bitnami/postgresql:15` or `bitnami/valkey:8.0` no longer exist.
 
-**Solution:** Use the `latest` tag for Bitnami images:
+**Solution:** The role does not override the PostgreSQL image, so the chart default applies. For Valkey, Bitnami publishes only a `latest` tag, so the role keeps `tag: latest` as a label and pins the content with `image.digest`. The chart then pulls `repository@digest`, and a re-published `latest` cannot change what the cluster runs. Don't deploy a Bitnami image by tag alone.
 
-```yaml
-postgresql:
-  image:
-    registry: docker.io
-    repository: bitnami/postgresql
-    tag: latest
-
-valkey:
-  image:
-    registry: docker.io
-    repository: bitnami/valkey
-    tag: latest
-```
+The pinned values live in `roles/stack/operator/netbox/templates/values.yml.j2`, under `netbox.valkey.image`. To update the digest, follow "Image pins" in [hardening.md](hardening.md). Don't copy the digest into other files.
 
 **Note:** As of August 2025, Bitnami evolved their public catalog to offer only hardened images under the Bitnami Secure Images initiative, removing non-latest tags.
 
@@ -217,72 +205,15 @@ The role now reads `db_password`, `valkey_password`, and `api_token_pepper` from
 
 ## Final Configuration (NetBox v4.5.0)
 
-### values.yml.j2
+### Helm values
 
-```yaml
----
-# NetBox v4.5.0 via netbox-community chart 7.3.0
-
-superuser:
-  name: admin
-  email: admin@example.com
-  password: <vault_netbox_superuser_password>
-
-# Base path for running behind reverse proxy
-basePath: /netbox
-
-# Extra config for API_TOKEN_PEPPERS (required for v2 API tokens)
-extraConfig:
-  - secret:
-      secretName: netbox-extra-config
-
-# Disable probes - chart has bug constructing basePath in probe URLs
-startupProbe:
-  enabled: false
-readinessProbe:
-  enabled: false
-livenessProbe:
-  enabled: false
-
-# Media persistence (shared between netbox and worker - needs RWX)
-persistence:
-  enabled: true
-  storageClass: longhorn
-  size: 1Gi
-  accessMode: ReadWriteMany
-
-# PostgreSQL subchart
-postgresql:
-  enabled: true
-  auth:
-    username: netbox
-    database: netbox
-    password: <netbox-db-password>
-    postgresPassword: <netbox-db-password>
-  primary:
-    persistence:
-      enabled: true
-      storageClass: longhorn
-      size: 1Gi
-
-# Valkey (Redis fork) subchart
-valkey:
-  enabled: true
-  image:
-    registry: docker.io
-    repository: bitnami/valkey
-    tag: latest
-  auth:
-    enabled: true
-    password: <netbox-valkey-password>
-  master:
-    persistence:
-      enabled: true
-      storageClass: longhorn
-      size: 1Gi
-  replica:
-    replicaCount: 0
-```
+The role renders the Helm values from
+`k3s-lab-bootstrap/roles/stack/operator/netbox/templates/values.yml.j2`. That file
+is the one source for the final configuration, including the Valkey image pin
+(`netbox.valkey.image`). These notes don't carry a copy, so none can drift from the
+role or drop the digest. The sections above explain why each setting exists: the
+base path, the API token peppers, the disabled probes, ReadWriteMany media storage
+and the Valkey subchart.
 
 ### Traefik IngressRoute
 
@@ -292,7 +223,7 @@ Two routes are required:
 
 ## Lessons Learned
 
-1. **Bitnami images now only offer `latest` tag** - Version-specific tags were removed from the public catalog in 2025.
+1. **Bitnami images now only offer `latest` tag** - Version-specific tags were removed from the public catalog in 2025. Pin the image with `image.digest` so the tag cannot change what you run.
 
 2. **NetBox v4.x uses Valkey instead of Redis** - Valkey is a Redis fork with compatible API. Update your configuration accordingly.
 
