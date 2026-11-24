@@ -110,6 +110,12 @@ To restore Zot from B2 — **must go via the registry HTTP API**, not by
 dropping the mirror's contents into Zot's local filesystem layout (those are
 different on-disk formats; bypassing the API will corrupt the registry):
 
+Zot accepts OCI manifests only. A snapshot taken while Zot still accepted
+Docker v2 manifests may hold some, and the restore can't convert them,
+because it preserves digests. Such snapshots aren't supported for restore:
+the push fails on the first Docker v2 manifest, after the entries before it
+are restored. Rebuild the environment instead.
+
 ```bash
 # 1. Pick a snapshot timestamp from B2
 aws s3 ls s3://dmf-app-backups-<env>/zot/ --endpoint-url <b2-endpoint>
