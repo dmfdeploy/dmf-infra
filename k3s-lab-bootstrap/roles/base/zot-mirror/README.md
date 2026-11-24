@@ -114,32 +114,98 @@ different on-disk formats; bypassing the API will corrupt the registry):
 # 1. Pick a snapshot timestamp from B2
 aws s3 ls s3://dmf-app-backups-<env>/zot/ --endpoint-url <b2-endpoint>
 
-# 2. Make sure a running Zot is available to push into. For an in-place
-#    restore, the existing Zot StatefulSet works — Zot replaces existing
-#    tags on push. For a side-by-side recovery, deploy a temporary Zot
-#    with its own PVC.
+# 2. Make sure a running Zot is available to push into. This recipe
+#    restores into the existing Zot service (`zot.zot.svc.cluster.local:5000`).
+#    Zot replaces existing tags on push.
 
-# 3. Sync from B2 to a local directory, then push into Zot's HTTP API:
-kubectl -n zot run zot-restore --restart=Never --image=quay.io/skopeo/stable:latest \
-  --overrides='{"spec":{"containers":[{"name":"r","image":"quay.io/skopeo/stable","command":["sleep","86400"]}]}}' \
-  -- sleep 86400
-kubectl -n zot exec -it zot-restore -- /bin/sh
-# inside the pod:
-mkdir /tmp/mirror /tmp/auth
-aws s3 sync s3://dmf-app-backups-<env>/zot/<snapshot-timestamp>/ /tmp/mirror/ \
-  --endpoint-url <b2-endpoint>
-# auth.json with zot-svc creds (read from OpenBao at secret/apps/zot/service
-# or the existing zot-mirror-creds Secret). zot-svc has create+update, enough
-# to push the restored manifests. For a full break-glass restore the `admin`
-# account (secret/apps/zot/admin) also works.
-echo '{"auths":{"zot.zot.svc.cluster.local:5000":{"auth":"<base64(zot-svc:password)>"}}}' > /tmp/auth/config.json
-# --scoped keeps the full repository path (dmf/charts/nmos-cpp, not nmos-cpp).
-# Without it, skopeo uses only the last path segment, and same-named
-# repositories overwrite each other.
-skopeo sync --scoped --all --preserve-digests --src dir --dest docker \
-  --authfile /tmp/auth/config.json \
-  --dest-tls-verify=false \
-  /tmp/mirror/zot.zot.svc.cluster.local:5000 zot.zot.svc.cluster.local:5000
+# 3. Download the snapshot, then push it into Zot's HTTP API. The skopeo
+#    image has no AWS CLI, so the pod downloads in an init container that
+#    uses the same AWS CLI image as the backup job, writes to a shared
+#    volume, and then skopeo restores from that volume. Both credentials
+#    are mounted from files, as in the backup job: `s3-creds-app-backups`
+#    (S3) and `zot-mirror-creds` (the `zot-svc` password, which has create
+#    and update, enough to push the restored manifests). For a full
+#    break-glass restore you can use the `admin` account instead
+#    (`secret/apps/zot/admin`): change the user name and mount a Secret
+#    that holds its password.
+#    Replace <snapshot-timestamp> with the value from step 1. If you
+#    changed the image defaults, use the same images as the backup job
+#    (`zot_mirror_awscli_image` and `zot_mirror_skopeo_image`).
+#    The `mirror` volume must hold the whole snapshot. To cap it, add
+#    `sizeLimit` with the value of `zot_mirror_scratch_size`.
+kubectl -n zot apply -f - <<'EOF'
+apiVersion: v1
+kind: Pod
+metadata:
+  name: zot-restore
+spec:
+  restartPolicy: Never
+  volumes:
+    - name: s3-creds
+      secret:
+        secretName: s3-creds-app-backups
+    - name: pull-creds
+      secret:
+        secretName: zot-mirror-creds
+    - name: mirror
+      emptyDir: {}
+  initContainers:
+    - name: download
+      image: amazon/aws-cli:latest
+      command: ["/bin/sh", "-c"]
+      args:
+        - |
+          set -eu
+          S3=/etc/s3-creds
+          AWS_ACCESS_KEY_ID="$(cat $S3/access_key_id)" \
+          AWS_SECRET_ACCESS_KEY="$(cat $S3/secret_access_key)" \
+          AWS_DEFAULT_REGION="$(cat $S3/region)" \
+            aws s3 sync "s3://$(cat $S3/bucket)/zot/<snapshot-timestamp>/" /mirror/ \
+              --endpoint-url "$(cat $S3/endpoint)"
+      volumeMounts:
+        - { name: s3-creds, mountPath: /etc/s3-creds, readOnly: true }
+        - { name: mirror, mountPath: /mirror }
+  containers:
+    - name: restore
+      image: quay.io/skopeo/stable:latest
+      command: ["/bin/bash", "-c"]
+      args:
+        - |
+          set -eu
+          # SRC_REG is the registry host the backup job read from. It names the
+          # folder inside the snapshot. DEST_REG is the registry to push to.
+          SRC_REG=zot.zot.svc.cluster.local:5000
+          DEST_REG=zot.zot.svc.cluster.local:5000
+          AUTH="$(printf 'zot-svc:%s' "$(cat /etc/pull-creds/password)" | base64 -w0)"
+          umask 077
+          printf '{"auths":{"%s":{"auth":"%s"}}}' "$DEST_REG" "$AUTH" > /tmp/auth.json
+          # --scoped keeps the full repository path (dmf/charts/nmos-cpp, not
+          # nmos-cpp). Without it, skopeo uses only the last path segment, and
+          # same-named repositories overwrite each other.
+          skopeo sync --scoped --all --preserve-digests --src dir --dest docker \
+            --authfile /tmp/auth.json --dest-tls-verify=false \
+            /mirror/$SRC_REG $DEST_REG
+      volumeMounts:
+        - { name: pull-creds, mountPath: /etc/pull-creds, readOnly: true }
+        - { name: mirror, mountPath: /mirror, readOnly: true }
+EOF
+# Wait up to an hour for the pod to finish. With `restartPolicy: Never`, the
+# phase becomes Succeeded only when the download and the restore both exit 0,
+# and Failed when either one fails.
+for _ in $(seq 360); do
+  phase="$(kubectl -n zot get pod zot-restore -o jsonpath='{.status.phase}')"
+  case "$phase" in Succeeded|Failed) break ;; esac
+  sleep 10
+done
+kubectl -n zot logs zot-restore -c download || true
+kubectl -n zot logs zot-restore -c restore || true
+# Delete the pod only after a successful restore. On any other result, read
+# the logs above first: they are lost when the pod is deleted.
+if [ "$phase" = Succeeded ]; then
+  kubectl -n zot delete pod zot-restore
+else
+  echo "Restore did not succeed (phase: $phase). Read the logs, then run: kubectl -n zot delete pod zot-restore"
+fi
 
 # 4. Verify the catalog
 # curl prompts for the zot-svc password, so it stays off the command line.
