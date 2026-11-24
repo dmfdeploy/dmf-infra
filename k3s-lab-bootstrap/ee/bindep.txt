@@ -1,9 +1,9 @@
 # System packages bundled into the DMF AWX EE image.
-# The awx-ee base typically has these; declaring them here makes the
-# build reproducible if the base ever drops one.
+# The Fedora minimal base has none of them, so every package the image needs
+# is listed here.
 #
 # Format: <package> [platform:<distro>] (bindep.org / fedora-style tags)
-# awx-ee:24.6.1 is Fedora-based so platform:rpm applies.
+# The base is Fedora, so platform:rpm applies.
 
 helm [platform:rpm]
 git [platform:rpm]
