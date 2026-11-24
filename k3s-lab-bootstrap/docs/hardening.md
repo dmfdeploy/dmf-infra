@@ -110,7 +110,7 @@ to the `include_tasks` call in `roles/harden/tasks/main.yml` if needed.
 
 ## Image pins
 
-The platform pins its third-party container images as `name:tag@sha256:<digest>`.
+The images this repository names in its own files are pinned as `name:tag@sha256:<digest>`.
 The tag tells you the release. The digest fixes the content, so a tag that someone
 re-publishes cannot change what the cluster pulls. Never use `:latest` as the only
 reference. The exceptions are listed under [Exceptions](#exceptions): Zot, the
@@ -119,6 +119,12 @@ images this project builds.
 
 For a multi-arch image, the digest is the one of the index (the manifest list), not
 of a single platform image, so arm64 and amd64 nodes both pull the pinned release.
+
+Images that a Helm chart supplies from its own defaults are not pinned yet. That covers
+the remote charts (cert-manager, external-secrets, Traefik, Grafana, Loki, Promtail,
+blackbox-exporter, Prometheus, Authentik, the AWX operator) and the vendored charts, and
+LibreNMS's init, rrdcached, MySQL and Redis images. A chart version fixes the tag, not the
+content behind it. dmfdeploy/dmfdeploy#1003 tracks pinning them.
 
 ### Update a pin
 
@@ -154,8 +160,10 @@ of a single platform image, so arm64 and amd64 nodes both pull the pinned releas
   `docker.io/bitnami/valkey:latest`.
 - **AWX execution environment** (`ee/`) is tracked on dmfdeploy/dmfdeploy#975.
   `awx_control_plane_ee_image` is already pinned by digest.
+- **LibreNMS** (`librenms_image_tag`) carries the digest inside the tag, because chart 7.1.0
+  has no digest key and renders `repository:tag`. A test checks the format.
 - **Vendored Helm charts** (`charts/`) are not scanned. Chart image pins are a separate
-  question on dmfdeploy/dmfdeploy#903.
+  question tracked on dmfdeploy/dmfdeploy#1003.
 
 ### What CI checks
 

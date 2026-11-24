@@ -6,7 +6,11 @@ librenms_ingress_class: traefik-private
 librenms_path: /librenms
 librenms_helm_repo: https://www.librenms.org/helm-charts
 librenms_helm_chart_version: "7.1.0"
-librenms_image_tag: "25.12.0"
+# Chart 7.1.0 has no digest key. It renders the image as `repository:tag`, so the digest
+# rides in the tag. Kubernetes accepts name:tag@digest and pulls the digest. The digest is
+# the multi-arch index for 25.12.0 (docs/hardening.md, "Image pins"). Only this main image
+# is pinned; the chart's init, rrdcached, MySQL and Redis images are not (dmfdeploy/dmfdeploy#1003).
+librenms_image_tag: "25.12.0@sha256:e35d265ee9bd1decbde6abb7e5120942f42ca9e23f7d73526fb27cd48778a852"
 librenms_external_scheme: https
 librenms_external_base_url: >-
   {{ (librenms_external_scheme ~ '://' ~ librenms_host)

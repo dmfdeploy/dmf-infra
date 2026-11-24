@@ -13,6 +13,8 @@ Covers:
 
 Does not prove:
 
+* images that a chart supplies from its own defaults, which this repository does not name
+  (dmfdeploy/dmfdeploy#1003),
 * references stored under other names, such as `backup_container` or `source_repo`, and
 * what a template variable holds. A value made only of templates, such as `"{{ img }}"`,
   passes. Review covers both.
@@ -59,6 +61,7 @@ IMAGE_KEY = re.compile(r"\s*(?:- )?(image|[\w-]*_image|images)\s*:\s*(.*?)\s*$")
 FOLDED = re.compile(r"[>|][+-]?\d*")
 DIGEST_END = re.compile(r"@sha256:[0-9a-f]{64}$")
 SHA = re.compile(r"sha256:[0-9a-f]{64}$")
+LIBRENMS_TAG = re.compile(r"[\w][\w.-]*@sha256:[0-9a-f]{64}")
 
 
 def indent(line):
@@ -230,6 +233,15 @@ class Fixtures(unittest.TestCase):
         stripped = re.sub(r"^\s*(tag|digest):.*\n", "", text, flags=re.M)
         self.assertNotEqual(stripped, text)
         self.assertTrue(scan_text(rel, stripped))
+
+    def test_librenms_default_tag_carries_a_digest(self):
+        """Chart 7.1.0 has no digest key, so the digest rides in `librenms_image_tag`."""
+        rel = "roles/modules/infra-monitoring/librenms/defaults/main.yml"
+        match = re.search(r'^librenms_image_tag:\s*"([^"]*)"', (ROOT / rel).read_text(), re.M)
+        self.assertTrue(match, "librenms_image_tag not found")
+        for bad in ("25.12.0", "25.12.0@sha256:abc", "25.12.0@sha256:" + "g" * 64, "@sha256:" + "a" * 64):
+            self.assertIsNone(LIBRENMS_TAG.fullmatch(bad), bad)
+        self.assertTrue(LIBRENMS_TAG.fullmatch(match.group(1)), match.group(1))
 
     def test_scope(self):
         bad = "image: nginx:latest\n"
