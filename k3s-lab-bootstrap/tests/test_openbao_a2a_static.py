@@ -278,6 +278,7 @@ class DirectTokenOnReceiptPathTest(unittest.TestCase):
             env = dict(
                 os.environ,
                 ANSIBLE_ROLES_PATH=str(ROOT / "roles/common"),
+                ANSIBLE_COLLECTIONS_PATH=str(Path.home() / ".ansible/collections"),
                 ANSIBLE_LOCAL_TEMP=tmp,
                 ANSIBLE_HOME=tmp,
                 ANSIBLE_NOCOLOR="1",
@@ -373,7 +374,7 @@ class RoleIdPublicationTest(unittest.TestCase):
             )
             env = dict(
                 os.environ,
-                ANSIBLE_COLLECTIONS_PATH=str(tmpdir / "collections"),
+                ANSIBLE_COLLECTIONS_PATH="%s:%s" % (tmpdir / "collections", Path.home() / ".ansible/collections"),
                 ANSIBLE_LOCAL_TEMP=tmp,
                 ANSIBLE_HOME=tmp,
                 ANSIBLE_NOCOLOR="1",

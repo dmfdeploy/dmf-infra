@@ -81,7 +81,7 @@ class PreflightRunTests(unittest.TestCase):
         run_env = {
             **os.environ,
             "PATH": f"{FIXTURES / 'fake-kubectl'}:{os.environ['PATH']}",
-            "ANSIBLE_COLLECTIONS_PATH": str(FIXTURES / "fake-collections"),
+            "ANSIBLE_COLLECTIONS_PATH": "%s:%s" % (FIXTURES / "fake-collections", Path.home() / ".ansible/collections"),
             "ANSIBLE_ROLES_PATH": os.environ.get("TEST_ROLES_PATH", str(ROOT / "roles")),
             "FAKE_STATE": str(state),
             **(env or {}),
