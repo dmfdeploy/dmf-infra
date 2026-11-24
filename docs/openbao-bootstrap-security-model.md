@@ -244,8 +244,11 @@ checks that every pod is unsealed and before any stage that can restart a pod. T
 `--skip-unseal-check` flag of that script skips only the seal check of stage 1, not
 the guard.
 
-Run the guard before a node drain or reboot as well. The unattended-upgrades
-reboot schedule in `k3s-lab-bootstrap/docs/hardening.md` does not run it.
+Run the guard before a node drain or reboot as well. On a fresh install, the
+harden role turns off the automatic reboot of unattended upgrades (see
+`k3s-lab-bootstrap/docs/hardening.md`). That setting does not control other
+reboot sources, such as power loss, provider actions, or other node
+configuration.
 
 #### Grow A Single Replica To A Raft Cluster
 

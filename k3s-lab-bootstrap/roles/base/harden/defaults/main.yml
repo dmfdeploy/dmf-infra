@@ -30,9 +30,6 @@ harden_lan_interface: >-
      | default(ansible_default_ipv4.interface | default(''))) }}
 harden_lan_cidr: ""
 
-# Unattended upgrades — reboot window (UTC)
-harden_reboot_time: "02:00"
-
 # Fail2ban SSH settings
 harden_fail2ban_maxretry: 3
 harden_fail2ban_bantime: "1h"
