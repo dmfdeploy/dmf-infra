@@ -19,7 +19,7 @@ jobs:
       run:
         working-directory: k3s-lab-bootstrap
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Install ansible tooling
@@ -27,7 +27,7 @@ jobs:
           python3 -m pip install --user -r requirements-ci.txt
           python3 -m pip install --user -r requirements.txt
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4  # v4.3.1
+      - uses: azure/setup-helm@2f5e7bc67f1f9972ab16657bb795f36d8f04de0e  # v5.1.0
         with:
           # Matches the Helm release the dmf-init image installs. Dependabot does
           # not track this input; bump it by hand.
@@ -324,7 +324,7 @@ jobs:
         timeout-minutes: 1
         working-directory: .
         run: echo "JOB_START=$(date +%s)" >> "$GITHUB_ENV"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         timeout-minutes: 1
         with:
           persist-credentials: false
@@ -434,7 +434,7 @@ jobs:
       run:
         working-directory: k3s-lab-bootstrap
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Install ansible tooling
@@ -500,7 +500,7 @@ jobs:
       run:
         working-directory: k3s-lab-bootstrap
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: Install ansible-core 2.15 on Python 3.11
@@ -542,7 +542,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       - name: No review history in comments
@@ -557,11 +557,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
       # Umbrella: canonical template + checker
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           repository: dmfdeploy/dmfdeploy
           ref: working-model-v2
