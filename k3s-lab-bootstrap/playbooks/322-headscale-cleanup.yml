@@ -10,7 +10,7 @@
 # Two operating modes, same playbook, behaviour switches on inventory
 # state:
 #
-#   sweep mode    — invoked post-teardown (lifecycle-finalise) when
+#   sweep mode    — invoked after teardown, when
 #                   groups['k3s'] is empty / all nodes are gone. Deletes
 #                   every headscale entry matching the pattern.
 #   reconcile mode — invoked mid-life with a live cluster. Preserves entries

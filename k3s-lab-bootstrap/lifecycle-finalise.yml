@@ -1,13 +1,22 @@
 ---
 # DMF lifecycle: Finalise & Review stage (EBU white paper p.4).
-# Teardown sequence in reverse layer order. Persists logs, releases resources,
-# preserves long-lived assets (floating IPs, SSH keys).
-- import_playbook: playbooks/lifecycle/finalise-teardown.yml
-  tags: [lifecycle-finalise, teardown]
-
-# Headscale node-table cleanup. Runs after teardown so groups['k3s'] is
-# empty and the playbook auto-selects sweep mode (deletes every entry
-# matching the k3s-node-* pattern). Idempotent and dry-run-by-default
-# (set headscale_cleanup_apply=true via --extra-vars to actually delete).
-- import_playbook: playbooks/322-headscale-cleanup.yml
-  tags: [lifecycle-finalise, teardown, headscale]
+# Finalise has no single playbook here. This entry point fails on purpose with
+# the steps that do the work, so that a run can never look like a finished
+# teardown.
+- name: "Finalise & Review (lifecycle: finalise)"
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Name the steps that finalise a facility
+      tags: [lifecycle-finalise, teardown]
+      ansible.builtin.fail:
+        msg: |
+          lifecycle-finalise.yml doesn't tear anything down. Finalise with these steps:
+          1. Tear down each media workload from the console. It runs that function's
+             teardown-*.yml runbook in dmf-runbooks through AWX.
+          2. Optionally, delete a finalised workload's leftover NetBox records with
+             dmf-runbooks playbooks/finalise-purge.yml (also launched from the console).
+          3. Destroy a Hetzner environment with dmf-env bin/tf-destroy.sh <env-id>.
+          4. Remove the destroyed nodes from Headscale. With no k3s host still active,
+             run: ansible-playbook -i <inv> playbooks/322-headscale-cleanup.yml
+             -e '{"headscale_active_hostnames": [], "headscale_cleanup_apply": true}'

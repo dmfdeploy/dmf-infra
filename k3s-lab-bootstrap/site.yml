@@ -19,7 +19,7 @@
 # templates in dmf-runbooks:
 #
 #   ansible-playbook -i <inv> lifecycle-operate.yml
-#   ansible-playbook -i <inv> lifecycle-finalise.yml
+#   ansible-playbook -i <inv> lifecycle-finalise.yml   (fails on purpose: prints the Finalise steps)
 #
 # See ../../../docs/architecture/DMF%20EBU%20Mapping%20(2026-04-25).md for the full
 # layer/vertical/lifecycle reference.
