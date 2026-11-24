@@ -151,8 +151,8 @@ mirror, switch and rollback steps.
    prints the new version, so the commands in this file follow it.
 4. From a clean checkout of that commit, run `scripts/build.sh`, then verify the
    local image (see "Verify the local image"). The build refuses to run when
-   `ee/` or the pin file has uncommitted changes, or when `IMAGE_VERSION` or
-   `LOCAL_TAG` is set in the environment.
+   `ee/` or the pin file has uncommitted changes, or when `IMAGE_VERSION`,
+   `LOCAL_TAG` or `VCS_REF` is set in the environment.
 5. Publishing, mirroring and switching consumers to the new tag follow the steps
    that slice 3 adds.
 
