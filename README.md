@@ -251,7 +251,7 @@ k3s-lab-bootstrap/
 ├── site.yml                         # Top-level entry: calls lifecycle-provision
 ├── lifecycle-provision.yml          # EBU Provision (full build)
 ├── lifecycle-operate.yml            # EBU Operate stage (read-only probes, drift)
-├── lifecycle-finalise.yml           # EBU Finalise & Review (teardown)
+├── lifecycle-finalise.yml           # EBU Finalise & Review (prints the steps; fails on purpose)
 ├── bootstrap-*.yml                  # From-scratch bootstrap chain (pre-/post-seed,
 │                                    #   configure, verify) — driven by dmf-env / dmf-init
 ├── inventories/
