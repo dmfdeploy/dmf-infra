@@ -268,8 +268,12 @@ jobs:
     # collections in front. A playbook is in one place, so it runs in exactly one shard,
     # unless it takes a slice: then it has one line for each of its slices, and the playbook
     # runs the cases at that slice's positions (-e case_shard and -e case_shards). The
-    # identity-verifier playbook is the longest, so it is in two slices of about 10 minutes
-    # each; the other shards take less than 10 minutes, setup included.
+    # identity-verifier playbook is the longest: its 62 cases take about 40 minutes of
+    # runner time, 20 seconds each, so it is in four slices of about 10 minutes. Two
+    # slices took 18 to 25 minutes each, too close to the 30-minute job limit. The other
+    # playbooks take less than 10 minutes in a shard, setup included. Each playbook also
+    # has its own time limit, so a stuck one fails by name before the job limit cancels
+    # the whole job without a result.
     name: ansible-openbao (${{ matrix.shard }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -297,8 +301,10 @@ jobs:
         3 fakes tests/test-openbao-cli.yml
         3 fakes tests/test-openbao-cli-callers.yml
         3 fakes tests/test-born-inventory-breakglass-login.yml
-        4 fakes tests/test-openbao-identity-verifier.yml 1/2
-        5 fakes tests/test-openbao-identity-verifier.yml 2/2
+        1 fakes tests/test-openbao-identity-verifier.yml 3/4
+        3 fakes tests/test-openbao-identity-verifier.yml 4/4
+        4 fakes tests/test-openbao-identity-verifier.yml 1/4
+        5 fakes tests/test-openbao-identity-verifier.yml 2/4
     defaults:
       run:
         working-directory: k3s-lab-bootstrap
@@ -370,13 +376,16 @@ jobs:
             if [ -n "${slice:-}" ]; then
               args=(-e "case_shard=${slice%/*}" -e "case_shards=${slice#*/}")
             fi
+            env_prefix=()
             if [ "$mode" = fakes ]; then
-              PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" \
-              ANSIBLE_COLLECTIONS_PATH="$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections" \
-                ansible-playbook "$playbook" "${args[@]}" </dev/null
-            else
-              ansible-playbook "$playbook" "${args[@]}" </dev/null
+              env_prefix=(env "PATH=$PWD/tests/fixtures/fake-kubectl:$PATH"
+                "ANSIBLE_COLLECTIONS_PATH=$PWD/tests/fixtures/fake-collections:$HOME/.ansible/collections")
             fi
+            "${env_prefix[@]}" timeout 20m ansible-playbook "$playbook" "${args[@]}" </dev/null || {
+              rc=$?
+              if [ "$rc" -eq 124 ]; then echo "::error::$playbook did not finish within 20 minutes"; fi
+              exit "$rc"
+            }
           done
         env:
           SHARD: ${{ matrix.shard }}
