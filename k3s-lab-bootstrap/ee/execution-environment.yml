@@ -12,7 +12,7 @@
 # is set, and builds from the rendered copy.
 #
 # Build: roles-adjacent script at scripts/build.sh
-# Publish (public source of truth): scripts/publish-to-ghcr.sh
+# Publish (public source of truth): the umbrella's bin/publish-image-to-ghcr.sh, see README.md
 # Mirror to cluster Zot (runtime registry): ../playbooks/630-zot-seed-platform.yml
 
 version: 3

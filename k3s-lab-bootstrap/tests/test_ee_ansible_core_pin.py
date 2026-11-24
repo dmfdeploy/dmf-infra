@@ -74,14 +74,11 @@ class BuildScriptPinTest(unittest.TestCase):
 
 
 class VersionTest(unittest.TestCase):
-    def test_publish_default_tag_is_the_build_default(self):
+    def test_print_version_is_the_build_default(self):
         result = _run("--print-version")
         self.assertEqual(result.returncode, 0, result.stderr)
         version = result.stdout.strip()
         self.assertRegex(version, r"^[0-9]+\.[0-9]+\.[0-9]+$")
-        publish = (EE / "scripts" / "publish-to-ghcr.sh").read_text(encoding="utf-8")
-        self.assertIn('build.sh" --print-version', publish)
-        self.assertNotRegex(publish, r"IMAGE_TAG:-[0-9]")
 
 
 class BuildRefusalTest(unittest.TestCase):
