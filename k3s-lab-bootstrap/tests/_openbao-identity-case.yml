@@ -19,6 +19,8 @@
     FAKE_STATE: "{{ _state.path }}/{{ _case.name }}"
     FAKE_POLICY_WRITER: "1"
     FAKE_BAO_PATH_ON_STDIN: "1"
+  # Each task in the block gets this limit, so a task that stops responding fails the case.
+  timeout: "{{ case_task_timeout }}"
   block:
     - name: "Identity verifier — {{ _case.name }}: make the state directory"
       ansible.builtin.file:
@@ -121,6 +123,11 @@
         msg: The verifier passed a case that must fail.
       when: _case.expect | default([]) | length > 0
   rescue:
+    - name: "Identity verifier — {{ _case.name }}: fail when a task of the case timed out"
+      ansible.builtin.fail:
+        msg: "identity case {{ _case.name }} did not finish within {{ case_task_timeout }} s: {{ ansible_failed_result.msg | default('') }}"
+      when: ansible_failed_result.timedout is defined
+
     - name: "Identity verifier — {{ _case.name }}: fail when a case that must pass failed"
       ansible.builtin.fail:
         msg: "The verifier failed a case that must pass: {{ ansible_failed_result.msg | default('') }}"
