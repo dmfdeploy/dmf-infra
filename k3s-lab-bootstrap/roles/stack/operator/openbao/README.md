@@ -63,7 +63,8 @@ change cannot leave a root-policy token valid.
 ### What it revokes
 
 The script (`files/revoker/revoker.py`, standard library only) runs from a ConfigMap
-on `python:3.13-alpine`, the image of the ntfy bridge in `roles/base/prometheus`.
+on the image in `openbao_revoker_image` (see `defaults/main.yml`), a Python
+image pinned by digest.
 Every 60 seconds it logs in with its projected ServiceAccount token, lists the
 accessors of the live tokens, and looks each one up. It logs in again on every scan
 and keeps no token between scans, so it stores no token on disk.
