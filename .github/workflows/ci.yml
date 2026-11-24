@@ -149,6 +149,8 @@ jobs:
         run: ansible-lint playbooks/ -p
       - name: CI collections match the execution environment's pinned list
         run: python3 -m unittest discover -s tests -p 'test_ci_collections_match_ee.py' -v
+      - name: the execution environment's ansible-core pin is one valid line and renders into the build
+        run: python3 -m unittest discover -s tests -p 'test_ee_ansible_core_pin.py' -v
       - name: no secrets in AWX job-template extra_vars (dmfdeploy/dmfdeploy#310)
         run: python3 -m unittest discover -s roles/stack/operator/awx-integration/tests -v
       - name: Forgejo Authentik contributor policy regression tests (dmfdeploy/dmfdeploy#15)

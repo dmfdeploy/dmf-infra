@@ -1,11 +1,15 @@
----
 # DMF AWX Execution Environment (Lane A of the 2026-05-19 convergence plan).
 #
-# Built from the upstream Ansible AWX EE plus pinned collections and
-# DMF-specific OCI labels. Used by:
+# Built from Fedora minimal 43, with a pinned ansible-core, a pinned
+# ansible-runner, pinned collections and DMF-specific OCI labels. Used by:
 #   - the in-cluster ansible runner pod (bootstrap-configure 69x chain;
 #     see roles/stack/operator/ansible-runner/)
 #   - AWX-spawned media catalog launchers (`media-*` JTs; ADR-0025)
+#
+# Do not build this file directly. scripts/build.sh replaces the placeholder
+# under dependencies.ansible_core with the line in
+# ../requirements-ansible-core.txt, the one place the ansible-core version
+# is set, and builds from the rendered copy.
 #
 # Build: roles-adjacent script at scripts/build.sh
 # Publish (public source of truth): scripts/publish-to-ghcr.sh
@@ -13,20 +17,32 @@
 
 version: 3
 
+options:
+  # Fedora minimal ships microdnf, not dnf.
+  package_manager_path: /usr/bin/microdnf
+
 images:
   base_image:
-    # Pinned upstream version. Bump deliberately, test the runner pod
-    # and one catalog JT before promoting a new pin.
-    name: quay.io/ansible/awx-ee:24.6.1
+    # The multi-arch index digest of the 43 tag, resolved with
+    # `skopeo inspect --raw docker://quay.io/fedora/fedora-minimal:43`
+    # on 2026-11-24. The digest is what the build uses; the tag is for readers.
+    # Refresh once a year (see ../README.md, "Yearly Fedora refresh").
+    name: quay.io/fedora/fedora-minimal:43@sha256:119588c03182271a8980aba57b4dfd924fb3e8d9bf9a90ae68a5c8c3964d9790
 
 dependencies:
-  # ansible-core + ansible-runner are NOT re-pinned here. The base image
-  # quay.io/ansible/awx-ee:24.6.1 ships with Python 3.9 and ansible-core
-  # 2.15.x, which is compatible with all collections we use (kubernetes.core
-  # 5.4.x, community.general 10.7.x, ansible.posix 1.6.x, community.docker 4.8.x).
-  # Pinning ansible-core to >=2.16 fails because 2.16+ requires Python 3.10+
-  # and the base image is on 3.9. To upgrade ansible-core, bump the awx-ee
-  # base tag first (e.g., to a build that ships with Python 3.11+).
+  # The base image has no Python, so Builder installs it. Fedora 43 ships
+  # Python 3.14, which ansible-core 2.21 supports as a controller and
+  # as a target.
+  python_interpreter:
+    package_system: python3 python3-pip
+    python_path: /usr/bin/python3
+  ansible_core:
+    # Placeholder. scripts/build.sh fills it from requirements-ansible-core.txt.
+    # A test fails if a version is written here by hand.
+    package_pip: __ANSIBLE_CORE_PIN__
+  ansible_runner:
+    package_pip: ansible-runner==2.4.3
+  # Every collection in requirements.yml must support the core pinned above.
   galaxy: requirements.yml
   python: requirements.txt
   system: bindep.txt
@@ -36,7 +52,7 @@ additional_build_steps:
     # ARG values are passed by scripts/build.sh via --build-arg.
     # ${VAR} substitution happens at docker build time, embedding the
     # values into the LABEL directives below.
-    - ARG IMAGE_VERSION=0.1.0
+    - ARG IMAGE_VERSION=0.2.0
     - ARG VCS_REF=unknown
     - LABEL org.opencontainers.image.title="DMF AWX Execution Environment"
     - LABEL org.opencontainers.image.description="Shared Ansible EE for dmfdeploy platform — used by in-cluster runner pod (bootstrap-configure) and AWX catalog launchers (media-* JTs). See ADR-0025."
@@ -45,5 +61,5 @@ additional_build_steps:
     - LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
     - LABEL org.opencontainers.image.licenses="Apache-2.0"
     - LABEL org.opencontainers.image.vendor="dmfdeploy platform contributors"
-    - LABEL org.opencontainers.image.base.name="quay.io/ansible/awx-ee:24.6.1"
+    - LABEL org.opencontainers.image.base.name="quay.io/fedora/fedora-minimal:43"
     - LABEL org.dmfdeploy.ee.lane="A"

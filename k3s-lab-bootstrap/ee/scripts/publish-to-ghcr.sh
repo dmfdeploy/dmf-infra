@@ -18,7 +18,8 @@
 # Env knobs:
 #   GHCR_USER         GitHub username (default: prompt)
 #   GHCR_NAMESPACE    GHCR namespace (default: dmfdeploy)
-#   IMAGE_TAG         Tag (default: 0.1.0)
+#   IMAGE_TAG         Tag (default: the version scripts/build.sh builds by
+#                     default, from `build.sh --print-version`)
 #   SOURCE_REGISTRY   Local registry prefix
 #                     (default: registry.dmf.example.com/dmf — matches scripts/build.sh)
 
@@ -29,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 UMBRELLA_DIR="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
 GHCR_NAMESPACE="${GHCR_NAMESPACE:-dmfdeploy}"
-IMAGE_TAG="${IMAGE_TAG:-0.1.0}"
+IMAGE_TAG="${IMAGE_TAG:-$("$SCRIPT_DIR/build.sh" --print-version)}"
 SOURCE_REGISTRY="${SOURCE_REGISTRY:-registry.dmf.example.com/dmf}"
 
 exec "${UMBRELLA_DIR}/bin/publish-image-to-ghcr.sh" \
