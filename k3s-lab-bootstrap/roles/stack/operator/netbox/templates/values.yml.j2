@@ -207,6 +207,10 @@ netbox:
       registry: docker.io
       repository: bitnami/valkey
       tag: latest
+      # The chart renders registry/repository@digest when the digest is set, so
+      # the pod runs this content and the tag is only a label. docker.io/bitnami
+      # publishes no versioned Valkey tag. See "Image pins" in docs/hardening.md.
+      digest: sha256:dc39ba054b5d4192d3ebff4ac6643f155e656fc7809c1b2e8df86e2c0a39f204
     auth:
       enabled: true
       password: {{ netbox_valkey_password_effective }}

@@ -67,8 +67,8 @@ zot_mirror_s3_creds_mount: /etc/s3-creds
 # `sync --preserve-digests`). InitContainer: amazon/aws-cli (we copy its `aws`
 # binary into a shared emptyDir so the main container has both tools).
 
-zot_mirror_skopeo_image: "quay.io/skopeo/stable:latest"
-zot_mirror_awscli_image: "amazon/aws-cli:latest"
+zot_mirror_skopeo_image: "quay.io/skopeo/stable:v1.25.1@sha256:638c591f8a72f447eb61e2075b6db023f81175839931675f93fbb3b55be27339"
+zot_mirror_awscli_image: "amazon/aws-cli:2.42.2@sha256:6c24ad4e8cdf12defd41c7e6d2ed836e73da9cbfecc1e9d7fd148bb9f4ea5eb2"
 
 # ── Scratch volume sizing ────────────────────────────────────────────────────
 # The `dir` layout stores each tag's blobs in its own folder, with no

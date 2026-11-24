@@ -4,9 +4,8 @@ openbao_namespace: openbao
 
 # Image: a release tag pinned to the digest of its multi-arch index. The
 # snapshot CronJob (roles/base/openbao-raft-snapshot) runs the same reference, so
-# the cluster runs one release. To bump, resolve the new digest with
-# `skopeo inspect --raw docker://docker.io/openbao/openbao:<tag> | shasum -a 256`
-# and change both defaults together.
+# the cluster runs one release. To bump, follow "Image pins" in
+# docs/hardening.md and change both defaults together.
 openbao_image: "docker.io/openbao/openbao:2.7.2@sha256:5046911075e137e154ce49ab051502f4ec7cf367d484ae4a4dce665d9b90561f"
 
 # Storage
@@ -412,7 +411,7 @@ openbao_revoker_ready_delay: 5
 
 # Python image of the script. The role mounts the script from a ConfigMap, as the
 # ntfy bridge does (roles/base/prometheus, prometheus_ntfy_bridge_image).
-openbao_revoker_image: python:3.13-alpine
+openbao_revoker_image: python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
 openbao_revoker_cpu_request: 10m
 openbao_revoker_memory_request: 32Mi
 openbao_revoker_cpu_limit: 100m

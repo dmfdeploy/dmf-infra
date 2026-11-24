@@ -81,7 +81,7 @@ prometheus_alertmanager_ntfy_url: ""
 # small in-cluster formatter bridge and point Alertmanager at that service.
 prometheus_ntfy_bridge_enabled: true
 prometheus_ntfy_bridge_name: ntfy-alertmanager-bridge
-prometheus_ntfy_bridge_image: python:3.13-alpine
+prometheus_ntfy_bridge_image: python:3.13-alpine@sha256:9ef1a599f863231c3d91e941389bfdc4a2d6070557243d54df1a4e57015b960e
 prometheus_ntfy_bridge_replicas: 1
 
 # healthchecks.io ping URL for the Watchdog dead-man's switch. The Watchdog rule

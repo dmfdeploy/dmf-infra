@@ -1,6 +1,6 @@
 ---
 zot_namespace: zot
-zot_image: ghcr.io/project-zot/zot-linux-arm64:v2.1.2
+zot_image: ghcr.io/project-zot/zot-linux-arm64:v2.1.2@sha256:c3fc47782d98b731d5928a24182b495e28cc92f9dcf1d5317f7dbd632e10bf30
 zot_image_pull_policy: IfNotPresent
 zot_cluster_ip: 10.43.165.105
 

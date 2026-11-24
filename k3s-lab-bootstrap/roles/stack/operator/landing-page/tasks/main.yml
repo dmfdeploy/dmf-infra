@@ -148,7 +148,7 @@
           spec:
             initContainers:
               - name: generate-html
-                image: curlimages/curl:latest
+                image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
                 command: ["/bin/sh", "/scripts/generate.sh"]
                 volumeMounts:
                   - name: html
@@ -161,7 +161,7 @@
                     mountPath: /assets-src
             containers:
               - name: nginx
-                image: nginx:alpine
+                image: nginx:alpine@sha256:b50897d5c7b1aa08067c3d90c5e8b3e47ec4e3c91c91446f67820228f7b41e34
                 ports:
                   - containerPort: 80
                 command: ["nginx", "-c", "/etc/nginx/custom/nginx.conf", "-g", "daemon off;"]
@@ -179,7 +179,7 @@
                     mountPath: /etc/nginx/custom
                     readOnly: true
               - name: regenerator
-                image: curlimages/curl:latest
+                image: curlimages/curl:8.23.0@sha256:3fb7e13e5d179a845c97d78204f3f1064d1907037f26a3ebf91710571151fd93
                 command:
                   - /bin/sh
                   - -c
