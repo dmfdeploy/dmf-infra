@@ -183,6 +183,9 @@
     #
     # Path: this playbook lives at dmf-infra/k3s-lab-bootstrap/playbooks/;
     # the dmf-cms checkout is three dirs up.
+    #
+    # Zot accepts OCI images only, so an override must name a dmf-cms release
+    # published with OCI media types (0.42.0 or later).
     dmf_cms_image_tag: "{{ cms_image_tag_override | default(lookup('pipe', 'git -C ' ~ playbook_dir ~ '/../../../dmf-cms show origin/main:VERSION') | trim) }}"
 
     # dmf-promsd image tag. VERSION is the single source of truth, read from
