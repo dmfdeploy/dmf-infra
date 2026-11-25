@@ -240,8 +240,8 @@ jobs:
         run: python3 -m pytest tests -q
       - name: Install promtool (pinned release, sha256 checked)
         env:
-          PROM_VERSION: "3.5.0"
-          PROM_SHA256: "e811827af26d822afb09a4f28314f61b618b12cff5369835a67f674d8b46f39a"
+          PROM_VERSION: "3.16.0"
+          PROM_SHA256: "68727009472a2c02e1ff7f062fd5b3e637285bffc8fc2d340c76fb449d6e0f34"
         run: |
           set -eu
           curl -fsSLo /tmp/prom.tgz "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz"
