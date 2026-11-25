@@ -1,6 +1,6 @@
 # DMF AWX Execution Environment (Lane A of the 2026-05-19 convergence plan).
 #
-# Built from Fedora minimal 43, with a pinned ansible-core, a pinned
+# Built from Fedora minimal 45, with a pinned ansible-core, a pinned
 # ansible-runner, pinned collections and DMF-specific OCI labels. Used by:
 #   - the in-cluster ansible runner pod (bootstrap-configure 69x chain;
 #     see roles/stack/operator/ansible-runner/)
@@ -23,15 +23,16 @@ options:
 
 images:
   base_image:
-    # The multi-arch index digest of the 43 tag, resolved with
-    # `skopeo inspect --raw docker://quay.io/fedora/fedora-minimal:43`
-    # on 2026-11-24. The digest is what the build uses; the tag is for readers.
-    # Refresh once a year (see ../README.md, "Yearly Fedora refresh").
-    name: quay.io/fedora/fedora-minimal:43@sha256:119588c03182271a8980aba57b4dfd924fb3e8d9bf9a90ae68a5c8c3964d9790
+    # The multi-arch index digest of the 45 tag, resolved with
+    # `skopeo inspect --raw docker://quay.io/fedora/fedora-minimal:45 | shasum -a 256`
+    # on 2026-11-25. The digest is what the build uses; the tag is for readers.
+    # Always take the newest released Fedora. Refresh when the next release
+    # ships (see ../README.md, "Fedora refresh").
+    name: quay.io/fedora/fedora-minimal:45@sha256:22c73cf27de5e36f06d435b3bf016b02b95e75473ceef9a0bed48396124951a1
 
 dependencies:
-  # The base image has no Python, so Builder installs it. Fedora 43 ships
-  # Python 3.14, which ansible-core 2.22 supports as a controller and
+  # The base image has no Python, so Builder installs it. Fedora 45 ships
+  # Python 3.15, which ansible-core 2.22 supports as a controller and
   # as a target.
   python_interpreter:
     package_system: python3 python3-pip
@@ -52,7 +53,7 @@ additional_build_steps:
     # ARG values are passed by scripts/build.sh via --build-arg.
     # ${VAR} substitution happens at docker build time, embedding the
     # values into the LABEL directives below.
-    - ARG IMAGE_VERSION=0.4.1
+    - ARG IMAGE_VERSION=0.5.0
     - ARG VCS_REF=unknown
     - LABEL org.opencontainers.image.title="DMF AWX Execution Environment"
     - LABEL org.opencontainers.image.description="Shared Ansible EE for dmfdeploy platform — used by in-cluster runner pod (bootstrap-configure) and AWX catalog launchers (media-* JTs). See ADR-0025."
@@ -61,5 +62,5 @@ additional_build_steps:
     - LABEL org.opencontainers.image.version="${IMAGE_VERSION}"
     - LABEL org.opencontainers.image.licenses="Apache-2.0"
     - LABEL org.opencontainers.image.vendor="dmfdeploy platform contributors"
-    - LABEL org.opencontainers.image.base.name="quay.io/fedora/fedora-minimal:43"
+    - LABEL org.opencontainers.image.base.name="quay.io/fedora/fedora-minimal:45"
     - LABEL org.dmfdeploy.ee.lane="A"
