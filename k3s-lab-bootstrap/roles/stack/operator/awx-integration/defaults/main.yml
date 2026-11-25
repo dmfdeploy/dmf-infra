@@ -823,13 +823,13 @@ awx_ee_catalog_description: "Shared Ansible EE for dmfdeploy platform catalog la
 # Source of truth is GHCR; playbooks/630-zot-seed-platform.yml mirrors these
 # into cluster-internal Zot before AWX catalog jobs can launch NMOS.
 nmos_cpp_registry_image: "zot.zot.svc.cluster.local:5000/dmf/nmos-cpp-registry"
-nmos_cpp_registry_tag: "0.1.0"
+nmos_cpp_registry_tag: "0.2.0"
 nmos_cpp_node_image: "zot.zot.svc.cluster.local:5000/dmf/nmos-cpp-node"
-nmos_cpp_node_tag: "0.1.0"
+nmos_cpp_node_tag: "0.2.0"
 nmos_cpp_chart_repo: "oci://zot.zot.svc.cluster.local:5000/dmf/charts"
 nmos_cpp_chart_name: "nmos-cpp"
-nmos_cpp_chart_version: "0.1.2"
-nmos_cpp_chart_digest: "sha256:fb52f88ab3bf140a361e8b9cba27a0220405e10cf769d5acf7ac171418fee03e"
+nmos_cpp_chart_version: "0.1.3"
+nmos_cpp_chart_digest: "sha256:e23472c8e843968cf935f65c1ffc6c19c966371bb9e45a98a2646b392da77761"
 
 # ── NMOS Crosspoint catalog artifacts (ADR-0025, Lane B) ──────────────────
 # Source of truth is GHCR; playbooks/630-zot-seed-platform.yml mirrors these
