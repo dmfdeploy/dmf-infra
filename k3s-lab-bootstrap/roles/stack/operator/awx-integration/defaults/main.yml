@@ -452,7 +452,18 @@ awx_catalog_projects:
     # is a delivery bump. Chart version is unchanged, so 630 is not needed
     # on this account, but the Forgejo mirror must be synced to v0.4.9 and
     # playbook 693 run after merge to move the AWX project pin.
-    scm_branch: "v0.4.9"
+    #
+    # v0.4.9 -> v0.4.10 (dmfdeploy/dmfdeploy#975): the nmos-cpp and
+    # nmos-crosspoint tasks check the NetBox service id as a number, which
+    # the AWX EE 0.2.0 toolchain (ansible-core 2.21) needs (dmf-runbooks#74).
+    # JT contract audit, v0.4.9 compared with dmf-runbooks bf2b10a: the
+    # documented JT inputs and every registered playbook path are unchanged;
+    # the role defaults and playbooks differ in comments only. The guard now
+    # also reserves _verified_service_read, _written_owned_names and
+    # _read_owned_names. They are internal and derived, so a caller that
+    # passes them as extra_vars is now rejected. The launcher also verifies
+    # the service tags after its PATCH to NetBox. No registration changed.
+    scm_branch: "v0.4.10"
   - name: dmf-media
     description: "Media function roles and playbooks (Layer 4-5)"
     scm_url: "{{ awx_integration_forgejo_internal_url }}/{{ awx_integration_forgejo_user }}/dmf-media.git"
