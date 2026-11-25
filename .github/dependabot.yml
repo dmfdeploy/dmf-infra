@@ -4,7 +4,7 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     groups:
       github-actions:
         patterns:
@@ -16,7 +16,7 @@ updates:
   - package-ecosystem: "pip"
     directory: "/k3s-lab-bootstrap"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
     groups:
       pip-minor-patch:
         update-types:
