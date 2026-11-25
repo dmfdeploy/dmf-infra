@@ -3,7 +3,7 @@
 # Version-pinned for reproducibility (plan §3 Lane A + ADR-0025 §8.3 default).
 #
 # Every version is exact, so a rebuild cannot pick up a release that needs a
-# different core. The 0.2.0 image loads every module that the playbooks use on
+# different core. The core 2.22 build checks load every module that the playbooks use on
 # the core in ../requirements-ansible-core.txt; a newer release of a collection
 # may exist. CI installs this file, so CI tests what the image builds, and
 # ../requirements.yml must list the same versions (a test checks it).
