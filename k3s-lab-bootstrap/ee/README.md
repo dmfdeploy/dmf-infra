@@ -31,12 +31,12 @@ zot.zot.svc.cluster.local:5000/dmf/awx-ee:<tag>  (runtime registry — Lane A co
 
 ## Versions
 
-The table describes image 0.2.0 as built on 2026-11-24 (linux/arm64).
+The table lists the pinned inputs of image 0.4.1, which is built from the merge commit.
 
 | Item | Value | Where it is set |
 |---|---|---|
-| ansible-core | 2.21.6 | `../requirements-ansible-core.txt`, the only place |
-| Python | 3.14.10 (Fedora 43 `python3`) | The base image; ansible-core 2.21 supports 3.12 to 3.14 |
+| ansible-core | 2.22.0 | `../requirements-ansible-core.txt`, the only place |
+| Python | 3.14.10 (Fedora 43 `python3`) | The base image; ansible-core 2.22 supports 3.13 to 3.15 |
 | ansible-runner | 2.4.3 | `execution-environment.yml` |
 | Base image | `quay.io/fedora/fedora-minimal:43` | `execution-environment.yml` |
 | Base index digest | `sha256:119588c03182271a8980aba57b4dfd924fb3e8d9bf9a90ae68a5c8c3964d9790` | `execution-environment.yml` (resolved 2026-11-24) |
@@ -268,10 +268,9 @@ Refresh the base once a year, and sooner when a fix matters.
 
 ### ansible-core support for Python
 
-ansible-core 2.21 supports Python 3.12 to 3.14 as a controller and
-3.9 to 3.14 on targets. Fedora minimal 43 ships Python 3.14, which is in
-range. ansible-runner 2.4.3 does not list 3.14 in its classifiers but runs on it
-(checked in the 0.2.0 build). ansible-core 2.22 needs Python 3.13 or later.
+ansible-core 2.22 supports Python 3.13 to 3.15 as a controller. Fedora minimal
+43 ships Python 3.14, which is in range. ansible-runner 2.4.3 does not list 3.14
+in its classifiers but runs on it (checked in the 0.2.0, 0.3.0 and core 2.22 builds).
 When you move the core pin to a new minor release, check the Python range
 before you build.
 
@@ -279,7 +278,7 @@ before you build.
 
 Every collection in `requirements.yml` must support the ansible-core pin. The
 collection versions are exact and unchanged from the 0.1.x images, so the
-0.2.0 checks confirm they load on core 2.21: `ansible-doc` loads every module
+core 2.22 build checks confirm they load: `ansible-doc` loads every module
 the playbooks use. When you bump a collection, check its `requires_ansible`
 in `meta/runtime.yml` before you pin a newer major release.
 

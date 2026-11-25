@@ -37,7 +37,7 @@ PIN_PATTERN='^ansible-core==[0-9]+\.[0-9]+\.[0-9]+$'
 PLACEHOLDER='__ANSIBLE_CORE_PIN__'
 # The one place the default image version is set. The commands in ../README.md
 # read it with --print-version.
-DEFAULT_IMAGE_VERSION='0.2.0'
+DEFAULT_IMAGE_VERSION='0.4.1'
 # The files execution-environment.yml references, besides itself.
 STAGED_INPUTS=(requirements.yml requirements.txt bindep.txt)
 
