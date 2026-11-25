@@ -19,10 +19,9 @@
 #     caller sets `openbao_cli_allow_exhausted_retries` to judge the last attempt itself;
 #   - `changed` is true for a successful call that changes OpenBao, and false for a failed one.
 #
-# The play runs on ansible-core 2.15 (the AWX image) and on the current version. On 2.15 a
-# template result that looks like a JSON object or list becomes a mapping or list, and a
-# result of a per-field template loses its type, so the play checks the body text, `rc` as a
-# number and a JSON-looking `stdout` as text.
+# Some ansible-core versions turn a template result that looks like a JSON object or list
+# into a mapping or list, and type the result of a per-field template differently, so the play
+# checks the body text, `rc` as a number and a JSON-looking `stdout` as text.
 #
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-cli.yml
@@ -72,7 +71,7 @@
           - args: [write, "{{ literal_word }}", "-"]
             input: "{{ literal_body | string }}"
 
-    - name: Send a body that arrives as a mapping on ansible-core 2.15, and one that is JSON text
+    - name: Send a body that can arrive as a mapping, and one that is JSON text
       ansible.builtin.include_role:
         name: common/openbao-cli
         apply:

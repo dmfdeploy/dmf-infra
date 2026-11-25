@@ -6,10 +6,8 @@ Two forms are unsafe when a value is a template expression:
   The quotes that `quote` adds end the program's string early, so a value that holds `'`
   turns into program text.
 * A value passed as an argument after the program (`argv: [sh, -c, 'bao read "$1"', sh,
-  "{{ v }}"]`). The command module expands `$NAME` in every argument on ansible-core 2.16
-  and later, so a value such as `$HOME/x` changes on the way. The parameter that turns this
-  off, `expand_argument_vars`, does not exist on the ansible-core 2.15 of the AWX execution
-  environment.
+  "{{ v }}"]`). The command module expands `$NAME` in every argument, so a value such as
+  `$HOME/x` changes on the way.
 
 The safe form sends each value on stdin, one per line, and the fixed program reads it:
 

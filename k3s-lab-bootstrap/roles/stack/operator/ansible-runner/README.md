@@ -30,5 +30,5 @@ end-to-end test against playbook 698.
 | `ansible_runner_namespace` | `dmf-bootstrap` | Namespace for SA, RBAC, and runner Jobs |
 | `ansible_runner_service_account` | `ansible-runner` | SA every runner Job runs as |
 | `ansible_runner_cluster_role` | `cluster-admin` | RBAC scope; tighten post-spike |
-| `ansible_runner_image` | `<registry>/dmf/awx-ee:<awx_ee_image_tag>` | Container image for runner Jobs. The tag is `awx_ee_image_tag`, set once in `vars/awx-ee.yml`; never use `latest`. See `defaults/main.yml` |
+| `ansible_runner_image` | see `defaults/main.yml` | Container image for runner Jobs: the shared DMF AWX EE. The default image expression is in `defaults/main.yml`; the tag value is `awx_ee_image_tag` in `vars/awx-ee.yml`. `ee/README.md` describes how to build, publish and switch the tag |
 | `ansible_runner_image_pull_policy` | `IfNotPresent` | Pull policy |

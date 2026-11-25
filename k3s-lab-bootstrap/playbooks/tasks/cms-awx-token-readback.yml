@@ -17,9 +17,9 @@
     openbao_cli_register: _cms_awx_openbao_raw
     openbao_cli_allow_failure: true
 
-# One expression, so `rc` stays a number: ansible-core 2.15 types the result of a
-# template per field, and `rc == 0` below would compare the text "0" with 0. The
-# token is empty when the read failed, so the assert below can name the exit code.
+# One expression, so `rc` stays a number on every ansible-core version: a template
+# per field can type the result as text, and `rc == 0` below would compare the text
+# "0" with 0. The token is empty when the read failed, so the assert below can name the exit code.
 - name: Extract AWX token from OpenBao JSON
   ansible.builtin.set_fact:
     _cms_awx_openbao_verify: >-

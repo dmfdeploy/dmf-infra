@@ -28,17 +28,6 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "ansible"
         versions: [">= 15"]
-      # requirements-ansible215.txt pins the ansible-core of the AWX image.
-      - dependency-name: "ansible-core"
-        versions: [">= 2.16"]
-      # ee/requirements.txt installs into the AWX image, which runs Python
-      # 3.9. pynetbox 7.9 needs Python 3.12, and jsonpatch 1.34 or later
-      # needs 3.10. Remove both entries when the execution environment moves
-      # to a current Python (dmfdeploy/dmfdeploy#975).
-      - dependency-name: "pynetbox"
-        versions: [">= 7.9"]
-      - dependency-name: "jsonpatch"
-        versions: [">= 1.34"]
     groups:
       pip-minor-patch:
         update-types:

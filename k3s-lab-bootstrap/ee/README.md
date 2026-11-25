@@ -216,17 +216,16 @@ confirms it. Read a tag's platform digest with the GHCR command above.
 `693-awx-integration.yml`, which points AWX at the new tag.
 
 **Rollback.** Do not roll back by editing the line on a checkout: the next
-checkout advance loses the edit. Before the final cleanup of
-dmfdeploy/dmfdeploy#975 (it removes the ansible-core 2.15 CI job and
-compatibility code) lands, revert the commit that switched the tag
-on `main` (a revert pull request), advance the Manage checkout to the revert,
-wake AWX, rerun 630 and 693, and check that the AWX execution environment object
-names `0.1.1` and that one job pod's `imageID` is the 0.1.1 arm64 platform
-manifest digest from the table above. After the cleanup
-lands, revert the cleanup commit first and then the switch commit, in that
-order, and only with the operator's approval. Keep 0.1.1 in GHCR and in Zot for
-at least 30 days after dmfdeploy/dmfdeploy#975 closes. The rollback drill is a
-separate live acceptance step.
+checkout advance loses the edit. Revert the cleanup commit of
+dmfdeploy/dmfdeploy#975 first (it removed the ansible-core 2.15 CI job and
+`requirements-ansible215.txt`), then the commit that switched the tag, as two
+revert pull requests in that order, and only with the operator's approval.
+Advance the Manage checkout to the last revert, wake AWX, rerun 630 and 693, and
+check that the AWX execution environment object names `0.1.1` and that one job
+pod's `imageID` is the 0.1.1 arm64 platform manifest digest from the table
+above. The rollback before the cleanup was drilled live when the image
+switched; this one has not been drilled. Keep 0.1.1 in GHCR and in Zot for at
+least 30 days after dmfdeploy/dmfdeploy#975 closes.
 
 ## Version bumps
 
@@ -286,11 +285,10 @@ in `meta/runtime.yml` before you pin a newer major release.
 
 ### The AWX pod security context was not read
 
-The live AWX pod security context was not read, because AWX was down. The
-UID-and-HOME checks used a plain container run with an arbitrary UID, group 0
-and `HOME` set, which is not the AWX container group's real pod spec.
-Acceptance for the security context moves to slice 3's real AWX job proof. Do
-not treat it as verified.
+The live proof ran four real AWX jobs on the 0.2.0 image (an nmos-cpp launch and
+teardown, twice), so the AWX container group's pods run it. The pod security
+context itself was not read: the UID-and-HOME checks used a plain container run
+with an arbitrary UID, group 0 and `HOME` set.
 
 ### A writable HOME is required
 
