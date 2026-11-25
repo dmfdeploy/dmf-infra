@@ -61,7 +61,7 @@
   hosts: k3s_control[0]
   become: true
   vars:
-    k3s_version: "v1.33.12+k3s1"
+    k3s_version: "v1.33.13+k3s2"
     # install.sh as committed at the k3s_version tag. k3s publishes no checksum
     # for the script, so this value is computed from that file. When you change
     # k3s_version, recompute it. The script then checks the k3s binary against
@@ -189,7 +189,7 @@
   become: true
   serial: 1
   vars:
-    k3s_version: "v1.33.12+k3s1"
+    k3s_version: "v1.33.13+k3s2"
     # install.sh as committed at the k3s_version tag. k3s publishes no checksum
     # for the script, so this value is computed from that file. When you change
     # k3s_version, recompute it. The script then checks the k3s binary against
