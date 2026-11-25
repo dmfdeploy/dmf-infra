@@ -3,11 +3,12 @@
 # Version-pinned for reproducibility (plan §3 Lane A + ADR-0025 §8.3 default).
 #
 # Every version is exact, so a rebuild cannot pick up a release that needs a
-# different core. The core 2.22 build checks load every module that the playbooks use on
-# the core in ../requirements-ansible-core.txt; a newer release of a collection
-# may exist. CI installs this file, so CI tests what the image builds, and
-# ../requirements.yml must list the same versions (a test checks it).
-# Dependabot does not update Galaxy collections; bump these by hand.
+# different core. The core 2.22 build checks load every module that the playbooks
+# use on the core in ../requirements-ansible-core.txt. Each pin is the latest release
+# as of 2026-11-25. CI installs this file, so CI tests what the image builds,
+# and ../requirements.yml must list the same versions (a test checks it).
+# Dependabot has no Galaxy ecosystem, so the versions move by hand under
+# dmfdeploy/dmfdeploy#1010.
 #
 # Bumping: pick a new version, rebuild via scripts/build.sh, smoke-test
 # one 69x play (e.g. 697-cms-awx-token) and one catalog JT (e.g.
@@ -17,23 +18,23 @@ collections:
   # Core runtime — used by every 69x play and every catalog launcher.
   # kubernetes.core.k8s, .k8s_info appear hundreds of times across plays.
   - name: kubernetes.core
-    version: 5.4.3
+    version: 6.6.0
 
   # Used for random_string, dict merge filters, postgresql modules,
   # and a handful of helper modules.
   - name: community.general
-    version: 10.7.9
+    version: 14.0.1
 
   # POSIX modules (mount, sysctl, authorized_key, etc.). Used by a few
   # infra plays and useful to have present rather than per-play installed.
   - name: ansible.posix
-    version: 1.6.2
+    version: 2.2.2
 
   # docker_image, docker_login modules used by playbook 630-zot-seed-platform.yml
   # to mirror images from GHCR into cluster-internal Zot. Also useful
   # for future image-handling plays.
   - name: community.docker
-    version: 4.8.9
+    version: 5.4.1
 
   # NetBox dynamic inventory (nb_inventory) for the catalog launchers' AWX
   # "NetBox Inventory". BAKED here so project_update / inventory sync never
@@ -43,9 +44,9 @@ collections:
   # Permanent internal git-sourced requirements: ADR-0034 (Forgejo mirror).
   # Pairs with `pynetbox` in requirements.txt (the plugin's runtime dep).
   - name: netbox.netbox
-    version: 3.23.1
+    version: 3.24.0
 
-  # A dependency of community.docker and netbox.netbox, pinned so the build
-  # cannot pick a release that needs a newer ansible-core.
+  # A dependency of community.docker and community.general, pinned so the
+  # build cannot pick a different release.
   - name: community.library_inventory_filtering_v1
     version: 1.1.5

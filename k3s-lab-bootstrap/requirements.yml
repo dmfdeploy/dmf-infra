@@ -3,25 +3,26 @@
 # Install with: ansible-galaxy collection install -r requirements.yml
 #
 # This list must match ee/requirements.yml, which the AWX execution environment
-# builds from and CI installs; a test checks it. Edit both together. Dependabot
-# does not update Galaxy collections; bump the versions by hand.
+# builds from and CI installs; a test checks it. Edit both together. Each pin is
+# the latest release as of 2026-11-25. Dependabot has no Galaxy ecosystem, so
+# the versions move by hand under dmfdeploy/dmfdeploy#1010.
 collections:
   # Kubernetes modules — used extensively across playbooks (k8s, k8s_info, helm, helm_repository)
   - name: kubernetes.core
-    version: 5.4.3
+    version: 6.6.0
   # POSIX modules — authorized_key, firewalld, iptables, etc.
   - name: ansible.posix
-    version: 1.6.2
+    version: 2.2.2
   # General modules — json_query filter (requires jmespath; see requirements.txt), among others
   - name: community.general
-    version: 10.7.9
+    version: 14.0.1
   # docker_image and docker_login, used by the zot-seed playbook.
   - name: community.docker
-    version: 4.8.9
+    version: 5.4.1
   # NetBox dynamic inventory (nb_inventory).
   - name: netbox.netbox
-    version: 3.23.1
-  # A dependency of community.docker and netbox.netbox. Pinned so the install
-  # cannot pick a release that needs a newer ansible-core.
+    version: 3.24.0
+  # A dependency of community.docker and community.general. Pinned so the
+  # install cannot pick a different release.
   - name: community.library_inventory_filtering_v1
     version: 1.1.5
