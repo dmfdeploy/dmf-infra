@@ -42,8 +42,8 @@
 # token, the number of words, each word, then `input`. The program text below never
 # changes, so no value is ever part of a program or of an argument list. A value
 # cannot hold a newline, and the input check refuses one. Ansible expands `$NAME` in
-# every argument of the command module (ansible-core before 2.16 cannot switch that
-# off), so a value in an argument list could be rewritten. Stdin is not expanded.
+# every argument of the command module, so a value in an argument list could be
+# rewritten. Stdin is not expanded.
 #
 # Pipelining is on for the call alone, so Ansible does not copy a module file that
 # holds the token to the node. `ANSIBLE_DEBUG` still prints module input, and the

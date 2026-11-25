@@ -14,8 +14,8 @@
 #   written: a matching value passes, a different value and a failed read each stop the play at
 #   their own assert. The extract step must keep `rc` a number, as `rc == 0` compares it.
 #
-# Each body must reach `bao` as the text that the caller built, on ansible-core 2.15 (the AWX
-# image) and on the current version.
+# Each body must reach `bao` as the text that the caller built, whichever ansible-core
+# runs the play.
 #
 # Run locally, from k3s-lab-bootstrap:
 #   PATH="$PWD/tests/fixtures/fake-kubectl:$PATH" ansible-playbook tests/test-openbao-cli-callers.yml

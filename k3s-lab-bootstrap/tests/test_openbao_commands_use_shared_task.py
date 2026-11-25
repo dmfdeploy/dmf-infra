@@ -158,8 +158,8 @@ def violations(root):
     return found
 
 
-# ansible-core 2.15 types the result of a template per field: `rc: "{{ x.rc }}"` is the text
-# "0", and `stdout: "{{ x.stdout }}"` is a mapping when the text looks like JSON. A fact that
+# Some ansible-core versions type the result of a template per field: `rc: "{{ x.rc }}"` is the
+# text "0", and `stdout: "{{ x.stdout }}"` is a mapping when the text looks like JSON. A fact that
 # copies a shared-role result field by field must say each type, or build the result as one
 # expression.
 TYPED_FIELDS = {"rc": "int", "changed": "bool", "stdout": "string", "stderr": "string"}
@@ -236,8 +236,8 @@ def yaml_include_tasks(node):
 def input_keeps_its_text(value):
     """True when every template in an `input` ends with a filter that keeps it text.
 
-    ansible-core 2.15 turns a template result that starts with `{` or `[` into a mapping or
-    list, unless the template has a `string` or `to_json` filter. A text with no template is
+    Some ansible-core versions turn a template result that starts with `{` or `[` into a
+    mapping or list, unless the template has a `string` or `to_json` filter. A text with no template is
     safe.
     """
     expressions = re.findall(r"\{\{(.*?)\}\}", value, re.S)
@@ -377,12 +377,12 @@ class SharedTaskTest(unittest.TestCase):
             with self.assertRaises(yaml.YAMLError):
                 violations(tree)
 
-    def test_the_text_that_ansible_2_15_turns_into_a_mapping_is_sent_as_text(self):
-        """ansible-core 2.15 types a template result that looks like JSON or a number.
+    def test_the_text_that_can_turn_into_a_mapping_is_sent_as_text(self):
+        """Some ansible-core versions type a template result that looks like JSON or a number.
 
         The shared role must not rely on the typing of a per-field template, and a caller's
         `input` must not be a bare variable that can look like JSON. tests/test-openbao-cli.yml
-        runs on 2.15 in CI; this test catches the same mistakes without it.
+        checks the same on the CI version; this test catches the mistakes without running Ansible.
         """
         step = (ROOT / SHARED_ROLE / "tasks/step.yml").read_text()
         document = yaml.safe_load(step)
@@ -394,7 +394,7 @@ class SharedTaskTest(unittest.TestCase):
         self.assertNotIn("\n  rc: \"", entry)
         self.assertIn("| int", entry)
 
-    def test_every_input_of_a_call_keeps_its_text_on_ansible_2_15(self):
+    def test_every_input_of_a_call_keeps_its_text(self):
         bad = []
         for rel, name, value in call_inputs(ROOT):
             if not input_keeps_its_text(value):

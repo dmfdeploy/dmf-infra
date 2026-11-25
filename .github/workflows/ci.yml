@@ -501,36 +501,9 @@ jobs:
           SHARD: ${{ matrix.shard }}
           TOTAL: ${{ strategy.job-total }}
 
-  ansible-core-215:
-    # The AWX execution environment runs ansible-core 2.15, and the other jobs run the
-    # current ansible. 2.15 builds a mapping from a template result that looks like JSON,
-    # and it types a per-field template result as text, so the shared OpenBao task
-    # has its own run on that version.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: k3s-lab-bootstrap
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install ansible-core 2.15 on Python 3.11
-        # ansible-core 2.15 supports Python 3.9 to 3.11 on the controller.
-        run: |
-          python3 -m pip install --user -r requirements-ci.txt
-          "$HOME/.local/bin/uv" venv --python 3.11 "$RUNNER_TEMP/ansible215"
-          "$HOME/.local/bin/uv" pip install --python "$RUNNER_TEMP/ansible215/bin/python" -r requirements-ansible215.txt
-          "$RUNNER_TEMP/ansible215/bin/ansible" --version
-      - name: Shared OpenBao task tests on ansible-core 2.15
-        run: |
-          export PATH="$RUNNER_TEMP/ansible215/bin:$PWD/tests/fixtures/fake-kubectl:$PATH"
-          ansible-playbook tests/test-openbao-cli.yml </dev/null
-          ansible-playbook tests/test-openbao-cli-callers.yml </dev/null
-
   ansible:
     # The required check. It passes only when every job it waits for passed.
-    needs: [ansible-checks, ansible-openbao, ansible-unit, ansible-core-215]
+    needs: [ansible-checks, ansible-openbao, ansible-unit]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -540,13 +513,11 @@ jobs:
           echo "ansible-checks:  $CHECKS"
           echo "ansible-openbao: $OPENBAO"
           echo "ansible-unit:    $UNIT"
-          echo "ansible-core-215: $CORE215"
-          [ "$CHECKS" = success ] && [ "$OPENBAO" = success ] && [ "$UNIT" = success ] && [ "$CORE215" = success ]
+          [ "$CHECKS" = success ] && [ "$OPENBAO" = success ] && [ "$UNIT" = success ]
         env:
           CHECKS: ${{ needs.ansible-checks.result }}
           OPENBAO: ${{ needs.ansible-openbao.result }}
           UNIT: ${{ needs.ansible-unit.result }}
-          CORE215: ${{ needs.ansible-core-215.result }}
 
   review-comments:
     # Comments state why, not which review prompted them

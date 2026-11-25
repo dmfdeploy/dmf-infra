@@ -4,7 +4,7 @@
 # A task sends each value to its fixed `sh -c` program on stdin, one per line, and the
 # program reads it with `IFS= read -r NAME`. Stdin reaches the program unchanged on every
 # ansible-core version. A value passed as an argument is not: the command module expands
-# `$NAME` in every argument on ansible-core 2.16 and later.
+# `$NAME` in every argument.
 #
 # The play runs two real task files with a value that holds both `$` and `'`:
 #

@@ -35,9 +35,9 @@
     openbao_cli_stdin: >-
       {{ openbao_cli_token | default('') }}{{ openbao_cli_nl }}{{ _openbao_cli_call.args | length }}{{ openbao_cli_nl }}{{
       _openbao_cli_call.args | map('string') | join(openbao_cli_nl) }}{{ openbao_cli_nl }}{{ openbao_cli_input | string }}
-    # ansible-core 2.15 turns a template result that looks like a JSON object or list
-    # into a mapping or list, and `string` of that is a Python representation. Send
-    # such a value as JSON text. A text that is not a mapping or list stays as it is.
+    # Some ansible-core versions turn a template result that looks like a JSON object
+    # or list into a mapping or list, and `string` of that is a Python representation.
+    # Send such a value as JSON text. A text that is not a mapping or list stays as it is.
     openbao_cli_input: >-
       {{ (_openbao_cli_call.input | default('') | to_json
       if (_openbao_cli_call.input | default('')) is mapping
@@ -65,7 +65,7 @@
       {%- elif openbao_cli_require_output | default(false) | bool and (openbao_cli_run.stdout | default('') | trim | length == 0) -%}empty output
       {%- endif -%}
     # One expression, so the types of the values stay the same on every ansible-core
-    # version: a template per field turns `rc` into text and `{}` into a mapping on 2.15.
+    # version: a template per field can turn `rc` into text and `{}` into a mapping.
     _openbao_cli_entry: >-
       {{ {
         'item': _openbao_cli_call.item | default(none),

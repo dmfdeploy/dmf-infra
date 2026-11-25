@@ -28,9 +28,8 @@ ansible_runner_cluster_role: cluster-admin
 # has run.
 #
 # The tag is awx_ee_image_tag, set once in vars/awx-ee.yml, which playbook 050
-# loads. To bump: rebuild + republish + run 630-zot-seed-platform, then change
-# that one line. Stay version-pinned for repro — never use :latest in steady
-# state.
+# loads. ee/README.md describes how to publish a new tag and switch to it. Stay
+# version-pinned for repro — never use :latest in steady state.
 #
 # Fallback: if Zot is not (yet) seeded, override ansible_runner_image to
 # `ghcr.io/dmfdeploy/awx-ee:{{ awx_ee_image_tag }}` at run time.

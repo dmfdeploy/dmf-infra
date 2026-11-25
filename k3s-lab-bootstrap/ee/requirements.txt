@@ -1,7 +1,6 @@
 # Python packages bundled into the DMF AWX EE image.
-# Exact versions, each checked to resolve on the base image's Python 3.9; their
-# own dependencies resolve at build time. Dependabot does not track this file;
-# bump the versions by hand.
+# Exact versions; their own dependencies resolve at build time. Dependabot
+# does not track this file; bump the versions by hand.
 # These satisfy kubernetes.core's dependencies (k8s, k8s_info modules
 # need the kubernetes/openshift python clients at runtime) and provide
 # JSON-patch support used by community.kubernetes/k8s_json_patch.
@@ -15,7 +14,7 @@ jsonpatch==1.33
 # offline from the EE — no public galaxy/pip fetch at job time.
 pynetbox==7.8.0
 
-# The json_query filter in community.general needs jmespath. The pinned base
-# image already ships jmespath 1.0.1; the pin keeps it when the base image
-# changes. The playbook host needs it too: see ../requirements.txt.
+# The json_query filter in community.general needs jmespath, and the base image
+# does not ship it, so this file installs it. The playbook host needs it too:
+# see ../requirements.txt.
 jmespath==1.1.0
