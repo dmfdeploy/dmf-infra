@@ -907,6 +907,81 @@
       - awx_integration_org_id is not none
     fail_msg: "AWX organization '{{ awx_integration_org }}' not found."
 
+# ADR-0034 layer 1 (dmfdeploy/dmfdeploy#443): an organization with no Galaxy
+# credential gives a project update no public Galaxy server. A requirements entry
+# with an explicit `source:` can still bypass that, which this does not cover.
+# Each run detaches any credential that is attached and reports changed when it
+# did, because a fresh AWX attaches the stock public Galaxy credential to the
+# Default organization. The assert at the end fails the run if any remain. The
+# credential object stays; only its link to the organization goes. Collections
+# come from the execution environment. One run reads and detaches the first 200
+# credentials; the assert fails closed if more remain.
+- name: Read the Galaxy credentials attached to the AWX organization
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/organizations/{{ awx_integration_org_id }}/galaxy_credentials/?page_size=200"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_integration_org_galaxy_creds is success
+    or (awx_integration_org_galaxy_creds.status | default(0) >= 400 and awx_integration_org_galaxy_creds.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_integration_org_galaxy_creds
+  # The response carries each credential's inputs block.
+  no_log: true
+
+- name: Detach every Galaxy credential from the AWX organization
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/organizations/{{ awx_integration_org_id }}/galaxy_credentials/"
+    method: POST
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    body_format: json
+    # A dict expression keeps the id an integer on every ansible-core version;
+    # a quoted `id: "{{ item.id }}"` is sent as a string on 2.15, and AWX answers
+    # 400 to a string id.
+    body: "{{ {'id': item.id, 'disassociate': true} }}"
+    status_code: 204
+  changed_when: true
+  until: >-
+    awx_integration_org_galaxy_detach is success
+    or (awx_integration_org_galaxy_detach.status | default(0) >= 400 and awx_integration_org_galaxy_detach.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_integration_org_galaxy_detach
+  loop: "{{ awx_integration_org_galaxy_creds.json.results }}"
+  loop_control:
+    label: "credential {{ item.id }}"
+  no_log: true
+
+- name: Read the organization's Galaxy credentials back
+  ansible.builtin.uri:
+    url: "{{ awx_integration_api_base }}/organizations/{{ awx_integration_org_id }}/galaxy_credentials/"
+    method: GET
+    url_username: "{{ awx_integration_admin_user }}"
+    url_password: "{{ awx_integration_admin_password }}"
+    force_basic_auth: true
+    status_code: 200
+  until: >-
+    awx_integration_org_galaxy_after is success
+    or (awx_integration_org_galaxy_after.status | default(0) >= 400 and awx_integration_org_galaxy_after.status | default(0) < 500)
+  retries: "{{ _gate_uri_retry | default(6) }}"
+  delay: "{{ _gate_uri_delay | default(5) }}"
+  register: awx_integration_org_galaxy_after
+  no_log: true
+
+- name: Fail if the AWX organization still has a Galaxy credential
+  ansible.builtin.assert:
+    that:
+      - awx_integration_org_galaxy_after.json.count | int == 0
+    fail_msg: >-
+      AWX organization '{{ awx_integration_org }}' still has a Galaxy credential
+      attached. ADR-0034 requires none, so a project update never reaches public Galaxy.
+
 - name: Lookup AWX service user
   ansible.builtin.uri:
     url: "{{ awx_integration_api_base }}/users/?username={{ awx_integration_svc_user | urlencode }}"
