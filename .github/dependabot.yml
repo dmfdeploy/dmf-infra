@@ -21,13 +21,9 @@ updates:
     directory: "/k3s-lab-bootstrap"
     schedule:
       interval: "monthly"
-    # CI runs Python 3.12 and ansible 15 needs 3.13 or newer. Remove this
-    # ignore when CI moves to Python 3.13.
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-      - dependency-name: "ansible"
-        versions: [">= 15"]
       # The single ansible-core pin moves on purpose under dmfdeploy/dmfdeploy#1010.
       - dependency-name: "ansible-core"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
