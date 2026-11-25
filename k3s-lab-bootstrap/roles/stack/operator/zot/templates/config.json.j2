@@ -4,6 +4,10 @@
   "storage": {
     "rootDirectory": "/var/lib/zot",
     "dedupe": true,
+    {# Since v2.1.21, a HEAD or ranged GET for a blob that the repository does not
+       hold returns 404 even when the dedupe cache has it. This setting restores
+       the earlier behavior. #}
+    "hydrateBlobOnRead": true,
     "gc": true
   },
   "http": {
