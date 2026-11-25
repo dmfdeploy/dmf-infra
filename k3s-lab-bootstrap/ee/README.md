@@ -12,7 +12,7 @@ and the [convergence plan](https://github.com/dmfdeploy/dmfdeploy/blob/45eb326e9
 ## Image flow
 
 ```
-quay.io/fedora/fedora-minimal:43@sha256:<index digest>   (upstream base)
+quay.io/fedora/fedora-minimal:45@sha256:<index digest>   (upstream base)
             │
             │   ansible-builder build (scripts/build.sh)
             │   + ansible-core from ../requirements-ansible-core.txt
@@ -31,15 +31,15 @@ zot.zot.svc.cluster.local:5000/dmf/awx-ee:<tag>  (runtime registry — Lane A co
 
 ## Versions
 
-The table lists the pinned inputs of image 0.4.1. It was built from commit c98df82, the merge commit of dmfdeploy/dmf-infra#216, and its revision label names that commit.
+The table lists the pinned inputs of image 0.5.0. Its revision label names the commit it was built from.
 
 | Item | Value | Where it is set |
 |---|---|---|
 | ansible-core | 2.22.0 | `../requirements-ansible-core.txt`, the only place |
-| Python | 3.14.10 (Fedora 43 `python3`) | The base image; ansible-core 2.22 supports 3.13 to 3.15 |
+| Python | 3.15.2 (Fedora 45 `python3`) | The base image; ansible-core 2.22 supports 3.13 to 3.15 |
 | ansible-runner | 2.4.3 | `execution-environment.yml` |
-| Base image | `quay.io/fedora/fedora-minimal:43` | `execution-environment.yml` |
-| Base index digest | `sha256:119588c03182271a8980aba57b4dfd924fb3e8d9bf9a90ae68a5c8c3964d9790` | `execution-environment.yml` (resolved 2026-11-24) |
+| Base image | `quay.io/fedora/fedora-minimal:45` | `execution-environment.yml` |
+| Base index digest | `sha256:22c73cf27de5e36f06d435b3bf016b02b95e75473ceef9a0bed48396124951a1` | `execution-environment.yml` (resolved 2026-11-25) |
 
 The ansible-core pin is one line. `scripts/build.sh` checks it against
 `^ansible-core==[0-9]+\.[0-9]+\.[0-9]+$`, copies only the files the spec
@@ -138,7 +138,7 @@ The revision label must equal the full SHA of the commit you are releasing.
 Consumers read the image tag from one variable, `awx_ee_image_tag` in
 `../vars/awx-ee.yml`. Playbooks 050 (the runner foundation), 630 (the Zot
 mirror) and 693 (the AWX integration) load that file with `vars_files`, and
-`-e awx_ee_image_tag=<tag>` overrides it for one run. The value is `0.4.1`.
+`-e awx_ee_image_tag=<tag>` overrides it for one run. The value is `0.4.1` until the 0.5.0 switch merges.
 
 **Architecture.** The image is built and published for arm64 only, as 0.1.1
 was: its GHCR index lists one `linux/arm64` image and an attestation. Playbook
@@ -245,11 +245,12 @@ the switch to 0.4.1.
    "Publish, mirror, switch and rollback": change `awx_ee_image_tag` in
    `../vars/awx-ee.yml`, then rerun 630 and 693.
 
-## Yearly Fedora refresh
+## Fedora refresh
 
-Fedora supports each release for about 13 months, and the base is pinned by
-digest, so a new Fedora security update does not reach the image on its own.
-Refresh the base once a year, and sooner when a fix matters.
+Always take the newest released Fedora. Each release gets about 13 months of
+support, and the base is pinned by digest, so a new Fedora security update does
+not reach the image on its own. Refresh the base when the next Fedora release
+ships, and sooner when a fix matters.
 
 1. Resolve the index digest of the new tag, for example
    `skopeo inspect --raw docker://quay.io/fedora/fedora-minimal:<N> | shasum -a 256`.
@@ -270,8 +271,8 @@ Refresh the base once a year, and sooner when a fix matters.
 ### ansible-core support for Python
 
 ansible-core 2.22 supports Python 3.13 to 3.15 as a controller. Fedora minimal
-43 ships Python 3.14, which is in range. ansible-runner 2.4.3 does not list 3.14
-in its classifiers but runs on it (checked in the 0.2.0, 0.3.0 and core 2.22 builds).
+45 ships Python 3.15, which is in range. ansible-runner 2.4.3 does not list 3.14 or
+3.15 in its classifiers. The 0.5.0 build checks that it runs on 3.15.
 When you move the core pin to a new minor release, check the Python range
 before you build.
 
