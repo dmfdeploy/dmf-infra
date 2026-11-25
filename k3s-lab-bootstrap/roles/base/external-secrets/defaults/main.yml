@@ -7,7 +7,7 @@
 eso_namespace: external-secrets
 eso_helm_repo: https://charts.external-secrets.io
 eso_helm_chart: external-secrets
-eso_helm_version: "2.3.0"
+eso_helm_version: "2.15.0"
 
 # Default CRD API group version (v1 is GA since chart 0.10+ / v2.x).
 # v1beta1 is present in the CRD spec for some versions but NOT served —
