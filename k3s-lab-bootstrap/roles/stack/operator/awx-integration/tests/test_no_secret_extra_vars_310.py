@@ -98,6 +98,23 @@ def _uri_tasks(tasks):
             yield task, args
 
 
+# The one string body allowed, matched exactly with its URL: a templated mapping value
+# (`id: "{{ item.id }}"`) renders as a string on ansible-core 2.15, and AWX answers 400 to a
+# string id; a dict expression keeps the id an integer.
+REVIEWED_STRING_BODY = "{{ {'id': item.id, 'disassociate': true} }}"
+REVIEWED_STRING_BODY_URL = "{{ awx_integration_api_base }}/organizations/{{ awx_integration_org_id }}/galaxy_credentials/"
+
+
+def string_body_findings(tasks):
+    """Return a finding for every uri body that is not a mapping, except the one reviewed pair."""
+    return [
+        f"{t.get('name', '?')}: uri body is not a mapping"
+        for t, a in _uri_tasks(tasks)
+        if "body" in a and not isinstance(a["body"], dict)
+        and not (a["body"] == REVIEWED_STRING_BODY and a.get("url") == REVIEWED_STRING_BODY_URL)
+    ]
+
+
 def inactive_cleanup_findings(defaults, tasks):
     """Return what is missing for the inactive optional credential cleanup.
 
@@ -105,7 +122,7 @@ def inactive_cleanup_findings(defaults, tasks):
     empty) must be detached from the job templates that declare it and then
     deleted, so a value set earlier and later cleared is not injected again.
     """
-    found = []
+    found = string_body_findings(tasks)
     optional = [
         c["credential_name"]
         for c in defaults.get("awx_integration_netbox_token_credentials") or []
@@ -133,7 +150,7 @@ def inactive_cleanup_findings(defaults, tasks):
 
     detach = [
         t for t, a in _uri_tasks(tasks)
-        if (a.get("body") or {}).get("disassociate") is True
+        if (a["body"] if isinstance(a.get("body"), dict) else {}).get("disassociate") is True
         and "/credentials/" in str(a.get("url", ""))
         and "_awx_inactive_cred_ids" in str(t.get("when", ""))
         and "extra_credentials" in str(t.get("loop", ""))
@@ -165,6 +182,23 @@ class InactiveOptionalCredentialCleanup(unittest.TestCase):
         defaults = yaml.safe_load((ROLE / "defaults" / "main.yml").read_text())
         tasks = yaml.safe_load((ROLE / "tasks" / "main.yml").read_text())
         self.assertEqual(inactive_cleanup_findings(defaults, tasks), [])
+
+    def test_guard_rejects_unreviewed_string_bodies(self):
+        galaxy = REVIEWED_STRING_BODY_URL
+        planted = {
+            "secret job-template body": {
+                "url": "{{ b }}/job_templates/1/", "method": "PATCH",
+                "body": "{{ {'extra_vars': {'netbox_token': vault_secret}} }}"},
+            "modified body at the Galaxy URL": {
+                "url": galaxy, "method": "POST", "body": "{{ {'id': item.id, 'disassociate': false} }}"},
+            "approved body at another URL": {
+                "url": "{{ b }}/job_templates/1/credentials/", "method": "POST", "body": REVIEWED_STRING_BODY},
+        }
+        for name, args in planted.items():
+            with self.subTest(name):
+                self.assertEqual(len(string_body_findings([{"name": name, "ansible.builtin.uri": args}])), 1)
+        approved = {"url": galaxy, "method": "POST", "body": REVIEWED_STRING_BODY}
+        self.assertEqual(string_body_findings([{"name": "ok", "ansible.builtin.uri": approved}]), [])
 
     def test_guard_detects_missing_cleanup(self):
         defaults = {
