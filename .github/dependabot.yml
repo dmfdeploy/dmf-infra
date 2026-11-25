@@ -24,14 +24,14 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
-      # The single ansible-core pin moves on purpose under dmfdeploy/dmfdeploy#1010.
-      - dependency-name: "ansible-core"
-        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       pip-minor-patch:
         update-types:
           - "minor"
           - "patch"
+        # ansible-core arrives as its own PR because the single pin moves only after a live install (dmfdeploy/dmfdeploy#1010).
+        exclude-patterns:
+          - "ansible-core"
     labels:
       - "no-issue"
     commit-message:
