@@ -35,7 +35,7 @@ jobs:
         with:
           # Matches the Helm release the dmf-init image installs. Dependabot does
           # not track this input; bump it by hand.
-          version: v3.18.4
+          version: v3.22.1
       - name: Install collections
         # Galaxy sometimes sends a malformed response. Retry, and clear the
         # response cache after the first failure.
