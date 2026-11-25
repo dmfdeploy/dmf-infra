@@ -28,6 +28,9 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "ansible"
         versions: [">= 15"]
+      # The single ansible-core pin moves on purpose under dmfdeploy/dmfdeploy#1010.
+      - dependency-name: "ansible-core"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
     groups:
       pip-minor-patch:
         update-types:
