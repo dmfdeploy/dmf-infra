@@ -5,7 +5,6 @@
 # Format: <package> [platform:<distro>] (bindep.org / fedora-style tags)
 # The base is Fedora, so platform:rpm applies.
 
-helm [platform:rpm]
 git [platform:rpm]
 ca-certificates [platform:rpm]
 # skopeo: registry-to-registry copy for playbook 630-zot-seed-platform.yml.
