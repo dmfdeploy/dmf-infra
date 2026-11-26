@@ -3,14 +3,14 @@ ingress_private_namespace: traefik-private
 ingress_private_release_name: traefik-private
 ingress_private_ingressclass: traefik-private
 ingress_private_nodeport: 30443
-# Pin to the last chart major that honors the top-level `service.type` key in
-# the values block below. Traefik chart 40.x restructured `service.*` and now
-# silently renders LoadBalancer regardless of `service.type: NodePort`, which
-# breaks this role's whole point (NodePort reachable via Tailscale). Bumping
-# this pin requires migrating the values block to the new schema — see the
-# render-time assertion in tasks/main.yml that fails fast if Service type
-# drifts from NodePort.
-ingress_private_chart_version: "39.0.9"
+# Traefik chart 40 moved the Service type to `service.spec.type`, and chart 41
+# renamed `logs.general` and `logs.access` to `log` and `accessLog`. The values
+# block in tasks/main.yml uses the new keys, and the chart's schema refuses
+# the old ones. A render-time assertion in tasks/main.yml fails fast if the
+# Service type drifts from NodePort. Stay on chart 42 while the bundled k3s
+# Traefik is 3.7: chart 43 needs the Gateway API 1.7 CRDs, and this release
+# installs no CRDs of its own (ingress_private_skip_crds).
+ingress_private_chart_version: "42.4.2"
 ingress_private_chart_ref: traefik/traefik
 ingress_private_helm_repo: https://traefik.github.io/charts
 # The bundled k3s Traefik install owns the cluster-scoped Traefik CRDs. The
