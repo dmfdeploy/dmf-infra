@@ -84,9 +84,11 @@
     - _grafana_ca_secret.resources | default([]) | length > 0
     - _grafana_ca_secret.resources[0].data['ca.crt'] | default('') | length > 0
 
-- name: Add grafana Helm repository
+# The grafana-community alias differs from the "grafana" alias that the
+# promtail role adds for the old repository, so the two never clash.
+- name: Add grafana-community Helm repository
   kubernetes.core.helm_repository:
-    name: grafana
+    name: grafana-community
     repo_url: "{{ grafana_helm_repo }}"
 
 # Two provider-keyed ConfigMaps (dmf + system) in one multi-doc template.
@@ -119,7 +121,7 @@
   kubernetes.core.helm:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     name: grafana
-    chart_ref: grafana/grafana
+    chart_ref: grafana-community/grafana
     chart_version: "{{ grafana_helm_chart_version }}"
     release_namespace: "{{ grafana_namespace }}"
     create_namespace: true

@@ -3,8 +3,8 @@ grafana_namespace: monitoring
 grafana_storage_size: 1Gi
 grafana_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
 grafana_admin_password: "{{ vault_grafana_admin_password | default(vault_bootstrap_admin_password | mandatory) }}"
-grafana_helm_repo: https://grafana.github.io/helm-charts
-grafana_helm_chart_version: "8.0.0"
+grafana_helm_repo: https://grafana-community.github.io/helm-charts
+grafana_helm_chart_version: "14.5.0"
 grafana_pvc_wait_retries: 30
 grafana_pvc_wait_delay: 10
 grafana_oidc_enabled: true
@@ -31,7 +31,7 @@ grafana_ingress_class: traefik-private
 # Without trust, login fails CERTIFICATE_VERIFY_FAILED (same class as the zot
 # and netbox CA-mount fixes). Mirror the zot pattern: publish dmf-local-ca
 # into the monitoring ns as a ConfigMap and mount ca.crt into the Grafana pod.
-# grafana/grafana is Alpine — the Go cert-dir scan is not guaranteed to match
+# The Grafana image is distroless — the Go cert-dir scan is not guaranteed to match
 # Debian/Zot's; set SSL_CERT_FILE explicitly as the image-agnostic primary.
 # No-op on cloud/real-cert lanes.
 grafana_local_ca_trust_enabled: "{{ dmf_tls_mode | default('') == 'local-ca' }}"
