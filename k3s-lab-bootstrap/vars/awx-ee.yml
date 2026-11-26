@@ -6,4 +6,4 @@
 #
 # To bump: build and publish the image (ee/README.md), change this one line, and
 # rerun 630-zot-seed-platform.yml and 693-awx-integration.yml.
-awx_ee_image_tag: "0.5.0"
+awx_ee_image_tag: "0.6.0"
