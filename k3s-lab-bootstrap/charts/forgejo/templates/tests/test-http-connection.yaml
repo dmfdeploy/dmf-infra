@@ -11,7 +11,15 @@ spec:
   containers:
     - name: wget
       image: "{{ .Values.test.image.name }}:{{ .Values.test.image.tag }}"
-      command: ['wget']
-      args:  ['{{ include "gitea.fullname" . }}-http:{{ .Values.service.http.port }}']
+      # retry with short timeouts, a single connection attempt can hang until the kernel gives up (~2m)
+      # when the service iptables rules aren't synced yet on first connect
+      command: ['sh', '-c']
+      args:
+        - |
+          for i in $(seq 1 20); do
+            wget -T 5 -O /dev/null '{{ include "gitea.fullname" . }}-http:{{ .Values.service.http.port }}' && exit 0
+            sleep 3
+          done
+          exit 1
   restartPolicy: Never
 {{- end }}

@@ -31,4 +31,8 @@
       {{- fail "`gitea.database.builtIn` does no longer exist. Builtin databases can be configured inside the dependencies itself. Please refer to the changelog." -}}
     {{- end -}}
   {{- end -}}
+
+  {{- if and .Values.ingress.enabled .Values.httpRoute.enabled -}}
+    {{- fail "`ingress.enabled and httpRoute.enabled are mutually exclusive." -}}
+  {{- end -}}
 {{- end -}}

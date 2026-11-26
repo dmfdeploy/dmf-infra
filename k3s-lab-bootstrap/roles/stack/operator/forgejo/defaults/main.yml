@@ -20,7 +20,7 @@ forgejo_external_base_url: "{{ forgejo_external_scheme }}://{{ forgejo_external_
 forgejo_root_url: "{{ forgejo_external_base_url }}/"
 
 forgejo_chart_stage_path: /tmp/forgejo-chart
-forgejo_chart_version: "16.0.2"
+forgejo_chart_version: "17.3.3"
 
 forgejo_storage_class: "{{ dmf_storage_class | default('longhorn') }}"
 forgejo_storage_size: 10Gi

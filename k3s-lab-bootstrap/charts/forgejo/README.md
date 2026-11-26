@@ -49,6 +49,7 @@
   - [Advanced](#advanced)
 - [Contributing](#contributing)
 - [Upgrading](#upgrading)
+  - [To v17](#to-v17)
   - [To v16](#to-v16)
   - [To v15](#to-v15)
   - [To v14](#to-v14)
@@ -861,12 +862,12 @@ Do not use `RollingUpdate` for `strategy.type`, it will cause issues with the de
 
 Security context is only usable with rootless image due to image design.
 
-| Name                         | Description                                                     | Value  |
-| ---------------------------- | --------------------------------------------------------------- | ------ |
-| `podSecurityContext.fsGroup` | Set the shared file system group for all containers in the pod. | `1000` |
-| `containerSecurityContext`   | Security context                                                | `{}`   |
-| `securityContext`            | Run init and Forgejo containers as a specific securityContext   | `{}`   |
-| `podDisruptionBudget`        | Pod disruption budget                                           | `{}`   |
+| Name                         | Description                                                                  | Value  |
+| ---------------------------- | ---------------------------------------------------------------------------- | ------ |
+| `podSecurityContext.fsGroup` | Set the shared file system group for all containers in the pod.              | `1000` |
+| `containerSecurityContext`   | Security context                                                             | `{}`   |
+| `securityContext`            | **DEPRECATED** Run init and Forgejo containers as a specific securityContext | `{}`   |
+| `podDisruptionBudget`        | Pod disruption budget                                                        | `{}`   |
 
 ### Service
 
@@ -916,16 +917,27 @@ Security context is only usable with rootless image due to image design.
 
 ### Gateway-API HTTPRoute
 
-| Name                           | Description                                                                              | Value        |
-| ------------------------------ | ---------------------------------------------------------------------------------------- | ------------ |
-| `httpRoute.enabled`            | Enables Gateway API HTTPRoute as a replacement for traditional Ingress resources         | `false`      |
-| `httpRoute.annotations`        | Annotations to add to the HTTPRoute resource                                             | `{}`         |
-| `httpRoute.parentRefs`         | List of parentRefs for the HTTPRoute, typically referencing the Gateway(name, namespace) | `[]`         |
-| `httpRoute.hostnames`          | Hostnames this HTTPRoute applies to                                                      | `[]`         |
-| `httpRoute.matches.path.type`  | Type of path match (e.g., PathPrefix or Exact or RegularExpression)                      | `PathPrefix` |
-| `httpRoute.matches.path.value` | Path value for matching incoming requests                                                | `/`          |
-| `httpRoute.matches.timeouts`   | Object containing timeouts.                                                              | `{}`         |
-| `httpRoute.filters`            | Filters to apply on HTTP requests, such as header rewrites or request redirects          | `[]`         |
+| Name                           | Description                                                                                                        | Value        |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------ |
+| `httpRoute.enabled`            | Enables Gateway API HTTPRoute as a replacement for traditional Ingress resources                                   | `false`      |
+| `httpRoute.annotations`        | Annotations to add to the HTTPRoute resource                                                                       | `{}`         |
+| `httpRoute.parentRefs`         | List of parentRefs for the HTTPRoute, typically referencing the Gateway(name, namespace)                           | `[]`         |
+| `httpRoute.hostnames`          | Hostnames this HTTPRoute applies to                                                                                | `[]`         |
+| `httpRoute.matches.path.type`  | Type of path match (e.g., PathPrefix or Exact or RegularExpression)                                                | `PathPrefix` |
+| `httpRoute.matches.path.value` | Path value for matching incoming requests                                                                          | `/`          |
+| `httpRoute.matches.timeouts`   | Object containing timeouts.                                                                                        | `{}`         |
+| `httpRoute.filters`            | Filters to apply on HTTP requests, such as header rewrites or request redirects                                    | `[]`         |
+| `httpRoute.port`               | Target port for HTTPRoute. Must be a port number.                                                                  | `nil`        |
+| `httpRoute.terminate`          | wether the Gateway listener terminates the TLS connection. This just affects the Forgejo `ROOT_URL` configuration. | `true`       |
+
+### Gateway-API TCPRoute
+
+| Name                   | Description                                                                                           | Value   |
+| ---------------------- | ----------------------------------------------------------------------------------------------------- | ------- |
+| `tcpRoute.enabled`     | Enables Gateway API TCPRoute for SSH traffic                                                          | `false` |
+| `tcpRoute.annotations` | Annotations to add to the TCPRoute resource                                                           | `{}`    |
+| `tcpRoute.parentRefs`  | List of parentRefs for the TCPRoute, typically referencing the Gateway (name, namespace, sectionName) | `[]`    |
+| `tcpRoute.port`        | Target port for TCPRoute. Must be a port number. Defaults to service.ssh.port.                        | `nil`   |
 
 ### Route
 
@@ -1007,12 +1019,14 @@ Do not set `replicaCount` greater than `1`, Forgejo is not HA ready and this wil
 
 ### Signing
 
-| Name                     | Description                                                       | Value              |
-| ------------------------ | ----------------------------------------------------------------- | ------------------ |
-| `signing.enabled`        | Enable commit/action signing                                      | `false`            |
-| `signing.gpgHome`        | GPG home directory                                                | `/data/git/.gnupg` |
-| `signing.privateKey`     | Inline private GPG key for signed internal Git activity           | `""`               |
-| `signing.existingSecret` | Use an existing secret to store the value of `signing.privateKey` | `""`               |
+| Name                         | Description                                                           | Value              |
+| ---------------------------- | --------------------------------------------------------------------- | ------------------ |
+| `signing.enabled`            | Enable commit/action signing                                          | `false`            |
+| `signing.gpgHome`            | GPG home directory                                                    | `/data/git/.gnupg` |
+| `signing.privateKey`         | Inline private GPG key for signed internal Git activity               | `""`               |
+| `signing.existingSecret`     | Use an existing secret to store the value of `signing.privateKey`     | `""`               |
+| `signing.ssh.privateKey`     | Inline private SSH key for signed internal Git activity               | `""`               |
+| `signing.ssh.existingSecret` | Use an existing secret to store the value of `signing.ssh.privateKey` | `""`               |
 
 ### Gitea
 
@@ -1149,6 +1163,10 @@ Hop into [our Matrix room](https://matrix.to/#/#forgejo-helm-chart:matrix.org) i
 This section lists major and breaking changes of each Helm Chart version.
 Please read them carefully to upgrade successfully, especially the change of the **default database backend**!
 If you miss this, blindly upgrading may delete your Postgres instance and you may lose your data!
+
+### To v17
+
+This chart now uses Forgejo v15 by default.
 
 ### To v16
 

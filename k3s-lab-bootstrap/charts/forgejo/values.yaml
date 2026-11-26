@@ -91,7 +91,7 @@ containerSecurityContext: {}
 ## @deprecated The securityContext variable has been split two:
 ## - containerSecurityContext
 ## - podSecurityContext.
-## @param securityContext Run init and Forgejo containers as a specific securityContext
+## @param securityContext **DEPRECATED** Run init and Forgejo containers as a specific securityContext
 securityContext: {}
 
 ## @param podDisruptionBudget Pod disruption budget
@@ -197,6 +197,8 @@ ingress:
 ## @param httpRoute.matches.path.value Path value for matching incoming requests
 ## @param httpRoute.matches.timeouts Object containing timeouts.
 ## @param httpRoute.filters Filters to apply on HTTP requests, such as header rewrites or request redirects
+## @param httpRoute.port Target port for HTTPRoute. Must be a port number.
+## @param httpRoute.terminate wether the Gateway listener terminates the TLS connection. This just affects the forgejo `ROOT_URL` configuration.
 httpRoute:
   enabled: false
   annotations: {}
@@ -218,6 +220,23 @@ httpRoute:
   #     set:
   #       - name: X-Forwarded-Proto
   #         value: https
+  port:
+  terminate: true
+
+# Enables Gateway API TCPRoute for SSH traffic
+## @section Gateway-API TCPRoute
+## @param tcpRoute.enabled Enables Gateway API TCPRoute for SSH traffic
+## @param tcpRoute.annotations Annotations to add to the TCPRoute resource
+## @param tcpRoute.parentRefs List of parentRefs for the TCPRoute, typically referencing the Gateway (name, namespace, sectionName)
+## @param tcpRoute.port Target port for TCPRoute. Must be a port number. Defaults to service.ssh.port.
+tcpRoute:
+  enabled: false
+  annotations: {}
+  parentRefs: []
+    # - name: my-gateway
+    #   namespace: gateway-ns
+    #   sectionName: ssh  # name of the Gateway listener for SSH
+  port:
 
 ## @section Route
 ## @param route.enabled Enable route
@@ -422,6 +441,8 @@ initContainers:
 ## @param signing.gpgHome GPG home directory
 ## @param signing.privateKey Inline private GPG key for signed internal Git activity
 ## @param signing.existingSecret Use an existing secret to store the value of `signing.privateKey`
+## @param signing.ssh.privateKey Inline private SSH key for signed internal Git activity
+## @param signing.ssh.existingSecret Use an existing secret to store the value of `signing.ssh.privateKey`
 signing:
   enabled: false
   gpgHome: /data/git/.gnupg
@@ -431,6 +452,9 @@ signing:
   #   ...
   #   <end PGP private key block>
   existingSecret: ''
+  ssh:
+    privateKey: ''
+    existingSecret: ''
 
 ## @section Gitea
 #

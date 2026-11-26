@@ -5,6 +5,7 @@ metadata:
   namespace: {{ include "common.names.namespace" . | quote }}
   labels:
     {{- include "gitea.labels" . | nindent 4 }}
+    {{- include "gitea.componentLabel" "http" | nindent 4 }}
     {{- if .Values.service.http.labels }}
     {{- toYaml .Values.service.http.labels  | nindent 4 }}
     {{- end }}

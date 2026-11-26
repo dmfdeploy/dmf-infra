@@ -34,7 +34,7 @@ spec:
     backendRefs:
     - kind: Service
       name: {{ $fullName }}-http
-      port: {{ .Values.service.http.port }}
+      port: {{ $httpRoute.port | default .Values.service.http.port }}
     {{- with $httpRoute.filters }}
     filters:
       {{- toYaml . | nindent 6 }}
