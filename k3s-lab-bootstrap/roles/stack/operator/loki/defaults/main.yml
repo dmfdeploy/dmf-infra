@@ -36,8 +36,8 @@ loki_per_stream_rate_limit_burst: 3MB
 # pre-Tier-A bug where retention_period was set but compactor was disabled).
 loki_compactor_retention_delete_delay: 2h
 loki_compactor_retention_delete_worker_count: 150
-loki_helm_repo: https://grafana.github.io/helm-charts
-loki_helm_chart_version: "6.6.2"
+loki_helm_repo: https://grafana-community.github.io/helm-charts
+loki_helm_chart_version: "21.5.1"
 loki_wait_retries: 60
 loki_wait_delay: 5
 

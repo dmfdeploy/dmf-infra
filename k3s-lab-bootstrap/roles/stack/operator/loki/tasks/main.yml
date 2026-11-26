@@ -9,9 +9,9 @@
       metadata:
         name: "{{ loki_namespace }}"
 
-- name: Add grafana Helm repository
+- name: Add grafana-community Helm repository
   kubernetes.core.helm_repository:
-    name: grafana
+    name: grafana-community
     repo_url: "{{ loki_helm_repo }}"
 
 - name: Template Loki Helm values
@@ -24,7 +24,7 @@
   kubernetes.core.helm:
     kubeconfig: /etc/rancher/k3s/k3s.yaml
     name: loki
-    chart_ref: grafana/loki
+    chart_ref: grafana-community/loki
     chart_version: "{{ loki_helm_chart_version }}"
     release_namespace: "{{ loki_namespace }}"
     create_namespace: true
