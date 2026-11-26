@@ -52,6 +52,9 @@ entries:
       authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
+      grant_types:
+        - authorization_code
+        - refresh_token
       access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
       access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
       refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
@@ -158,6 +161,9 @@ entries:
       authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
+      grant_types:
+        - authorization_code
+        - refresh_token
       access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
       access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
       refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
@@ -201,6 +207,9 @@ entries:
       authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
+      grant_types:
+        - authorization_code
+        - refresh_token
       access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
       access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
       refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
@@ -244,6 +253,9 @@ entries:
       authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
+      grant_types:
+        - authorization_code
+        - refresh_token
       access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
       access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
       refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
@@ -287,6 +299,9 @@ entries:
       authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
+      grant_types:
+        - authorization_code
+        - refresh_token
       access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
       access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
       refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
@@ -330,6 +345,9 @@ entries:
       authentication_flow: !Find [authentik_flows.flow, [slug, dmf-passkey-login]]
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       client_type: confidential
+      grant_types:
+        - authorization_code
+        - refresh_token
       access_code_validity: {{ authentik_oidc_access_code_validity | default('minutes=1', true) | to_json }}
       access_token_validity: {{ authentik_oidc_access_token_validity | default('minutes=15', true) | to_json }}
       refresh_token_validity: {{ authentik_oidc_refresh_token_validity | default('hours=8', true) | to_json }}
