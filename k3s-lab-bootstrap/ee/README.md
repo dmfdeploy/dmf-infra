@@ -39,6 +39,7 @@ The table lists the pinned inputs of image 0.5.0. Its revision label names the c
 | Python | 3.15.2 (Fedora 45 `python3`) | The base image; ansible-core 2.22 supports 3.13 to 3.15 |
 | ansible-runner | 2.4.3 | `execution-environment.yml` |
 | Base image | `quay.io/fedora/fedora-minimal:45` | `execution-environment.yml` |
+| Helm | 3.22.1, from the release tarball, checked against its sha256 | `execution-environment.yml` (`append_final`) |
 | Base index digest | `sha256:22c73cf27de5e36f06d435b3bf016b02b95e75473ceef9a0bed48396124951a1` | `execution-environment.yml` (resolved 2026-11-25) |
 
 The ansible-core pin is one line. `scripts/build.sh` checks it against
@@ -57,7 +58,7 @@ removes the copy on exit. A stray or ignored file in this directory, such as a
 | `../requirements-ansible-core.txt` | The ansible-core pin: one line, `ansible-core==X.Y.Z` |
 | `requirements.yml` | Ansible Galaxy collections (kubernetes.core, community.general, ansible.posix, community.docker, netbox.netbox) |
 | `requirements.txt` | Python packages (kubernetes, openshift, jsonpatch, pynetbox, jmespath) |
-| `bindep.txt` | System packages (helm, git, ca-certificates, skopeo) |
+| `bindep.txt` | System packages (git, ca-certificates, skopeo). Helm is not here; see the versions table |
 | `scripts/build.sh` | Checks the pin, renders the spec and its inputs into a temporary directory, and wraps `ansible-builder build` with the right `DOCKER_HOST` and the commit SHA for the revision label |
 | `../playbooks/630-zot-seed-platform.yml` | Cluster-side mirror from GHCR digest into cluster-internal Zot |
 
@@ -113,7 +114,7 @@ docker run --rm $IMG ansible --version        # core equals the pin; note the Py
 docker run --rm $IMG ansible-runner --version
 docker run --rm $IMG ansible-galaxy collection list   # equals requirements.yml
 docker run --rm $IMG pip check
-docker run --rm $IMG bash -c 'helm version && git --version && skopeo --version'
+docker run --rm $IMG bash -c 'helm version --short && git --version && skopeo --version'
 # One example of the OpenBao fake-cluster tests: mount the repository's
 # k3s-lab-bootstrap directory and run a single playbook. The full suite is every
 # playbook the ansible-openbao job in .github/workflows/ci.yml runs; run each

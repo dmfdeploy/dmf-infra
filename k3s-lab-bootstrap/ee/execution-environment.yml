@@ -50,6 +50,19 @@ dependencies:
 
 additional_build_steps:
   append_final:
+    # Helm 3.22.1, checked against the sha256 of its release tarball. Fedora's
+    # package is Helm 4, but the controller image runs Helm 3 and catalog releases
+    # are reachable from both. Remove this pin when every image moves to Helm 4
+    # (batch 2, group 10 of the version policy). Uses the image's own Python: the
+    # minimal base has neither curl nor tar.
+    - |-
+      RUN python3 -c "import hashlib, io, platform, tarfile, urllib.request; \
+      arch, want = {'x86_64': ('amd64', '896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea'), 'aarch64': ('arm64', '4c29e286b279d170fa048ddfc3e4e83dcd069ca9c52102766ba672d7149e694d')}[platform.machine()]; \
+      data = urllib.request.urlopen('https://get.helm.sh/helm-v3.22.1-linux-' + arch + '.tar.gz').read(); \
+      got = hashlib.sha256(data).hexdigest(); \
+      assert got == want, 'helm checksum mismatch: ' + got; \
+      open('/usr/local/bin/helm', 'wb').write(tarfile.open(fileobj=io.BytesIO(data)).extractfile('linux-' + arch + '/helm').read())" \
+      && chmod 0755 /usr/local/bin/helm
     # ARG values are passed by scripts/build.sh via --build-arg.
     # ${VAR} substitution happens at docker build time, embedding the
     # values into the LABEL directives below.
