@@ -33,6 +33,22 @@ class ForgejoContributorPolicyTests(unittest.TestCase):
         forgejo_provider = next(entry for entry in blueprint["entries"] if entry.get("id") == "oidc-forgejo")
         self.assertEqual(forgejo_provider["attrs"]["sub_mode"], "user_username")
 
+    def test_every_oauth2_provider_grants_code_and_refresh_token(self):
+        # Authentik 2026.8 defaults `grant_types` to an empty list for a
+        # provider that a blueprint creates, and then refuses every login.
+        blueprint = yaml.load(render_authentik_blueprint("user_username"), Loader=AuthentikBlueprintLoader)
+        providers = [
+            entry for entry in blueprint["entries"]
+            if entry.get("model") == "authentik_providers_oauth2.oauth2provider"
+        ]
+        self.assertEqual(len(providers), 6)
+        for provider in providers:
+            self.assertEqual(
+                provider["attrs"].get("grant_types"),
+                ["authorization_code", "refresh_token"],
+                provider["attrs"]["name"],
+            )
+
     def test_uuid_subject_is_rejected_until_supported_migration_exists(self):
         with self.assertRaisesRegex(ValueError, "supported, version-specific migration"):
             validate_subject_mode("user_uuid")
