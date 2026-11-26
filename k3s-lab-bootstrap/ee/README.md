@@ -140,7 +140,7 @@ The revision label must equal the full SHA of the commit you are releasing.
 Consumers read the image tag from one variable, `awx_ee_image_tag` in
 `../vars/awx-ee.yml`. Playbooks 050 (the runner foundation), 630 (the Zot
 mirror) and 693 (the AWX integration) load that file with `vars_files`, and
-`-e awx_ee_image_tag=<tag>` overrides it for one run. The value is `0.5.0`.
+`-e awx_ee_image_tag=<tag>` overrides it for one run. The value is `0.6.0`.
 
 **Architecture.** The image is built and published for arm64 only, as 0.1.1
 was: its GHCR index lists one `linux/arm64` image and an attestation. Playbook
@@ -206,6 +206,7 @@ skopeo inspect --raw docker://<registry-host>/dmf/awx-ee:<tag> | shasum -a 256
 
 | Tag | Index digest | arm64 platform manifest digest |
 |---|---|---|
+| `0.6.0` | `sha256:90ee6d11030b4072724a7435fa92b122c3fbd5a66816446cd1edf6ebb697484a` | `sha256:d6e6b58ffc0610aaa958bd7312a77881f3b8bcdd921f3aefed0256cbd96d2273` |
 | `0.5.0` | `sha256:1ad2dc3461db4f9d862db69282e107b6c13b14ececb89ad83edf78d6b0804cf7` | `sha256:dbb7070d71d4062a896dc853859108655c6bcbc20ed9e01f5b5903a82bb20286` |
 | `0.4.1` | `sha256:2ed7aa83a5e57038706a66e3c9c5142ae32f157775ce0f14f3ca4f70e34c165c` | `sha256:32209462cc05938d2c055f1936351ce17d556a1102ad4f3d4bd33b25f5ad5857` |
 | `0.2.0` | `sha256:352e46fa1a72597cf8fa0a2a2c5e5e682f4b7e96fac536b9282b7b76a7d24b94` | `sha256:7b558a7a5e67c5df53c79e8736a44b61d05b93b7af0714736b019295ae308981` |
@@ -223,13 +224,13 @@ confirms it. Read a tag's platform digest with the GHCR command above.
 
 **Rollback.** Do not roll back by editing the line on a checkout: the next
 checkout advance loses the edit. Revert the commit that switched the tag to
-0.5.0, as one revert pull request and only with the operator's approval. The
-revert returns `../vars/awx-ee.yml` to `0.4.1`. Advance the Manage checkout to
+0.6.0, as one revert pull request and only with the operator's approval. The
+revert returns `../vars/awx-ee.yml` to `0.5.0`. Advance the Manage checkout to
 the revert, wake AWX, rerun 630 and 693, and check that the AWX execution
-environment object names `0.4.1` and that one job pod's `imageID` is the 0.4.1
+environment object names `0.5.0` and that one job pod's `imageID` is the 0.5.0
 arm64 platform manifest digest from the table above. This rollback has not been
-drilled. Keep 0.4.1, 0.2.0 and 0.1.1 in GHCR and in Zot for at least 30 days after
-the switch to 0.5.0.
+drilled. Keep 0.5.0, 0.4.1, 0.2.0 and 0.1.1 in GHCR and in Zot for at least 30 days
+after the switch to 0.6.0.
 
 ## Version bumps
 
