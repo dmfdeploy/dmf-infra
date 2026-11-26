@@ -16,7 +16,7 @@ prometheus_retention: 30d
 prometheus_retention_size: 40GB
 prometheus_path: /prometheus
 prometheus_helm_repo: https://prometheus-community.github.io/helm-charts
-prometheus_helm_chart_version: "25.8.0"
+prometheus_helm_chart_version: "30.0.0"
 
 # Resource requests/limits to steer scheduling and avoid overcommit.
 # umbrella dmfdeploy/dmfdeploy#258 platform request-budget audit (J1 gate):
