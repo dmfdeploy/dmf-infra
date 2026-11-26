@@ -1,11 +1,11 @@
 ---
-metallb_version: "v0.14.9"
+metallb_version: "v0.16.2"
 # SHA-256 of metallb-native.yaml, keyed by release. MetalLB publishes no checksum
 # file, so each value is the hash of the file at that release tag, downloaded from
 # metallb_manifest_url and run through `shasum -a 256`. Add the new version's hash
 # when you change metallb_version; the install fails until you do.
 metallb_manifest_sha256:
-  v0.14.9: "951065e85692aa106f1bb5d5a487d9306154923a794ab1d82122881cbaf588e4"
+  v0.16.2: "e5f7c268f114c446dc60aaad71b7cabf861f637743e033e354d7d48592807c6d"
 metallb_namespace: metallb-system
 metallb_manifest_url: "https://raw.githubusercontent.com/metallb/metallb/{{ metallb_version }}/config/manifests/metallb-native.yaml"
 metallb_address_pool_name: default-pool
