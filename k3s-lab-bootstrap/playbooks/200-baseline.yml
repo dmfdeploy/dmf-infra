@@ -88,16 +88,16 @@
     # Checksums are the <tarball>.sha256sum files beside each tarball on get.helm.sh.
     - name: Install helm binary
       ansible.builtin.get_url:
-        url: "https://get.helm.sh/helm-v3.22.1-linux-arm64.tar.gz"
+        url: "https://get.helm.sh/helm-v4.3.2-linux-arm64.tar.gz"
         dest: /tmp/helm.tar.gz
-        checksum: "sha256:4c29e286b279d170fa048ddfc3e4e83dcd069ca9c52102766ba672d7149e694d"
+        checksum: "sha256:df31cb61680ef728f82c770e5280dd565617bee6b039d37e85c677288be4bbb0"
         mode: "0755"
       when: not helm_binary.stat.exists and ansible_facts["architecture"] == "aarch64"
     - name: Install helm binary (amd64 fallback)
       ansible.builtin.get_url:
-        url: "https://get.helm.sh/helm-v3.22.1-linux-amd64.tar.gz"
+        url: "https://get.helm.sh/helm-v4.3.2-linux-amd64.tar.gz"
         dest: /tmp/helm.tar.gz
-        checksum: "sha256:896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea"
+        checksum: "sha256:d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983"
         mode: "0755"
       when: not helm_binary.stat.exists and ansible_facts["architecture"] != "aarch64"
     - name: Extract helm binary

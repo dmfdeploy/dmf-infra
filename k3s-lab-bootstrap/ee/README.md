@@ -31,7 +31,7 @@ zot.zot.svc.cluster.local:5000/dmf/awx-ee:<tag>  (runtime registry — Lane A co
 
 ## Versions
 
-The table lists the pinned inputs of image 0.5.0. Its revision label names the commit it was built from.
+The table lists the inputs of image 0.6.0. Its revision label names the commit it was built from.
 
 | Item | Value | Where it is set |
 |---|---|---|
@@ -39,7 +39,8 @@ The table lists the pinned inputs of image 0.5.0. Its revision label names the c
 | Python | 3.15.2 (Fedora 45 `python3`) | The base image; ansible-core 2.22 supports 3.13 to 3.15 |
 | ansible-runner | 2.4.3 | `execution-environment.yml` |
 | Base image | `quay.io/fedora/fedora-minimal:45` | `execution-environment.yml` |
-| Helm | 3.22.1, from the release tarball, checked against its sha256 | `execution-environment.yml` (`append_final`) |
+| Helm | 4.3.2, from the release tarball, checked against its sha256 | `execution-environment.yml` (`append_final`) |
+| Python client for Kubernetes | 37.0.3 | `requirements.txt` |
 | Base index digest | `sha256:22c73cf27de5e36f06d435b3bf016b02b95e75473ceef9a0bed48396124951a1` | `execution-environment.yml` (resolved 2026-11-25) |
 
 The ansible-core pin is one line. `scripts/build.sh` checks it against

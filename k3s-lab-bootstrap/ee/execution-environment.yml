@@ -50,15 +50,14 @@ dependencies:
 
 additional_build_steps:
   append_final:
-    # Helm 3.22.1, checked against the sha256 of its release tarball. Fedora's
-    # package is Helm 4, but the controller image runs Helm 3 and catalog releases
-    # are reachable from both. Remove this pin when every image moves to Helm 4
-    # (batch 2, group 10 of the version policy). Uses the image's own Python: the
-    # minimal base has neither curl nor tar.
+    # Helm 4.3.2, checked against the sha256 of its release tarball, so the nodes,
+    # the controller image and this image run one Helm version. Fedora's package
+    # trails the release. Uses the image's own Python: the minimal base has neither
+    # curl nor tar.
     - |-
       RUN python3 -c "import hashlib, io, platform, sys, tarfile, urllib.request; \
-      arch, want = {'x86_64': ('amd64', '896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea'), 'aarch64': ('arm64', '4c29e286b279d170fa048ddfc3e4e83dcd069ca9c52102766ba672d7149e694d')}[platform.machine()]; \
-      data = urllib.request.urlopen('https://get.helm.sh/helm-v3.22.1-linux-' + arch + '.tar.gz').read(); \
+      arch, want = {'x86_64': ('amd64', 'd1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983'), 'aarch64': ('arm64', 'df31cb61680ef728f82c770e5280dd565617bee6b039d37e85c677288be4bbb0')}[platform.machine()]; \
+      data = urllib.request.urlopen('https://get.helm.sh/helm-v4.3.2-linux-' + arch + '.tar.gz').read(); \
       got = hashlib.sha256(data).hexdigest(); \
       got == want or sys.exit('helm checksum mismatch: ' + got); \
       open('/usr/local/bin/helm', 'wb').write(tarfile.open(fileobj=io.BytesIO(data)).extractfile('linux-' + arch + '/helm').read())" \
@@ -66,7 +65,7 @@ additional_build_steps:
     # ARG values are passed by scripts/build.sh via --build-arg.
     # ${VAR} substitution happens at docker build time, embedding the
     # values into the LABEL directives below.
-    - ARG IMAGE_VERSION=0.5.0
+    - ARG IMAGE_VERSION=0.6.0
     - ARG VCS_REF=unknown
     - LABEL org.opencontainers.image.title="DMF AWX Execution Environment"
     - LABEL org.opencontainers.image.description="Shared Ansible EE for dmfdeploy platform — used by in-cluster runner pod (bootstrap-configure) and AWX catalog launchers (media-* JTs). See ADR-0025."
