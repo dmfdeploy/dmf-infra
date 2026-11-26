@@ -55,11 +55,9 @@
         kubernetesIngress:
           ingressClass: "{{ ingress_private_ingressclass }}"
       service:
-        type: NodePort
         spec:
+          type: NodePort
           externalTrafficPolicy: Cluster
-        nodePorts:
-          websecure: "{{ ingress_private_nodeport }}"
       ports:
         web:
           expose:
@@ -68,11 +66,10 @@
           expose:
             default: true
           nodePort: "{{ ingress_private_nodeport }}"
-      logs:
-        general:
-          level: INFO
-        access:
-          enabled: false
+      log:
+        level: INFO
+      accessLog:
+        enabled: false
       # Entrypoint-level timeouts via additionalArguments — portable across
       # chart majors (chart's `ports.<ep>.transport` schema is unstable).
       # Defaults sized for cluster-internal registry uploads through
