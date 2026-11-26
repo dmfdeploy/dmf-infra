@@ -46,7 +46,7 @@ dmf_born_inventory_tenant_slug: "dmf"
 # Cluster name is the structural identifier — always env_id (slug-shaped).
 dmf_born_inventory_cluster_name: "{{ dmf_born_inventory_env_id }}"
 dmf_born_inventory_cluster_type_name: "k3s"
-dmf_born_inventory_platform_name: "Debian 12"
+dmf_born_inventory_platform_name: "Debian 13"
 # Manufacturer derived from provider; falls back to Hetzner so the legacy
 # hetzner-arm env stays unchanged. aliyun-123 already misreported as
 # Hetzner under the old hardcoded default — see follow-up in the plan.
