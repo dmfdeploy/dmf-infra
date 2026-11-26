@@ -101,6 +101,13 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end -}}
 
 {{/*
+Kubernetes component label
+*/}}
+{{- define "gitea.componentLabel" -}}
+app.kubernetes.io/component: {{ . }}
+{{- end -}}
+
+{{/*
 Selector labels
 */}}
 {{- define "gitea.selectorLabels" -}}
@@ -154,18 +161,23 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- $_ := set $values "secret" (printf "${GITEA_OAUTH_SECRET_%d}" $idx) -}}
 {{- end -}}
 
-{{- $flags := list "skipLocal-2fa" "groupTeamMapRemoval" "skip-local-2fa" "group-team-map-removal" -}}
+{{- $flags := list "skipLocal-2fa" "groupTeamMapRemoval" "skip-local-2fa" "group-team-map-removal" "dyn-group-maps-removal" "dynGroupMapsRemoval" -}}
+{{- $json_vars := list "dyn-group-maps" "dynGroupMaps" "group-team-map" "groupTeamMap" -}}
 {{- range $key, $val := $values -}}
 {{- if has $key $flags -}}
 {{- printf "--%s " ($key | kebabcase) -}}
 {{- else if ne $key "existingSecret" -}}
+{{- if has $key $json_vars -}}
+{{- printf "--%s '%s' " ($key | kebabcase) ($val) -}}
+{{- else -}}
 {{- printf "--%s %s " ($key | kebabcase) ($val | quote) -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
 
 {{- define "gitea.public_protocol" -}}
-{{- if and .Values.ingress.enabled (gt (len .Values.ingress.tls) 0) -}}
+{{- if or (and .Values.ingress.enabled (gt (len .Values.ingress.tls) 0)) (and .Values.httpRoute.enabled .Values.httpRoute.terminate) -}}
 https
 {{- else -}}
 {{ .Values.gitea.config.server.PROTOCOL }}
@@ -283,7 +295,9 @@ https
     {{- $_ := set .Values.gitea.config.server "PROTOCOL" "http" -}}
   {{- end -}}
   {{- if not (.Values.gitea.config.server.DOMAIN) -}}
-    {{- if gt (len .Values.ingress.hosts) 0 -}}
+    {{- if and (.Values.httpRoute.enabled) (gt (len .Values.httpRoute.hostnames) 0) -}}
+      {{- $_ := set .Values.gitea.config.server "DOMAIN" ( tpl (index .Values.httpRoute.hostnames 0) $) -}}
+    {{- else if gt (len .Values.ingress.hosts) 0 -}}
       {{- $_ := set .Values.gitea.config.server "DOMAIN" ( tpl (index .Values.ingress.hosts 0).host $) -}}
     {{- else -}}
       {{- $_ := set .Values.gitea.config.server "DOMAIN" (include "gitea.default_domain" .) -}}
@@ -338,6 +352,18 @@ https
 
 {{- define "gitea.gpg-key-secret-name" -}}
 {{ default (printf "%s-gpg-key" (include "gitea.fullname" .)) .Values.signing.existingSecret }}
+{{- end -}}
+
+{{- define "gitea.gpg-signing-enabled" -}}
+{{- if and .Values.signing.enabled (or .Values.signing.privateKey .Values.signing.existingSecret) -}}true{{- end -}}
+{{- end -}}
+
+{{- define "gitea.ssh-signing-key-secret-name" -}}
+{{ default (printf "%s-ssh-signing-key" (include "gitea.fullname" .)) .Values.signing.ssh.existingSecret }}
+{{- end -}}
+
+{{- define "gitea.ssh-signing-enabled" -}}
+{{- if and .Values.signing.enabled (or .Values.signing.ssh.privateKey .Values.signing.ssh.existingSecret) -}}true{{- end -}}
 {{- end -}}
 
 {{- define "gitea.serviceAccountName" -}}
