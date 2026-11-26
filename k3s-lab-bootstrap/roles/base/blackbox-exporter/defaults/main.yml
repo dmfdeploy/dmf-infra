@@ -1,7 +1,7 @@
 ---
 blackbox_namespace: monitoring
 blackbox_helm_repo: https://prometheus-community.github.io/helm-charts
-blackbox_helm_chart_version: "11.11.0"
+blackbox_helm_chart_version: "11.22.0"
 
 # fullnameOverride ensures the Service is named `blackbox` (matching the
 # vendored prometheus scrape config which targets `blackbox.monitoring.svc`).
