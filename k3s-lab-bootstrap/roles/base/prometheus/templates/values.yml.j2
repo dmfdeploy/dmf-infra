@@ -142,6 +142,12 @@ server:
   baseURL: "{{ prometheus_path }}"
   prefixURL: "{{ prometheus_path }}"
 
+# Since chart 28 the chart has its own default scrapeConfigs map, which it adds
+# to prometheus.yml. The jobs below (serverFiles) already cover those, and
+# Prometheus refuses a config with duplicate job names. A null value removes the
+# chart's default map.
+scrapeConfigs: null
+
 # ──────────────────────────────────────────────────────────────
 # serverFiles — prometheus.yml scrape_configs + recording/alerting rules
 # (rules always deploy, Watchdog included; only notify-path alerts are AM-gated)
