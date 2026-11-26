@@ -61,12 +61,12 @@
   hosts: k3s_control[0]
   become: true
   vars:
-    k3s_version: "v1.33.13+k3s2"
+    k3s_version: "v1.37.2+k3s1"
     # install.sh as committed at the k3s_version tag. k3s publishes no checksum
     # for the script, so this value is computed from that file. When you change
     # k3s_version, recompute it. The script then checks the k3s binary against
     # the sha256sum file in the same release.
-    k3s_install_script_sha256: "9ca7930c31179d83bc13de20078fd8ad3e1ee00875b31f39a7e524ca4ef7d9de"
+    k3s_install_script_sha256: "ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
     k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default(ansible_default_ipv4.interface | default('eth0'))) }}"
     k3s_server_disable_cloud_controller_resolved: "{{ k3s_server_disable_cloud_controller | default(false) }}"
     k3s_disable_servicelb_resolved: >-
@@ -189,12 +189,12 @@
   become: true
   serial: 1
   vars:
-    k3s_version: "v1.33.13+k3s2"
+    k3s_version: "v1.37.2+k3s1"
     # install.sh as committed at the k3s_version tag. k3s publishes no checksum
     # for the script, so this value is computed from that file. When you change
     # k3s_version, recompute it. The script then checks the k3s binary against
     # the sha256sum file in the same release.
-    k3s_install_script_sha256: "9ca7930c31179d83bc13de20078fd8ad3e1ee00875b31f39a7e524ca4ef7d9de"
+    k3s_install_script_sha256: "ed01f89fd977bf20ac1516bbebf8370bf3ddbaa55dac8aba610956a4c78cc00b"
     k3s_private_interface_resolved: "{{ k3s_private_interface | default(k3s_flannel_iface | default(ansible_default_ipv4.interface | default('eth0'))) }}"
     k3s_server_disable_cloud_controller_resolved: "{{ k3s_server_disable_cloud_controller | default(false) }}"
     k3s_disable_servicelb_resolved: >-
