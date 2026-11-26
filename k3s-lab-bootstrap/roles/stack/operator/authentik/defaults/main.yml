@@ -4,7 +4,7 @@ authentik_release_name: authentik
 
 authentik_helm_repo: https://charts.goauthentik.io
 authentik_helm_chart: authentik
-authentik_helm_version: "2026.2.2"
+authentik_helm_version: "2026.8.6"
 
 authentik_host: "auth.{{ cert_manager_cluster_domain | default('dmf.example.com') }}"
 authentik_web_path: /
