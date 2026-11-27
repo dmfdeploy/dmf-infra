@@ -5,6 +5,7 @@
   gather_facts: false
   vars_files:
     - "{{ playbook_dir }}/../../vars/service-hosts.yml"
+    - "{{ playbook_dir }}/../../vars/dmf-promsd.yml"
   roles:
     - base/cluster-ready
     - stack/operator/dmf-promsd

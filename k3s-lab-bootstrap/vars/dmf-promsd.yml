@@ -1,0 +1,15 @@
+---
+# The dmf-promsd image (ghcr.io/dmfdeploy/dmf-promsd, mirrored into Zot as
+# dmf-promsd), in one place. Playbooks 630 and 160 load this file with
+# vars_files.
+#
+# The digest is the OCI index digest of the published image. 630 copies the
+# image from GHCR by that digest and checks Zot holds the same digest; the
+# deployment references the image by it too. The tag is a label that a human
+# can read, and the digest is what decides which build runs.
+#
+# To bump: release dmf-promsd, read the index digest of the new tag
+# (`docker buildx imagetools inspect ghcr.io/dmfdeploy/dmf-promsd:<version>`),
+# change both lines, and rerun 630-zot-seed-platform.yml and 160-promsd.yml.
+dmf_promsd_image_tag: "0.1.5"
+dmf_promsd_image_digest: "sha256:5dc0a548b6e521885b1f3d993970566006a579fe7625f42cf967109ca6bb2698"
