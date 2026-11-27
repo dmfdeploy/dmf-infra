@@ -246,7 +246,7 @@ jobs:
       - name: AWX autoscale helper tests
         working-directory: k3s-lab-bootstrap/roles/stack/operator/awx-autoscale
         run: python3 -m pytest tests -q
-      - name: Install promtool (pinned release, sha256 checked)
+      - name: Install promtool and prometheus (pinned release, sha256 checked)
         env:
           PROM_VERSION: "3.16.0"
           PROM_SHA256: "68727009472a2c02e1ff7f062fd5b3e637285bffc8fc2d340c76fb449d6e0f34"
@@ -254,7 +254,7 @@ jobs:
           set -eu
           curl -fsSLo /tmp/prom.tgz "https://github.com/prometheus/prometheus/releases/download/v${PROM_VERSION}/prometheus-${PROM_VERSION}.linux-amd64.tar.gz"
           echo "${PROM_SHA256}  /tmp/prom.tgz" | sha256sum -c -
-          tar -xzf /tmp/prom.tgz -C /tmp --strip-components=1 "prometheus-${PROM_VERSION}.linux-amd64/promtool"
+          tar -xzf /tmp/prom.tgz -C /tmp --strip-components=1 "prometheus-${PROM_VERSION}.linux-amd64/promtool" "prometheus-${PROM_VERSION}.linux-amd64/prometheus"
           echo "/tmp" >> "$GITHUB_PATH"
       - name: Prometheus alert rule tests
         working-directory: k3s-lab-bootstrap/roles/base/prometheus
@@ -272,6 +272,8 @@ jobs:
           done
       - name: the platform-services dashboard shows the AWX probe lane as asleep, by running its query in promtool (dmfdeploy/dmfdeploy#1027)
         run: python3 -m unittest discover -s tests -p 'test_awx_probe_lane_dashboard_1027.py' -v
+      - name: the kubelet and cAdvisor series carry a node label, by running the rendered scrape jobs in prometheus (dmfdeploy/dmfdeploy#1028)
+        run: python3 -m unittest discover -s tests -p 'test_node_label_relabel_1028.py' -v
       - name: helm-lint charts/
         run: |
           set -eu

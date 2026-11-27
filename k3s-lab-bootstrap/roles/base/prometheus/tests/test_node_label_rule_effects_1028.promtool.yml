@@ -1,0 +1,192 @@
+# promtool rule unit test — the `node` label on kubelet and cAdvisor series
+# (dmfdeploy/dmfdeploy#1028).
+#
+# Render and run as described in test_awx_replica_divergence_424.promtool.yml.
+#
+# The scrape jobs `kubernetes-nodes` and `kubernetes-nodes-cadvisor` now add a
+# `node` label; job `kubernetes-apiservers` also serves the kubelet volume
+# series and does not get it. Every rule that reads these series is covered:
+#   - PersistentVolumeNearFull divides two series and matches on all labels.
+#     Both sides come from the same job, so both gain `node` together.
+#   - ContainerCPUThrottling and ContainerCpuOverRequest aggregate by
+#     namespace, pod and container, which drops `node`.
+# Each case fires or stays quiet exactly as it does on series without `node`.
+rule_files:
+  - rendered_alerts.yml
+evaluation_interval: 1m
+
+tests:
+  - name: PV near full, direct kubelet series (with node) and API-server series (without) -> one alert each
+    interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_used_bytes{job="kubernetes-nodes", instance="n1", node="n1", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '90x20'
+      - series: 'kubelet_volume_stats_capacity_bytes{job="kubernetes-nodes", instance="n1", node="n1", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '100x20'
+      - series: 'kubelet_volume_stats_used_bytes{job="kubernetes-apiservers", instance="api", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '90x20'
+      - series: 'kubelet_volume_stats_capacity_bytes{job="kubernetes-apiservers", instance="api", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PersistentVolumeNearFull
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: storage
+              job: kubernetes-nodes
+              instance: n1
+              node: n1
+              namespace: ns
+              persistentvolumeclaim: pvc
+            exp_annotations:
+              summary: "PV ns/pvc >85% full"
+              description: "PVC ns/pvc is above 85% used. Expand or free space before the workload goes read-only."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#persistentvolumenearfull"
+          - exp_labels:
+              severity: warning
+              category: storage
+              job: kubernetes-apiservers
+              instance: api
+              namespace: ns
+              persistentvolumeclaim: pvc
+            exp_annotations:
+              summary: "PV ns/pvc >85% full"
+              description: "PVC ns/pvc is above 85% used. Expand or free space before the workload goes read-only."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#persistentvolumenearfull"
+
+  - name: PV below the threshold on both jobs -> silent
+    interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_used_bytes{job="kubernetes-nodes", instance="n1", node="n1", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '50x20'
+      - series: 'kubelet_volume_stats_capacity_bytes{job="kubernetes-nodes", instance="n1", node="n1", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '100x20'
+      - series: 'kubelet_volume_stats_used_bytes{job="kubernetes-apiservers", instance="api", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '50x20'
+      - series: 'kubelet_volume_stats_capacity_bytes{job="kubernetes-apiservers", instance="api", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PersistentVolumeNearFull
+        exp_alerts: []
+
+  - name: PV full on the API-server series only -> that job alone alerts
+    interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_used_bytes{job="kubernetes-nodes", instance="n1", node="n1", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '50x20'
+      - series: 'kubelet_volume_stats_capacity_bytes{job="kubernetes-nodes", instance="n1", node="n1", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '100x20'
+      - series: 'kubelet_volume_stats_used_bytes{job="kubernetes-apiservers", instance="api", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '90x20'
+      - series: 'kubelet_volume_stats_capacity_bytes{job="kubernetes-apiservers", instance="api", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PersistentVolumeNearFull
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: storage
+              job: kubernetes-apiservers
+              instance: api
+              namespace: ns
+              persistentvolumeclaim: pvc
+            exp_annotations:
+              summary: "PV ns/pvc >85% full"
+              description: "PVC ns/pvc is above 85% used. Expand or free space before the workload goes read-only."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#persistentvolumenearfull"
+
+  - name: PV full on a series without node (the shape before the change) -> fires
+    interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_used_bytes{job="kubernetes-nodes", instance="n1", kubernetes_io_hostname="n1", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '90x20'
+      - series: 'kubelet_volume_stats_capacity_bytes{job="kubernetes-nodes", instance="n1", kubernetes_io_hostname="n1", namespace="ns", persistentvolumeclaim="pvc"}'
+        values: '100x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: PersistentVolumeNearFull
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: storage
+              job: kubernetes-nodes
+              instance: n1
+              kubernetes_io_hostname: n1
+              namespace: ns
+              persistentvolumeclaim: pvc
+            exp_annotations:
+              summary: "PV ns/pvc >85% full"
+              description: "PVC ns/pvc is above 85% used. Expand or free space before the workload goes read-only."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#persistentvolumenearfull"
+
+  - name: throttling with node on the cAdvisor series -> fires without node in the alert
+    interval: 1m
+    input_series:
+      - series: 'container_cpu_cfs_throttled_periods_total{job="kubernetes-nodes-cadvisor", node="n1", namespace="ns", pod="p", container="c"}'
+        values: '0+50x30'
+      - series: 'container_cpu_cfs_periods_total{job="kubernetes-nodes-cadvisor", node="n1", namespace="ns", pod="p", container="c"}'
+        values: '0+100x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerCPUThrottling
+        exp_alerts:
+          - exp_labels:
+              severity: info
+              category: pod
+              namespace: ns
+              pod: p
+              container: c
+            exp_annotations:
+              summary: "Container ns/p/c CPU-throttled"
+              description: "More than 25% of CFS periods throttled for 15m — the CPU limit is the constraint (expected under graceful degradation; informational)."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#containercputhrottling"
+
+  - name: no throttling with node on the cAdvisor series -> silent
+    interval: 1m
+    input_series:
+      - series: 'container_cpu_cfs_throttled_periods_total{job="kubernetes-nodes-cadvisor", node="n1", namespace="ns", pod="p", container="c"}'
+        values: '0x30'
+      - series: 'container_cpu_cfs_periods_total{job="kubernetes-nodes-cadvisor", node="n1", namespace="ns", pod="p", container="c"}'
+        values: '0+100x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerCPUThrottling
+        exp_alerts: []
+
+  - name: CPU above the warn ratio of its request, cAdvisor series with node -> warning fires, critical stays quiet
+    interval: 1m
+    input_series:
+      # 2.5 cores used against a 1-core request: above 2x, below 3x.
+      - series: 'container_cpu_usage_seconds_total{job="kubernetes-nodes-cadvisor", node="n1", namespace="ns", pod="p", container="c"}'
+        values: '0+150x30'
+      - series: 'kube_pod_container_resource_requests{node="n1", namespace="ns", pod="p", container="c", resource="cpu"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerCpuOverRequest
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: runaway
+              namespace: ns
+              pod: p
+              container: c
+            exp_annotations:
+              summary: "Container ns/p/c CPU above 2.0x its request"
+              description: "Container c in ns/p is using 2.5x its declared CPU request, sustained for 10m — the promtail 1.53-core/76h episode's own signature."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#containercpuoverrequest"
+
+  - name: CPU at the request, cAdvisor series with node -> silent
+    interval: 1m
+    input_series:
+      - series: 'container_cpu_usage_seconds_total{job="kubernetes-nodes-cadvisor", node="n1", namespace="ns", pod="p", container="c"}'
+        values: '0+60x30'
+      - series: 'kube_pod_container_resource_requests{node="n1", namespace="ns", pod="p", container="c", resource="cpu"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: ContainerCpuOverRequest
+        exp_alerts: []
