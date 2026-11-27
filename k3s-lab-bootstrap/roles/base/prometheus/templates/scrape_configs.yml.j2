@@ -11,6 +11,10 @@
      3. `dmf-static-probes` appended last — static blackbox lanes for
         non-NetBox infrastructure anchors (dmfdeploy/dmfdeploy#166),
         driven by prometheus_static_probe_targets in defaults.
+     4. `kubernetes-nodes` and `kubernetes-nodes-cadvisor` jobs: a `replace`
+        relabel from `__meta_kubernetes_node_name` to `node`, so the kubelet
+        and cAdvisor series carry the node name the dashboards select on
+        (dmfdeploy/dmfdeploy#1028).
    Helm replaces lists wholesale — there's no partial-merge for scrape_configs
    — so vendoring is the cleanest way to patch/extend entries while
    keeping the rest of the chart-default jobs intact.
@@ -50,6 +54,10 @@
         relabel_configs:
         - action: labelmap
           regex: __meta_kubernetes_node_label_(.+)
+        - action: replace
+          source_labels:
+          - __meta_kubernetes_node_name
+          target_label: node
         scheme: https
         tls_config:
           # Verifies the kubelet serving certificate against the cluster CA.
@@ -62,6 +70,10 @@
         relabel_configs:
         - action: labelmap
           regex: __meta_kubernetes_node_label_(.+)
+        - action: replace
+          source_labels:
+          - __meta_kubernetes_node_name
+          target_label: node
         metrics_path: /metrics/cadvisor
         scheme: https
         tls_config:
