@@ -1,0 +1,4 @@
+---
+dependencies:
+  - role: common/awx-identity
+    tags: [awx_identity]

@@ -511,16 +511,16 @@ groups:
           avg_over_time(
             (
               label_replace(
-                (max by (namespace) (awx_cr_web_replicas{namespace="{{ prometheus_alert_awx_namespace }}", name="{{ prometheus_alert_awx_instance_name }}"}) > bool 0)
+                (max by (namespace) (awx_cr_web_replicas{namespace="{{ awx_namespace }}", name="{{ awx_instance_name }}"}) > bool 0)
                 * on(namespace)
-                (max by (namespace) (kube_deployment_status_replicas_available{namespace="{{ prometheus_alert_awx_namespace }}", deployment="{{ prometheus_alert_awx_instance_name }}-web"}) == bool 0),
+                (max by (namespace) (kube_deployment_status_replicas_available{namespace="{{ awx_namespace }}", deployment="{{ awx_instance_name }}-web"}) == bool 0),
                 "component", "web", "", ""
               )
               or
               label_replace(
-                (max by (namespace) (awx_cr_task_replicas{namespace="{{ prometheus_alert_awx_namespace }}", name="{{ prometheus_alert_awx_instance_name }}"}) > bool 0)
+                (max by (namespace) (awx_cr_task_replicas{namespace="{{ awx_namespace }}", name="{{ awx_instance_name }}"}) > bool 0)
                 * on(namespace)
-                (max by (namespace) (kube_deployment_status_replicas_available{namespace="{{ prometheus_alert_awx_namespace }}", deployment="{{ prometheus_alert_awx_instance_name }}-task"}) == bool 0),
+                (max by (namespace) (kube_deployment_status_replicas_available{namespace="{{ awx_namespace }}", deployment="{{ awx_instance_name }}-task"}) == bool 0),
                 "component", "task", "", ""
               )
             )[{{ prometheus_alert_awx_cr_divergence_window }}:{{ prometheus_alert_awx_cr_divergence_resolution }}]
@@ -843,7 +843,7 @@ groups:
       # so that one series is dropped only while the AWX CR asks for 0 web
       # replicas. Any other lane alerts without condition. The lane series
       # carry only the labels exposure, instance and job, so the AWX lane is
-      # the series whose instance equals prometheus_alert_awx_probe_instance.
+      # the series whose instance equals awx_probe_instance.
       # label_replace gives the single aggregated CR series that instance
       # value, and `unless on(instance)` drops the lane by exact equality.
       # When awx_cr_web_replicas is absent (no CR, or no CustomResourceState
@@ -854,8 +854,8 @@ groups:
           (probe_success{job="netbox-probe"} == 0)
           unless on(instance)
           label_replace(
-            max(awx_cr_web_replicas{namespace="{{ prometheus_alert_awx_namespace }}", name="{{ prometheus_alert_awx_instance_name }}"}) == 0,
-            "instance", "{{ prometheus_alert_awx_probe_instance }}", "", ""
+            max(awx_cr_web_replicas{namespace="{{ awx_namespace }}", name="{{ awx_instance_name }}"}) == 0,
+            "instance", "{{ awx_probe_instance }}", "", ""
           )
         for: 10m
         labels:

@@ -1,21 +1,4 @@
 ---
-# The three AWX values go into PromQL strings in the NetboxProbeLaneDown rule, so
-# they must be plain Kubernetes names and a service address built from them: no
-# quote, backslash, brace, dollar sign or newline. \Z anchors the end of the
-# string; $ would also accept a trailing newline.
-- name: Check the AWX namespace, name and probe instance the alert rules embed
-  ansible.builtin.assert:
-    that:
-      - prometheus_alert_awx_namespace is match('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z')
-      - prometheus_alert_awx_instance_name is match('^(?=.{1,253}\Z)[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*\Z')
-      - prometheus_alert_awx_probe_instance is match('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.svc\.cluster\.local:[0-9]{1,5}\Z')
-    fail_msg: >-
-      prometheus_alert_awx_namespace must be a DNS label,
-      prometheus_alert_awx_instance_name a DNS subdomain and
-      prometheus_alert_awx_probe_instance <service>.<namespace>.svc.cluster.local:<port>,
-      because the alert rules embed them.
-    quiet: true
-
 - name: Assert Alertmanager receiver URLs are present when alerting is enabled
   ansible.builtin.assert:
     that:

@@ -262,7 +262,7 @@ jobs:
           set -eu
           ansible localhost -m ansible.builtin.template \
             -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
-            -e @defaults/main.yml
+            -e @defaults/main.yml -e @../../common/awx-identity/defaults/main.yml
           promtool check rules tests/rendered_alerts.yml
           shopt -s nullglob
           files=(tests/test_*.promtool.yml)
@@ -270,8 +270,8 @@ jobs:
           for f in "${files[@]}"; do
             promtool test rules "$f"
           done
-      - name: the platform-services dashboard shows the AWX probe lane as asleep, by running its query in promtool (dmfdeploy/dmfdeploy#1027)
-        run: python3 -m unittest discover -s tests -p 'test_awx_probe_lane_dashboard_1027.py' -v
+      - name: one AWX identity for the seed and both monitors, and the probe lane shown as asleep, through the real roles and promtool (dmfdeploy/dmfdeploy#1027)
+        run: python3 -m unittest discover -s tests -p 'test_awx_*_1027.py' -v
       - name: the kubelet and cAdvisor series carry a node label, by running the rendered scrape jobs in prometheus (dmfdeploy/dmfdeploy#1028)
         run: python3 -m unittest discover -s tests -p 'test_node_label_relabel_1028.py' -v
       - name: helm-lint charts/

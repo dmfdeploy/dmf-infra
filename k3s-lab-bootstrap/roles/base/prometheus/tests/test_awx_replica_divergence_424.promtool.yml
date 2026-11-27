@@ -8,7 +8,7 @@
 #   cd roles/base/prometheus
 #   ansible localhost -m ansible.builtin.template \
 #     -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
-#     -e @defaults/main.yml
+#     -e @defaults/main.yml -e @../../common/awx-identity/defaults/main.yml
 #   promtool check rules tests/rendered_alerts.yml
 #   promtool test rules tests/test_awx_replica_divergence_424.promtool.yml
 #

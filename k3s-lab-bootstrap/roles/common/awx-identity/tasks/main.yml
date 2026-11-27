@@ -1,0 +1,36 @@
+---
+# The namespace, name and probe instance go into PromQL strings in the
+# NetboxProbeLaneDown and AWXReplicaDivergence rules and in the platform-services
+# dashboard query, so they must be plain Kubernetes names and a service address
+# built from them: no quote, backslash, brace, dollar sign or newline. The check
+# runs on the effective values, whichever way they were set.
+# \Z anchors the end of the string; $ would also accept a trailing newline.
+- name: Check the AWX namespace, name and probe instance that the monitors embed
+  ansible.builtin.assert:
+    that:
+      - awx_namespace is match('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z')
+      - awx_instance_name is match('^(?=.{1,253}\Z)[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*\Z')
+      - awx_probe_instance is match('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.svc\.cluster\.local:[0-9]{1,5}\Z')
+    fail_msg: >-
+      awx_namespace must be a DNS label, awx_instance_name a DNS subdomain and
+      awx_probe_instance <service>.<namespace>.svc.cluster.local:<port>, because
+      the alert rules and the dashboard embed them.
+    quiet: true
+
+# NetBox records AWX's Service from dmf_born_inventory_app_cluster_coords.awx,
+# and the monitors match the lane by the identity above. The two must agree, so
+# an override of that dictionary may not point AWX elsewhere. To move AWX, set
+# awx_namespace, awx_instance_name, awx_probe_service or awx_probe_port.
+- name: Check that the NetBox seed's AWX coordinates are the shared AWX identity
+  ansible.builtin.assert:
+    that:
+      - (dmf_born_inventory_app_cluster_coords | default({})).get('awx') is none
+        or (dmf_born_inventory_app_cluster_coords.awx.service | string) == (awx_probe_service | string)
+        and (dmf_born_inventory_app_cluster_coords.awx.namespace | string) == (awx_namespace | string)
+        and (dmf_born_inventory_app_cluster_coords.awx.port | string) == (awx_probe_port | string)
+    fail_msg: >-
+      dmf_born_inventory_app_cluster_coords.awx must equal the shared AWX
+      identity (service {{ awx_probe_service }}, namespace {{ awx_namespace }},
+      port {{ awx_probe_port }}). Set awx_namespace, awx_instance_name,
+      awx_probe_service or awx_probe_port instead of overriding the coordinates.
+    quiet: true

@@ -47,19 +47,8 @@ grafana_resources:
     cpu: 25m
     memory: 128Mi
 
-# The AWX CR the platform-services dashboard reads its sleep state from. The
-# prometheus role's NetboxProbeLaneDown alert reads the same CR through
-# prometheus_alert_awx_namespace and prometheus_alert_awx_instance_name, so these
-# follow those two variables when they are set, and otherwise the AWX role's
-# awx_namespace and awx_instance_name. An override of the alert's CR identity
-# therefore moves the dashboard too. configmap-dashboards.yml.j2 replaces the
-# placeholders __AWX_NAMESPACE__, __AWX_INSTANCE_NAME__ and __AWX_PROBE_INSTANCE__
-# in the dashboard JSON with these values and grafana_awx_probe_instance below.
-grafana_awx_namespace: "{{ prometheus_alert_awx_namespace | default(awx_namespace | default('awx')) }}"
-grafana_awx_instance_name: "{{ prometheus_alert_awx_instance_name | default(awx_instance_name | default('awx')) }}"
-# The AWX lane's `instance` label, the same value the alert matches. It follows
-# prometheus_alert_awx_probe_instance when set; otherwise it is built from the
-# NetBox seed's AWX coordinates exactly as that variable is.
-grafana_awx_probe_instance: >-
-  {%- set coords = (dmf_born_inventory_app_cluster_coords | default({})).get('awx', {}) -%}
-  {{ prometheus_alert_awx_probe_instance | default(coords.get('service', grafana_awx_instance_name ~ '-service') ~ '.' ~ coords.get('namespace', grafana_awx_namespace) ~ '.svc.cluster.local:' ~ coords.get('port', 80)) }}
+# The platform-services dashboard reads the AWX CR and the AWX probe lane from
+# the shared identity in roles/common/awx-identity (awx_namespace,
+# awx_instance_name, awx_probe_instance), which this role lists as a dependency.
+# configmap-dashboards.yml.j2 replaces the placeholders __AWX_NAMESPACE__,
+# __AWX_INSTANCE_NAME__ and __AWX_PROBE_INSTANCE__ in the dashboard JSON.
