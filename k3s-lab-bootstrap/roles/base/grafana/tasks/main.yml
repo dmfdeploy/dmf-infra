@@ -91,17 +91,20 @@
     name: grafana-community
     repo_url: "{{ grafana_helm_repo }}"
 
-# The two AWX values go into a PromQL string inside the dashboard JSON, so
-# they must be plain Kubernetes names: no quote, backslash, brace or newline.
+# The three AWX values go into a PromQL string inside the dashboard JSON, so
+# they must be plain Kubernetes names and a service address built from them: no
+# quote, backslash, brace, dollar sign or newline.
 # \Z anchors the end of the string; $ would also accept a trailing newline.
-- name: Check the AWX namespace and name the dashboard reads
+- name: Check the AWX namespace, name and probe instance the dashboard reads
   ansible.builtin.assert:
     that:
       - grafana_awx_namespace is match('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z')
       - grafana_awx_instance_name is match('^(?=.{1,253}\Z)[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*\Z')
+      - grafana_awx_probe_instance is match('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\.svc\.cluster\.local:[0-9]{1,5}\Z')
     fail_msg: >-
-      grafana_awx_namespace must be a DNS label and grafana_awx_instance_name a
-      DNS subdomain, because the dashboard query embeds them.
+      grafana_awx_namespace must be a DNS label, grafana_awx_instance_name a DNS
+      subdomain and grafana_awx_probe_instance <service>.<namespace>.svc.cluster.local:<port>,
+      because the dashboard query embeds them.
     quiet: true
 
 # Two provider-keyed ConfigMaps (dmf + system) in one multi-doc template.

@@ -9,6 +9,7 @@ prometheus role's template for the non-default identity cases. The test needs
 `ansible` and `promtool` on the PATH."""
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import tempfile
@@ -22,7 +23,9 @@ GRAFANA = ROOT / "roles/base/grafana"
 PROMETHEUS = ROOT / "roles/base/prometheus"
 KEY = "  dmf-platform-services.json: |\n"
 AWX = "awx-service.awx.svc.cluster.local:80"
-NETBOX = "netbox.netbox.svc.cluster.local:80"
+NMOS = "nmos-cpp-registry.nmos.svc.cluster.local:80"
+LOOKALIKE = "awx-exporter.monitoring.svc.cluster.local:9100"
+SUFFIXED = "awx-service.awx.svc.cluster.local:80/ready"
 
 
 def ansible_template(src, dest, extra, *extra_files):
@@ -71,9 +74,10 @@ def series(name, labels, value, samples=5):
     return {"series": f"{name}{{{body}}}", "values": f"{value}x{samples}"}
 
 
-def probe(app, instance, value, samples=5):
-    return series("probe_success", {"job": "netbox-probe", "app": app,
-                                    "instance": instance}, value, samples)
+def probe(instance, value, samples=5):
+    """A lane series with the labels the live scrape gives it: no app label."""
+    return series("probe_success", {"exposure": "private", "instance": instance,
+                                    "job": "netbox-probe"}, value, samples)
 
 
 def cr(namespace, name, replicas, samples=5):
@@ -81,8 +85,8 @@ def cr(namespace, name, replicas, samples=5):
                   replicas, samples)
 
 
-def lane(app, instance, value):
-    return {"labels": f"dmf:lane_state{{app=\"{app}\", instance=\"{instance}\", job=\"netbox-probe\"}}",
+def lane(instance, value):
+    return {"labels": f"dmf:lane_state{{exposure=\"private\", instance=\"{instance}\", job=\"netbox-probe\"}}",
             "value": value}
 
 
@@ -106,57 +110,79 @@ class DashboardLaneState(unittest.TestCase):
         expr = probe_table(render_dashboard(self.tmp))["targets"][0]["expr"]
         self.assertNotIn("__AWX_", expr)
         self.assertIn('namespace="awx", name="awx"', expr)
+        self.assertIn(f'"instance", "{AWX}"', expr)
 
     def test_asleep_reads_two_when_the_probe_fails(self):
-        self.check("asleep, probe 0", [probe("awx", AWX, 0), cr("awx", "awx", 0)],
-                   [lane("awx", AWX, 2)])
+        self.check("asleep, probe 0", [probe(AWX, 0), cr("awx", "awx", 0)],
+                   [lane(AWX, 2)])
 
     def test_asleep_reads_two_when_the_probe_still_succeeds(self):
-        self.check("asleep, probe 1", [probe("awx", AWX, 1), cr("awx", "awx", 0)],
-                   [lane("awx", AWX, 2)])
+        self.check("asleep, probe 1", [probe(AWX, 1), cr("awx", "awx", 0)],
+                   [lane(AWX, 2)])
 
     def test_awake_keeps_the_probe_result(self):
-        self.check("awake, probe 0", [probe("awx", AWX, 0), cr("awx", "awx", 2)],
-                   [lane("awx", AWX, 0)])
-        self.check("awake, probe 1", [probe("awx", AWX, 1), cr("awx", "awx", 2)],
-                   [lane("awx", AWX, 1)])
+        self.check("awake, probe 0", [probe(AWX, 0), cr("awx", "awx", 2)],
+                   [lane(AWX, 0)])
+        self.check("awake, probe 1", [probe(AWX, 1), cr("awx", "awx", 2)],
+                   [lane(AWX, 1)])
 
     def test_absent_metric_keeps_the_probe_result(self):
-        self.check("absent, probe 0", [probe("awx", AWX, 0)], [lane("awx", AWX, 0)])
-        self.check("absent, probe 1", [probe("awx", AWX, 1)], [lane("awx", AWX, 1)])
+        self.check("absent, probe 0", [probe(AWX, 0)], [lane(AWX, 0)])
+        self.check("absent, probe 1", [probe(AWX, 1)], [lane(AWX, 1)])
 
     def test_each_lane_has_exactly_one_series(self):
         self.check("several lanes",
-                   [probe("awx", AWX, 0), probe("netbox", NETBOX, 1),
+                   [probe(AWX, 0), probe(NMOS, 1),
                     cr("awx", "awx", 0)],
-                   [lane("awx", AWX, 2), lane("netbox", NETBOX, 1)])
+                   [lane(AWX, 2), lane(NMOS, 1)])
         self.check("several lanes, duplicate CR series",
-                   [probe("awx", AWX, 1), probe("netbox", NETBOX, 0),
+                   [probe(AWX, 1), probe(NMOS, 0),
                     cr("awx", "awx", 0),
                     series("awx_cr_web_replicas",
                            {"namespace": "awx", "name": "awx", "pod": "b"}, 0)],
-                   [lane("awx", AWX, 2), lane("netbox", NETBOX, 0)])
+                   [lane(AWX, 2), lane(NMOS, 0)])
 
     def test_sleep_of_another_lane_is_not_hidden(self):
         self.check("other lane at 0 while AWX sleeps",
-                   [probe("netbox", NETBOX, 0), cr("awx", "awx", 0)],
-                   [lane("netbox", NETBOX, 0)])
+                   [probe(NMOS, 0), cr("awx", "awx", 0)],
+                   [lane(NMOS, 0)])
+
+    def test_lookalike_lanes_are_never_dropped(self):
+        for other in (LOOKALIKE, SUFFIXED, NMOS):
+            self.check(f"{other} while AWX sleeps, probe 0",
+                       [probe(other, 0), cr("awx", "awx", 0)], [lane(other, 0)])
+            self.check(f"{other} while AWX sleeps, probe 1",
+                       [probe(other, 1), cr("awx", "awx", 0)], [lane(other, 1)])
+
+    def test_lane_of_a_different_awx_service_is_not_the_configured_lane(self):
+        other = "awx-service.other.svc.cluster.local:80"
+        self.check("same service name, other namespace",
+                   [probe(other, 0), probe(AWX, 0), cr("awx", "awx", 0)],
+                   [lane(other, 0), lane(AWX, 2)])
 
     def test_configured_identity_is_the_one_that_counts(self):
         identity = {"prometheus_alert_awx_namespace": "lab",
                     "prometheus_alert_awx_instance_name": "tower"}
+        lab = "tower-service.lab.svc.cluster.local:80"
         self.check("configured CR asleep, probe 0",
-                   [probe("awx", AWX, 0), cr("lab", "tower", 0)],
-                   [lane("awx", AWX, 2)], **identity)
+                   [probe(lab, 0), cr("lab", "tower", 0)], [lane(lab, 2)], **identity)
         self.check("configured CR asleep, probe 1",
-                   [probe("awx", AWX, 1), cr("lab", "tower", 0)],
-                   [lane("awx", AWX, 2)], **identity)
+                   [probe(lab, 1), cr("lab", "tower", 0)], [lane(lab, 2)], **identity)
+        self.check("configured CR awake",
+                   [probe(lab, 0), cr("lab", "tower", 2)], [lane(lab, 0)], **identity)
         self.check("unrelated awx/awx asleep, configured CR awake",
-                   [probe("awx", AWX, 0), cr("awx", "awx", 0), cr("lab", "tower", 2)],
-                   [lane("awx", AWX, 0)], **identity)
+                   [probe(lab, 0), probe(AWX, 0), cr("awx", "awx", 0), cr("lab", "tower", 2)],
+                   [lane(lab, 0), lane(AWX, 0)], **identity)
         self.check("only the unrelated awx/awx exists",
-                   [probe("awx", AWX, 1), cr("awx", "awx", 0)],
-                   [lane("awx", AWX, 1)], **identity)
+                   [probe(lab, 1), cr("awx", "awx", 0)], [lane(lab, 1)], **identity)
+
+    def test_seed_coordinates_name_the_lane(self):
+        coords = {"dmf_born_inventory_app_cluster_coords": {
+            "awx": {"service": "tower-web", "namespace": "lab", "port": 8052}}}
+        seeded = "tower-web.lab.svc.cluster.local:8052"
+        self.check("seeded lane asleep",
+                   [probe(seeded, 0), probe(AWX, 0), cr("awx", "awx", 0)],
+                   [lane(seeded, 2), lane(AWX, 0)], **coords)
 
     def test_mapping_names_each_state_and_asleep_has_its_own_colour(self):
         table = probe_table(render_dashboard(self.tmp))["fieldConfig"]["defaults"]
@@ -191,38 +217,57 @@ class SharedIdentity(unittest.TestCase):
     def test_alert_override_moves_both(self):
         expr, alert = self.selectors(prometheus_alert_awx_namespace="lab",
                                      prometheus_alert_awx_instance_name="tower")
-        self.assertIn('namespace="lab", name="tower"', expr)
-        self.assertIn('awx_cr_web_replicas{namespace="lab", name="tower"}', alert)
-        self.assertNotIn('namespace="awx", name="awx"', expr + alert)
+        for text in (expr, alert):
+            self.assertIn('namespace="lab", name="tower"', text.replace('\\"', '"'))
+            self.assertIn("tower-service.lab.svc.cluster.local:80", text)
+        self.assertNotIn(AWX, expr + alert)
 
     def test_awx_role_variables_move_both(self):
         expr, alert = self.selectors(awx_namespace="lab", awx_instance_name="tower")
-        self.assertIn('namespace="lab", name="tower"', expr)
-        self.assertIn('awx_cr_web_replicas{namespace="lab", name="tower"}', alert)
+        for text in (expr, alert):
+            self.assertIn("tower-service.lab.svc.cluster.local:80", text)
 
     def test_alert_override_wins_over_the_awx_role_variables(self):
         expr, alert = self.selectors(awx_namespace="one", awx_instance_name="two",
                                      prometheus_alert_awx_namespace="lab",
                                      prometheus_alert_awx_instance_name="tower")
-        self.assertIn('namespace="lab", name="tower"', expr)
-        self.assertIn('awx_cr_web_replicas{namespace="lab", name="tower"}', alert)
+        for text in (expr, alert):
+            self.assertIn("tower-service.lab.svc.cluster.local:80", text)
+
+    def test_seed_coordinates_move_both(self):
+        coords = {"awx": {"service": "tower-web", "namespace": "lab", "port": 8052}}
+        expr, alert = self.selectors(dmf_born_inventory_app_cluster_coords=coords)
+        for text in (expr, alert):
+            self.assertIn("tower-web.lab.svc.cluster.local:8052", text)
 
     def test_defaults_agree(self):
         expr, alert = self.selectors()
-        self.assertIn('namespace="awx", name="awx"', expr)
-        self.assertIn('awx_cr_web_replicas{namespace="awx", name="awx"}', alert)
+        for text in (expr, alert):
+            self.assertIn(AWX, text)
+
+    def test_alert_and_dashboard_use_one_sleep_clause(self):
+        """Both expressions embed the same label_replace(...) text."""
+        clause = r"label_replace\(\s*max\(.*?\) == 0,\s*\"instance\", \"[^\"]*\", \"\", \"\"\s*\)"
+        expr, alert = self.selectors()
+        dash = re.findall(clause, expr.replace('\\"', '"'), re.S)
+        rule = re.findall(clause, alert, re.S)
+        squash = lambda t: re.sub(r"\s+", " ", t).replace("( ", "(").replace(" )", ")")
+        self.assertEqual(len(dash), 2)
+        self.assertEqual(len(rule), 1)
+        self.assertEqual({squash(t) for t in dash}, {squash(t) for t in rule})
 
 
-def run_name_check(namespace, instance_name):
+def run_name_check(namespace, instance_name, probe_instance=AWX):
     """Run the Grafana role's own name-check task through Ansible."""
     tasks = yaml.safe_load((GRAFANA / "tasks/main.yml").read_text())
     task = next(t for t in tasks
-                if t.get("name") == "Check the AWX namespace and name the dashboard reads")
+                if t.get("name") == "Check the AWX namespace, name and probe instance the dashboard reads")
     return subprocess.run(
         ["ansible", "localhost", "-m", "ansible.builtin.assert",
          "-a", json.dumps(task["ansible.builtin.assert"]),
          "-e", json.dumps({"grafana_awx_namespace": namespace,
-                           "grafana_awx_instance_name": instance_name})],
+                           "grafana_awx_instance_name": instance_name,
+                           "grafana_awx_probe_instance": probe_instance})],
         capture_output=True, text=True)
 
 
@@ -245,18 +290,34 @@ class NameCheck(unittest.TestCase):
                 self.assertNotEqual(run_name_check(name, "awx").returncode, 0)
 
 
+class ProbeInstanceCheck(unittest.TestCase):
+    def test_accepts_service_addresses(self):
+        for value in (AWX, "tower-web.lab.svc.cluster.local:8052", "a.b.svc.cluster.local:1"):
+            with self.subTest(value=value):
+                self.assertEqual(run_name_check("awx", "awx", value).returncode, 0)
+
+    def test_rejects_values_that_could_widen_or_break_the_query(self):
+        for value in (AWX + "\n", "awx-service.awx.svc.cluster.local", 'a".b.svc.cluster.local:80',
+                      "a.b.svc.cluster.local:80/ready", "a.*.svc.cluster.local:80",
+                      "$1.b.svc.cluster.local:80", "a.b.svc.cluster.local:", "A.b.svc.cluster.local:80",
+                      "a.b.c.svc.cluster.local:80", "a.b.svc.cluster.local:123456", ""):
+            with self.subTest(value=value):
+                self.assertNotEqual(run_name_check("awx", "awx", value).returncode, 0)
+
+
 class AlertIdentity(unittest.TestCase):
     def test_alert_reads_the_configured_cr(self):
         tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp, True)
         rules = alert_rules(tmp, prometheus_alert_awx_namespace="lab",
                             prometheus_alert_awx_instance_name="tower")
+        LAB = "tower-service.lab.svc.cluster.local:80"
         labels = {"severity": "warning", "category": "sd-pipeline",
-                  "job": "netbox-probe", "app": "awx", "instance": AWX}
+                  "job": "netbox-probe", "exposure": "private", "instance": LAB}
 
         annotations = {
-            "summary": f"Probe lane {AWX} (awx) is failing",
-            "description": f"The blackbox probe for {AWX} has failed for 10 minutes. "
+            "summary": f"Probe lane {LAB} is failing",
+            "description": f"The blackbox probe for {LAB} has failed for 10 minutes. "
                            "The AWX lane does not alert while the AWX CR asks for 0 web "
                            "replicas (scale-to-zero sleep); a wake window or an install "
                            "without scale-to-zero alerts as usual.",
@@ -264,7 +325,7 @@ class AlertIdentity(unittest.TestCase):
 
         def case(name, crs, fires):
             return {"name": name, "interval": "1m",
-                    "input_series": [probe("awx", AWX, 0, 20)] + crs,
+                    "input_series": [probe(LAB, 0, 20), probe(LOOKALIKE, 1, 20)] + crs,
                     "alert_rule_test": [{
                         "eval_time": "15m", "alertname": "NetboxProbeLaneDown",
                         "exp_alerts": [{"exp_labels": labels, "exp_annotations": annotations}] if fires else []}]}

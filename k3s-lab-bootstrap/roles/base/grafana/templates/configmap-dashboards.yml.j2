@@ -13,7 +13,7 @@ data:
   dmf-are-we-ok.json: |
 {{ lookup('file', role_path + '/files/dmf-are-we-ok.json') | indent(4, first=True) }}
   dmf-platform-services.json: |
-{{ lookup('file', role_path + '/files/dmf-platform-services.json') | replace('__AWX_NAMESPACE__', grafana_awx_namespace) | replace('__AWX_INSTANCE_NAME__', grafana_awx_instance_name) | indent(4, first=True) }}
+{{ lookup('file', role_path + '/files/dmf-platform-services.json') | replace('__AWX_NAMESPACE__', grafana_awx_namespace) | replace('__AWX_INSTANCE_NAME__', grafana_awx_instance_name) | replace('__AWX_PROBE_INSTANCE__', grafana_awx_probe_instance) | indent(4, first=True) }}
 ---
 apiVersion: v1
 kind: ConfigMap
