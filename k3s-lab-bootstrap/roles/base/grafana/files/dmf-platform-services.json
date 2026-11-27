@@ -13,18 +13,21 @@
       "id": 1,
       "type": "table",
       "title": "Service health (NetBox probe lane)",
-      "description": "probe_success per NetBox-discovered instance. Labels come from the NetBox stamping (source of truth).",
+      "description": "probe_success per NetBox-discovered instance. Labels come from the NetBox stamping (source of truth). The AWX lane reads asleep (2) whenever the AWX CR asks for 0 web replicas on purpose (scale-to-zero), whatever its probe says. Otherwise a lane reads its real probe result: 1 up, 0 failed.",
       "gridPos": { "x": 0, "y": 0, "w": 24, "h": 8 },
       "datasource": "Prometheus",
       "targets": [
-        { "refId": "A", "instant": true, "format": "table", "expr": "probe_success{job=\"netbox-probe\"}" }
+        { "refId": "A", "instant": true, "format": "table", "expr": "(probe_success{job=\"netbox-probe\"} unless on(app) label_replace(max(awx_cr_web_replicas{namespace=\"__AWX_NAMESPACE__\", name=\"__AWX_INSTANCE_NAME__\"}) == 0, \"app\", \"awx\", \"\", \"\")) or ((probe_success{job=\"netbox-probe\"} and on(app) label_replace(max(awx_cr_web_replicas{namespace=\"__AWX_NAMESPACE__\", name=\"__AWX_INSTANCE_NAME__\"}) == 0, \"app\", \"awx\", \"\", \"\")) * 0 + 2)" }
       ],
       "transformations": [
         { "id": "organize", "options": { "excludeByName": { "Time": true, "__name__": true }, "renameByName": { "Value": "up (1=healthy)" } } }
       ],
       "fieldConfig": {
         "defaults": {
-          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] },
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "failed", "index": 0 }, "1": { "text": "up", "index": 1 }, "2": { "text": "asleep", "index": 2 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 }, { "color": "blue", "value": 2 } ] },
           "custom": { "cellOptions": { "type": "color-background" } }
         },
         "overrides": [

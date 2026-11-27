@@ -266,6 +266,8 @@ jobs:
           for f in "${files[@]}"; do
             promtool test rules "$f"
           done
+      - name: the platform-services dashboard shows the AWX probe lane as asleep, by running its query in promtool (dmfdeploy/dmfdeploy#1027)
+        run: python3 -m unittest discover -s tests -p 'test_awx_probe_lane_dashboard_1027.py' -v
       - name: helm-lint charts/
         run: |
           set -eu

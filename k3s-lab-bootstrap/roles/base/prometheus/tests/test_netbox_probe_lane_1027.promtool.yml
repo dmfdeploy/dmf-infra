@@ -1,0 +1,126 @@
+# promtool rule unit test — NetboxProbeLaneDown (dmfdeploy/dmfdeploy#1027).
+#
+# Render and run as described in test_awx_replica_divergence_424.promtool.yml.
+#
+# Six cases: the AWX lane at 0 while the CR asks for 0 web replicas stays
+# silent; at 0 while the CR asks for 2 it fires; at 0 with the CR metric
+# absent it fires; a non-AWX lane at 0 fires even while AWX sleeps; a lane at
+# 1 stays silent; an awx CR in another namespace asleep does not silence the
+# lane. tests/test_awx_probe_lane_dashboard_1027.py renders the rule with a
+# non-default AWX identity. Each case has one 20m series of 1m samples; the
+# alert waits 10m.
+rule_files:
+  - rendered_alerts.yml
+evaluation_interval: 1m
+
+tests:
+  - name: asleep on purpose, AWX lane at 0 -> silent
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", app="awx", instance="awx-service.awx.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts: []
+
+  - name: awake, AWX lane at 0 -> fires
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", app="awx", instance="awx-service.awx.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: sd-pipeline
+              job: netbox-probe
+              app: awx
+              instance: awx-service.awx.svc.cluster.local:80
+            exp_annotations:
+              summary: "Probe lane awx-service.awx.svc.cluster.local:80 (awx) is failing"
+              description: "The blackbox probe for awx-service.awx.svc.cluster.local:80 has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
+
+  - name: CR metric absent, AWX lane at 0 -> fires
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", app="awx", instance="awx-service.awx.svc.cluster.local:80"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: sd-pipeline
+              job: netbox-probe
+              app: awx
+              instance: awx-service.awx.svc.cluster.local:80
+            exp_annotations:
+              summary: "Probe lane awx-service.awx.svc.cluster.local:80 (awx) is failing"
+              description: "The blackbox probe for awx-service.awx.svc.cluster.local:80 has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
+
+  - name: other lane at 0 while AWX sleeps -> fires
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", app="netbox", instance="netbox.netbox.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: sd-pipeline
+              job: netbox-probe
+              app: netbox
+              instance: netbox.netbox.svc.cluster.local:80
+            exp_annotations:
+              summary: "Probe lane netbox.netbox.svc.cluster.local:80 (netbox) is failing"
+              description: "The blackbox probe for netbox.netbox.svc.cluster.local:80 has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
+
+  - name: lane at 1 -> silent
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", app="awx", instance="awx-service.awx.svc.cluster.local:80"}'
+        values: '1x20'
+      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts: []
+
+  # A CR named awx in another namespace is not the AWX CR the alert reads.
+  - name: unrelated awx CR in another namespace asleep, AWX lane at 0 -> fires
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", app="awx", instance="awx-service.awx.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{namespace="other", name="awx"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: sd-pipeline
+              job: netbox-probe
+              app: awx
+              instance: awx-service.awx.svc.cluster.local:80
+            exp_annotations:
+              summary: "Probe lane awx-service.awx.svc.cluster.local:80 (awx) is failing"
+              description: "The blackbox probe for awx-service.awx.svc.cluster.local:80 has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
