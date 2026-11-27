@@ -2,16 +2,24 @@
 #
 # Render and run as described in test_awx_replica_divergence_424.promtool.yml.
 #
-# The probe series carry the labels a live scrape gives them: exposure,
-# instance and job, with no app label. The AWX lane is the series whose
-# instance is awx-service.awx.svc.cluster.local:80. Cases: the AWX lane at 0
-# while the CR asks for 0 web replicas stays silent; at 0 while the CR asks for
-# 2 it fires; at 0 with the CR metric absent it fires; another lane at 0 fires
-# while AWX sleeps; a lane at 1 stays silent; an awx CR in another namespace
-# asleep does not silence the lane; lanes whose instance only resembles the AWX
-# service still fire. tests/test_awx_probe_lane_dashboard_1027.py renders the
-# rule with a non-default AWX identity. Each case has one 20m series of 1m
-# samples; the alert waits 10m.
+# The series carry the labels a live scrape gives them (sandbox, 2026-11-27).
+# The probe series have exposure, instance and job, with no app label. The CR
+# series is awx_cr_web_replicas as kube-state-metrics exposes it, with its
+# customresource_*, node, service and app_kubernetes_io_* labels. The AWX lane
+# is the series whose instance is awx-service.awx.svc.cluster.local:80.
+#
+# Cases: the AWX lane at 0 while the CR asks for 0 web replicas stays silent; at
+# 0 while the CR asks for 2 it fires; at 0 with the CR metric absent it fires;
+# another lane at 0 fires while AWX sleeps; a lane at 1 stays silent; a CR in
+# another namespace asleep does not silence the lane; a second CR with another
+# name and namespace does not decide the lane.
+#
+# The cases for lanes that only resemble the AWX service are regression guards:
+# the earlier rule matched a label the series never carry, dropped no lane, and
+# also passed them. The overbroad versions of the rule that must fail are in
+# tests/test_awx_probe_lane_dashboard_1027.py. That test also renders the rule
+# for a non-default AWX identity, through the real roles. Each case has 20m
+# series of 1m samples; the alert waits 10m.
 rule_files:
   - rendered_alerts.yml
 evaluation_interval: 1m
@@ -22,7 +30,7 @@ tests:
     input_series:
       - series: 'probe_success{job="netbox-probe", exposure="private", instance="awx-service.awx.svc.cluster.local:80"}'
         values: '0x20'
-      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="awx", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
         values: '0x20'
     alert_rule_test:
       - eval_time: 15m
@@ -34,7 +42,7 @@ tests:
     input_series:
       - series: 'probe_success{job="netbox-probe", exposure="private", instance="awx-service.awx.svc.cluster.local:80"}'
         values: '0x20'
-      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="awx", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
         values: '2x20'
     alert_rule_test:
       - eval_time: 15m
@@ -76,7 +84,7 @@ tests:
     input_series:
       - series: 'probe_success{job="netbox-probe", exposure="private", instance="nmos-cpp-registry.nmos.svc.cluster.local:80"}'
         values: '0x20'
-      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="awx", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
         values: '0x20'
     alert_rule_test:
       - eval_time: 15m
@@ -100,7 +108,7 @@ tests:
         values: '0x20'
       - series: 'probe_success{job="netbox-probe", exposure="private", instance="nmos-cpp-registry.nmos.svc.cluster.local:80"}'
         values: '0x20'
-      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="awx", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
         values: '0x20'
     alert_rule_test:
       - eval_time: 15m
@@ -122,7 +130,7 @@ tests:
     input_series:
       - series: 'probe_success{job="netbox-probe", exposure="private", instance="awx-service.awx.svc.cluster.local:80"}'
         values: '1x20'
-      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="awx", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
         values: '2x20'
     alert_rule_test:
       - eval_time: 15m
@@ -134,7 +142,7 @@ tests:
     input_series:
       - series: 'probe_success{job="netbox-probe", exposure="private", instance="awx-service.awx.svc.cluster.local:80"}'
         values: '0x20'
-      - series: 'awx_cr_web_replicas{namespace="other", name="awx"}'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="other", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
         values: '0x20'
     alert_rule_test:
       - eval_time: 15m
@@ -156,7 +164,7 @@ tests:
     input_series:
       - series: 'probe_success{job="netbox-probe", exposure="private", instance="awx-exporter.monitoring.svc.cluster.local:9100"}'
         values: '0x20'
-      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="awx", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
         values: '0x20'
     alert_rule_test:
       - eval_time: 15m
@@ -178,7 +186,7 @@ tests:
     input_series:
       - series: 'probe_success{job="netbox-probe", exposure="private", instance="awx-service.awx.svc.cluster.local:80/ready"}'
         values: '0x20'
-      - series: 'awx_cr_web_replicas{namespace="awx", name="awx"}'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="awx", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
         values: '0x20'
     alert_rule_test:
       - eval_time: 15m
@@ -194,3 +202,17 @@ tests:
               summary: "Probe lane awx-service.awx.svc.cluster.local:80/ready is failing"
               description: "The blackbox probe for awx-service.awx.svc.cluster.local:80/ready has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
               runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
+
+  - name: second CR with another name and namespace awake, configured CR asleep -> silent
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", exposure="private", instance="awx-service.awx.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="awx", namespace="awx", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="second", namespace="other", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="vrbs-exsz-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts: []

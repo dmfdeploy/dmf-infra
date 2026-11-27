@@ -128,21 +128,9 @@ prometheus_alert_cpu_over_request_crit_ratio: 3.0
 # not saturation signals, so a single short debounce covers all three.
 prometheus_alert_ingestion_drop_for: 2m
 
-# AWX CR-vs-running-state divergence (dmfdeploy/dmfdeploy#424). Namespace/
-# instance name mirror roles/stack/operator/awx defaults so this role does
-# not hard-require that role to run first in every playbook that includes
-# prometheus alone — same fallback pattern as awx-autoscale's own defaults.
-prometheus_alert_awx_namespace: "{{ awx_namespace | default('awx') }}"
-prometheus_alert_awx_instance_name: "{{ awx_instance_name | default('awx') }}"
-# The `instance` label of the AWX lane of the NetBox probe job. NetBox seeds
-# it from dmf_born_inventory_app_cluster_coords.awx as
-# <service>.<namespace>.svc.cluster.local:<port>
-# (roles/common/dmf-born-inventory/defaults/main.yml; promsd composes the probe
-# target from the same three fields). Without that variable in the play, the
-# AWX operator's own service name <instance name>-service and port 80 apply.
-prometheus_alert_awx_probe_instance: >-
-  {%- set coords = (dmf_born_inventory_app_cluster_coords | default({})).get('awx', {}) -%}
-  {{ coords.get('service', prometheus_alert_awx_instance_name ~ '-service') }}.{{ coords.get('namespace', prometheus_alert_awx_namespace) }}.svc.cluster.local:{{ coords.get('port', 80) }}
+# AWX CR-vs-running-state divergence (dmfdeploy/dmfdeploy#424). The AWX
+# namespace, name and probe instance come from roles/common/awx-identity (awx_namespace,
+# awx_instance_name, awx_probe_instance), which this role lists as a dependency.
 # Trailing window the divergence ratio below is averaged over, via a promql
 # subquery (not a bare `for:` — see the alert's own comment in alerts.yaml.j2
 # for why a bare for: silently resets on every retry). ~2x the worst measured
