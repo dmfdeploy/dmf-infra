@@ -210,6 +210,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_no_log_result_not_looped.py' -v
       - name: tracked third-party images are pinned by digest, never :latest (not charts/, ee/)
         run: python3 -m unittest discover -s tests -p 'test_image_references_pinned.py' -v
+      - name: the node scrape jobs scrape the kubelet directly and verify it
+        run: python3 -m unittest discover -s tests -p 'test_prometheus_scrape_configs.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
