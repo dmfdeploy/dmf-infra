@@ -212,6 +212,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_image_references_pinned.py' -v
       - name: the node scrape jobs scrape the kubelet directly and verify it
         run: python3 -m unittest discover -s tests -p 'test_prometheus_scrape_configs.py' -v
+      - name: the Nodes dashboard selects targets by the label the scrape config sets
+        run: python3 -m unittest discover -s tests -p 'test_grafana_nodes_dashboard.py' -v
       - name: ansible syntax-check
         run: |
           shopt -s nullglob
