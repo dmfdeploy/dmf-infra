@@ -50,15 +50,10 @@
         relabel_configs:
         - action: labelmap
           regex: __meta_kubernetes_node_label_(.+)
-        - replacement: kubernetes.default.svc:443
-          target_label: __address__
-        - regex: (.+)
-          replacement: /api/v1/nodes/$1/proxy/metrics
-          source_labels:
-          - __meta_kubernetes_node_name
-          target_label: __metrics_path__
         scheme: https
         tls_config:
+          # Verifies the kubelet serving certificate against the cluster CA.
+          # Each scraped node address must be in that certificate's SAN.
           ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
       - bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
         job_name: kubernetes-nodes-cadvisor
@@ -67,15 +62,11 @@
         relabel_configs:
         - action: labelmap
           regex: __meta_kubernetes_node_label_(.+)
-        - replacement: kubernetes.default.svc:443
-          target_label: __address__
-        - regex: (.+)
-          replacement: /api/v1/nodes/$1/proxy/metrics/cadvisor
-          source_labels:
-          - __meta_kubernetes_node_name
-          target_label: __metrics_path__
+        metrics_path: /metrics/cadvisor
         scheme: https
         tls_config:
+          # Verifies the kubelet serving certificate against the cluster CA.
+          # Each scraped node address must be in that certificate's SAN.
           ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
       - honor_labels: true
         job_name: kubernetes-service-endpoints
