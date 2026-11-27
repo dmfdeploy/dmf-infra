@@ -1,0 +1,39 @@
+{
+  "status": "success",
+  "data": {
+    "alerts": [
+      {
+        "labels": {
+          "alertname": "Watchdog",
+          "severity": "none"
+        },
+        "annotations": {},
+        "state": "firing",
+        "activeAt": "2026-11-27T10:00:00Z",
+        "value": "0e+00"
+      },
+      {
+        "labels": {
+          "alertname": "TargetDown",
+          "severity": "warning",
+          "job": "kubernetes-nodes"
+        },
+        "annotations": {},
+        "state": "firing",
+        "activeAt": "2026-11-27T10:00:00Z",
+        "value": "0e+00"
+      },
+      {
+        "labels": {
+          "alertname": "TargetDown",
+          "severity": "warning",
+          "job": "kubernetes-nodes-cadvisor"
+        },
+        "annotations": {},
+        "state": "firing",
+        "activeAt": "2026-11-27T10:00:00Z",
+        "value": "0e+00"
+      }
+    ]
+  }
+}

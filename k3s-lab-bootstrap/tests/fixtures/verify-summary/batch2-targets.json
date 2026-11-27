@@ -1,0 +1,122 @@
+{
+  "status": "success",
+  "data": {
+    "activeTargets": [
+      {
+        "discoveredLabels": {
+          "__address__": "localhost:9090",
+          "job": "prometheus"
+        },
+        "labels": {
+          "instance": "localhost:9090",
+          "job": "prometheus"
+        },
+        "scrapePool": "prometheus",
+        "scrapeUrl": "https://localhost:9090/metrics",
+        "globalUrl": "https://localhost:9090/metrics",
+        "lastError": "",
+        "lastScrape": "2026-11-27T10:00:00.000000000Z",
+        "lastScrapeDuration": 0.01,
+        "health": "up",
+        "scrapeInterval": "1m",
+        "scrapeTimeout": "10s"
+      },
+      {
+        "discoveredLabels": {
+          "__address__": "192.0.2.5:6443",
+          "job": "kubernetes-apiservers"
+        },
+        "labels": {
+          "instance": "192.0.2.5:6443",
+          "job": "kubernetes-apiservers"
+        },
+        "scrapePool": "kubernetes-apiservers",
+        "scrapeUrl": "https://192.0.2.5:6443/metrics",
+        "globalUrl": "https://192.0.2.5:6443/metrics",
+        "lastError": "",
+        "lastScrape": "2026-11-27T10:00:00.000000000Z",
+        "lastScrapeDuration": 0.01,
+        "health": "up",
+        "scrapeInterval": "1m",
+        "scrapeTimeout": "10s"
+      },
+      {
+        "discoveredLabels": {
+          "__address__": "dmf-sandbox",
+          "job": "kubernetes-nodes"
+        },
+        "labels": {
+          "instance": "dmf-sandbox",
+          "job": "kubernetes-nodes"
+        },
+        "scrapePool": "kubernetes-nodes",
+        "scrapeUrl": "https://dmf-sandbox/metrics",
+        "globalUrl": "https://dmf-sandbox/metrics",
+        "lastError": "server returned HTTP status 403 Forbidden",
+        "lastScrape": "2026-11-27T10:00:00.000000000Z",
+        "lastScrapeDuration": 0.01,
+        "health": "down",
+        "scrapeInterval": "1m",
+        "scrapeTimeout": "10s"
+      },
+      {
+        "discoveredLabels": {
+          "__address__": "dmf-sandbox",
+          "job": "kubernetes-nodes-cadvisor"
+        },
+        "labels": {
+          "instance": "dmf-sandbox",
+          "job": "kubernetes-nodes-cadvisor"
+        },
+        "scrapePool": "kubernetes-nodes-cadvisor",
+        "scrapeUrl": "https://dmf-sandbox/metrics",
+        "globalUrl": "https://dmf-sandbox/metrics",
+        "lastError": "server returned HTTP status 403 Forbidden",
+        "lastScrape": "2026-11-27T10:00:00.000000000Z",
+        "lastScrapeDuration": 0.01,
+        "health": "down",
+        "scrapeInterval": "1m",
+        "scrapeTimeout": "10s"
+      },
+      {
+        "discoveredLabels": {
+          "__address__": "192.0.2.30:9100",
+          "job": "kubernetes-pods"
+        },
+        "labels": {
+          "instance": "192.0.2.30:9100",
+          "job": "kubernetes-pods"
+        },
+        "scrapePool": "kubernetes-pods",
+        "scrapeUrl": "192.0.2.30:9100/metrics",
+        "globalUrl": "192.0.2.30:9100/metrics",
+        "lastError": "",
+        "lastScrape": "2026-11-27T10:00:00.000000000Z",
+        "lastScrapeDuration": 0.01,
+        "health": "up",
+        "scrapeInterval": "1m",
+        "scrapeTimeout": "10s"
+      },
+      {
+        "discoveredLabels": {
+          "__address__": "https://netbox.example",
+          "job": "netbox-probe"
+        },
+        "labels": {
+          "instance": "https://netbox.example",
+          "job": "netbox-probe"
+        },
+        "scrapePool": "netbox-probe",
+        "scrapeUrl": "https://netbox.example/metrics",
+        "globalUrl": "https://netbox.example/metrics",
+        "lastError": "",
+        "lastScrape": "2026-11-27T10:00:00.000000000Z",
+        "lastScrapeDuration": 0.01,
+        "health": "up",
+        "scrapeInterval": "1m",
+        "scrapeTimeout": "10s"
+      }
+    ],
+    "droppedTargets": []
+  }
+}
