@@ -1,0 +1,16 @@
+---
+# Alerts that fire by design on a healthy sandbox install. The sandbox verify
+# summary (playbooks/verify-sandbox-summary.yml) reports every other firing
+# alert as a finding.
+#
+# Rules for an entry:
+#   - `name` is one exact alert name. Patterns are not supported.
+#   - `reason` says why the alert fires by design. A real defect never goes
+#     on this list; fix the defect or leave the finding visible.
+#   - Names are unique.
+# tests/test_verify_summary.py validates this file in CI.
+alerts:
+  - name: Watchdog
+    reason: >-
+      Dead-man switch. It fires on every healthy install so that a missing
+      alert proves the alerting path is broken.

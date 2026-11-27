@@ -165,6 +165,8 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_awx_ee_image_tag.py' -v
       - name: Forgejo admin identity audit fixture tests (dmfdeploy/dmfdeploy#15)
         run: python3 -m unittest discover -s tests -p 'test_audit_forgejo_identities.py' -v
+      - name: sandbox verify summary checks, allowlist validation and console probe
+        run: python3 -m unittest discover -s tests -p 'test_verify_summary.py' -v
       - name: setup request catalogue digests, pinned policies and ConfigMap render
         run: python3 -m unittest discover -s tests -p 'test_openbao_catalogue.py' -v
       - name: CoreDNS custom zone forwards unlisted names

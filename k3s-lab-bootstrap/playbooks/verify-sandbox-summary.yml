@@ -1,0 +1,68 @@
+---
+# Sandbox verify summary (dmfdeploy/dmfdeploy#1031). Last play of
+# bootstrap-sandbox-verify.yml. It reads scrape targets, firing alerts, the
+# running console's changes routes and Grafana's health, then prints one clean
+# line or a named list of findings.
+#
+# Report only. Nothing here fails the verify step: the helper catches its own
+# errors, and every task below ignores failure and falls back to an INCOMPLETE
+# line, including a templating error or a helper that did not run.
+- name: Sandbox self-check summary (report only)
+  hosts: k3s_control[0]
+  become: false
+  gather_facts: false
+  ignore_unreachable: true
+  tasks:
+    - name: Run the self-check
+      block:
+        - name: Read the alert allowlist
+          block:
+            - name: Parse the allowlist file
+              ansible.builtin.set_fact:
+                _vs_allowlist: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/../roles/base/prometheus/files/verify-allowlist.yml') | from_yaml }}"
+                _vs_allowlist_error: false
+          rescue:
+            - name: Record that the allowlist could not be read
+              ansible.builtin.set_fact:
+                _vs_allowlist: {}
+                _vs_allowlist_error: true
+
+        - name: Run the helper on the control node
+          ansible.builtin.script:
+            cmd: >-
+              {{ playbook_dir }}/files/verify_summary.py
+              {{ {
+                'kubeconfig': '/etc/rancher/k3s/k3s.yaml',
+                'monitoring_namespace': prometheus_namespace | default('monitoring'),
+                'prometheus_path': prometheus_path | default('/prometheus'),
+                'grafana_prefix': (grafana_path | default('/grafana')) if (grafana_exposure | default('host')) == 'path' else '',
+                'cms_namespace': cms_namespace | default('dmf-cms'),
+                'cms_port': '8000',
+                'awx_namespace': awx_namespace | default('awx'),
+                'settle_tries': 30,
+                'settle_delay': 10,
+                'allowlist': _vs_allowlist,
+                'allowlist_error': _vs_allowlist_error,
+                'probe_source': lookup('ansible.builtin.file', playbook_dir ~ '/files/console_routes_probe.py')
+              } | to_json | quote }}
+            executable: python3
+          register: _vs_run
+          changed_when: false
+          failed_when: false
+      rescue:
+        - name: Record that the self-check did not run
+          ansible.builtin.set_fact:
+            _vs_run:
+              rc: -1
+              stdout: ""
+              stdout_lines: []
+      tags: [verify, verify-summary]
+
+    - name: Print the self-check summary
+      ansible.builtin.debug:
+        msg: >-
+          {{ _vs_run.stdout_lines
+             if (_vs_run.rc | default(-1)) == 0 and (_vs_run.stdout | default('') | trim | length) > 0
+             else ['Sandbox self-check: INCOMPLETE, the helper did not run or printed nothing. Nothing was checked.'] }}
+      ignore_errors: true
+      tags: [verify, verify-summary]
