@@ -124,7 +124,7 @@ entries:
       invalidation_flow: !Find [authentik_flows.flow, [slug, default-provider-invalidation-flow]]
       acs_url: {{ (_awx_base_url ~ '/sso/complete/saml/') | to_json }}
       audience: awx
-      issuer: {{ (_awx_base_url ~ '/sso/metadata/saml/') | to_json }}
+      issuer_override: {{ (_awx_base_url ~ '/sso/metadata/saml/') | to_json }}
       sp_binding: post
       signing_kp: !Find [authentik_crypto.certificatekeypair, [name, authentik Self-signed Certificate]]
       sign_assertion: true

@@ -49,6 +49,18 @@ class ForgejoContributorPolicyTests(unittest.TestCase):
                 provider["attrs"]["name"],
             )
 
+    def test_awx_saml_provider_sets_the_issuer_override_to_the_awx_metadata_url(self):
+        # Authentik renamed the SAML provider field `issuer` to
+        # `issuer_override`. A blueprint that still sets `issuer` loses the
+        # value, and Authentik signs assertions with its own metadata URL,
+        # which AWX rejects as an invalid issuer.
+        blueprint = yaml.load(render_authentik_blueprint("user_username"), Loader=AuthentikBlueprintLoader)
+        attrs = next(entry for entry in blueprint["entries"] if entry.get("id") == "saml-awx")["attrs"]
+        awx_base_url = attrs["acs_url"].removesuffix("/sso/complete/saml/")
+        self.assertTrue(awx_base_url.startswith("https://awx."), awx_base_url)
+        self.assertEqual(attrs.get("issuer_override"), awx_base_url + "/sso/metadata/saml/")
+        self.assertNotIn("issuer", attrs)
+
     def test_uuid_subject_is_rejected_until_supported_migration_exists(self):
         with self.assertRaisesRegex(ValueError, "supported, version-specific migration"):
             validate_subject_mode("user_uuid")
