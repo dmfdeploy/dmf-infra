@@ -64,7 +64,7 @@
               runAsNonRoot: true
             containers:
               - name: dmf-promsd
-                image: "{{ dmf_promsd_image_repository }}:{{ dmf_promsd_image_tag }}"
+                image: "{{ dmf_promsd_image_repository }}:{{ dmf_promsd_image_tag }}@{{ dmf_promsd_image_digest }}"
                 imagePullPolicy: "{{ dmf_promsd_image_pull_policy }}"
                 ports:
                   - containerPort: 8000

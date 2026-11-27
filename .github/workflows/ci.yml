@@ -163,6 +163,8 @@ jobs:
         run: python3 tests/test-forgejo-contributor-policy.py
       - name: the AWX EE tag is set once and plays 050, 630 and 693 resolve it
         run: python3 -m unittest discover -s tests -p 'test_awx_ee_image_tag.py' -v
+      - name: the dmf-promsd image is pinned by digest and 630 and the deployment use it (dmfdeploy/dmfdeploy#1026)
+        run: python3 -m unittest discover -s tests -p 'test_dmf_promsd_image_pin.py' -v
       - name: Forgejo admin identity audit fixture tests (dmfdeploy/dmfdeploy#15)
         run: python3 -m unittest discover -s tests -p 'test_audit_forgejo_identities.py' -v
       - name: sandbox verify summary checks, allowlist validation and console probe
