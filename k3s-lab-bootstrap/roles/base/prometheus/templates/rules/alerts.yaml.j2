@@ -841,25 +841,28 @@ groups:
       # A failing lane of the NetBox-driven probe job. The AWX lane fails on
       # purpose while scale-to-zero has AWX asleep (dmfdeploy/dmfdeploy#1027),
       # so that one series is dropped only while the AWX CR asks for 0 web
-      # replicas. Any other lane alerts without condition. When
-      # awx_cr_web_replicas is absent (no CR, or no CustomResourceState
+      # replicas. Any other lane alerts without condition. The lane series
+      # carry only the labels exposure, instance and job, so the AWX lane is
+      # the series whose instance equals prometheus_alert_awx_probe_instance.
+      # label_replace gives the single aggregated CR series that instance
+      # value, and `unless on(instance)` drops the lane by exact equality.
+      # When awx_cr_web_replicas is absent (no CR, or no CustomResourceState
       # config), the right side is empty and nothing is dropped. The
-      # label_replace gives the single aggregated CR series the app label,
-      # so `unless on(app)` matches it against the lane's app="awx" series.
+      # platform-services dashboard uses the same right-hand side.
       - alert: NetboxProbeLaneDown
         expr: >-
           (probe_success{job="netbox-probe"} == 0)
-          unless on(app)
+          unless on(instance)
           label_replace(
             max(awx_cr_web_replicas{namespace="{{ prometheus_alert_awx_namespace }}", name="{{ prometheus_alert_awx_instance_name }}"}) == 0,
-            "app", "awx", "", ""
+            "instance", "{{ prometheus_alert_awx_probe_instance }}", "", ""
           )
         for: 10m
         labels:
           severity: warning
           category: sd-pipeline
         annotations:
-          summary: {% raw %}Probe lane {{ $labels.instance }} ({{ $labels.app }}) is failing{% endraw +%}
+          summary: {% raw %}Probe lane {{ $labels.instance }} is failing{% endraw +%}
           description: >-
             The blackbox probe for {% raw %}{{ $labels.instance }}{% endraw +%}
             has failed for 10 minutes. The AWX lane does not alert while the
