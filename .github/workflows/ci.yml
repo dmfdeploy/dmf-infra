@@ -278,7 +278,10 @@ jobs:
             promtool test rules "$f"
           done
       - name: one AWX identity for the seed and both monitors, and the probe lane shown as asleep, through the real roles and promtool (dmfdeploy/dmfdeploy#1027)
-        run: python3 -m unittest discover -s tests -p 'test_awx_*_1027.py' -v
+        run: |
+          set -eu
+          python3 -m unittest discover -s tests -p 'test_awx_identity_1027.py' -v
+          python3 -m unittest discover -s tests -p 'test_awx_probe_lane_dashboard_1027.py' -v
       - name: the kubelet and cAdvisor series carry a node label, by running the rendered scrape jobs in prometheus (dmfdeploy/dmfdeploy#1028)
         run: python3 -m unittest discover -s tests -p 'test_node_label_relabel_1028.py' -v
       - name: helm-lint charts/

@@ -1,5 +1,18 @@
 ---
-# First task: this role reads the AWX identity (roles/common/awx-identity), and
+# The token refusal comes first, before any other task of this role. The AWX
+# identity checks follow it.
+- name: Refuse a direct NetBox token on the receipt-driven path
+  ansible.builtin.assert:
+    that:
+      - >-
+        not (dmf_born_inventory_receipt_path_enabled | bool)
+        or (dmf_born_inventory_netbox_admin_token | default('') | length == 0)
+    fail_msg: >-
+      The receipt-driven born-inventory path does not accept a direct NetBox
+      admin token, because the token would skip the receipt. Unset
+      dmf_born_inventory_netbox_admin_token, or switch the receipt path off.
+
+# This role reads the AWX identity (roles/common/awx-identity), and
 # this check holds even when a play drops that dependency.
 - name: Check that the AWX namespace and instance name are set
   tags: [awx_identity]
@@ -24,17 +37,6 @@
       service, namespace and port of AWX come from awx_namespace and
       awx_instance_name. Set those two instead of overriding the coordinates.
     quiet: true
-
-- name: Refuse a direct NetBox token on the receipt-driven path
-  ansible.builtin.assert:
-    that:
-      - >-
-        not (dmf_born_inventory_receipt_path_enabled | bool)
-        or (dmf_born_inventory_netbox_admin_token | default('') | length == 0)
-    fail_msg: >-
-      The receipt-driven born-inventory path does not accept a direct NetBox
-      admin token, because the token would skip the receipt. Unset
-      dmf_born_inventory_netbox_admin_token, or switch the receipt path off.
 
 - name: Assert path-mode exposure does not use an https IP address
   ansible.builtin.assert:
