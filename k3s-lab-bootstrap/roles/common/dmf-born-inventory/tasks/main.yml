@@ -1,4 +1,30 @@
 ---
+# First task: this role reads the AWX identity (roles/common/awx-identity), and
+# this check holds even when a play drops that dependency.
+- name: Check that the AWX namespace and instance name are set
+  tags: [awx_identity]
+  ansible.builtin.assert:
+    that:
+      - awx_namespace is defined and awx_namespace is not none and (awx_namespace | string | length) > 0
+      - awx_instance_name is defined and awx_instance_name is not none and (awx_instance_name | string | length) > 0
+    fail_msg: >-
+      awx_namespace and awx_instance_name must both be set to a non-empty
+      name. Set them in the inventory or with -e.
+    quiet: true
+
+# The AWX entry is built from awx_namespace and awx_instance_name where the
+# service is stamped (app-service.yml), so the dictionary has no AWX key.
+- name: Check that the coordinates override has no AWX entry
+  tags: [awx_identity]
+  ansible.builtin.assert:
+    that:
+      - "'awx' not in (dmf_born_inventory_app_cluster_coords | default({}))"
+    fail_msg: >-
+      dmf_born_inventory_app_cluster_coords must not have an awx entry. The
+      service, namespace and port of AWX come from awx_namespace and
+      awx_instance_name. Set those two instead of overriding the coordinates.
+    quiet: true
+
 - name: Refuse a direct NetBox token on the receipt-driven path
   ansible.builtin.assert:
     that:

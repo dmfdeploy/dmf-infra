@@ -198,13 +198,9 @@ dmf_born_inventory_app_cluster_coords:
     service: netbox
     namespace: netbox
     port: 80
-  # AWX follows the shared identity (roles/common/awx-identity), which the
-  # monitors also read. common/awx-identity fails the play when an override of
-  # this dictionary points AWX elsewhere.
-  awx:
-    service: "{{ awx_probe_service }}"
-    namespace: "{{ awx_namespace }}"
-    port: "{{ awx_probe_port }}"
+  # No awx entry: the stamp task in app-service.yml builds AWX's service,
+  # namespace and port from awx_namespace and awx_instance_name, the two inputs
+  # the monitors also read (roles/common/awx-identity).
   forgejo:
     service: forgejo-http
     namespace: forgejo

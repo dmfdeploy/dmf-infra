@@ -49,6 +49,7 @@ grafana_resources:
 
 # The platform-services dashboard reads the AWX CR and the AWX probe lane from
 # the shared identity in roles/common/awx-identity (awx_namespace,
-# awx_instance_name, awx_probe_instance), which this role lists as a dependency.
+# awx_instance_name and the awx_probe_instance filter), which this role lists as
+# a dependency.
 # configmap-dashboards.yml.j2 replaces the placeholders __AWX_NAMESPACE__,
 # __AWX_INSTANCE_NAME__ and __AWX_PROBE_INSTANCE__ in the dashboard JSON.

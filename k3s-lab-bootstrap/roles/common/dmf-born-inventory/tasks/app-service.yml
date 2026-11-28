@@ -208,7 +208,17 @@
     status_code: 200
     validate_certs: "{{ dmf_born_inventory_netbox_validate_certs | bool }}"
   vars:
-    dmf_app_cluster_svc: "{{ dmf_born_inventory_app_cluster_coords[dmf_app_service_key] }}"
+    # AWX comes from the shared identity, the other apps from the dictionary.
+    dmf_app_cluster_svc: >-
+      {{
+        {
+          'service': awx_instance_name | awx_service_name,
+          'namespace': awx_namespace,
+          'port': awx_instance_name | awx_service_port
+        }
+        if dmf_app_service_key == 'awx'
+        else dmf_born_inventory_app_cluster_coords[dmf_app_service_key]
+      }}
   when:
     - dmf_app_service_id | int > 0
     - dmf_app_cluster_svc is defined

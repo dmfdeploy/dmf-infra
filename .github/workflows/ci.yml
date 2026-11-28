@@ -260,10 +260,17 @@ jobs:
         working-directory: k3s-lab-bootstrap/roles/base/prometheus
         run: |
           set -eu
+          # The alert template calls the filters of the AWX identity role. The
+          # rules are rendered for the default identity, and for a second one
+          # that the tower rule tests use.
+          export ANSIBLE_FILTER_PLUGINS="$PWD/../../common/awx-identity/filter_plugins"
           ansible localhost -m ansible.builtin.template \
             -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
-            -e @defaults/main.yml -e @../../common/awx-identity/defaults/main.yml
-          promtool check rules tests/rendered_alerts.yml
+            -e @defaults/main.yml -e awx_namespace=awx -e awx_instance_name=awx
+          ansible localhost -m ansible.builtin.template \
+            -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts_tower.yml" \
+            -e @defaults/main.yml -e awx_namespace=lab -e awx_instance_name=tower
+          promtool check rules tests/rendered_alerts.yml tests/rendered_alerts_tower.yml
           shopt -s nullglob
           files=(tests/test_*.promtool.yml)
           [ ${#files[@]} -gt 0 ] || { echo "No promtool tests found"; exit 1; }

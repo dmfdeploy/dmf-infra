@@ -1,0 +1,150 @@
+# promtool rule unit test: NetboxProbeLaneDown (dmfdeploy/dmfdeploy#1027) with a second identity.
+#
+# The case ids (C1, L1 and so on) are the ids in docs/awx-probe-lane-cases.md.
+# Render and run as described in test_awx_replica_divergence_424.promtool.yml.
+# This file runs with awx_namespace lab and awx_instance_name tower. The lane is
+# the series whose instance is tower-service.lab.svc.cluster.local:80. A test
+# renders the rules through the real roles with those inputs and runs this file.
+#
+# The series carry the labels a live scrape gives them. The probe series have
+# exposure, instance and job, with no app label. The CR series is
+# awx_cr_web_replicas as kube-state-metrics exposes it, with its customresource_*,
+# node, service and app_kubernetes_io_* labels; its instance label is a
+# documentation address in place of the pod address. Each case has 20m series of
+# 1m samples; the alert waits 10m.
+rule_files:
+  - rendered_alerts_tower.yml
+evaluation_interval: 1m
+
+tests:
+  - name: C10 tower asleep, lane at 0 -> silent
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", exposure="private", instance="tower-service.lab.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts: []
+
+  - name: C10b tower asleep, lane at the default address at 0 -> fires
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", exposure="private", instance="awx-service.awx.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: sd-pipeline
+              job: netbox-probe
+              exposure: private
+              instance: awx-service.awx.svc.cluster.local:80
+            exp_annotations:
+              summary: "Probe lane awx-service.awx.svc.cluster.local:80 is failing"
+              description: "The blackbox probe for awx-service.awx.svc.cluster.local:80 has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
+
+  - name: C17 tower asleep, lane on port 8080 at 0 -> fires
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", exposure="private", instance="tower-service.lab.svc.cluster.local:8080"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: sd-pipeline
+              job: netbox-probe
+              exposure: private
+              instance: tower-service.lab.svc.cluster.local:8080
+            exp_annotations:
+              summary: "Probe lane tower-service.lab.svc.cluster.local:8080 is failing"
+              description: "The blackbox probe for tower-service.lab.svc.cluster.local:8080 has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
+
+  - name: L5 configured CR asleep, other CR 1 awake, AWX lane at 0 -> silent
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", exposure="private", instance="tower-service.lab.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower2", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts: []
+
+  - name: L6 configured CR awake, other CR 1 asleep, AWX lane at 0 -> fires
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", exposure="private", instance="tower-service.lab.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '2x20'
+      - series: 'awx_cr_web_replicas{name="tower2", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: sd-pipeline
+              job: netbox-probe
+              exposure: private
+              instance: tower-service.lab.svc.cluster.local:80
+            exp_annotations:
+              summary: "Probe lane tower-service.lab.svc.cluster.local:80 is failing"
+              description: "The blackbox probe for tower-service.lab.svc.cluster.local:80 has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
+
+  - name: L7 configured CR asleep, other CR 2 awake, AWX lane at 0 -> silent
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", exposure="private", instance="tower-service.lab.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab2", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '2x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts: []
+
+  - name: L8 configured CR awake, other CR 2 asleep, AWX lane at 0 -> fires
+    interval: 1m
+    input_series:
+      - series: 'probe_success{job="netbox-probe", exposure="private", instance="tower-service.lab.svc.cluster.local:80"}'
+        values: '0x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '2x20'
+      - series: 'awx_cr_web_replicas{name="tower", namespace="lab2", customresource_group="awx.ansible.com", customresource_kind="AWX", customresource_version="v1beta1", instance="192.0.2.53:8080", job="kubernetes-service-endpoints", node="node-01", service="prometheus-kube-state-metrics", app_kubernetes_io_component="metrics", app_kubernetes_io_instance="prometheus", app_kubernetes_io_managed_by="Helm", app_kubernetes_io_name="kube-state-metrics", app_kubernetes_io_part_of="kube-state-metrics", app_kubernetes_io_version="2.20.0", helm_sh_chart="kube-state-metrics-9.1.0"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: NetboxProbeLaneDown
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              category: sd-pipeline
+              job: netbox-probe
+              exposure: private
+              instance: tower-service.lab.svc.cluster.local:80
+            exp_annotations:
+              summary: "Probe lane tower-service.lab.svc.cluster.local:80 is failing"
+              description: "The blackbox probe for tower-service.lab.svc.cluster.local:80 has failed for 10 minutes. The AWX lane does not alert while the AWX CR asks for 0 web replicas (scale-to-zero sleep); a wake window or an install without scale-to-zero alerts as usual."
+              runbook_url: "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"

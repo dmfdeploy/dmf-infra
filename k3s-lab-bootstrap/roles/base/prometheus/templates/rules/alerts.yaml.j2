@@ -855,7 +855,7 @@ groups:
           unless on(instance)
           label_replace(
             max(awx_cr_web_replicas{namespace="{{ awx_namespace }}", name="{{ awx_instance_name }}"}) == 0,
-            "instance", "{{ awx_probe_instance }}", "", ""
+            "instance", "{{ awx_instance_name | awx_probe_instance(awx_namespace) }}", "", ""
           )
         for: 10m
         labels:

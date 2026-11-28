@@ -129,8 +129,9 @@ prometheus_alert_cpu_over_request_crit_ratio: 3.0
 prometheus_alert_ingestion_drop_for: 2m
 
 # AWX CR-vs-running-state divergence (dmfdeploy/dmfdeploy#424). The AWX
-# namespace, name and probe instance come from roles/common/awx-identity (awx_namespace,
-# awx_instance_name, awx_probe_instance), which this role lists as a dependency.
+# namespace, name and probe instance come from roles/common/awx-identity
+# (awx_namespace, awx_instance_name and the awx_probe_instance filter), which
+# this role lists as a dependency.
 # Trailing window the divergence ratio below is averaged over, via a promql
 # subquery (not a bare `for:` — see the alert's own comment in alerts.yaml.j2
 # for why a bare for: silently resets on every retry). ~2x the worst measured

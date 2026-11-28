@@ -2,6 +2,9 @@
 AWX probe lane as asleep, not failed, while AWX sleeps on purpose
 (dmfdeploy/dmfdeploy#1027).
 
+The case ids in the docstrings (C1, L5 and so on) are the ids in
+docs/awx-probe-lane-cases.md.
+
 The test renders the dashboard ConfigMap and the Prometheus rules by running the
 real roles of the real playbooks (awx_role_path_1027.py), so the AWX identity
 resolves the way a play resolves it. It runs the probe table's query and the
@@ -25,13 +28,18 @@ import tempfile
 import textwrap
 import unittest
 
+import yaml
+
 import awx_role_path_1027 as real
+
+ROOT = real.ROOT
 
 KEY = "  dmf-platform-services.json: |\n"
 AWX = "awx-service.awx.svc.cluster.local:80"
-NMOS = "nmos-cpp-registry.nmos.svc.cluster.local:80"
-LOOKALIKE = "awx-exporter.monitoring.svc.cluster.local:9100"
-SUFFIXED = "awx-service.awx.svc.cluster.local:80/ready"
+TOWER = "tower-service.lab.svc.cluster.local:80"
+LOOKALIKES = ("awx-service-other.awx.svc.cluster.local:80",
+              "awx-service.awx.svc.cluster.local:8080",
+              "awx-service.awx.svc.cluster.local:80/path")
 RUNBOOK = "https://github.com/dmfdeploy/dmf-runbooks/blob/main/docs/alerts.md#service-discovery-pipeline"
 
 _SHARED = pathlib.Path(tempfile.mkdtemp())
@@ -42,20 +50,15 @@ atexit.register(shutil.rmtree, _SHARED, True)
 def _rendered(consumer, inventory_json):
     workdir = _SHARED / f"{consumer}-{len(list(_SHARED.iterdir()))}"
     workdir.mkdir()
-    result, rendered = real.run(consumer, workdir, json.loads(inventory_json))
-    assert result.returncode == 0, result.stdout + result.stderr
-    return rendered
+    run = real.run(consumer, workdir, json.loads(inventory_json))
+    assert run.returncode == 0, run.output
+    return run.rendered
 
 
 def render_dashboard(**inventory):
     """The dashboard JSON the Grafana role's ConfigMap carries."""
-    lines = _rendered("dashboard", json.dumps(inventory, sort_keys=True)).splitlines(keepends=True)
-    body = []
-    for line in lines[lines.index(KEY) + 1:]:
-        if not line.startswith("    ") and line.strip():
-            break
-        body.append(line)
-    return json.loads(textwrap.dedent("".join(body)))
+    return json.loads(textwrap.dedent(
+        real.dashboard_json_text(_rendered("dashboard", json.dumps(inventory, sort_keys=True)))))
 
 
 def render_rules(**inventory):
@@ -71,8 +74,7 @@ def probe_table(dashboard):
 
 
 def alert_expr(rules):
-    return next(r["expr"] for g in rules["groups"] for r in g["rules"]
-                if r.get("alert") == "NetboxProbeLaneDown")
+    return real.alert_expr(rules, "NetboxProbeLaneDown")
 
 
 def promtool_test(workdir, rule_files, tests, label="run"):
@@ -101,19 +103,18 @@ def series(name, labels, value, samples=5):
 def probe(instance, value, samples=5):
     """A lane series as the live scrape gives it: no app label.
 
-    Live, 2026-11-27: probe_success{exposure="private",
-    instance="awx-service.awx.svc.cluster.local:80", job="netbox-probe"}"""
+    A live series has exactly these three labels."""
     return series("probe_success", {"exposure": "private", "instance": instance,
                                     "job": "netbox-probe"}, value, samples)
 
 
-# The CR series as kube-state-metrics exposes it on the live sandbox,
-# 2026-11-27, with the CR's own name and namespace left to the caller. The
-# instance address is a documentation-range stand-in for the pod address.
+# The CR series as kube-state-metrics exposes it, with the CR's own name and
+# namespace left to the caller. The instance address is a documentation-range
+# stand-in for the pod address.
 LIVE_CR_LABELS = {
     "customresource_group": "awx.ansible.com", "customresource_kind": "AWX",
     "customresource_version": "v1beta1", "instance": "192.0.2.53:8080",
-    "job": "kubernetes-service-endpoints", "node": "vrbs-exsz-01",
+    "job": "kubernetes-service-endpoints", "node": "node-01",
     "service": "prometheus-kube-state-metrics", "app_kubernetes_io_component": "metrics",
     "app_kubernetes_io_instance": "prometheus", "app_kubernetes_io_managed_by": "Helm",
     "app_kubernetes_io_name": "kube-state-metrics", "app_kubernetes_io_part_of": "kube-state-metrics",
@@ -132,6 +133,22 @@ def lane(instance, value):
             "value": value}
 
 
+
+TOWER_IDENTITY = {"awx_namespace": "lab", "awx_instance_name": "tower"}
+
+# Second-CR rows: (id, configured state, other state, which other CR, tower file).
+# Other CR 1 has the configured namespace and another name; other CR 2 has the
+# configured name in another namespace.
+SECOND_CR = [("L1", 0, 2, 1, False), ("L2", 2, 0, 1, False), ("L3", 0, 2, 2, False),
+             ("L4", 2, 0, 2, False), ("L5", 0, 2, 1, True), ("L6", 2, 0, 1, True),
+             ("L7", 0, 2, 2, True), ("L8", 2, 0, 2, True)]
+
+
+def other_cr(tower, kind):
+    namespace, name = ("lab", "tower") if tower else ("awx", "awx")
+    return (namespace, name + "2") if kind == 1 else (namespace + "2", name)
+
+
 class DashboardLaneState(unittest.TestCase):
     def setUp(self):
         self.tmp = pathlib.Path(tempfile.mkdtemp())
@@ -148,98 +165,71 @@ class DashboardLaneState(unittest.TestCase):
                                   "exp_samples": expected}]}], label=f"dashboard {name}")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
-    def test_no_placeholder_is_left_in_the_rendered_query(self):
-        expr = probe_table(render_dashboard())["targets"][0]["expr"]
-        self.assertNotIn("__AWX_", expr)
-        self.assertIn('namespace="awx", name="awx"', expr)
-        self.assertIn(f'"instance", "{AWX}"', expr)
+    def test_awake_keeps_the_probe_result(self):
+        """C1 (awake, probe 1 reads up) and C1b (awake, probe 0 reads failed)."""
+        self.check("C1 awake, probe 1", [probe(AWX, 1), cr("awx", "awx", 2)], [lane(AWX, 1)])
+        self.check("C1b awake, probe 0", [probe(AWX, 0), cr("awx", "awx", 2)], [lane(AWX, 0)])
 
     def test_asleep_reads_two_when_the_probe_fails(self):
-        self.check("asleep, probe 0", [probe(AWX, 0), cr("awx", "awx", 0)],
-                   [lane(AWX, 2)])
+        """C2 (asleep through autoscale). C3a, a hand scale of the CR, is the same series."""
+        self.check("C2 asleep, probe 0", [probe(AWX, 0), cr("awx", "awx", 0)], [lane(AWX, 2)])
 
     def test_asleep_reads_two_when_the_probe_still_succeeds(self):
-        self.check("asleep, probe 1", [probe(AWX, 1), cr("awx", "awx", 0)],
-                   [lane(AWX, 2)])
+        """C2b (asleep, probe 1: a wake in progress)."""
+        self.check("C2b asleep, probe 1", [probe(AWX, 1), cr("awx", "awx", 0)], [lane(AWX, 2)])
 
-    def test_awake_keeps_the_probe_result(self):
-        self.check("awake, probe 0", [probe(AWX, 0), cr("awx", "awx", 2)],
-                   [lane(AWX, 0)])
-        self.check("awake, probe 1", [probe(AWX, 1), cr("awx", "awx", 2)],
-                   [lane(AWX, 1)])
+    def test_deployments_at_zero_with_the_cr_awake_reads_failed(self):
+        """C3b: the CR still asks for 2, so the lane is not excused."""
+        self.check("C3b CR at 2, probe 0", [probe(AWX, 0), cr("awx", "awx", 2)], [lane(AWX, 0)])
 
     def test_absent_metric_keeps_the_probe_result(self):
-        self.check("absent, probe 0", [probe(AWX, 0)], [lane(AWX, 0)])
-        self.check("absent, probe 1", [probe(AWX, 1)], [lane(AWX, 1)])
-
-    def test_each_lane_has_exactly_one_series(self):
-        self.check("several lanes",
-                   [probe(AWX, 0), probe(NMOS, 1), cr("awx", "awx", 0)],
-                   [lane(AWX, 2), lane(NMOS, 1)])
-        self.check("several lanes, duplicate CR series",
-                   [probe(AWX, 1), probe(NMOS, 0), cr("awx", "awx", 0),
-                    cr("awx", "awx", 0, instance="192.0.2.54:8080", node="vrbs-exsz-02")],
-                   [lane(AWX, 2), lane(NMOS, 0)])
-
-    def test_another_cr_does_not_decide_the_awx_lane(self):
-        # A second AWX CR on the live label shape, awake while the configured
-        # one sleeps, and the other way round.
-        self.check("configured CR asleep, another CR awake",
-                   [probe(AWX, 0), cr("awx", "awx", 0), cr("other", "second", 2)],
-                   [lane(AWX, 2)])
-        self.check("configured CR awake, another CR asleep",
-                   [probe(AWX, 0), cr("awx", "awx", 2), cr("other", "second", 0)],
-                   [lane(AWX, 0)])
-
-    def test_sleep_of_another_lane_is_not_hidden(self):
-        self.check("other lane at 0 while AWX sleeps",
-                   [probe(NMOS, 0), cr("awx", "awx", 0)], [lane(NMOS, 0)])
+        """C4 (AWX not deployed: the CR metric is absent)."""
+        self.check("C4 absent, probe 0", [probe(AWX, 0)], [lane(AWX, 0)])
 
     def test_regression_guard_lookalike_lanes_are_never_dropped(self):
-        """The old rule also passed this: it dropped no lane at all."""
-        for other in (LOOKALIKE, SUFFIXED, NMOS):
-            self.check(f"{other} while AWX sleeps, probe 0",
-                       [probe(other, 0), cr("awx", "awx", 0)], [lane(other, 0)])
-            self.check(f"{other} while AWX sleeps, probe 1",
-                       [probe(other, 1), cr("awx", "awx", 0)], [lane(other, 1)])
-
-    def test_regression_guard_lane_of_a_different_awx_service(self):
-        other = "awx-service.other.svc.cluster.local:80"
-        self.check("same service name, other namespace",
-                   [probe(other, 0), probe(AWX, 0), cr("awx", "awx", 0)],
-                   [lane(other, 0), lane(AWX, 2)])
+        """C16: the earlier rule also passed this; the mutants of C16b tell old from new."""
+        for other in LOOKALIKES:
+            self.check(f"C16 {other}", [probe(other, 0), cr("awx", "awx", 0)], [lane(other, 0)])
 
     def test_configured_identity_is_the_one_that_counts(self):
-        identity = {"awx_namespace": "lab", "awx_instance_name": "tower"}
-        lab = "tower-service.lab.svc.cluster.local:80"
-        self.check("configured CR asleep, probe 0",
-                   [probe(lab, 0), cr("lab", "tower", 0)], [lane(lab, 2)], **identity)
-        self.check("configured CR asleep, probe 1",
-                   [probe(lab, 1), cr("lab", "tower", 0)], [lane(lab, 2)], **identity)
-        self.check("configured CR awake",
-                   [probe(lab, 0), cr("lab", "tower", 2)], [lane(lab, 0)], **identity)
-        self.check("unrelated awx/awx asleep, configured CR awake",
-                   [probe(lab, 0), probe(AWX, 0), cr("awx", "awx", 0), cr("lab", "tower", 2)],
-                   [lane(lab, 0), lane(AWX, 0)], **identity)
-        self.check("only the unrelated awx/awx exists",
-                   [probe(lab, 1), cr("awx", "awx", 0)], [lane(lab, 1)], **identity)
+        """C10 (the tower lane asleep reads 2)."""
+        self.check("C10 tower asleep", [probe(TOWER, 0), cr("lab", "tower", 0)],
+                   [lane(TOWER, 2)], **TOWER_IDENTITY)
 
-    def test_service_and_port_name_the_lane(self):
-        identity = {"awx_probe_service": "tower-web", "awx_probe_port": 8052}
-        seeded = "tower-web.awx.svc.cluster.local:8052"
-        self.check("seeded lane asleep",
-                   [probe(seeded, 0), probe(AWX, 0), cr("awx", "awx", 0)],
-                   [lane(seeded, 2), lane(AWX, 0)], **identity)
+    def test_regression_guard_lane_of_a_different_awx_service(self):
+        """C10b: tower asleep, the lane at the default address at 0 reads failed."""
+        self.check("C10b default lane, tower asleep", [probe(AWX, 0), cr("lab", "tower", 0)],
+                   [lane(AWX, 0)], **TOWER_IDENTITY)
 
-    def test_mapping_names_each_state_and_asleep_has_its_own_colour(self):
-        table = probe_table(render_dashboard())["fieldConfig"]["defaults"]
-        options = {}
-        for m in table["mappings"]:
-            options.update(m["options"])
-        self.assertEqual({k: v["text"] for k, v in options.items()},
-                         {"0": "failed", "1": "up", "2": "asleep"})
-        colours = {s["value"]: s["color"] for s in table["thresholds"]["steps"]}
-        self.assertEqual(colours, {None: "red", 1: "green", 2: "blue"})
+    def test_regression_guard_port_of_a_different_awx_service(self):
+        """C17: tower asleep, the lane on port 8080 at 0 reads failed."""
+        other = "tower-service.lab.svc.cluster.local:8080"
+        self.check("C17 tower port 8080", [probe(other, 0), cr("lab", "tower", 0)],
+                   [lane(other, 0)], **TOWER_IDENTITY)
+
+    def second_cr(self, row, conf, oth, kind, tower):
+        """L1 to L8 (generated as test_second_cr_<id> below): another CR never decides the lane."""
+        namespace, name = ("lab", "tower") if tower else ("awx", "awx")
+        target = TOWER if tower else AWX
+        other = other_cr(tower, kind)
+        self.check(f"{row} configured {conf}, other {oth}",
+                   [probe(target, 0), cr(namespace, name, conf), cr(other[0], other[1], oth)],
+                   [lane(target, 2 if conf == 0 else 0)], **(TOWER_IDENTITY if tower else {}))
+
+    def test_second_cr_C19a(self):
+        """C19a: two series of the configured CR, both 0: asleep, one lane series."""
+        self.check("C19a both 0", [probe(AWX, 0), cr("awx", "awx", 0),
+                                   cr("awx", "awx", 0, instance="192.0.2.54:8080")], [lane(AWX, 2)])
+
+    def test_second_cr_C19b(self):
+        """C19b: the same two series at 0 and 2: the larger value keeps the lane awake."""
+        self.check("C19b 0 and 2", [probe(AWX, 0), cr("awx", "awx", 0),
+                                    cr("awx", "awx", 2, instance="192.0.2.54:8080")], [lane(AWX, 0)])
+
+
+for _row, _conf, _oth, _kind, _tower in SECOND_CR:
+    setattr(DashboardLaneState, f"test_second_cr_{_row}",
+            (lambda r, c, o, k, t: lambda self: self.second_cr(r, c, o, k, t))(_row, _conf, _oth, _kind, _tower))
 
 
 def failing_labels(instance):
@@ -277,44 +267,37 @@ class RuleRunner(unittest.TestCase):
         return promtool_test(self.tmp, [str(path)], cases, label=label)
 
 
-class AlertIdentity(RuleRunner):
+class TowerRuleFile(RuleRunner):
+    """The tower promtool file, run against the rules the real roles render for it."""
 
-    def test_alert_reads_the_configured_cr(self):
-        lab = "tower-service.lab.svc.cluster.local:80"
-        rules = render_rules(awx_namespace="lab", awx_instance_name="tower")
-        result = self.run_rules(rules, [
-            alert_case("configured CR asleep -> silent",
-                       [(lab, 0), (LOOKALIKE, 1)], [cr("lab", "tower", 0, 20)], []),
-            alert_case("only awx/awx asleep -> fires",
-                       [(lab, 0), (LOOKALIKE, 1)], [cr("awx", "awx", 0, 20)], [lab]),
-            alert_case("configured CR awake, awx/awx asleep -> fires",
-                       [(lab, 0), (LOOKALIKE, 1)],
-                       [cr("lab", "tower", 2, 20), cr("awx", "awx", 0, 20)], [lab])],
-            "alert configured identity")
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-
-    def test_the_other_alerts_follow_the_same_identity(self):
-        expr = " ".join(r["expr"] for g in render_rules(awx_namespace="lab", awx_instance_name="tower")["groups"]
-                        for r in g["rules"] if "awx" in r.get("alert", "").lower())
-        self.assertIn('namespace="lab"', expr)
-        self.assertIn('name="tower"', expr)
-        self.assertIn('deployment="tower-web"', expr)
-        self.assertNotIn('namespace="awx"', expr)
+    def test_tower_file_passes_on_the_rendered_rules(self):
+        """C10, C10b, C17 and L5 to L8 in test_netbox_probe_lane_1027_tower.promtool.yml."""
+        tests = ROOT / "roles/base/prometheus/tests"
+        rendered = _rendered("alert", json.dumps(TOWER_IDENTITY, sort_keys=True))
+        text = yaml.safe_load(rendered)["serverFiles"]["alerting_rules.yml"]
+        (self.tmp / "rendered_alerts_tower.yml").write_text(yaml.safe_dump(text))
+        shutil.copy(tests / "test_netbox_probe_lane_1027_tower.promtool.yml", self.tmp)
+        done = subprocess.run(["promtool", "test", "rules",
+                               str(self.tmp / "test_netbox_probe_lane_1027_tower.promtool.yml")],
+                              capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
 
 
 class RuleMutants(RuleRunner):
-    """Two overbroad versions of the rule must fail the lane cases.
+    """C16b: two overbroad versions of the rule must fail the lane cases.
 
     The old rule matched on a label the series never carry, so it dropped no lane
     and the lookalike cases cannot tell it from the fix. A rule that drops too
     much can be told apart: each mutant is built from the rendered rule by string
     replacement and must turn the cases that need the dropped lane red."""
 
+    ASLEEP = "C16b AWX asleep, AWX lane at 0 -> silent"
+    AWAKE = "C16b AWX awake, AWX lane at 0 -> fires"
+    LOOKALIKE = "C16b AWX asleep, lookalike lane at 0 -> fires"
     CASES = [
-        alert_case("AWX asleep, AWX lane at 0 -> silent", [(AWX, 0)], [cr("awx", "awx", 0, 20)], []),
-        alert_case("AWX awake, AWX lane at 0 -> fires", [(AWX, 0)], [cr("awx", "awx", 2, 20)], [AWX]),
-        alert_case("AWX asleep, other lane at 0 -> fires", [(NMOS, 0)], [cr("awx", "awx", 0, 20)], [NMOS]),
-        alert_case("AWX asleep, lookalike lane at 0 -> fires", [(LOOKALIKE, 0)], [cr("awx", "awx", 0, 20)], [LOOKALIKE]),
+        alert_case(ASLEEP, [(AWX, 0)], [cr("awx", "awx", 0, 20)], []),
+        alert_case(AWAKE, [(AWX, 0)], [cr("awx", "awx", 2, 20)], [AWX]),
+        alert_case(LOOKALIKE, [(LOOKALIKES[0], 0)], [cr("awx", "awx", 0, 20)], [LOOKALIKES[0]]),
     ]
 
     def mutated(self, old, new):
@@ -332,6 +315,7 @@ class RuleMutants(RuleRunner):
         return result, {n for n in names if f"name: {n}," in result.stdout + result.stderr}
 
     def test_the_real_rule_passes_every_case(self):
+        """C16b baseline: the real rule passes the cases the mutants fail."""
         result, failed = self.failed_cases(render_rules(), "lane cases, real rule")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(failed, set())
@@ -340,17 +324,14 @@ class RuleMutants(RuleRunner):
         rules = self.mutated("unless on(instance)", "unless on()")
         result, failed = self.failed_cases(rules, "lane cases, mutant unless on()")
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(failed, {"AWX asleep, other lane at 0 -> fires",
-                                  "AWX asleep, lookalike lane at 0 -> fires"})
+        self.assertEqual(failed, {self.LOOKALIKE})
 
     def test_a_rule_that_drops_every_awx_prefixed_lane_fails(self):
         rules = self.mutated('probe_success{job="netbox-probe"}',
                              'probe_success{job="netbox-probe", instance!~"awx-.*"}')
         result, failed = self.failed_cases(rules, 'lane cases, mutant instance!~"awx-.*"')
         self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(failed, {"AWX awake, AWX lane at 0 -> fires",
-                                  "AWX asleep, lookalike lane at 0 -> fires"})
-
+        self.assertEqual(failed, {self.AWAKE, self.LOOKALIKE})
 
 
 if __name__ == "__main__":

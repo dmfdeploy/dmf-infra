@@ -1,2 +1,3 @@
 .ansible/
 roles/base/prometheus/tests/rendered_alerts.yml
+roles/base/prometheus/tests/rendered_alerts_tower.yml
