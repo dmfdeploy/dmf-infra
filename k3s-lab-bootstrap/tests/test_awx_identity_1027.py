@@ -328,7 +328,8 @@ class MissingInputs(Base):
                 deps = [d["role"] if isinstance(d, dict) else d for d in meta["dependencies"]]
                 self.assertIn(real.IDENTITY_ROLE, deps)
                 tasks = yaml.safe_load((ROOT / "roles" / role / "tasks/main.yml").read_text())
-                first = tasks[0]
+                # The seed keeps its token refusal as the first task; the check follows it.
+                first = tasks[1] if consumer == "seed" else tasks[0]
                 self.assertEqual(first["name"], "Check that the AWX namespace and instance name are set")
                 self.assertIn("awx_namespace", " ".join(first["ansible.builtin.assert"]["that"]))
                 self.assertIn("awx_instance_name", " ".join(first["ansible.builtin.assert"]["that"]))

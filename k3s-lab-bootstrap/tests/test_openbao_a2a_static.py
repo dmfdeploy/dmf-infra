@@ -270,14 +270,14 @@ class DirectTokenOnReceiptPathTest(unittest.TestCase):
             play = Path(tmp) / "play.yml"
             play.write_text(
                 "- hosts: localhost\n  connection: local\n  gather_facts: false\n  tasks:\n"
-                "    - ansible.builtin.include_role:\n        name: dmf-born-inventory\n"
+                "    - ansible.builtin.include_role:\n        name: common/dmf-born-inventory\n"
                 "      vars:\n"
                 f"        dmf_born_inventory_receipt_path_enabled: {switch}\n"
                 f"        dmf_born_inventory_netbox_admin_token: '{token}'\n"
             )
             env = dict(
                 os.environ,
-                ANSIBLE_ROLES_PATH=str(ROOT / "roles/common"),
+                ANSIBLE_ROLES_PATH=str(ROOT / "roles"),
                 ANSIBLE_COLLECTIONS_PATH=str(Path.home() / ".ansible/collections"),
                 ANSIBLE_LOCAL_TEMP=tmp,
                 ANSIBLE_HOME=tmp,
