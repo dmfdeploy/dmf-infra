@@ -16,14 +16,17 @@
 # Both go into PromQL strings in the NetboxProbeLaneDown and AWXReplicaDivergence
 # rules and in the platform-services dashboard query, so they must be plain
 # Kubernetes names: no quote, backslash, brace, dollar sign or newline. The
-# filters in this role check the same shape where they are used.
+# filters in this role check the same shape where they are used. The instance
+# name prefixes a Service name (a DNS-1035 label, so it starts with a letter and
+# has no dots) and "-admin-password", the longest suffix this repo writes (15
+# characters): 63 - 15 = 48 characters at most.
 # \Z anchors the end of the string; $ would also accept a trailing newline.
 - name: Check the shape of the AWX namespace and instance name
   ansible.builtin.assert:
     that:
       - awx_namespace is match('^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\Z')
-      - awx_instance_name is match('^(?=.{1,253}\Z)[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?(\.[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?)*\Z')
+      - awx_instance_name is match('^(?=.{1,48}\Z)[a-z]([-a-z0-9]*[a-z0-9])?\Z')
     fail_msg: >-
-      awx_namespace must be a DNS label and awx_instance_name a DNS subdomain,
-      because the alert rules and the dashboard embed them.
+      awx_namespace must be a DNS label and awx_instance_name a DNS-1035 label of
+      at most 48 characters, because the alert rules and the dashboard embed them.
     quiet: true
