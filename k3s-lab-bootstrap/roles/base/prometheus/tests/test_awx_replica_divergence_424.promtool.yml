@@ -6,9 +6,10 @@
 # lookup('template', ...) at deploy time), then run promtool:
 #
 #   cd roles/base/prometheus
+#   export ANSIBLE_FILTER_PLUGINS="$PWD/../../common/awx-identity/filter_plugins"
 #   ansible localhost -m ansible.builtin.template \
 #     -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
-#     -e @defaults/main.yml -e @../../common/awx-identity/defaults/main.yml
+#     -e @defaults/main.yml -e awx_namespace=awx -e awx_instance_name=awx
 #   promtool check rules tests/rendered_alerts.yml
 #   promtool test rules tests/test_awx_replica_divergence_424.promtool.yml
 #

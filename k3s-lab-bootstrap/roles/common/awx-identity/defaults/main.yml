@@ -1,15 +1,13 @@
 ---
-# The one AWX identity the platform shares (dmfdeploy/dmfdeploy#1027). The
-# NetBox seed (dmf-born-inventory), the Prometheus alert rules and the Grafana
-# dashboard each list this role as a dependency, so every play that uses one of
-# them reads the same values. Role defaults have the lowest precedence, so an
-# inventory value for awx_namespace or awx_instance_name wins.
+# The two inputs that name the AWX instance for the platform
+# (dmfdeploy/dmfdeploy#1027). The NetBox seed, the Prometheus alert rules, the
+# Grafana dashboard and the AWX deployer each list this role as a dependency,
+# so every play that uses one of them reads these two names and no others.
+# Set them in the inventory or with -e. Role defaults have the lowest
+# precedence, so an inventory value wins.
+#
+# Nothing derived from them is stored. The Service name, the port and the probe
+# instance come from the filters in filter_plugins/awx_identity.py, at the point
+# of use, so no variable can move one reader without the others.
 awx_namespace: awx
 awx_instance_name: awx
-
-# The Service and port that NetBox records for AWX and that the NetBox probe
-# job scrapes. awx_probe_instance is the `instance` label of that probe series:
-# <service>.<namespace>.svc.cluster.local:<port>.
-awx_probe_service: "{{ awx_instance_name }}-service"
-awx_probe_port: 80
-awx_probe_instance: "{{ awx_probe_service }}.{{ awx_namespace }}.svc.cluster.local:{{ awx_probe_port }}"

@@ -1,5 +1,4 @@
 ---
-awx_namespace: awx
 awx_helm_repo: https://ansible-community.github.io/awx-operator-helm/
 # This is the Helm CHART version (passed to helm as chart_version), NOT the
 # operator appVersion. Helm chart 3.2.1 -> operator appVersion 2.19.1 -> AWX
@@ -14,8 +13,8 @@ awx_operator_version: "3.2.1"
 # profile prelude, so a standalone play run keeps the cap (#281).
 awx_operator_cpu_limit: "{{ '500m' if (dmf_release_profile | default('')) == 'sandbox-single-node' else '' }}"
 
-# AWX instance configuration
-awx_instance_name: awx
+# AWX instance configuration. The instance name and namespace are the two
+# inputs of roles/common/awx-identity, which this role lists as a dependency.
 # Local AWX admin username — intentionally a fixed non-colliding break-glass
 # identity, NOT vault_bootstrap_admin_username. ADR-0028 D3 + per-app survey
 # §3.2 (2026-05-24): when the local admin username matches the
