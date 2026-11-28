@@ -81,8 +81,8 @@ environment bakes in. CI installs both lists.
 
 Run each block in this section from the repository root, with the virtual
 environment active. Each block changes to `k3s-lab-bootstrap/` itself, stops at
-the first failing command and returns a failure status. The commands are the
-ones that the `ansible` job in CI runs, in the same order.
+the first failing command and returns a failure status. The commands cover
+a subset of the CI checks. See [What CI runs](#what-ci-runs).
 
 Lint, and run the unit tests:
 
@@ -235,9 +235,10 @@ follows `AGENTS.md`, which allows `ansible-playbook` only with
 maintainer, and says so in the pull request.
 
 The times below are ranges from a laptop. The whole run takes 30 to 40 minutes.
-CI runs the same checks in parallel jobs: `ansible-checks`, which allows 15
-minutes, and the OpenBao tests, which `ansible-unit` splits into 3 shards and
-`ansible-openbao` splits into 5.
+CI runs related checks in parallel jobs: `ansible-checks`, which allows 15
+minutes; `ansible-unit`, which splits OpenBao unit tests into 3 shards; and
+`ansible-openbao`, which splits fixture playbooks into 5 shards. CI also runs
+checks not listed here.
 
 | Check | Time |
 | --- | --- |
@@ -263,8 +264,9 @@ playbooks to CI.
 The `ci` workflow has these jobs:
 
 - **`ansible-checks`** installs the pinned `ansible-core`, `ansible-lint`,
-  `yamllint` and `requirements.txt` on Python 3.14, then runs the commands in the
-  previous section. It also installs Helm and skopeo.
+  `yamllint` and `requirements.txt` on Python 3.14, then runs lint, syntax,
+  chart and unit checks; the previous section lists a local subset. It also
+  installs Helm and skopeo.
 - **`review-comments`** runs `bin/check-review-comments.sh` and its
   `--self-test`. The check rejects a code comment that records review history.
   The self-test takes about 20 seconds.
