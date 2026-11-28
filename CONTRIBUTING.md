@@ -23,8 +23,8 @@ This section is the one place for development and test commands. The README and
 
 ### Prerequisites
 
-- **Python 3.** CI uses the `python3` of its `ubuntu-24.04` runner and pins no
-  version. The checks in this section were tested with Python 3.12.
+- **Python 3.14.** CI runs Python 3.14 (the `python-version` setting in
+  `ci.yml`). Use 3.14 to match it.
 - **Network access to Ansible Galaxy**, to install the collections.
 - **[Helm](https://helm.sh/).** The chart lint runs it. CI installs it with
   `azure/setup-helm`.
@@ -53,9 +53,9 @@ failing command and returns a failure status.
   set -euo pipefail
   python3 --version
   python3 -m venv .venv
-  .venv/bin/python -m pip install ansible ansible-lint yamllint
-  .venv/bin/python -m pip install -r k3s-lab-bootstrap/requirements.txt
   cd k3s-lab-bootstrap
+  ../.venv/bin/python -m pip install -r requirements-ansible-core.txt \
+    -r requirements-ci.txt -r requirements.txt
   ../.venv/bin/ansible-galaxy collection install -r ee/requirements.yml
 )
 ```
@@ -67,7 +67,9 @@ new terminal:
 . .venv/bin/activate
 ```
 
-`k3s-lab-bootstrap/requirements.txt` declares the Python packages that the
+`requirements-ansible-core.txt` and `requirements-ci.txt` pin `ansible-core`,
+`ansible-lint` and `yamllint`, the same files that CI installs.
+`requirements.txt` declares the Python packages that the
 playbooks and the unit tests import. `jmespath` is one: the `json_query` filter
 in `community.general` needs it, and tests that use the filter fail without it.
 `ansible-galaxy` installs the collections into `~/.ansible/collections`, outside
@@ -185,17 +187,24 @@ covers it:
 
 Run the Prometheus alert rule tests. They need
 [promtool](https://prometheus.io/docs/prometheus/latest/command-line/promtool/).
-The block renders the alert template into a file that Git ignores, checks the
-rules, and runs each test file:
+The alert template calls the filters of the AWX identity role, so the block
+points `ANSIBLE_FILTER_PLUGINS` at them. It renders the template twice, once for
+the default AWX identity and once for a second identity that the tower rule
+tests use. The files go to a place that Git ignores. The block then checks both
+rule files and runs each test file:
 
 ```bash
 (
   set -euo pipefail
   cd k3s-lab-bootstrap/roles/base/prometheus
+  export ANSIBLE_FILTER_PLUGINS="$PWD/../../common/awx-identity/filter_plugins"
   ansible localhost -m ansible.builtin.template \
     -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts.yml" \
-    -e @defaults/main.yml
-  promtool check rules tests/rendered_alerts.yml
+    -e @defaults/main.yml -e awx_namespace=awx -e awx_instance_name=awx
+  ansible localhost -m ansible.builtin.template \
+    -a "src=templates/rules/alerts.yaml.j2 dest=tests/rendered_alerts_tower.yml" \
+    -e @defaults/main.yml -e awx_namespace=lab -e awx_instance_name=tower
+  promtool check rules tests/rendered_alerts.yml tests/rendered_alerts_tower.yml
   for f in tests/test_*.promtool.yml; do
     promtool test rules "$f"
   done
@@ -225,8 +234,10 @@ follows `AGENTS.md`, which allows `ansible-playbook` only with
 `--syntax-check`. An agent leaves the fixture playbooks to CI or to a
 maintainer, and says so in the pull request.
 
-The times below come from one run on an 8-core laptop. The whole run takes about
-20 minutes, and CI allows 30.
+The times below are ranges from a laptop. The whole run takes 30 to 40 minutes.
+CI runs the same checks in parallel jobs: `ansible-checks`, which allows 15
+minutes, and the OpenBao tests, which `ansible-unit` splits into 3 shards and
+`ansible-openbao` splits into 5.
 
 | Check | Time |
 | --- | --- |
@@ -234,7 +245,7 @@ The times below come from one run on an 8-core laptop. The whole run takes about
 | `ansible-lint` | About 25 seconds |
 | Syntax check of every playbook | About 20 seconds |
 | The `awx-integration`, Forgejo, CoreDNS, `no_log` and trace mode tests | A few seconds each |
-| The OpenBao unit tests, `test_openbao_*.py` | About 3 minutes |
+| The OpenBao unit tests, `test_openbao_*.py` | 15 to 25 minutes |
 | `test_local_ca_node_address.py` | About 20 seconds |
 | `test-openbao-k8s-auth.yml` | About 4.5 minutes |
 | `test-openbao-grow-ha.yml` | About 3.5 minutes |
@@ -251,9 +262,9 @@ playbooks to CI.
 
 The `ci` workflow has these jobs:
 
-- **`ansible`** installs the newest `ansible` package, `ansible-lint`, `yamllint`
-  and `requirements.txt`, then runs the commands in the previous section. It
-  also installs Helm and skopeo.
+- **`ansible-checks`** installs the pinned `ansible-core`, `ansible-lint`,
+  `yamllint` and `requirements.txt` on Python 3.14, then runs the commands in the
+  previous section. It also installs Helm and skopeo.
 - **`review-comments`** runs `bin/check-review-comments.sh` and its
   `--self-test`. The check rejects a code comment that records review history.
   The self-test takes about 20 seconds.
@@ -353,9 +364,9 @@ CI checks each of these.
   points at this repo. If your change has no issue, such as a typo fix, a
   maintainer can add the `no-issue` label. Only maintainers can add labels, so
   if you open the pull request from a fork, ask in the PR. The check runs when
-  you open the pull request, push a commit, or edit the PR body. Adding a label
-  doesn't run it, so after a maintainer adds `no-issue`, edit the PR body or
-  push a commit to run the check again.
+  you open the pull request, reopen it, push a commit, edit the PR body, or add
+  or remove a label (the `on:` trigger list in `issue-link.yml`). After a
+  maintainer adds `no-issue`, nothing more is needed.
 - **A DCO sign-off on every commit.** Use `git commit -s`. See the next section.
 - **Conventional commit subjects.** Use `type(scope): summary`, with one
   optional scope. The scope may use only `a-z`, `0-9`, `.`, `_` and `-`. The
