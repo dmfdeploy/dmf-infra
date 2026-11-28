@@ -286,9 +286,10 @@ To run the review-comment check, run this block from the repository root:
 ```
 
 The `guard` workflow scans for secrets and vulnerabilities, lints the workflow
-files, and checks commit subjects and the issue link. Its gitleaks job scans the
+files, and checks commit subjects. Its gitleaks job scans the
 checked-out files with the `.gitleaks.toml` of the base branch, and it skips the
-commit history. The `DCO` workflow checks sign-offs. Both run in CI only.
+commit history. The `issue-link` workflow checks the issue link in the PR body.
+The `DCO` workflow checks sign-offs. All three run in CI only.
 
 ### Checks that need more than a checkout
 
@@ -381,8 +382,9 @@ CI checks each of these.
   vulnerability scans.
 
 Also leave agent session links out of commit messages and the PR body. The
-`guard` workflow rejects one known session-link format. It can't recognize
-every tool's links, so reviewers look for them too.
+`guard` workflow rejects one known session-link format in commit messages, and the
+`issue-link` workflow rejects it in the PR body. They can't recognize every
+tool's links, so reviewers look for them too.
 
 ## Developer Certificate of Origin (DCO)
 
