@@ -423,6 +423,57 @@ class Stamp(Base):
             "forgejo": {"service": "", "namespace": "forgejo", "port": 3000}}}, app="forgejo")
         self.assertEqual(stub.stamps(), [])
 
+# Instance names for the name rule: a DNS-1035 label of at most 48 characters
+# (63 minus the 15 characters of "-admin-password").
+NAME_ACCEPTED = ["awx", "a", "a" * 48, "tower-blue", "a1-b2"]
+NAME_REJECTED = ["a" * 49, "tower.blue", "1awx", "-awx", "awx-", "Awx", ""]
+
+
+class InstanceNameRule(Base):
+    """The instance name must make a valid name for every derived Service, Deployment and Secret."""
+
+    def run_alert(self, name, **kw):
+        return real.run("alert", self.dir(), {"awx_instance_name": name, "awx_namespace": "awx"}, **kw)
+
+    def test_the_role_check_applies_the_rule(self):
+        for name in NAME_ACCEPTED:
+            with self.subTest(accepted=name):
+                run = self.run_alert(name)
+                self.assertEqual(run.returncode, 0, run.output)
+        for name in NAME_REJECTED:
+            with self.subTest(rejected=name):
+                run = self.run_alert(name)
+                self.assertNotEqual(run.returncode, 0, run.output)
+                self.assertIsNone(run.rendered)
+
+    def test_the_filters_apply_the_rule(self):
+        plugins = str(ROOT / "roles" / real.IDENTITY_ROLE / "filter_plugins")
+        env = {"ANSIBLE_FILTER_PLUGINS": plugins}
+        for name in NAME_ACCEPTED:
+            with self.subTest(accepted=name):
+                run = self.run_alert(name, drop_dependency=True, env_extra=env)
+                self.assertEqual(run.returncode, 0, run.output)
+        for name in NAME_REJECTED[:-1]:  # an empty value fails the presence check first
+            with self.subTest(rejected=name):
+                run = self.run_alert(name, drop_dependency=True, env_extra=env)
+                self.assertNotEqual(run.returncode, 0, run.output)
+                self.assertIn("must be a plain Kubernetes name", run.output)
+
+    def test_the_filters_and_the_role_check_agree(self):
+        import importlib.util
+        import re
+        spec = importlib.util.spec_from_file_location(
+            "awx_identity_filters", ROOT / "roles" / real.IDENTITY_ROLE / "filter_plugins/awx_identity.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        tasks = yaml.safe_load((ROOT / "roles" / real.IDENTITY_ROLE / "tasks/main.yml").read_text())
+        condition = next(c for t in tasks for c in t["ansible.builtin.assert"]["that"]
+                         if c.startswith("awx_instance_name is match("))
+        pattern = re.compile(condition[len("awx_instance_name is match('"):-2])
+        for name in NAME_ACCEPTED + NAME_REJECTED + ["a" * 63, "a" * 253, "a.b.c"]:
+            with self.subTest(name=name):
+                self.assertEqual(bool(pattern.match(name)), bool(module._NAME.match(name)))
+
 
 class FilterDiscovery(unittest.TestCase):
     def test_ci_promtool_renders_resolve_the_filters(self):
